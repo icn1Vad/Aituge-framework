@@ -798,16 +798,25 @@
 
       async function refreshRagStatus() {
         const res = await fetch("/rag/status");
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) throw new Error(await responseErrorText(res));
         const data = await res.json();
         ragStatusEl.textContent = `RAG: ${data.knowledgebase_count} KB / ${data.file_count} 文件 / ${data.chunk_count} chunks`;
+      }
+
+      async function responseErrorText(res) {
+        const text = await res.text();
+        try {
+          return JSON.parse(text)?.detail || text;
+        } catch {
+          return text;
+        }
       }
 
       async function ingestDefaultPdf() {
         setRagBusy(true);
         try {
           const res = await fetch("/rag/ingest-default", { method: "POST" });
-          if (!res.ok) throw new Error(await res.text());
+          if (!res.ok) throw new Error(await responseErrorText(res));
           const data = await res.json();
           ragStatusEl.textContent = `RAG: KB ${data.kb_id} 已入库，${data.chunk_count} chunks`;
         } catch (error) {
@@ -827,7 +836,7 @@
             method: "POST",
             body: form,
           });
-          if (!res.ok) throw new Error(await res.text());
+          if (!res.ok) throw new Error(await responseErrorText(res));
           const data = await res.json();
           ragStatusEl.textContent = `RAG: KB ${data.kb_id} 已入库，${data.chunk_count} chunks`;
         } catch (error) {

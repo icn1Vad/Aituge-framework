@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 import sys
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 
 from backend.simple_chat_app import create_app as create_simple_chat_app
 from backend.data.RAG.tool_retrieval import LocalRagStore, ToolRetrievalRAG
@@ -26,7 +26,7 @@ LOCAL_PYTHON_ARTIFACT_DIR = (
     Path(__file__).resolve().parent / "tool" / "local_runtime" / "artifacts"
 )
 DEFAULT_RAG_PDF_PATH = (
-    Path(__file__).resolve().parents[1]
+    Path(__file__).resolve().parents[2]
     / "兼用_原02_致远互联：北京致远互联软件股份有限公司内部审计制度.pdf"
 )
 RAG_STORE = LocalRagStore()
@@ -94,15 +94,21 @@ def create_app() -> FastAPI:
 
     @app.post("/rag/ingest-default")
     async def ingest_default_pdf():
-        return RAG_STORE.ingest_pdf(
-            DEFAULT_RAG_PDF_PATH,
-            kb_name="kb_1",
-            kb_description="北京致远互联软件股份有限公司内部审计制度。",
-        )
+        try:
+            return RAG_STORE.ingest_pdf(
+                DEFAULT_RAG_PDF_PATH,
+                kb_name="kb_1",
+                kb_description="北京致远互联软件股份有限公司内部审计制度。",
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/rag/ingest-upload")
     async def ingest_uploaded_pdf(file: UploadFile = File(...)):
-        content = await file.read()
-        return await RAG_STORE.ingest_upload(file.filename or "upload.pdf", content)
+        try:
+            content = await file.read()
+            return await RAG_STORE.ingest_upload(file.filename or "upload.pdf", content)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return app

@@ -139,12 +139,37 @@ class LocalRagStore:
         copy_source: bool = True,
     ) -> dict[str, Any]:
         path = Path(path).expanduser().resolve()
+        data = self.load()
+        source_path = str(path)
+        for file in data.get("files", []):
+            metadata = file.get("metadata") or {}
+            if metadata.get("source_path") == source_path:
+                kb_id = str(file.get("kb_id"))
+                file_id = str(file.get("id"))
+                chunk_count = sum(
+                    1
+                    for chunk in data.get("chunks", [])
+                    if str(chunk.get("file_id")) == file_id
+                )
+                return {
+                    "ok": True,
+                    "deduped": True,
+                    "kb_id": kb_id,
+                    "file_id": file_id,
+                    "chunk_count": chunk_count,
+                    "text_length": sum(
+                        len(chunk.get("text") or "")
+                        for chunk in data.get("chunks", [])
+                        if str(chunk.get("file_id")) == file_id
+                    ),
+                    "file_name": file.get("file_name") or path.name,
+                }
+
         text = extract_pdf_text(path)
         chunks = chunk_text(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         if not chunks:
             raise ValueError(f"No extractable text found in PDF: {path}")
 
-        data = self.load()
         kb_id = str(data.get("next_kb_id", 1))
         file_id = str(data.get("next_file_id", 1))
         first_chunk_id = int(data.get("next_chunk_id", 1))
@@ -167,7 +192,7 @@ class LocalRagStore:
             file_name=path.name,
             title=path.stem,
             source_url=stored_path,
-            metadata={"source_path": str(path)},
+            metadata={"source_path": source_path},
         )
         chunk_entities = [
             KnowledgeBaseChunk(
@@ -176,7 +201,7 @@ class LocalRagStore:
                 file_id=file_id,
                 text=chunk,
                 index=index,
-                metadata={"source_path": str(path)},
+                metadata={"source_path": source_path},
             )
             for index, chunk in enumerate(chunks)
         ]
@@ -212,4 +237,3 @@ class LocalRagStore:
             )
         finally:
             tmp_path.unlink(missing_ok=True)
-
