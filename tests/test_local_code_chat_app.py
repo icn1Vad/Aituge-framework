@@ -3,6 +3,7 @@ import asyncio
 import httpx
 
 from backend.local_code_chat_app import create_app
+from backend.simple_chat_app import LOCAL_PYTHON_ARTIFACT_DIR
 from common.llm.models import TextChunk
 from db.db_context import create_db_session
 import service.agent.single_agent_runner as runner_mod
@@ -61,3 +62,23 @@ def test_local_code_chat_app_injects_local_python_tool(monkeypatch):
 
     asyncio.run(run())
 
+
+def test_local_code_chat_app_serves_python_artifacts():
+    async def run():
+        app = create_app()
+        run_dir = LOCAL_PYTHON_ARTIFACT_DIR / "test-run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        artifact_file = run_dir / "chart.svg"
+        artifact_file.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>',
+            encoding="utf-8",
+        )
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/tool-artifacts/local-python/test-run/chart.svg")
+
+        assert response.status_code == 200
+        assert "<svg" in response.text
+
+    asyncio.run(run())

@@ -330,6 +330,34 @@
         font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       }
 
+      .tool-artifacts {
+        display: grid;
+        gap: 8px;
+      }
+
+      .tool-artifact {
+        display: grid;
+        gap: 5px;
+      }
+
+      .tool-artifact img {
+        display: block;
+        max-width: 100%;
+        max-height: 420px;
+        border: 1px solid #e7ebf3;
+        border-radius: 6px;
+        background: #fff;
+        object-fit: contain;
+      }
+
+      .tool-artifact iframe {
+        width: min(720px, 78vw);
+        height: 420px;
+        border: 1px solid #e7ebf3;
+        border-radius: 6px;
+        background: #fff;
+      }
+
       footer {
         padding: 16px 64px 22px;
         background: #fff;
@@ -554,6 +582,60 @@
         return toolCall?.id || toolCall?.tool?.id || fallback || crypto.randomUUID();
       }
 
+      function splitToolResult(value) {
+        const raw = String(value || "");
+        const match = raw.match(/__TUGE_ARTIFACTS__(.*?)__END_TUGE_ARTIFACTS__/s);
+        if (!match) return { text: raw, artifacts: [] };
+
+        let artifacts = [];
+        try {
+          artifacts = JSON.parse(match[1])?.artifacts || [];
+        } catch {
+          artifacts = [];
+        }
+        return {
+          text: raw.replace(match[0], "").trim(),
+          artifacts,
+        };
+      }
+
+      function renderArtifacts(trace, artifacts = []) {
+        const container = trace.querySelector(".tool-artifacts");
+        container.innerHTML = "";
+        for (const artifact of artifacts) {
+          if (!artifact?.url) continue;
+
+          const item = document.createElement("div");
+          item.className = "tool-artifact";
+          const label = document.createElement("div");
+          label.className = "tool-label";
+          label.textContent = artifact.name || artifact.url;
+
+          if (artifact.type === "image") {
+            const img = document.createElement("img");
+            img.src = artifact.url;
+            img.alt = artifact.name || "artifact image";
+            item.append(label, img);
+          } else if (artifact.type === "html") {
+            const iframe = document.createElement("iframe");
+            iframe.src = artifact.url;
+            iframe.sandbox = "allow-scripts";
+            iframe.title = artifact.name || "artifact html";
+            item.append(label, iframe);
+          } else {
+            const link = document.createElement("a");
+            link.href = artifact.url;
+            link.textContent = artifact.name || artifact.url;
+            link.target = "_blank";
+            link.rel = "noreferrer";
+            item.append(label, link);
+          }
+
+          container.appendChild(item);
+        }
+        container.hidden = artifacts.length === 0;
+      }
+
       function upsertToolTrace(nodes, toolCall, options = {}) {
         const id = toolId(toolCall, options.id);
         const fn = toolFunction(toolCall);
@@ -576,6 +658,7 @@
                 <div class="tool-label">结果</div>
                 <pre class="tool-code tool-result"></pre>
               </div>
+              <div class="tool-artifacts" hidden></div>
             </div>
           `;
           nodes.tools.appendChild(trace);
@@ -591,8 +674,10 @@
           state.textContent = options.error ? "error" : "complete";
           state.classList.remove("complete", "error");
           state.classList.add(options.error ? "error" : "complete");
+          const result = splitToolResult(options.error || options.result || "");
           trace.querySelector(".tool-result-wrap").hidden = false;
-          trace.querySelector(".tool-result").textContent = options.error || options.result || "";
+          trace.querySelector(".tool-result").textContent = result.text;
+          renderArtifacts(trace, result.artifacts);
         }
         trace.scrollIntoView({ behavior: "smooth", block: "end" });
       }
