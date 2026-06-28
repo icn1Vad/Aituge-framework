@@ -261,6 +261,75 @@
         font-size: 13px;
       }
 
+      .tool-list {
+        display: grid;
+        gap: 8px;
+        max-width: min(720px, 78vw);
+      }
+
+      .tool-trace {
+        border-left: 2px solid var(--purple);
+        border-top: 1px solid #e4e7ef;
+        border-right: 1px solid #e4e7ef;
+        border-bottom: 1px solid #e4e7ef;
+        border-radius: 7px;
+        background: #fafbff;
+        overflow: hidden;
+        font-size: 12px;
+      }
+
+      .tool-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 10px;
+        color: #475467;
+        background: #f4f6fb;
+      }
+
+      .tool-state {
+        padding: 2px 6px;
+        border-radius: 999px;
+        color: var(--purple-dark);
+        background: #ece9ff;
+        font-size: 11px;
+      }
+
+      .tool-state.complete {
+        color: #067647;
+        background: #dcfae6;
+      }
+
+      .tool-state.error {
+        color: #b42318;
+        background: #fee4e2;
+      }
+
+      .tool-body {
+        display: grid;
+        gap: 6px;
+        padding: 8px 10px 10px;
+      }
+
+      .tool-label {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .tool-code {
+        margin: 0;
+        max-height: 220px;
+        overflow: auto;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        padding: 8px;
+        border-radius: 6px;
+        color: #344054;
+        background: #fff;
+        border: 1px solid #e7ebf3;
+        font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      }
+
       footer {
         padding: 16px 64px 22px;
         background: #fff;
@@ -448,11 +517,94 @@
         actions.innerHTML = '<button class="icon-btn" type="button">⧉</button><button class="icon-btn" type="button">↻</button><span class="token-badge">0 tokens</span>';
         const bubble = document.createElement("div");
         bubble.className = "bubble";
-        wrap.append(actions, bubble);
+        const tools = document.createElement("div");
+        tools.className = "tool-list";
+        wrap.append(actions, tools, bubble);
         turn.appendChild(wrap);
         messagesEl.appendChild(turn);
         turn.scrollIntoView({ behavior: "smooth", block: "end" });
-        return { bubble, token: actions.querySelector(".token-badge") };
+        return { bubble, token: actions.querySelector(".token-badge"), tools, toolMap: new Map() };
+      }
+
+      function parseMaybeJson(value) {
+        if (value === null || value === undefined) return value;
+        if (typeof value !== "string") return value;
+        const trimmed = value.trim();
+        if (!trimmed) return "";
+        if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return value;
+        try {
+          return JSON.parse(trimmed);
+        } catch {
+          return value;
+        }
+      }
+
+      function formatToolValue(value) {
+        const parsed = parseMaybeJson(value);
+        if (parsed === null || parsed === undefined) return "";
+        if (typeof parsed === "string") return parsed;
+        return JSON.stringify(parsed, null, 2);
+      }
+
+      function toolFunction(toolCall) {
+        return toolCall?.function || toolCall?.tool?.function || {};
+      }
+
+      function toolId(toolCall, fallback = "") {
+        return toolCall?.id || toolCall?.tool?.id || fallback || crypto.randomUUID();
+      }
+
+      function upsertToolTrace(nodes, toolCall, options = {}) {
+        const id = toolId(toolCall, options.id);
+        const fn = toolFunction(toolCall);
+        const name = fn.name || options.name || "tool";
+        let trace = nodes.toolMap.get(id);
+        if (!trace) {
+          trace = document.createElement("div");
+          trace.className = "tool-trace";
+          trace.innerHTML = `
+            <div class="tool-head">
+              <span class="tool-state">running</span>
+              <strong class="tool-name"></strong>
+            </div>
+            <div class="tool-body">
+              <div>
+                <div class="tool-label">参数</div>
+                <pre class="tool-code tool-args"></pre>
+              </div>
+              <div class="tool-result-wrap" hidden>
+                <div class="tool-label">结果</div>
+                <pre class="tool-code tool-result"></pre>
+              </div>
+            </div>
+          `;
+          nodes.tools.appendChild(trace);
+          nodes.toolMap.set(id, trace);
+        }
+
+        trace.querySelector(".tool-name").textContent = name;
+        const argsText = formatToolValue(fn.arguments || options.arguments || "");
+        if (argsText) trace.querySelector(".tool-args").textContent = argsText;
+
+        if (options.result !== undefined || options.error !== undefined) {
+          const state = trace.querySelector(".tool-state");
+          state.textContent = options.error ? "error" : "complete";
+          state.classList.remove("complete", "error");
+          state.classList.add(options.error ? "error" : "complete");
+          trace.querySelector(".tool-result-wrap").hidden = false;
+          trace.querySelector(".tool-result").textContent = options.error || options.result || "";
+        }
+        trace.scrollIntoView({ behavior: "smooth", block: "end" });
+      }
+
+      function renderSteps(nodes, steps = []) {
+        for (const [index, step] of steps.entries()) {
+          upsertToolTrace(nodes, step.tool, {
+            id: step.tool?.id || `step-${index}`,
+            result: step.result,
+            error: step.error,
+          });
+        }
       }
 
       function setBusy(busy, label = "ready") {
@@ -516,6 +668,17 @@
               statusEl.textContent = "streaming";
             }
             if (event === "chunk") {
+              if (payload.data?.actions) {
+                for (const action of payload.data.actions) upsertToolTrace(nodes, action);
+              }
+              if (payload.data?.observation) {
+                const observation = payload.data.observation;
+                upsertToolTrace(nodes, observation.tool, {
+                  id: observation.tool?.id,
+                  result: observation.result,
+                  error: observation.error,
+                });
+              }
               const delta = payload.data?.choices?.[0]?.delta?.content || "";
               const usage = payload.data?.usage;
               if (delta) {
@@ -559,6 +722,7 @@
           } else {
             const response = await sendNonStream(text);
             assistant.bubble.textContent = response?.choices?.[0]?.message?.content || "";
+            renderSteps(assistant, response?.steps || []);
             const usage = response?.usage;
             if (usage) assistant.token.textContent = `${usage.total_tokens || 0} tokens`;
             renderThreads(assistant.bubble.textContent.slice(0, 36));
