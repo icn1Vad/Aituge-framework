@@ -13,3 +13,7 @@ venv/
 
 # Runtime data
 backend/single-agent/tmp/
+
+# Nested worktrees
+aituge-registry/
+aituge-singleagent/
