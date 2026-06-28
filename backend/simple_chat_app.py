@@ -13,12 +13,12 @@ FRONTEND_DIR = ROOT_DIR / "frontend" / "simple-chat"
 if str(SINGLE_AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(SINGLE_AGENT_DIR))
 
-from api.single_agent_api import router as single_agent_router  # noqa: E402
+from api.single_agent_api import ToolProvider, create_router  # noqa: E402
 
 
-def create_app() -> FastAPI:
+def create_app(tool_provider: ToolProvider | None = None) -> FastAPI:
     app = FastAPI(title="TUGE Simple Chat")
-    app.include_router(single_agent_router)
+    app.include_router(create_router(tool_provider))
     app.mount("/ui", StaticFiles(directory=FRONTEND_DIR, html=True), name="ui")
 
     @app.get("/")
