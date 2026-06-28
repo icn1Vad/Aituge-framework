@@ -530,6 +530,7 @@
           <form id="form" class="composer">
             <textarea id="input" placeholder="给 TUGE single-agent 发消息" autofocus></textarea>
             <div class="composer-actions">
+              <label><input id="reportSkill" type="checkbox" /> 报告 skill</label>
               <label><input id="stream" type="checkbox" checked /> stream</label>
               <button id="send" class="send" type="submit" title="发送">↑</button>
             </div>
@@ -546,12 +547,26 @@
       const statusEl = document.getElementById("status");
       const sendEl = document.getElementById("send");
       const streamEl = document.getElementById("stream");
+      const reportSkillEl = document.getElementById("reportSkill");
       const newChatEl = document.getElementById("newChat");
       const threadListEl = document.getElementById("threadList");
       const ingestDefaultEl = document.getElementById("ingestDefault");
       const pickPdfEl = document.getElementById("pickPdf");
       const pdfFileEl = document.getElementById("pdfFile");
       const ragStatusEl = document.getElementById("ragStatus");
+
+      const REPORT_SKILL_PACKAGE = {
+        primary_skill: "report-generator",
+        candidate_skills: [
+          "report-executive-summary",
+          "report-context-scope",
+          "report-analysis-findings",
+          "report-quantitative-calculation",
+          "report-chart-figure",
+          "report-code-verification",
+          "report-risk-actions",
+        ],
+      };
 
       let threadId = null;
       let currentThreadTitle = "初始问候";
@@ -745,6 +760,31 @@
         }
       }
 
+      function renderSkills(nodes, skills) {
+        if (!skills?.primary && !skills?.candidates?.length) return;
+        const primary = skills.primary;
+        const candidates = skills.candidates || [];
+        const path = [primary?.name, ...candidates.map((skill) => skill.name)].filter(Boolean);
+        const result = candidates.length
+          ? candidates.map((skill) => `${skill.name}: ${skill.description || ""}`).join("\n")
+          : "no auxiliary skills";
+        upsertToolTrace(nodes, {
+          id: `skill-${primary?.name || "package"}`,
+          function: {
+            name: `skill: ${primary?.name || "package"}`,
+            arguments: JSON.stringify({
+              type: "skill_package",
+              path,
+              primary: primary?.name || null,
+              auxiliary: candidates.map((skill) => skill.name),
+            }, null, 2),
+          },
+        }, {
+          id: `skill-${primary?.name || "package"}`,
+          result,
+        });
+      }
+
       function setBusy(busy, label = "ready") {
         sendEl.disabled = busy;
         statusEl.textContent = label;
@@ -811,33 +851,33 @@
         return rest;
       }
 
+      function buildChatPayload(text, stream) {
+        return {
+          message: text,
+          user_id: userId,
+          thread_id: threadId,
+          stream,
+          ...(reportSkillEl.checked ? REPORT_SKILL_PACKAGE : {}),
+        };
+      }
+
       async function sendNonStream(text) {
         const res = await fetch("/single-agent/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: text,
-            user_id: userId,
-            thread_id: threadId,
-            stream: false,
-          }),
+          body: JSON.stringify(buildChatPayload(text, false)),
         });
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         threadId = data.thread_id;
-        return data.response;
+        return data;
       }
 
       async function sendStream(text, nodes) {
         const res = await fetch("/single-agent/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: text,
-            user_id: userId,
-            thread_id: threadId,
-            stream: true,
-          }),
+          body: JSON.stringify(buildChatPayload(text, true)),
         });
         if (!res.ok || !res.body) throw new Error(await res.text());
 
@@ -851,6 +891,7 @@
           buffer = parseSse(buffer, (event, payload) => {
             if (event === "metadata") {
               threadId = payload.thread_id;
+              renderSkills(nodes, payload.data?.skills);
               statusEl.textContent = "streaming";
             }
             if (event === "chunk") {
@@ -910,7 +951,9 @@
           if (streamEl.checked) {
             await sendStream(text, assistant);
           } else {
-            const response = await sendNonStream(text);
+            const data = await sendNonStream(text);
+            const response = data.response;
+            renderSkills(assistant, data.skills);
             assistant.bubble.textContent = response?.choices?.[0]?.message?.content || "";
             renderSteps(assistant, response?.steps || []);
             const usage = response?.usage;

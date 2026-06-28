@@ -34,5 +34,5 @@ class LlmModelEntity(LlmModelRead, table=True):
     __tablename__ = "tuge_llm_model"
     __table_args__ = (UniqueConstraint("tenant_id", "provider_name", "model_id", name="unique_tuge_llm_model"),)
 
-    id: str = Field(default_factory=lambda x: str(uuid.uuid4().hex), primary_key=True, max_length=64)
-    encrypted_api_key: str = Field(default=None)
+    id: str = Field(default_factory=lambda: str(uuid.uuid4().hex), primary_key=True, max_length=64)
+    encrypted_api_key: Optional[str] = Field(default=None)
