@@ -75,10 +75,8 @@ def test_tool_config_entity_to_provider_config_decrypts_secrets():
     entity = ToolConfigEntity(
         tool_name="web_search",
         provider="aliyun",
-        config_json='{"endpoint": "iqs.cn-zhangjiakou.aliyuncs.com", "search_count": 5}',
-        encrypted_secrets_json=encrypt_key(
-            '{"access_key_id": "ak", "access_key_secret": "sk"}'
-        ),
+        config_json='{"endpoint": "https://cloud-iqs.aliyuncs.com/search/unified", "search_count": 5}',
+        encrypted_secrets_json=encrypt_key('{"api_key": "iqs-api-key"}'),
     )
 
     config = entity.to_provider_config()
@@ -86,4 +84,4 @@ def test_tool_config_entity_to_provider_config_decrypts_secrets():
     assert config.tool_name == "web_search"
     assert config.provider == "aliyun"
     assert config.config["search_count"] == 5
-    assert config.secrets == {"access_key_id": "ak", "access_key_secret": "sk"}
+    assert config.secrets == {"api_key": "iqs-api-key"}

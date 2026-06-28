@@ -100,13 +100,18 @@ Aliyun web search config:
   "tool_name": "web_search",
   "provider": "aliyun",
   "config_json": {
-    "endpoint": "iqs.cn-zhangjiakou.aliyuncs.com",
+    "endpoint": "https://cloud-iqs.aliyuncs.com/search/unified",
     "search_count": 10,
-    "time_range": "OneMonth"
+    "engine_type": "LiteAdvanced",
+    "contents": {
+      "mainText": true,
+      "markdownText": false,
+      "summary": false,
+      "rerankScore": true
+    }
   },
   "secrets_json": {
-    "access_key_id": "your-aliyun-access-key-id",
-    "access_key_secret": "your-aliyun-access-key-secret"
+    "api_key": "your-aliyun-iqs-api-key"
   }
 }
 ```
