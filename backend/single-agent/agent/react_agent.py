@@ -341,20 +341,18 @@ class ReactAgent:
                 ]
                 tool_results = await asyncio.gather(*tool_execution_tasks)
 
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": narration_content,
+                    "tool_calls": valid_tool_calls,
+                }
+                if reasoning_content:
+                    assistant_msg["reasoning_content"] = reasoning_content
+                messages.append(assistant_msg)
+
                 # Process results and check for return_direct
                 should_return = False
                 for idx, (tool_call, tool_content, tool_error, message_content) in enumerate(tool_results):
-                    # Add assistant message with tool call; attach any narration to
-                    # the first one so it stays bound to an actual tool call.
-                    assistant_msg = {
-                        "role": "assistant",
-                        "content": narration_content if idx == 0 else None,
-                        "tool_calls": [tool_call]
-                    }
-                    if reasoning_content and idx == 0:
-                        assistant_msg["reasoning_content"] = reasoning_content
-                    messages.append(assistant_msg)
-
                     # Add tool result message (cap large results)
                     capped_content = self.msg_manager.cap_tool_result(message_content) if message_content else message_content
                     messages.append({
