@@ -1,0 +1,576 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PAI-RAG Chat Replica</title>
+    <style>
+      :root {
+        --bg: #f7f8fb;
+        --sidebar: #f2f4f8;
+        --panel: #ffffff;
+        --line: #dfe4ec;
+        --line-strong: #cfd7e3;
+        --text: #242933;
+        --muted: #6b7280;
+        --soft: #eef2f7;
+        --purple: #6d4bd8;
+        --purple-dark: #5b3fc7;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .app {
+        height: 100vh;
+        display: grid;
+        grid-template-columns: 280px 1fr;
+      }
+
+      aside {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        border-right: 1px solid var(--line);
+        background: var(--sidebar);
+      }
+
+      .brand {
+        height: 58px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 18px;
+        font-weight: 700;
+      }
+
+      .brand-mark {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        display: grid;
+        place-items: center;
+        color: #fff;
+        background: var(--purple);
+        font-weight: 800;
+      }
+
+      .nav {
+        display: grid;
+        gap: 2px;
+        padding: 6px 12px 0;
+      }
+
+      .nav-item,
+      .thread {
+        height: 38px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 10px;
+        border-radius: 8px;
+        color: #3f4652;
+        font-size: 14px;
+      }
+
+      .nav-item.active {
+        color: #222733;
+      }
+
+      .section-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 16px 8px;
+        color: #4b5563;
+        font-size: 14px;
+      }
+
+      .new-chat {
+        margin: 0 12px 8px;
+        height: 40px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        background: #fff;
+        color: #20242c;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 12px;
+        cursor: pointer;
+        font-size: 14px;
+      }
+
+      .thread-list {
+        padding: 0 12px 16px;
+        overflow: auto;
+      }
+
+      .thread {
+        height: auto;
+        min-height: 44px;
+        align-items: flex-start;
+        flex-direction: column;
+        justify-content: center;
+        gap: 2px;
+        background: #e9eef6;
+        margin-bottom: 8px;
+      }
+
+      .thread .title {
+        width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .thread .preview {
+        width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .workspace {
+        min-width: 0;
+        height: 100vh;
+        display: grid;
+        grid-template-rows: 58px 1fr auto;
+        background: #fff;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 0 28px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.96);
+      }
+
+      .model-pill {
+        height: 38px;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 13px;
+        border: 1px solid #d8d1ff;
+        border-radius: 10px;
+        color: #3f365f;
+        background: #f6f3ff;
+        font-weight: 650;
+      }
+
+      .model-dot {
+        width: 16px;
+        height: 16px;
+        border-radius: 5px;
+        display: grid;
+        place-items: center;
+        color: var(--purple);
+        border: 1px solid #cabfff;
+        font-size: 11px;
+      }
+
+      .top-status {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .messages {
+        overflow: auto;
+        padding: 38px 64px 28px;
+      }
+
+      .empty {
+        height: 100%;
+        display: grid;
+        place-items: center;
+        color: #98a2b3;
+      }
+
+      .turn {
+        display: flex;
+        margin: 0 0 28px;
+      }
+
+      .turn.user {
+        justify-content: flex-end;
+      }
+
+      .turn.assistant {
+        justify-content: flex-start;
+      }
+
+      .bubble {
+        max-width: min(720px, 78%);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        line-height: 1.7;
+        font-size: 15px;
+      }
+
+      .user .bubble {
+        padding: 11px 18px;
+        color: #fff;
+        background: var(--purple);
+        border-radius: 22px 22px 6px 22px;
+      }
+
+      .assistant-wrap {
+        display: grid;
+        gap: 8px;
+      }
+
+      .assistant-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        color: #a6afbd;
+        font-size: 13px;
+      }
+
+      .icon-btn {
+        width: 22px;
+        height: 22px;
+        display: grid;
+        place-items: center;
+        border: 0;
+        border-radius: 6px;
+        color: #98a2b3;
+        background: transparent;
+      }
+
+      .token-badge {
+        padding: 5px 10px;
+        border-radius: 10px;
+        color: #3f4652;
+        background: #eef1f6;
+        font-size: 13px;
+      }
+
+      footer {
+        padding: 16px 64px 22px;
+        background: #fff;
+      }
+
+      .composer {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        align-items: end;
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 10px;
+        border: 1px solid var(--line-strong);
+        border-radius: 12px;
+        background: #fff;
+        box-shadow: 0 8px 24px rgba(16, 24, 40, 0.06);
+      }
+
+      textarea {
+        min-height: 48px;
+        max-height: 160px;
+        resize: vertical;
+        border: 0;
+        outline: 0;
+        padding: 10px 12px;
+        font: inherit;
+        line-height: 1.5;
+      }
+
+      .composer-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 4px 4px 0;
+      }
+
+      label {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .send {
+        width: 40px;
+        height: 40px;
+        display: grid;
+        place-items: center;
+        border: 0;
+        border-radius: 10px;
+        color: #fff;
+        background: var(--purple);
+        cursor: pointer;
+        font-size: 18px;
+      }
+
+      .send:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
+      @media (max-width: 760px) {
+        .app {
+          grid-template-columns: 1fr;
+        }
+
+        aside {
+          display: none;
+        }
+
+        .messages,
+        footer {
+          padding-left: 18px;
+          padding-right: 18px;
+        }
+
+        header {
+          padding: 0 16px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside>
+        <div class="brand">
+          <div class="brand-mark">P</div>
+          <div>PAI-RAG</div>
+        </div>
+        <nav class="nav">
+          <div class="nav-item">▣ 知识库</div>
+          <div class="nav-item">▤ 应用</div>
+          <div class="nav-item">⚖ 评估</div>
+          <div class="nav-item active">○ 对话</div>
+        </nav>
+        <div class="section-title">
+          <span>对话</span>
+          <span>⌃</span>
+        </div>
+        <button id="newChat" class="new-chat" type="button">＋ 新建对话</button>
+        <div id="threadList" class="thread-list"></div>
+      </aside>
+
+      <section class="workspace">
+        <header>
+          <div class="model-pill">
+            <span class="model-dot">⌘</span>
+            <span id="modelName">deepseek-v4-pro</span>
+            <span>⌄</span>
+          </div>
+          <div id="status" class="top-status">ready</div>
+        </header>
+
+        <main id="messages" class="messages">
+          <div id="empty" class="empty">开始一轮最小 single-agent 对话</div>
+        </main>
+
+        <footer>
+          <form id="form" class="composer">
+            <textarea id="input" placeholder="给 TUGE single-agent 发消息" autofocus></textarea>
+            <div class="composer-actions">
+              <label><input id="stream" type="checkbox" checked /> stream</label>
+              <button id="send" class="send" type="submit" title="发送">↑</button>
+            </div>
+          </form>
+        </footer>
+      </section>
+    </div>
+
+    <script>
+      const messagesEl = document.getElementById("messages");
+      const emptyEl = document.getElementById("empty");
+      const inputEl = document.getElementById("input");
+      const formEl = document.getElementById("form");
+      const statusEl = document.getElementById("status");
+      const sendEl = document.getElementById("send");
+      const streamEl = document.getElementById("stream");
+      const newChatEl = document.getElementById("newChat");
+      const threadListEl = document.getElementById("threadList");
+
+      let threadId = null;
+      let currentThreadTitle = "初始问候";
+      const userId = `web-${crypto.randomUUID()}`;
+
+      function ensureStarted() {
+        if (emptyEl) emptyEl.remove();
+      }
+
+      function renderThreads(preview = "") {
+        threadListEl.innerHTML = "";
+        const item = document.createElement("div");
+        item.className = "thread";
+        const title = document.createElement("div");
+        title.className = "title";
+        title.textContent = currentThreadTitle || "新会话";
+        const sub = document.createElement("div");
+        sub.className = "preview";
+        sub.textContent = preview || "等待消息";
+        item.append(title, sub);
+        threadListEl.appendChild(item);
+      }
+
+      function addUserMessage(text) {
+        ensureStarted();
+        const turn = document.createElement("div");
+        turn.className = "turn user";
+        const bubble = document.createElement("div");
+        bubble.className = "bubble";
+        bubble.textContent = text;
+        turn.appendChild(bubble);
+        messagesEl.appendChild(turn);
+        turn.scrollIntoView({ behavior: "smooth", block: "end" });
+      }
+
+      function addAssistantMessage() {
+        ensureStarted();
+        const turn = document.createElement("div");
+        turn.className = "turn assistant";
+        const wrap = document.createElement("div");
+        wrap.className = "assistant-wrap";
+        const actions = document.createElement("div");
+        actions.className = "assistant-actions";
+        actions.innerHTML = '<button class="icon-btn" type="button">⧉</button><button class="icon-btn" type="button">↻</button><span class="token-badge">0 tokens</span>';
+        const bubble = document.createElement("div");
+        bubble.className = "bubble";
+        wrap.append(actions, bubble);
+        turn.appendChild(wrap);
+        messagesEl.appendChild(turn);
+        turn.scrollIntoView({ behavior: "smooth", block: "end" });
+        return { bubble, token: actions.querySelector(".token-badge") };
+      }
+
+      function setBusy(busy, label = "ready") {
+        sendEl.disabled = busy;
+        statusEl.textContent = label;
+      }
+
+      function parseSse(buffer, onEvent) {
+        const parts = buffer.split("\n\n");
+        const rest = parts.pop() || "";
+        for (const part of parts) {
+          const lines = part.split("\n");
+          const event = (lines.find((line) => line.startsWith("event: ")) || "event: message").slice(7);
+          const dataLine = lines.find((line) => line.startsWith("data: "));
+          if (!dataLine) continue;
+          onEvent(event, JSON.parse(dataLine.slice(6)));
+        }
+        return rest;
+      }
+
+      async function sendNonStream(text) {
+        const res = await fetch("/single-agent/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: text,
+            user_id: userId,
+            thread_id: threadId,
+            stream: false,
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        threadId = data.thread_id;
+        return data.response;
+      }
+
+      async function sendStream(text, nodes) {
+        const res = await fetch("/single-agent/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: text,
+            user_id: userId,
+            thread_id: threadId,
+            stream: true,
+          }),
+        });
+        if (!res.ok || !res.body) throw new Error(await res.text());
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          buffer = parseSse(buffer, (event, payload) => {
+            if (event === "metadata") {
+              threadId = payload.thread_id;
+              statusEl.textContent = "streaming";
+            }
+            if (event === "chunk") {
+              const delta = payload.data?.choices?.[0]?.delta?.content || "";
+              const usage = payload.data?.usage;
+              if (delta) {
+                nodes.bubble.textContent += delta;
+                renderThreads(nodes.bubble.textContent.slice(0, 36));
+                nodes.bubble.scrollIntoView({ behavior: "smooth", block: "end" });
+              }
+              if (usage) nodes.token.textContent = `${usage.total_tokens || 0} tokens`;
+            }
+            if (event === "final") {
+              const usage = payload.data?.usage;
+              if (usage) nodes.token.textContent = `${usage.total_tokens || 0} tokens`;
+            }
+          });
+        }
+      }
+
+      newChatEl.addEventListener("click", () => {
+        threadId = null;
+        currentThreadTitle = "新会话";
+        messagesEl.innerHTML = '<div id="empty" class="empty">开始一轮最小 single-agent 对话</div>';
+        renderThreads("");
+        inputEl.focus();
+      });
+
+      formEl.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const text = inputEl.value.trim();
+        if (!text) return;
+
+        inputEl.value = "";
+        currentThreadTitle = text.slice(0, 18);
+        addUserMessage(text);
+        const assistant = addAssistantMessage();
+        renderThreads(text);
+        setBusy(true, "thinking");
+
+        try {
+          if (streamEl.checked) {
+            await sendStream(text, assistant);
+          } else {
+            const response = await sendNonStream(text);
+            assistant.bubble.textContent = response?.choices?.[0]?.message?.content || "";
+            const usage = response?.usage;
+            if (usage) assistant.token.textContent = `${usage.total_tokens || 0} tokens`;
+            renderThreads(assistant.bubble.textContent.slice(0, 36));
+          }
+          setBusy(false, "ready");
+        } catch (error) {
+          assistant.bubble.textContent = `请求失败：${error.message}`;
+          setBusy(false, "error");
+        }
+      });
+
+      renderThreads("");
+    </script>
+  </body>
+</html>
