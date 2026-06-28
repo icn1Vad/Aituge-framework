@@ -37,6 +37,7 @@ def create_limited_local_python_tools(
 - This is a convenience local runner, not a hardened security sandbox.
 - The caller config controls timeout, Python executable, working directory, and output length.
 - Always print values that should be visible in the final result.
+- Save user-visible artifacts with relative paths in the current working directory, such as "report.html" or "chart.png"; do not save artifacts to /tmp or absolute paths.
 
 # Parameters
 - code (required, string): Python code to execute. Raw code, {"code": "..."}, Markdown code fences, and <code>...</code> are accepted.
@@ -54,4 +55,3 @@ def create_limited_local_python_bundle(
 
     tools, cleanup = create_limited_local_python_tools(config)
     return ToolBundle.from_tools(tools, cleanup=cleanup)
-

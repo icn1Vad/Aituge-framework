@@ -71,6 +71,29 @@ class SessionHistoryManager:
             logger.error(f"Failed to load TUGE session history: {e}", exc_info=True)
             return []
 
+    async def restore_history_messages(
+        self,
+        user_id: str,
+        session_id: str,
+        messages: List[ChatCompletionMessageParam],
+    ) -> None:
+        if not user_id or not session_id or not messages:
+            return
+
+        try:
+            history = self._trim_to_rounds([_clean_user_message(msg) for msg in messages])
+            await cache_manager.set(
+                session_history_key(user_id, session_id),
+                json.dumps(history, ensure_ascii=False),
+                ttl=self.TTL_SECONDS,
+            )
+            logger.info(
+                f"Restored TUGE session history to Redis: user={user_id}, "
+                f"session={session_id}, messages={len(history)}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to restore TUGE session history: {e}", exc_info=True)
+
     async def clear_history(self, user_id: str, session_id: str, model: str | None = None) -> None:
         if not user_id or not session_id:
             return

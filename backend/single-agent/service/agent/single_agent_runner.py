@@ -2,6 +2,7 @@ import json
 from typing import Any, AsyncIterator, List, Optional, Sequence
 
 from agent.prompts import REACT_PROMPT
+from agent.message_manager import AgentMessageManager
 from agent.react_agent import ReactAgent
 from agent.state import AgentState
 from common.encrypt_utils import decrypt_key
@@ -134,6 +135,16 @@ def _message_text(message: dict) -> str:
     return str(content or "")
 
 
+def _stored_content_text(content: list[dict] | None) -> str:
+    if not content:
+        return ""
+    return "\n".join(
+        part.get("text", "")
+        for part in content
+        if isinstance(part, dict) and part.get("type") == "text"
+    )
+
+
 def _default_title(message: dict) -> str:
     text = _message_text(message).strip().replace("\n", " ")
     return text[:40] or "New conversation"
@@ -180,14 +191,17 @@ class SingleAgentRunner:
         )
 
         if session_id and user_id and len(runtime_messages) == 1:
-            history = await session_history_manager.get_history_messages(
+            history = await self._restore_history_messages(
                 user_id=user_id,
                 session_id=session_id,
+                thread_id=thread_id,
+                current_user_message_id=user_message_id,
+                llm=llm,
             )
             if history:
                 runtime_messages = history + runtime_messages
                 logger.info(
-                    f"Restored {len(history)} Redis history messages for "
+                    f"Restored {len(history)} history messages for "
                     f"user={user_id}, session={session_id}."
                 )
 
@@ -262,14 +276,17 @@ class SingleAgentRunner:
         )
 
         if session_id and user_id and len(runtime_messages) == 1:
-            history = await session_history_manager.get_history_messages(
+            history = await self._restore_history_messages(
                 user_id=user_id,
                 session_id=session_id,
+                thread_id=thread_id,
+                current_user_message_id=user_message_id,
+                llm=llm,
             )
             if history:
                 runtime_messages = history + runtime_messages
                 logger.info(
-                    f"Restored {len(history)} Redis history messages for "
+                    f"Restored {len(history)} history messages for "
                     f"user={user_id}, session={session_id}."
                 )
 
@@ -376,6 +393,63 @@ class SingleAgentRunner:
                 thread_id = thread_id or session_id or "ephemeral"
 
         return llm, thread_id, session_id or thread_id, user_message_id
+
+    async def _restore_history_messages(
+        self,
+        user_id: str,
+        session_id: str,
+        thread_id: str,
+        current_user_message_id: Optional[str],
+        llm: PaiLlm,
+    ) -> list[dict]:
+        history = await session_history_manager.get_history_messages(
+            user_id=user_id,
+            session_id=session_id,
+        )
+        if history:
+            return history
+
+        history = await self._load_sqlite_history_messages(
+            thread_id=thread_id,
+            current_user_message_id=current_user_message_id,
+        )
+        if not history:
+            return []
+
+        manager = AgentMessageManager(
+            context_window=llm.context_window,
+            max_output_tokens=llm.max_tokens,
+        )
+        history = manager.fit_to_budget(history)
+        await session_history_manager.restore_history_messages(
+            user_id=user_id,
+            session_id=session_id,
+            messages=history,
+        )
+        return history
+
+    async def _load_sqlite_history_messages(
+        self,
+        thread_id: str,
+        current_user_message_id: Optional[str],
+    ) -> list[dict]:
+        async with create_db_session() as session:
+            messages = await MessageService(session).list_messages(
+                thread_id=thread_id,
+                tenant_id=self.tenant_id,
+            )
+
+        history: list[dict] = []
+        for message in messages:
+            if message.id == current_user_message_id:
+                continue
+            if message.role not in {"user", "assistant"}:
+                continue
+            text = _stored_content_text(message.content)
+            if not text:
+                continue
+            history.append({"role": message.role, "content": text})
+        return history
 
     async def _persist_assistant_message(
         self,
