@@ -47,6 +47,7 @@ def test_outer_backend_serves_frontend_and_chat(monkeypatch):
             assert page.status_code == 200
             assert "PAI-RAG" in page.text
             assert "新建对话" in page.text
+            assert "报告 skill" in page.text
 
             non_stream = await client.post(
                 "/single-agent/chat",

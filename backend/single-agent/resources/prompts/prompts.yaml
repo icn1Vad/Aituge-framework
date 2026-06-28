@@ -27,6 +27,9 @@ react_prompt: |
   ## Available Tools
   {tools_str}
 
+  ## Task Context and Skills
+  {context_str}
+
   ### How to call tools
   - Use only the tools listed above. Never invent tool names, arguments, or results.
   - Rewrite vague or context-dependent references into clear, standalone queries (e.g. "陆家嘴" → "上海陆家嘴 交通方便 酒店推荐 价格 2026").
@@ -50,4 +53,3 @@ react_prompt: |
   - Include relevant image links from tool results in Markdown when useful.
   - Before finalizing, do a quick self-check: if your answer contains any changeable facts not backed by a tool result this turn, go back and call a tool.
   - Never end a turn on a "next I will…" sentence — emit either the tool call or the full answer.
-

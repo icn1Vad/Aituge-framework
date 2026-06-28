@@ -6,6 +6,7 @@ dotenv.load_dotenv()
 from loguru import logger
 from sqlmodel import SQLModel
 from sqlalchemy import event
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncEngine
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -19,6 +20,13 @@ from pathlib import Path
 
 
 DEFAULT_SQLITE_URL = f"sqlite+aiosqlite:///{Path(__file__).resolve().parent.parent / 'tmp' / 'sqlite' / 'local.db'}"
+
+
+def _ensure_sqlite_parent_dir(db_url: str) -> None:
+    database = make_url(db_url).database
+    if not database or database == ":memory:":
+        return
+    Path(database).expanduser().parent.mkdir(parents=True, exist_ok=True)
 
 
 def get_async_db_engine() -> AsyncEngine:
@@ -83,6 +91,7 @@ def get_async_db_engine() -> AsyncEngine:
         return async_engine
     else:
         db_url = os.getenv("SQLITE_URL", DEFAULT_SQLITE_URL)
+        _ensure_sqlite_parent_dir(db_url)
         logger.info(f"Creating SQLite engine: {db_url}")
 
         async_engine = create_async_engine(

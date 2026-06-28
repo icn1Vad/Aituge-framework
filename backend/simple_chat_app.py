@@ -7,10 +7,13 @@ from fastapi.staticfiles import StaticFiles
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+BACKEND_DIR = ROOT_DIR / "backend"
 SINGLE_AGENT_DIR = ROOT_DIR / "backend" / "single-agent"
 FRONTEND_DIR = ROOT_DIR / "frontend" / "simple-chat"
 LOCAL_PYTHON_ARTIFACT_DIR = ROOT_DIR / "backend" / "tool" / "local_runtime" / "artifacts"
 
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
 if str(SINGLE_AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(SINGLE_AGENT_DIR))
 

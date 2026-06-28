@@ -163,6 +163,7 @@ class SingleAgentRunner:
         user_id: str = "default_user",
         persist: bool = True,
         prompts: Optional[dict[str, str]] = None,
+        task_prompt: str = "",
     ) -> SingleAgentChatResult:
         runtime_messages = _normalize_messages(messages=messages, user_message=user_message)
         current_user_message = runtime_messages[-1]
@@ -193,7 +194,7 @@ class SingleAgentRunner:
         system_prompt = (prompts or {}).get("react", self.system_prompt)
         system_prompt = system_prompt.format(
             tools_str=build_tools_summary(tools),
-            context_str="",
+            context_str=task_prompt or "",
         )
 
         agent = ReactAgent(
@@ -237,6 +238,7 @@ class SingleAgentRunner:
         user_id: str = "default_user",
         persist: bool = True,
         prompts: Optional[dict[str, str]] = None,
+        task_prompt: str = "",
     ) -> AsyncIterator[SingleAgentStreamEvent]:
         runtime_messages = _normalize_messages(messages=messages, user_message=user_message)
         current_user_message = runtime_messages[-1]
@@ -274,7 +276,7 @@ class SingleAgentRunner:
         system_prompt = (prompts or {}).get("react", self.system_prompt)
         system_prompt = system_prompt.format(
             tools_str=build_tools_summary(tools),
-            context_str="",
+            context_str=task_prompt or "",
         )
 
         agent = ReactAgent(
