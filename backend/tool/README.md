@@ -5,8 +5,14 @@
 The intended boundary is:
 
 - `backend/tool` owns concrete clients, adapters, configs, and factories.
+- `backend/tool/registry` owns tool provider registration and shared config
+  shapes.
 - `backend/single-agent` receives ready-to-use `FunctionTool` instances.
 - Task/API layers decide which tools are enabled for a run.
+
+The registry is intentionally light. It is a task-facing factory catalog, not a
+global permission system: callers still decide which `ToolProviderConfig`
+objects to use for a given task/session.
 
 The first sandbox implementation follows PAI-RAG's simpler shape: create a
 remote code sandbox client, wrap it as a small set of LlamaIndex tools, and
@@ -57,4 +63,18 @@ For a local-code test app:
 
 ```bash
 uvicorn backend.local_code_chat_app:create_app --factory --host 0.0.0.0 --port 8892
+```
+
+To build tools through the unified tool list:
+
+```python
+from tool.registry import ToolProviderConfig, get_default_tool_list
+
+bundle = get_default_tool_list().create_bundle(
+    ToolProviderConfig(
+        tool_name="code_interpreter",
+        provider="local_python",
+        config={"timeout_seconds": 20},
+    )
+)
 ```

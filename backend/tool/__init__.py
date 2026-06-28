@@ -6,5 +6,6 @@ instead of importing concrete tool clients directly.
 """
 
 from .bundle import ToolBundle
+from .registry import ToolProviderConfig, get_default_tool_list
 
-__all__ = ["ToolBundle"]
+__all__ = ["ToolBundle", "ToolProviderConfig", "get_default_tool_list"]
