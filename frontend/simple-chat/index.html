@@ -110,6 +110,47 @@
         font-size: 14px;
       }
 
+      .rag-panel {
+        margin: 4px 12px 10px;
+        display: grid;
+        gap: 8px;
+      }
+
+      .rag-actions {
+        display: grid;
+        grid-template-columns: 1fr 40px;
+        gap: 8px;
+      }
+
+      .rag-btn {
+        height: 36px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        background: #fff;
+        color: #20242c;
+        cursor: pointer;
+        font-size: 13px;
+      }
+
+      .rag-btn:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
+      .rag-file {
+        display: none;
+      }
+
+      .rag-status {
+        min-height: 28px;
+        padding: 7px 9px;
+        border-radius: 8px;
+        color: #4b5563;
+        background: #e9eef6;
+        font-size: 12px;
+        line-height: 1.25;
+      }
+
       .thread-list {
         padding: 0 12px 16px;
         overflow: auto;
@@ -460,6 +501,14 @@
           <span>⌃</span>
         </div>
         <button id="newChat" class="new-chat" type="button">＋ 新建对话</button>
+        <div class="rag-panel">
+          <div class="rag-actions">
+            <button id="ingestDefault" class="rag-btn" type="button">入库默认PDF</button>
+            <button id="pickPdf" class="rag-btn" type="button" title="选择PDF">＋</button>
+          </div>
+          <input id="pdfFile" class="rag-file" type="file" accept="application/pdf,.pdf" />
+          <div id="ragStatus" class="rag-status">RAG: 未加载</div>
+        </div>
         <div id="threadList" class="thread-list"></div>
       </aside>
 
@@ -499,6 +548,10 @@
       const streamEl = document.getElementById("stream");
       const newChatEl = document.getElementById("newChat");
       const threadListEl = document.getElementById("threadList");
+      const ingestDefaultEl = document.getElementById("ingestDefault");
+      const pickPdfEl = document.getElementById("pickPdf");
+      const pdfFileEl = document.getElementById("pdfFile");
+      const ragStatusEl = document.getElementById("ragStatus");
 
       let threadId = null;
       let currentThreadTitle = "初始问候";
@@ -697,6 +750,54 @@
         statusEl.textContent = label;
       }
 
+      function setRagBusy(busy) {
+        ingestDefaultEl.disabled = busy;
+        pickPdfEl.disabled = busy;
+        ragStatusEl.textContent = busy ? "RAG: 入库中" : ragStatusEl.textContent;
+      }
+
+      async function refreshRagStatus() {
+        const res = await fetch("/rag/status");
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        ragStatusEl.textContent = `RAG: ${data.knowledgebase_count} KB / ${data.file_count} 文件 / ${data.chunk_count} chunks`;
+      }
+
+      async function ingestDefaultPdf() {
+        setRagBusy(true);
+        try {
+          const res = await fetch("/rag/ingest-default", { method: "POST" });
+          if (!res.ok) throw new Error(await res.text());
+          const data = await res.json();
+          ragStatusEl.textContent = `RAG: KB ${data.kb_id} 已入库，${data.chunk_count} chunks`;
+        } catch (error) {
+          ragStatusEl.textContent = `RAG: ${error.message}`;
+        } finally {
+          setRagBusy(false);
+        }
+      }
+
+      async function ingestUploadedPdf(file) {
+        if (!file) return;
+        setRagBusy(true);
+        try {
+          const form = new FormData();
+          form.append("file", file);
+          const res = await fetch("/rag/ingest-upload", {
+            method: "POST",
+            body: form,
+          });
+          if (!res.ok) throw new Error(await res.text());
+          const data = await res.json();
+          ragStatusEl.textContent = `RAG: KB ${data.kb_id} 已入库，${data.chunk_count} chunks`;
+        } catch (error) {
+          ragStatusEl.textContent = `RAG: ${error.message}`;
+        } finally {
+          pdfFileEl.value = "";
+          setRagBusy(false);
+        }
+      }
+
       function parseSse(buffer, onEvent) {
         const parts = buffer.split("\n\n");
         const rest = parts.pop() || "";
@@ -789,6 +890,10 @@
         inputEl.focus();
       });
 
+      ingestDefaultEl.addEventListener("click", ingestDefaultPdf);
+      pickPdfEl.addEventListener("click", () => pdfFileEl.click());
+      pdfFileEl.addEventListener("change", () => ingestUploadedPdf(pdfFileEl.files?.[0]));
+
       formEl.addEventListener("submit", async (event) => {
         event.preventDefault();
         const text = inputEl.value.trim();
@@ -820,6 +925,9 @@
       });
 
       renderThreads("");
+      refreshRagStatus().catch(() => {
+        ragStatusEl.textContent = "RAG: 状态不可用";
+      });
     </script>
   </body>
 </html>
