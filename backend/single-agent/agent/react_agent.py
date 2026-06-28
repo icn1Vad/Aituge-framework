@@ -175,6 +175,7 @@ class ReactAgent:
 
                 tool_calls = []
                 step_content = ""
+                step_reasoning_content = ""
                 # If we can still nudge this turn, withhold streamed text until we
                 # know it isn't a bare action-preview — otherwise the user sees the
                 # dangling "let me search…" before we silently correct it. We only
@@ -217,6 +218,7 @@ class ReactAgent:
                                 buffering = False
 
                         if isinstance(chunk, ReasoningChunk):
+                            step_reasoning_content += chunk.reasoning_delta
                             yield chunk
                         elif buffering:
                             step_content += chunk.delta
@@ -264,6 +266,7 @@ class ReactAgent:
                             f"Action-preview without tool call; nudging ({nudge_count}/{MAX_INTENT_NUDGES})."
                         )
                         step_content = ""
+                        step_reasoning_content = ""
                         pending = ""
                         pending_usage = None
                         continue
@@ -285,6 +288,8 @@ class ReactAgent:
                 # emit bare previews.
                 narration_content = step_content or None
                 step_content = ""
+                reasoning_content = step_reasoning_content or None
+                step_reasoning_content = ""
 
                 # Filter valid tool calls
                 valid_tool_calls = [
@@ -299,11 +304,14 @@ class ReactAgent:
                     # Add assistant message with invalid tool calls to maintain conversation state
                     if tool_calls:
                         invalid_tc = tool_calls[0]
-                        messages.append({
+                        assistant_msg = {
                             "role": "assistant",
                             "content": narration_content,
                             "tool_calls": [invalid_tc]
-                        })
+                        }
+                        if reasoning_content:
+                            assistant_msg["reasoning_content"] = reasoning_content
+                        messages.append(assistant_msg)
 
                         # Add error messages for invalid tool calls
                         error_msg = f"Error: Tool '{invalid_tc.function.name}' is not available. Available tools: {list(self.tool_fn_map.keys())}"
@@ -338,11 +346,14 @@ class ReactAgent:
                 for idx, (tool_call, tool_content, tool_error, message_content) in enumerate(tool_results):
                     # Add assistant message with tool call; attach any narration to
                     # the first one so it stays bound to an actual tool call.
-                    messages.append({
+                    assistant_msg = {
                         "role": "assistant",
                         "content": narration_content if idx == 0 else None,
                         "tool_calls": [tool_call]
-                    })
+                    }
+                    if reasoning_content and idx == 0:
+                        assistant_msg["reasoning_content"] = reasoning_content
+                    messages.append(assistant_msg)
 
                     # Add tool result message (cap large results)
                     capped_content = self.msg_manager.cap_tool_result(message_content) if message_content else message_content

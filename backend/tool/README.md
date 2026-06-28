@@ -15,6 +15,11 @@ return a cleanup hook for the caller to run after the conversation/task.
 The initial sandbox is intentionally named `limited` because it is a bounded
 execution helper, not a general-purpose secure isolation product.
 
+`backend/tool/local_runtime` also provides a minimal Codex-like local Python
+runner. It executes code on the host with a temporary working directory,
+timeout, output truncation, and cleanup. It is built for trusted local testing,
+not hardened isolation.
+
 ## Task-Owned Injection
 
 The single-agent runtime should not import concrete tool implementations. The
@@ -46,4 +51,10 @@ For HTTP tests or task adapters, pass a provider into the app/router:
 
 ```python
 app = create_app(tool_provider=lambda request: bundle)
+```
+
+For a local-code test app:
+
+```bash
+uvicorn backend.local_code_chat_app:create_app --factory --host 0.0.0.0 --port 8892
 ```

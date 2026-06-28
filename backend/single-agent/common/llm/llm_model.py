@@ -176,6 +176,18 @@ class PaiLlm():
                                 usage=chunk.usage,
                             )
                     else:
+                        reasoning_delta = ""
+                        if hasattr(chunk.choices[0].delta, "reasoning_content") and chunk.choices[0].delta.reasoning_content:
+                            reasoning_delta = chunk.choices[0].delta.reasoning_content
+
+                        if reasoning_delta:
+                            yield ReasoningChunk(
+                                reasoning_delta=reasoning_delta,
+                                tool_calls=tool_calls,
+                                usage=chunk.usage,
+                            )
+                            continue
+
                         yield TextChunk(
                             delta=delta,
                             tool_calls=tool_calls,
