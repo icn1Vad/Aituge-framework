@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -17,8 +18,11 @@ if str(SINGLE_AGENT_DIR) not in sys.path:
 from api.single_agent_api import ToolProvider, create_router  # noqa: E402
 
 
-def create_app(tool_provider: ToolProvider | None = None) -> FastAPI:
-    app = FastAPI(title="TUGE Simple Chat")
+def create_app(
+    tool_provider: ToolProvider | None = None,
+    lifespan: Any = None,
+) -> FastAPI:
+    app = FastAPI(title="TUGE Simple Chat", lifespan=lifespan)
     app.include_router(create_router(tool_provider))
     app.mount("/ui", StaticFiles(directory=FRONTEND_DIR, html=True), name="ui")
     app.mount(

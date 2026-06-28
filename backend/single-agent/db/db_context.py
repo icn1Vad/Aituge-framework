@@ -192,6 +192,7 @@ async def init_db():
     import db.models.llm  # noqa: F401
     import db.models.message  # noqa: F401
     import db.models.thread  # noqa: F401
+    import tool.registry.models  # noqa: F401
 
     async with get_engine().begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)

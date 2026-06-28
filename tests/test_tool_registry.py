@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from tool.registry import ToolProviderConfig, ToolList, get_default_tool_list
+from common.encrypt_utils import encrypt_key
+from tool.registry import (
+    ToolConfigEntity,
+    ToolProviderConfig,
+    ToolList,
+    get_default_tool_list,
+)
 
 
 def test_default_tool_list_contains_current_tool_providers():
@@ -11,6 +17,7 @@ def test_default_tool_list_contains_current_tool_providers():
 
     assert ("code_interpreter", "local_python") in entries
     assert ("code_interpreter", "limited_sandbox") in entries
+    assert ("web_search", "aliyun") in entries
 
 
 def test_default_tool_list_exposes_llm_tool_names():
@@ -23,6 +30,9 @@ def test_default_tool_list_exposes_llm_tool_names():
     assert limited_sandbox.llm_tool_names == (
         "LimitedPythonInterpreter",
         "LimitedInstallPythonPackage",
+    )
+    assert tool_list.get("web_search", "aliyun").llm_tool_names == (
+        "aliyun-websearch",
     )
 
 
@@ -59,3 +69,21 @@ def test_tool_list_raises_for_unknown_provider():
 
     with pytest.raises(KeyError):
         tool_list.get("web_search", "aliyun")
+
+
+def test_tool_config_entity_to_provider_config_decrypts_secrets():
+    entity = ToolConfigEntity(
+        tool_name="web_search",
+        provider="aliyun",
+        config_json='{"endpoint": "iqs.cn-zhangjiakou.aliyuncs.com", "search_count": 5}',
+        encrypted_secrets_json=encrypt_key(
+            '{"access_key_id": "ak", "access_key_secret": "sk"}'
+        ),
+    )
+
+    config = entity.to_provider_config()
+
+    assert config.tool_name == "web_search"
+    assert config.provider == "aliyun"
+    assert config.config["search_count"] == 5
+    assert config.secrets == {"access_key_id": "ak", "access_key_secret": "sk"}

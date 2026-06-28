@@ -50,9 +50,7 @@ def test_local_code_chat_app_injects_local_python_tool(monkeypatch):
 
         assert response.status_code == 200
         body = response.json()
-        assert body["response"]["choices"][0]["message"]["content"] == (
-            "tools=LimitedLocalPythonInterpreter"
-        )
+        assert "LimitedLocalPythonInterpreter" in body["response"]["choices"][0]["message"]["content"]
 
         await session_history_manager.clear_history(
             "local-code-app-test-user",

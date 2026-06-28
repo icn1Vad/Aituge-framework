@@ -13,6 +13,7 @@ from tool.sandbox import (
     LimitedCodeSandboxConfig,
     create_limited_code_sandbox_bundle,
 )
+from tool.search import AliyunSearchConfig, create_aliyun_web_search_bundle
 
 from .config import ToolProviderConfig
 from .registry import ToolDefinition, ToolList
@@ -38,6 +39,12 @@ def _create_limited_sandbox_bundle(config: ToolProviderConfig):
     return create_limited_code_sandbox_bundle(sandbox_config)
 
 
+def _create_aliyun_web_search_bundle(config: ToolProviderConfig):
+    raw = {**dict(config.config), **dict(config.secrets)}
+    search_config = AliyunSearchConfig(**raw)
+    return create_aliyun_web_search_bundle(search_config)
+
+
 def create_default_tool_list() -> ToolList:
     tool_list = ToolList()
     tool_list.register(
@@ -61,6 +68,17 @@ def create_default_tool_list() -> ToolList:
             factory=_create_limited_sandbox_bundle,
         )
     )
+    tool_list.register(
+        ToolDefinition(
+            tool_name="web_search",
+            provider="aliyun",
+            display_name="Aliyun IQS Web Search",
+            description="Search the web with Aliyun IQS and return PAI-style JSON results.",
+            llm_tool_names=("aliyun-websearch",),
+            factory=_create_aliyun_web_search_bundle,
+        ),
+        make_default=True,
+    )
     return tool_list
 
 
@@ -69,4 +87,3 @@ DEFAULT_TOOL_LIST = create_default_tool_list()
 
 def get_default_tool_list() -> ToolList:
     return DEFAULT_TOOL_LIST
-

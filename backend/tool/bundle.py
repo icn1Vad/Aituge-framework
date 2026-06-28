@@ -43,10 +43,17 @@ class ToolBundle:
         cleanup_hooks = [cleanup] if cleanup else []
         return cls(tools=list(tools), cleanup_hooks=cleanup_hooks)
 
+    @classmethod
+    def combine(cls, bundles: Iterable["ToolBundle"]) -> "ToolBundle":
+        combined = cls()
+        for bundle in bundles:
+            combined.tools.extend(bundle.tools)
+            combined.cleanup_hooks.extend(bundle.cleanup_hooks)
+        return combined
+
     def add_cleanup(self, cleanup: CleanupHook) -> None:
         self.cleanup_hooks.append(cleanup)
 
     async def cleanup(self) -> None:
         for cleanup_hook in reversed(self.cleanup_hooks):
             await _run_cleanup(cleanup_hook)
-

@@ -1,11 +1,18 @@
 """Simple chat app with the local Python runtime tool enabled."""
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 
 from backend.simple_chat_app import create_app as create_simple_chat_app
-from tool.registry import ToolProviderConfig, get_default_tool_list
+from db.db_context import create_db_session, init_db
+from tool import ToolBundle
+from tool.registry import (
+    ToolProviderConfig,
+    create_enabled_tool_bundle,
+    get_default_tool_list,
+)
 
 
 LOCAL_PYTHON_ARTIFACT_DIR = (
@@ -14,8 +21,8 @@ LOCAL_PYTHON_ARTIFACT_DIR = (
 
 
 def create_app() -> FastAPI:
-    def tool_provider(_request):
-        return get_default_tool_list().create_bundle(
+    async def tool_provider(_request):
+        local_python_bundle = get_default_tool_list().create_bundle(
             ToolProviderConfig(
                 tool_name="code_interpreter",
                 provider="local_python",
@@ -29,4 +36,14 @@ def create_app() -> FastAPI:
             )
         )
 
-    return create_simple_chat_app(tool_provider=tool_provider)
+        async with create_db_session() as session:
+            db_tool_bundle = await create_enabled_tool_bundle(session)
+
+        return ToolBundle.combine([local_python_bundle, db_tool_bundle])
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        await init_db()
+        yield
+
+    return create_simple_chat_app(tool_provider=tool_provider, lifespan=lifespan)

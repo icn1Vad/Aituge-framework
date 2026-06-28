@@ -78,3 +78,38 @@ bundle = get_default_tool_list().create_bundle(
     )
 )
 ```
+
+## DB Tool Config
+
+Tool provider config is stored in `tuge_tool_config`.
+
+Core columns:
+
+- `tenant_id`: usually `__default_tenant_id__`
+- `tool_name`: logical tool name, for example `web_search`
+- `provider`: concrete provider, for example `aliyun`
+- `enabled`: `true` / `false`
+- `config_json`: non-secret provider settings
+- `encrypted_secrets_json`: encrypted JSON secrets created with
+  `common.encrypt_utils.encrypt_key`
+
+Aliyun web search config:
+
+```json
+{
+  "tool_name": "web_search",
+  "provider": "aliyun",
+  "config_json": {
+    "endpoint": "iqs.cn-zhangjiakou.aliyuncs.com",
+    "search_count": 10,
+    "time_range": "OneMonth"
+  },
+  "secrets_json": {
+    "access_key_id": "your-aliyun-access-key-id",
+    "access_key_secret": "your-aliyun-access-key-secret"
+  }
+}
+```
+
+`backend.local_code_chat_app` loads enabled DB tool configs and injects them
+alongside the local Python tool.
