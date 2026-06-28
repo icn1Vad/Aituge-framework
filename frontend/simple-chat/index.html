@@ -151,6 +151,78 @@
         line-height: 1.25;
       }
 
+      .rag-list {
+        display: grid;
+        gap: 8px;
+        max-height: 290px;
+        overflow: auto;
+      }
+
+      .rag-card {
+        display: grid;
+        gap: 7px;
+        padding: 9px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        font-size: 12px;
+      }
+
+      .rag-card-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .rag-title {
+        min-width: 0;
+        color: #20242c;
+        font-weight: 700;
+        overflow-wrap: anywhere;
+      }
+
+      .rag-meta {
+        color: var(--muted);
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+      }
+
+      .rag-chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+
+      .rag-chip {
+        max-width: 100%;
+        padding: 3px 6px;
+        border-radius: 999px;
+        color: #475467;
+        background: #eef2f7;
+        overflow-wrap: anywhere;
+      }
+
+      .rag-file-row {
+        display: grid;
+        gap: 4px;
+        padding-top: 7px;
+        border-top: 1px solid #edf0f5;
+      }
+
+      .rag-chunks {
+        display: grid;
+        gap: 4px;
+      }
+
+      .rag-chunk {
+        padding: 6px;
+        border-radius: 6px;
+        color: #475467;
+        background: #f8fafc;
+        line-height: 1.4;
+      }
+
       .thread-list {
         padding: 0 12px 16px;
         overflow: auto;
@@ -508,6 +580,7 @@
           </div>
           <input id="pdfFile" class="rag-file" type="file" accept="application/pdf,.pdf" />
           <div id="ragStatus" class="rag-status">RAG: 未加载</div>
+          <div id="ragList" class="rag-list"></div>
         </div>
         <div id="threadList" class="thread-list"></div>
       </aside>
@@ -554,6 +627,7 @@
       const pickPdfEl = document.getElementById("pickPdf");
       const pdfFileEl = document.getElementById("pdfFile");
       const ragStatusEl = document.getElementById("ragStatus");
+      const ragListEl = document.getElementById("ragList");
 
       const REPORT_SKILL_PACKAGE = {
         primary_skill: "report-generator",
@@ -796,11 +870,115 @@
         ragStatusEl.textContent = busy ? "RAG: 入库中" : ragStatusEl.textContent;
       }
 
+      function renderRagInventory(data) {
+        ragListEl.innerHTML = "";
+
+        const retrieval = data.retrieval || {};
+        const params = document.createElement("div");
+        params.className = "rag-card";
+        const paramsHead = document.createElement("div");
+        paramsHead.className = "rag-card-head";
+        const paramsTitle = document.createElement("div");
+        paramsTitle.className = "rag-title";
+        paramsTitle.textContent = "检索参数";
+        paramsHead.appendChild(paramsTitle);
+        const paramsBackend = document.createElement("div");
+        paramsBackend.className = "rag-meta";
+        paramsBackend.textContent = `mode: ${retrieval.mode || "-"} · backend: ${retrieval.backend || "-"}`;
+        const paramsModels = document.createElement("div");
+        paramsModels.className = "rag-meta";
+        paramsModels.textContent = `embedding: ${retrieval.embedding || "未启用"} · rerank: ${retrieval.rerank || "未启用"}`;
+        const paramsChips = document.createElement("div");
+        paramsChips.className = "rag-chip-row";
+        params.append(paramsHead, paramsBackend, paramsModels, paramsChips);
+        for (const tool of retrieval.tools_per_kb || []) {
+          const chip = document.createElement("span");
+          chip.className = "rag-chip";
+          chip.textContent = tool;
+          paramsChips.appendChild(chip);
+        }
+        ragListEl.appendChild(params);
+
+        const knowledgebases = data.knowledgebases || [];
+        if (!knowledgebases.length) {
+          const empty = document.createElement("div");
+          empty.className = "rag-card rag-meta";
+          empty.textContent = "还没有 PDF 入库";
+          ragListEl.appendChild(empty);
+          return;
+        }
+
+        for (const kb of knowledgebases) {
+          const card = document.createElement("div");
+          card.className = "rag-card";
+          const head = document.createElement("div");
+          head.className = "rag-card-head";
+          const kbTitle = document.createElement("div");
+          kbTitle.className = "rag-title";
+          kbTitle.textContent = kb.name || "未命名 KB";
+          const kbId = document.createElement("div");
+          kbId.className = "rag-meta";
+          kbId.textContent = `KB ${kb.id}`;
+          head.append(kbTitle, kbId);
+          card.appendChild(head);
+
+          const summary = document.createElement("div");
+          summary.className = "rag-meta";
+          summary.textContent = `${kb.file_count || 0} 文件 · ${kb.chunk_count || 0} chunks`;
+          card.appendChild(summary);
+
+          if (kb.description) {
+            const desc = document.createElement("div");
+            desc.className = "rag-meta";
+            desc.textContent = kb.description;
+            card.appendChild(desc);
+          }
+
+          const toolRow = document.createElement("div");
+          toolRow.className = "rag-chip-row";
+          for (const toolName of kb.tool_names || []) {
+            const chip = document.createElement("span");
+            chip.className = "rag-chip";
+            chip.textContent = toolName;
+            toolRow.appendChild(chip);
+          }
+          card.appendChild(toolRow);
+
+          for (const file of kb.files || []) {
+            const fileRow = document.createElement("div");
+            fileRow.className = "rag-file-row";
+            const fileTitle = document.createElement("div");
+            fileTitle.className = "rag-title";
+            fileTitle.textContent = file.title || file.file_name || "PDF";
+            const fileMeta = document.createElement("div");
+            fileMeta.className = "rag-meta";
+            fileMeta.textContent = `file ${file.id} · ${file.status || "-"} · ${file.chunk_count || 0} chunks`;
+            const fileSource = document.createElement("div");
+            fileSource.className = "rag-meta";
+            fileSource.textContent = file.source_path || file.source_url || file.file_name || "";
+            fileRow.append(fileTitle, fileMeta, fileSource);
+            const chunks = document.createElement("div");
+            chunks.className = "rag-chunks";
+            for (const chunk of file.chunks || []) {
+              const chunkEl = document.createElement("div");
+              chunkEl.className = "rag-chunk";
+              chunkEl.textContent = `chunk ${chunk.id} #${chunk.index} · ${chunk.char_count} chars：${chunk.preview}`;
+              chunks.appendChild(chunkEl);
+            }
+            fileRow.appendChild(chunks);
+            card.appendChild(fileRow);
+          }
+
+          ragListEl.appendChild(card);
+        }
+      }
+
       async function refreshRagStatus() {
         const res = await fetch("/rag/status");
         if (!res.ok) throw new Error(await responseErrorText(res));
         const data = await res.json();
         ragStatusEl.textContent = `RAG: ${data.knowledgebase_count} KB / ${data.file_count} 文件 / ${data.chunk_count} chunks`;
+        renderRagInventory(data);
       }
 
       async function responseErrorText(res) {
@@ -819,6 +997,7 @@
           if (!res.ok) throw new Error(await responseErrorText(res));
           const data = await res.json();
           ragStatusEl.textContent = `RAG: KB ${data.kb_id} 已入库，${data.chunk_count} chunks`;
+          await refreshRagStatus();
         } catch (error) {
           ragStatusEl.textContent = `RAG: ${error.message}`;
         } finally {
@@ -839,6 +1018,7 @@
           if (!res.ok) throw new Error(await responseErrorText(res));
           const data = await res.json();
           ragStatusEl.textContent = `RAG: KB ${data.kb_id} 已入库，${data.chunk_count} chunks`;
+          await refreshRagStatus();
         } catch (error) {
           ragStatusEl.textContent = `RAG: ${error.message}`;
         } finally {
@@ -979,6 +1159,7 @@
       renderThreads("");
       refreshRagStatus().catch(() => {
         ragStatusEl.textContent = "RAG: 状态不可用";
+        ragListEl.innerHTML = "";
       });
     </script>
   </body>

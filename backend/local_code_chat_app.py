@@ -32,6 +32,73 @@ DEFAULT_RAG_PDF_PATH = (
 RAG_STORE = LocalRagStore()
 
 
+def _rag_status_payload() -> dict:
+    knowledgebases, files, chunks = RAG_STORE.load_models()
+    files_by_kb = {}
+    chunks_by_file = {}
+    for file in files:
+        files_by_kb.setdefault(file.kb_id, []).append(file)
+    for chunk in chunks:
+        chunks_by_file.setdefault(chunk.file_id, []).append(chunk)
+
+    return {
+        "ok": True,
+        "knowledgebase_count": len(knowledgebases),
+        "file_count": len(files),
+        "chunk_count": len(chunks),
+        "retrieval": {
+            "mode": "keyword",
+            "backend": "InMemoryRagBackend",
+            "embedding": None,
+            "rerank": None,
+            "tools_per_kb": ["search", "catalog", "grep", "fetch"],
+        },
+        "knowledgebases": [
+            {
+                "id": kb.id,
+                "name": kb.name,
+                "description": kb.description,
+                "tool_names": [
+                    f"search-knowledgebase-{kb.id[:10]}",
+                    f"catalog-{kb.id[:8]}",
+                    f"grep-{kb.id[:8]}",
+                    f"fetch-{kb.id[:8]}",
+                ],
+                "file_count": len(files_by_kb.get(kb.id, [])),
+                "chunk_count": sum(
+                    len(chunks_by_file.get(file.id, []))
+                    for file in files_by_kb.get(kb.id, [])
+                ),
+                "files": [
+                    {
+                        "id": file.id,
+                        "file_name": file.file_name,
+                        "title": file.title,
+                        "source_url": file.source_url,
+                        "source_path": dict(file.metadata).get("source_path"),
+                        "status": file.status,
+                        "chunk_count": len(chunks_by_file.get(file.id, [])),
+                        "chunks": [
+                            {
+                                "id": chunk.id,
+                                "index": chunk.index,
+                                "char_count": len(chunk.text),
+                                "preview": chunk.text[:160].replace("\n", " "),
+                            }
+                            for chunk in sorted(
+                                chunks_by_file.get(file.id, []),
+                                key=lambda item: item.index,
+                            )[:5]
+                        ],
+                    }
+                    for file in files_by_kb.get(kb.id, [])
+                ],
+            }
+            for kb in knowledgebases
+        ],
+    }
+
+
 def _create_local_rag_bundle() -> ToolBundle:
     knowledgebases, files, chunks = RAG_STORE.load_models()
     if not knowledgebases:
@@ -76,21 +143,7 @@ def create_app() -> FastAPI:
 
     @app.get("/rag/status")
     async def rag_status():
-        knowledgebases, files, chunks = RAG_STORE.load_models()
-        return {
-            "ok": True,
-            "knowledgebase_count": len(knowledgebases),
-            "file_count": len(files),
-            "chunk_count": len(chunks),
-            "knowledgebases": [
-                {
-                    "id": kb.id,
-                    "name": kb.name,
-                    "description": kb.description,
-                }
-                for kb in knowledgebases
-            ],
-        }
+        return _rag_status_payload()
 
     @app.post("/rag/ingest-default")
     async def ingest_default_pdf():
