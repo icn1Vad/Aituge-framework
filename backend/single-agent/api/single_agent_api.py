@@ -8,6 +8,9 @@ from fastapi.responses import StreamingResponse
 from llama_index.core.tools.function_tool import FunctionTool
 from pydantic import BaseModel
 from service.agent import SingleAgentRunner
+from db.db_context import create_db_session
+from service.thread.message_service import MessageService
+from service.thread.thread_service import ThreadService
 from skill import SkillBundle, build_skill_bundle, create_read_skill_tool, list_skills
 
 
@@ -21,6 +24,16 @@ class SingleAgentChatRequest(BaseModel):
     stream: bool = False
     primary_skill: Optional[str] = None
     candidate_skills: Optional[List[str]] = None
+
+
+def _content_text(content: list[dict] | None) -> str:
+    if not content:
+        return ""
+    return "\n".join(
+        part.get("text", "")
+        for part in content
+        if isinstance(part, dict) and part.get("type") == "text"
+    )
 
 
 CleanupHook = Callable[[], Awaitable[None] | None]
@@ -186,6 +199,56 @@ def create_router(tool_provider: Optional[ToolProvider] = None) -> APIRouter:
                 }
                 for skill in list_skills()
             ]
+        }
+
+    @router.get("/threads")
+    async def threads(user_id: str = "default_user", limit: int = 50, offset: int = 0):
+        async with create_db_session() as session:
+            items = await ThreadService(session).list_threads(
+                user_id=user_id,
+                limit=limit,
+                offset=offset,
+            )
+        return {
+            "threads": [
+                {
+                    "id": thread.id,
+                    "session_id": thread.id,
+                    "title": thread.title,
+                    "user_id": thread.user_id,
+                    "created_at": thread.created_at.isoformat(),
+                    "updated_at": thread.updated_at.isoformat(),
+                }
+                for thread in items
+            ]
+        }
+
+    @router.get("/threads/{thread_id}/messages")
+    async def thread_messages(thread_id: str):
+        async with create_db_session() as session:
+            thread = await ThreadService(session).get_thread(thread_id)
+            if not thread:
+                raise HTTPException(status_code=404, detail=f"Thread '{thread_id}' not found.")
+            messages = await MessageService(session).list_messages(thread_id)
+        return {
+            "thread": {
+                "id": thread.id,
+                "session_id": thread.id,
+                "title": thread.title,
+                "user_id": thread.user_id,
+                "created_at": thread.created_at.isoformat(),
+                "updated_at": thread.updated_at.isoformat(),
+            },
+            "messages": [
+                {
+                    "id": message.id,
+                    "role": message.role,
+                    "content": message.content,
+                    "text": _content_text(message.content),
+                    "created_at": message.created_at.isoformat(),
+                }
+                for message in messages
+            ],
         }
 
     @router.post("/chat")

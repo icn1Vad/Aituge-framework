@@ -628,6 +628,7 @@
       const pdfFileEl = document.getElementById("pdfFile");
       const ragStatusEl = document.getElementById("ragStatus");
       const ragListEl = document.getElementById("ragList");
+      const USER_ID_KEY = "tuge-simple-chat-user-id";
 
       const REPORT_SKILL_PACKAGE = {
         primary_skill: "report-generator",
@@ -644,24 +645,37 @@
 
       let threadId = null;
       let currentThreadTitle = "初始问候";
-      const userId = `web-${crypto.randomUUID()}`;
+      let threads = [];
+      let userId = localStorage.getItem(USER_ID_KEY);
+      if (!userId) {
+        userId = `web-${crypto.randomUUID()}`;
+        localStorage.setItem(USER_ID_KEY, userId);
+      }
 
       function ensureStarted() {
-        if (emptyEl) emptyEl.remove();
+        document.getElementById("empty")?.remove();
       }
 
       function renderThreads(preview = "") {
         threadListEl.innerHTML = "";
-        const item = document.createElement("div");
-        item.className = "thread";
-        const title = document.createElement("div");
-        title.className = "title";
-        title.textContent = currentThreadTitle || "新会话";
-        const sub = document.createElement("div");
-        sub.className = "preview";
-        sub.textContent = preview || "等待消息";
-        item.append(title, sub);
-        threadListEl.appendChild(item);
+        const items = threads.length
+          ? threads
+          : [{ id: threadId || "current", title: currentThreadTitle || "新会话", preview: preview || "等待消息" }];
+        for (const thread of items) {
+          const item = document.createElement("button");
+          item.className = "thread";
+          item.type = "button";
+          item.dataset.threadId = thread.id;
+          const title = document.createElement("div");
+          title.className = "title";
+          title.textContent = thread.title || "新会话";
+          const sub = document.createElement("div");
+          sub.className = "preview";
+          sub.textContent = thread.preview || (thread.id === threadId ? preview : "") || "等待消息";
+          item.append(title, sub);
+          item.addEventListener("click", () => loadThread(thread.id));
+          threadListEl.appendChild(item);
+        }
       }
 
       function addUserMessage(text) {
@@ -674,6 +688,12 @@
         turn.appendChild(bubble);
         messagesEl.appendChild(turn);
         turn.scrollIntoView({ behavior: "smooth", block: "end" });
+      }
+
+      function addAssistantText(text) {
+        const assistant = addAssistantMessage();
+        assistant.bubble.textContent = text;
+        return assistant;
       }
 
       function addAssistantMessage() {
@@ -1045,9 +1065,39 @@
           message: text,
           user_id: userId,
           thread_id: threadId,
+          session_id: threadId,
           stream,
           ...(reportSkillEl.checked ? REPORT_SKILL_PACKAGE : {}),
         };
+      }
+
+      async function loadThreads() {
+        const res = await fetch(`/single-agent/threads?user_id=${encodeURIComponent(userId)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        threads = (data.threads || []).map((thread) => ({
+          id: thread.id,
+          title: thread.title || "新会话",
+          preview: thread.updated_at || "",
+        }));
+        renderThreads("");
+      }
+
+      async function loadThread(id) {
+        const res = await fetch(`/single-agent/threads/${encodeURIComponent(id)}/messages`);
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        threadId = data.thread.id;
+        currentThreadTitle = data.thread.title || "新会话";
+        messagesEl.innerHTML = "";
+        for (const message of data.messages || []) {
+          if (message.role === "user") addUserMessage(message.text || "");
+          if (message.role === "assistant") addAssistantText(message.text || "");
+        }
+        if (!messagesEl.children.length) {
+          messagesEl.innerHTML = '<div id="empty" class="empty">开始一轮最小 single-agent 对话</div>';
+        }
+        renderThreads("");
       }
 
       async function sendNonStream(text) {
@@ -1149,6 +1199,7 @@
             if (usage) assistant.token.textContent = `${usage.total_tokens || 0} tokens`;
             renderThreads(assistant.bubble.textContent.slice(0, 36));
           }
+          await loadThreads();
           setBusy(false, "ready");
         } catch (error) {
           assistant.bubble.textContent = `请求失败：${error.message}`;
@@ -1157,6 +1208,7 @@
       });
 
       renderThreads("");
+      loadThreads();
       refreshRagStatus().catch(() => {
         ragStatusEl.textContent = "RAG: 状态不可用";
         ragListEl.innerHTML = "";
