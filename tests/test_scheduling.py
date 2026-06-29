@@ -26,8 +26,15 @@ class CapturingAgent:
     async def run_async(self, state):
         async def gen():
             tool_names = ",".join(tool.metadata.name for tool in self.tools)
+            has_report_identity = "You are Report Agent" in self.system_prompt
             has_report_skill = "# Report Generator Skill" in self.system_prompt
-            yield TextChunk(delta=f"tools={tool_names}; report_skill_prompt={has_report_skill}")
+            yield TextChunk(
+                delta=(
+                    f"tools={tool_names}; "
+                    f"report_identity={has_report_identity}; "
+                    f"report_skill_prompt={has_report_skill}"
+                )
+            )
 
         return gen()
 
@@ -75,11 +82,13 @@ def test_agent_registry_creates_default_profiles(tmp_path, monkeypatch):
             "code-agent",
         }
         assert report_agent is not None
+        assert report_agent.system_prompt.startswith("You are Report Agent")
         assert report_agent.default_skills[0] == "report-generator"
         assert "code_interpreter" in report_agent.default_tools
 
         all_capable_agent = await get_agent_profile(session, "all-capable-agent")
         assert all_capable_agent is not None
+        assert all_capable_agent.system_prompt.startswith("You are All Capable Agent")
         assert all_capable_agent.default_tools == [
             "code_interpreter",
             "enabled_db_tools",
@@ -130,6 +139,7 @@ def test_scheduling_chat_assembles_profile_tools_and_skills(tmp_path, monkeypatc
         assert body["skills"]["primary"]["name"] == "report-generator"
         assert "LimitedLocalPythonInterpreter" in content
         assert "ReadSkill" in content
+        assert "report_identity=True" in content
         assert "report_skill_prompt=True" in content
 
         await session_history_manager.clear_history(

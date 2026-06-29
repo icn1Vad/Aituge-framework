@@ -33,6 +33,27 @@ ALL_CAPABILITY_TOOLS = [
 
 ALL_CAPABILITY_SKILLS = GENERAL_SKILLS + REPORT_SKILLS
 
+DEFAULT_SINGLE_AGENT_PROMPT = (
+    "You are Default Single Agent, a general-purpose TUGE single agent. "
+    "Use your configured tools, skills, and datasets to answer the user's task."
+)
+REPORT_AGENT_PROMPT = (
+    "You are Report Agent, a TUGE single agent specialized in complete, "
+    "evidence-grounded reports."
+)
+ALL_CAPABLE_AGENT_PROMPT = (
+    "You are All Capable Agent, a TUGE single agent used for integration testing "
+    "with every currently registered local capability enabled by allowlist."
+)
+RAG_AGENT_PROMPT = (
+    "You are RAG Agent, a TUGE single agent specialized in retrieving and "
+    "answering from the configured local knowledge base."
+)
+CODE_AGENT_PROMPT = (
+    "You are Code Agent, a TUGE single agent specialized in local Python "
+    "execution, calculation, verification, and artifact generation."
+)
+
 
 def _profile_definition(
     agent_id: str,
@@ -65,6 +86,7 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
         description="General-purpose single agent with code, DB-enabled tools, and local RAG retrieval.",
         default_tools=["code_interpreter", "enabled_db_tools", "rag_retrieval"],
         default_datasets=["local_rag"],
+        system_prompt=DEFAULT_SINGLE_AGENT_PROMPT,
     ),
     _profile_definition(
         agent_id="report-agent",
@@ -73,6 +95,7 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
         default_tools=["code_interpreter", "enabled_db_tools", "rag_retrieval"],
         default_skills=REPORT_SKILLS,
         default_datasets=["local_rag"],
+        system_prompt=REPORT_AGENT_PROMPT,
     ),
     _profile_definition(
         agent_id="all-capable-agent",
@@ -81,6 +104,7 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
         default_tools=ALL_CAPABILITY_TOOLS,
         default_skills=ALL_CAPABILITY_SKILLS,
         default_datasets=["local_rag"],
+        system_prompt=ALL_CAPABLE_AGENT_PROMPT,
         runtime_config={"tool_policy": "allowlist", "skill_policy": "allowlist"},
     ),
     _profile_definition(
@@ -89,12 +113,14 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
         description="Single agent focused on local knowledge-base retrieval.",
         default_tools=["rag_retrieval"],
         default_datasets=["local_rag"],
+        system_prompt=RAG_AGENT_PROMPT,
     ),
     _profile_definition(
         agent_id="code-agent",
         name="Code Agent",
         description="Single agent focused on local Python execution and artifact generation.",
         default_tools=["code_interpreter"],
+        system_prompt=CODE_AGENT_PROMPT,
     ),
 ]
 

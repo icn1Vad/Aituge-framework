@@ -16,6 +16,10 @@ async def ensure_default_agent_profiles(session: AsyncSession) -> None:
         existing = await session.get(AgentProfileEntity, profile.agent_id)
         if existing is None:
             session.add(profile)
+        elif not existing.system_prompt and profile.system_prompt:
+            existing.system_prompt = profile.system_prompt
+            existing.updated_at = datetime.utcnow()
+            session.add(existing)
     await session.commit()
 
 
