@@ -26,8 +26,8 @@ class CapturingAgent:
     async def run_async(self, state):
         async def gen():
             tool_names = ",".join(tool.metadata.name for tool in self.tools)
-            has_report_skill = "skill-active: report-generator" in self.system_prompt
-            yield TextChunk(delta=f"tools={tool_names}; report_skill={has_report_skill}")
+            has_report_skill = "# Report Generator Skill" in self.system_prompt
+            yield TextChunk(delta=f"tools={tool_names}; report_skill_prompt={has_report_skill}")
 
         return gen()
 
@@ -130,7 +130,7 @@ def test_scheduling_chat_assembles_profile_tools_and_skills(tmp_path, monkeypatc
         assert body["skills"]["primary"]["name"] == "report-generator"
         assert "LimitedLocalPythonInterpreter" in content
         assert "ReadSkill" in content
-        assert "report_skill=True" in content
+        assert "report_skill_prompt=True" in content
 
         await session_history_manager.clear_history(
             "scheduling-test-user",

@@ -16,9 +16,9 @@ def test_load_skill_and_render_bundle():
     rendered = bundle.render_prompt()
 
     assert primary.name == "task-style"
-    assert primary.description == "Keep task answers concise and include the active skill marker."
+    assert primary.description == "Keep task answers concise."
     assert "# Primary Task Skill" in rendered
-    assert "skill-active: task-style" in rendered
+    assert "# Task Style Skill" in rendered
 
 
 def test_list_skills_and_build_bundle_from_names():
@@ -60,7 +60,7 @@ def test_build_different_primary_skill_types():
     )
     rendered = bundle.render_prompt()
 
-    assert "skill-active: debugging-checklist" in rendered
+    assert "# Debugging Checklist Skill" in rendered
     assert "implementation-plan: Structure coding tasks" in rendered
     assert "concise-summary: Summarize results" in rendered
 
@@ -81,7 +81,7 @@ def test_build_report_generator_skill_package():
     rendered = bundle.render_prompt()
 
     assert bundle.primary.name == "report-generator"
-    assert "skill-active: report-generator" in rendered
+    assert "# Report Generator Skill" in rendered
     assert "The report is not complete until every required section has been written." in rendered
     assert "each section must be written from its matching" in rendered
     assert "call ReadSkill with skill_name before applying" in rendered

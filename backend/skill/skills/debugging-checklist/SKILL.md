@@ -16,5 +16,3 @@ Follow this process:
 2. Locate the first application frame or failing assertion.
 3. Make the smallest fix that explains the observed failure.
 4. Rerun the reproducer and one nearby regression check.
-
-Include the marker `skill-active: debugging-checklist` when reporting the run.

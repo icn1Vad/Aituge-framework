@@ -15,5 +15,3 @@ Follow this process:
 2. Keep edits scoped to the requested behavior.
 3. Run a focused verification command.
 4. Report changed files and verification results.
-
-Include the marker `skill-active: implementation-plan` when reporting the run.

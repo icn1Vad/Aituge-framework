@@ -15,5 +15,3 @@ Structure the answer as:
 1. Outcome.
 2. Evidence.
 3. Next action, only if useful.
-
-Include the marker `skill-active: concise-summary` when reporting the run.

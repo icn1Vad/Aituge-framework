@@ -27,9 +27,8 @@ def test_api_accepts_task_owned_skill_bundle(monkeypatch):
 
             async def run_async(self, state):
                 async def gen():
-                    marker = "skill-active: task-style"
-                    assert marker in self.system_prompt
-                    yield TextChunk(delta=marker)
+                    assert "# Task Style Skill" in self.system_prompt
+                    yield TextChunk(delta="task-style loaded")
 
                 return gen()
 
@@ -54,7 +53,7 @@ def test_api_accepts_task_owned_skill_bundle(monkeypatch):
             assert response.status_code == 200
             body = response.json()
             assert body["response"]["choices"][0]["message"]["content"] == (
-                "skill-active: task-style"
+                "task-style loaded"
             )
 
         await session_history_manager.clear_history(
@@ -75,7 +74,7 @@ def test_api_loads_skills_from_request_fields(monkeypatch):
 
             async def run_async(self, state):
                 async def gen():
-                    assert "skill-active: task-style" in self.system_prompt
+                    assert "# Task Style Skill" in self.system_prompt
                     assert "review-style: Add a brief risk check" in self.system_prompt
                     assert [tool.metadata.name for tool in self.tools] == ["ReadSkill"]
                     yield TextChunk(delta="request skill fields loaded")
@@ -193,7 +192,7 @@ def test_api_injects_different_skill_types_from_request(monkeypatch):
 
             async def run_async(self, state):
                 async def gen():
-                    assert "skill-active: debugging-checklist" in self.system_prompt
+                    assert "# Debugging Checklist Skill" in self.system_prompt
                     assert "implementation-plan: Structure coding tasks" in self.system_prompt
                     assert "concise-summary: Summarize results" in self.system_prompt
                     assert [tool.metadata.name for tool in self.tools] == ["ReadSkill"]
@@ -242,7 +241,7 @@ def test_api_injects_report_generator_skill_package(monkeypatch):
 
             async def run_async(self, state):
                 async def gen():
-                    assert "skill-active: report-generator" in self.system_prompt
+                    assert "# Report Generator Skill" in self.system_prompt
                     assert "report-executive-summary: Write the report opening" in self.system_prompt
                     assert "report-analysis-findings: Turn evidence" in self.system_prompt
                     assert "report-risk-actions: Close a report" in self.system_prompt

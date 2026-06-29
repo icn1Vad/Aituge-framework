@@ -11,9 +11,6 @@ Use this as the primary skill when the task asks for a report, research memo,
 analysis brief, project review, or any answer that should contain multiple
 sections.
 
-Include the marker `skill-active: report-generator` in the response when this
-skill is active.
-
 ## Completion Contract
 
 The report is not complete until every required section has been written.
