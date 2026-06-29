@@ -192,12 +192,12 @@ async def convert_gen_to_stream_chat_completions(
         # 保存会话历史
         if final_content and user_id and session_id and user_message:
             try:
-                from service.cache.session_history_manager import session_history_manager
+                from service.conversation import ConversationManager
                 assistant_message = {
                     "role": "assistant",
                     "content": final_content,
                 }
-                await session_history_manager.save_messages(
+                await ConversationManager().save_live_history(
                     user_id=user_id,
                     session_id=session_id,
                     user_message=user_message,
@@ -336,12 +336,12 @@ async def convert_gen_to_chat_completions(
     # 保存会话历史
     if content and user_id and session_id and user_message:
         try:
-            from service.cache.session_history_manager import session_history_manager
+            from service.conversation import ConversationManager
             assistant_message = {
                 "role": "assistant",
                 "content": content,
             }
-            await session_history_manager.save_messages(
+            await ConversationManager().save_live_history(
                 user_id=user_id,
                 session_id=session_id,
                 user_message=user_message,
