@@ -26,6 +26,18 @@ class RedisCache:
     async def set(self, key: str, value: str, ttl: Optional[int] = None) -> bool:
         return bool(await self.get_client().set(key, value, ex=ttl))
 
+    async def set_if_absent(self, key: str, value: str, ttl: int) -> bool:
+        return bool(await self.get_client().set(key, value, ex=ttl, nx=True))
+
+    async def delete_if_value(self, key: str, value: str) -> bool:
+        script = """
+        if redis.call("get", KEYS[1]) == ARGV[1] then
+            return redis.call("del", KEYS[1])
+        end
+        return 0
+        """
+        return bool(await self.get_client().eval(script, 1, key, value))
+
     async def delete(self, key: str) -> int:
         return await self.get_client().delete(key)
 

@@ -23,8 +23,8 @@ def session_history_key(user_id: str, session_id: str) -> str:
 
 
 class SessionHistoryManager:
-    MAX_HISTORY_ROUNDS = 5
-    MAX_HISTORY_MESSAGES = 40
+    MAX_HISTORY_ROUNDS = 100
+    MAX_HISTORY_MESSAGES = 240
     TTL_SECONDS = 7 * 24 * 60 * 60
 
     async def save_messages(
