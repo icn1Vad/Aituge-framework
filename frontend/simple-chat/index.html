@@ -619,7 +619,6 @@
           <form id="form" class="composer">
             <textarea id="input" placeholder="给 TUGE single-agent 发消息" autofocus></textarea>
             <div class="composer-actions">
-              <label><input id="reportSkill" type="checkbox" /> 报告 skill</label>
               <label><input id="stream" type="checkbox" checked /> stream</label>
               <button id="send" class="send" type="submit" title="发送">↑</button>
             </div>
@@ -636,7 +635,6 @@
       const statusEl = document.getElementById("status");
       const sendEl = document.getElementById("send");
       const streamEl = document.getElementById("stream");
-      const reportSkillEl = document.getElementById("reportSkill");
       const agentSelectEl = document.getElementById("agentSelect");
       const modelNameEl = document.getElementById("modelName");
       const newChatEl = document.getElementById("newChat");
@@ -649,19 +647,6 @@
       const USER_ID_KEY = "tuge-simple-chat-user-id";
       const AGENT_ID_KEY = "tuge-simple-chat-agent-id";
       const DEFAULT_AGENT_ID = "default-single-agent";
-
-      const REPORT_SKILL_PACKAGE = {
-        primary_skill: "report-generator",
-        candidate_skills: [
-          "report-executive-summary",
-          "report-context-scope",
-          "report-analysis-findings",
-          "report-quantitative-calculation",
-          "report-chart-figure",
-          "report-code-verification",
-          "report-risk-actions",
-        ],
-      };
 
       let threadId = null;
       let currentThreadTitle = "初始问候";
@@ -1121,7 +1106,6 @@
           thread_id: threadId,
           session_id: threadId,
           stream,
-          ...(reportSkillEl.checked ? REPORT_SKILL_PACKAGE : {}),
         };
       }
 

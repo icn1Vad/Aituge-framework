@@ -17,6 +17,22 @@ REPORT_SKILLS = [
     "report-risk-actions",
 ]
 
+GENERAL_SKILLS = [
+    "task-style",
+    "implementation-plan",
+    "debugging-checklist",
+    "review-style",
+    "concise-summary",
+]
+
+ALL_CAPABILITY_TOOLS = [
+    "code_interpreter",
+    "enabled_db_tools",
+    "rag_retrieval",
+]
+
+ALL_CAPABILITY_SKILLS = GENERAL_SKILLS + REPORT_SKILLS
+
 
 def _profile_definition(
     agent_id: str,
@@ -57,6 +73,15 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
         default_tools=["code_interpreter", "enabled_db_tools", "rag_retrieval"],
         default_skills=REPORT_SKILLS,
         default_datasets=["local_rag"],
+    ),
+    _profile_definition(
+        agent_id="all-capable-agent",
+        name="All Capable Agent",
+        description="Single agent with every currently registered local capability enabled by allowlist.",
+        default_tools=ALL_CAPABILITY_TOOLS,
+        default_skills=ALL_CAPABILITY_SKILLS,
+        default_datasets=["local_rag"],
+        runtime_config={"tool_policy": "allowlist", "skill_policy": "allowlist"},
     ),
     _profile_definition(
         agent_id="rag-agent",

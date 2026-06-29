@@ -70,12 +70,23 @@ def test_agent_registry_creates_default_profiles(tmp_path, monkeypatch):
         assert {profile.agent_id for profile in profiles} >= {
             "default-single-agent",
             "report-agent",
+            "all-capable-agent",
             "rag-agent",
             "code-agent",
         }
         assert report_agent is not None
         assert report_agent.default_skills[0] == "report-generator"
         assert "code_interpreter" in report_agent.default_tools
+
+        all_capable_agent = await get_agent_profile(session, "all-capable-agent")
+        assert all_capable_agent is not None
+        assert all_capable_agent.default_tools == [
+            "code_interpreter",
+            "enabled_db_tools",
+            "rag_retrieval",
+        ]
+        assert "report-generator" in all_capable_agent.default_skills
+        assert all_capable_agent.runtime_config["tool_policy"] == "allowlist"
 
     try:
         asyncio.run(run())
@@ -131,4 +142,3 @@ def test_scheduling_chat_assembles_profile_tools_and_skills(tmp_path, monkeypatc
         asyncio.run(run())
     finally:
         reset_engine_for_test()
-
