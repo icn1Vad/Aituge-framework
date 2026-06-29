@@ -286,6 +286,22 @@
         font-weight: 650;
       }
 
+      .agent-select {
+        min-width: 176px;
+        max-width: 260px;
+        border: 0;
+        outline: 0;
+        color: #3f365f;
+        background: transparent;
+        font: inherit;
+      }
+
+      .model-name {
+        color: #655d75;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
       .model-dot {
         width: 16px;
         height: 16px;
@@ -589,8 +605,8 @@
         <header>
           <div class="model-pill">
             <span class="model-dot">⌘</span>
-            <span id="modelName">deepseek-v4-pro</span>
-            <span>⌄</span>
+            <select id="agentSelect" class="agent-select" title="选择 agent"></select>
+            <span id="modelName" class="model-name">deepseek-v4-pro</span>
           </div>
           <div id="status" class="top-status">ready</div>
         </header>
@@ -621,6 +637,8 @@
       const sendEl = document.getElementById("send");
       const streamEl = document.getElementById("stream");
       const reportSkillEl = document.getElementById("reportSkill");
+      const agentSelectEl = document.getElementById("agentSelect");
+      const modelNameEl = document.getElementById("modelName");
       const newChatEl = document.getElementById("newChat");
       const threadListEl = document.getElementById("threadList");
       const ingestDefaultEl = document.getElementById("ingestDefault");
@@ -629,6 +647,8 @@
       const ragStatusEl = document.getElementById("ragStatus");
       const ragListEl = document.getElementById("ragList");
       const USER_ID_KEY = "tuge-simple-chat-user-id";
+      const AGENT_ID_KEY = "tuge-simple-chat-agent-id";
+      const DEFAULT_AGENT_ID = "default-single-agent";
 
       const REPORT_SKILL_PACKAGE = {
         primary_skill: "report-generator",
@@ -646,6 +666,7 @@
       let threadId = null;
       let currentThreadTitle = "初始问候";
       let threads = [];
+      let agents = [];
       let userId = localStorage.getItem(USER_ID_KEY);
       if (!userId) {
         userId = `web-${crypto.randomUUID()}`;
@@ -676,6 +697,39 @@
           item.addEventListener("click", () => loadThread(thread.id));
           threadListEl.appendChild(item);
         }
+      }
+
+      function selectedAgentId() {
+        return agentSelectEl.value || DEFAULT_AGENT_ID;
+      }
+
+      function schedulingChatUrl() {
+        return `/scheduling/agents/${encodeURIComponent(selectedAgentId())}/chat`;
+      }
+
+      function updateSelectedAgentMeta() {
+        const agent = agents.find((item) => item.agent_id === selectedAgentId());
+        modelNameEl.textContent = agent?.model_id || "deepseek-v4-pro";
+        agentSelectEl.title = agent?.description || "选择 agent";
+      }
+
+      async function loadAgents() {
+        const res = await fetch("/scheduling/agents");
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        agents = data.agents || [];
+        agentSelectEl.innerHTML = "";
+        for (const agent of agents) {
+          const option = document.createElement("option");
+          option.value = agent.agent_id;
+          option.textContent = agent.name || agent.agent_id;
+          agentSelectEl.appendChild(option);
+        }
+        const saved = localStorage.getItem(AGENT_ID_KEY);
+        agentSelectEl.value = agents.some((agent) => agent.agent_id === saved)
+          ? saved
+          : DEFAULT_AGENT_ID;
+        updateSelectedAgentMeta();
       }
 
       function addUserMessage(text) {
@@ -1101,7 +1155,7 @@
       }
 
       async function sendNonStream(text) {
-        const res = await fetch("/single-agent/chat", {
+        const res = await fetch(schedulingChatUrl(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(buildChatPayload(text, false)),
@@ -1113,7 +1167,7 @@
       }
 
       async function sendStream(text, nodes) {
-        const res = await fetch("/single-agent/chat", {
+        const res = await fetch(schedulingChatUrl(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(buildChatPayload(text, true)),
@@ -1173,6 +1227,10 @@
       ingestDefaultEl.addEventListener("click", ingestDefaultPdf);
       pickPdfEl.addEventListener("click", () => pdfFileEl.click());
       pdfFileEl.addEventListener("change", () => ingestUploadedPdf(pdfFileEl.files?.[0]));
+      agentSelectEl.addEventListener("change", () => {
+        localStorage.setItem(AGENT_ID_KEY, selectedAgentId());
+        updateSelectedAgentMeta();
+      });
 
       formEl.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -1208,6 +1266,12 @@
       });
 
       renderThreads("");
+      loadAgents().catch((error) => {
+        statusEl.textContent = "agent load failed";
+        agentSelectEl.innerHTML = `<option value="${DEFAULT_AGENT_ID}">Default Single Agent</option>`;
+        modelNameEl.textContent = "deepseek-v4-pro";
+        console.warn(error);
+      });
       loadThreads();
       refreshRagStatus().catch(() => {
         ragStatusEl.textContent = "RAG: 状态不可用";

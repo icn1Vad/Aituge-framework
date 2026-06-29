@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from .models import AgentProfileEntity
+
+
+REPORT_SKILLS = [
+    "report-generator",
+    "report-context-scope",
+    "report-executive-summary",
+    "report-analysis-findings",
+    "report-quantitative-calculation",
+    "report-chart-figure",
+    "report-code-verification",
+    "report-risk-actions",
+]
+
+
+def _profile_definition(
+    agent_id: str,
+    name: str,
+    description: str,
+    default_tools: list[str],
+    default_skills: list[str] | None = None,
+    default_datasets: list[str] | None = None,
+    model_id: str = "deepseek-v4-pro",
+    system_prompt: str = "",
+    runtime_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "agent_id": agent_id,
+        "name": name,
+        "description": description,
+        "model_id": model_id,
+        "system_prompt": system_prompt,
+        "default_tools_json": json.dumps(default_tools, ensure_ascii=True),
+        "default_skills_json": json.dumps(default_skills or [], ensure_ascii=True),
+        "default_datasets_json": json.dumps(default_datasets or [], ensure_ascii=True),
+        "runtime_config_json": json.dumps(runtime_config or {}, ensure_ascii=True),
+    }
+
+
+DEFAULT_AGENT_PROFILE_DEFINITIONS = [
+    _profile_definition(
+        agent_id="default-single-agent",
+        name="Default Single Agent",
+        description="General-purpose single agent with code, DB-enabled tools, and local RAG retrieval.",
+        default_tools=["code_interpreter", "enabled_db_tools", "rag_retrieval"],
+        default_datasets=["local_rag"],
+    ),
+    _profile_definition(
+        agent_id="report-agent",
+        name="Report Agent",
+        description="Single agent preloaded with report-writing skills plus code, search, and RAG tools.",
+        default_tools=["code_interpreter", "enabled_db_tools", "rag_retrieval"],
+        default_skills=REPORT_SKILLS,
+        default_datasets=["local_rag"],
+    ),
+    _profile_definition(
+        agent_id="rag-agent",
+        name="RAG Agent",
+        description="Single agent focused on local knowledge-base retrieval.",
+        default_tools=["rag_retrieval"],
+        default_datasets=["local_rag"],
+    ),
+    _profile_definition(
+        agent_id="code-agent",
+        name="Code Agent",
+        description="Single agent focused on local Python execution and artifact generation.",
+        default_tools=["code_interpreter"],
+    ),
+]
+
+
+def build_default_agent_profiles() -> list[AgentProfileEntity]:
+    return [
+        AgentProfileEntity(**definition)
+        for definition in DEFAULT_AGENT_PROFILE_DEFINITIONS
+    ]

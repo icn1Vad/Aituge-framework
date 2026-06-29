@@ -14,6 +14,9 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from db.db_context import create_db_session, init_db
+from scheduling.agent_registry import ensure_default_agent_profiles
+from scheduling.api import create_scheduling_router
+from scheduling.scheduler import SchedulingRuntimeOptions
 from tool import ToolBundle
 from tool.registry import (
     ToolProviderConfig,
@@ -137,9 +140,20 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app):
         await init_db()
+        async with create_db_session() as session:
+            await ensure_default_agent_profiles(session)
         yield
 
     app = create_simple_chat_app(tool_provider=tool_provider, lifespan=lifespan)
+    app.include_router(
+        create_scheduling_router(
+            SchedulingRuntimeOptions(
+                local_python_artifact_dir=LOCAL_PYTHON_ARTIFACT_DIR,
+                artifact_base_url="/tool-artifacts/local-python",
+                rag_store=RAG_STORE,
+            )
+        )
+    )
 
     @app.get("/rag/status")
     async def rag_status():
