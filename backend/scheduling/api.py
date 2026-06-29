@@ -9,11 +9,13 @@ from .agent_registry import (
     get_agent_profile,
     list_agent_profiles,
 )
+from .discussion import create_discussion_router
 from .scheduler import SchedulingChatRequest, SchedulingRuntimeOptions, SchedulingService
 
 
 def create_scheduling_router(options: SchedulingRuntimeOptions) -> APIRouter:
     router = APIRouter(prefix="/scheduling", tags=["scheduling"])
+    router.include_router(create_discussion_router(options))
 
     @router.get("/agents")
     async def agents():

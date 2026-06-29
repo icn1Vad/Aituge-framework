@@ -116,6 +116,66 @@
         gap: 8px;
       }
 
+      .discussion-panel {
+        margin: 4px 12px 10px;
+        display: grid;
+        gap: 8px;
+      }
+
+      .discussion-topic {
+        min-height: 70px;
+        width: 100%;
+        padding: 9px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        background: #fff;
+        font-size: 13px;
+      }
+
+      .discussion-controls {
+        display: grid;
+        grid-template-columns: 1fr 72px;
+        gap: 8px;
+      }
+
+      .discussion-agents,
+      .discussion-debug {
+        display: grid;
+        gap: 6px;
+        padding: 8px;
+        border-radius: 8px;
+        background: #e9eef6;
+        font-size: 12px;
+      }
+
+      .discussion-debug {
+        max-height: 180px;
+        overflow: auto;
+      }
+
+      .discussion-debug-item {
+        display: grid;
+        gap: 3px;
+        padding: 7px;
+        border-radius: 7px;
+        background: #fff;
+        color: #475467;
+      }
+
+      .discussion-agent-option {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .discussion-agent-option span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
       .rag-actions {
         display: grid;
         grid-template-columns: 1fr 40px;
@@ -598,6 +658,20 @@
           <div id="ragStatus" class="rag-status">RAG: 未加载</div>
           <div id="ragList" class="rag-list"></div>
         </div>
+        <div class="section-title">
+          <span>多 Agent 讨论</span>
+          <span>beta</span>
+        </div>
+        <div class="discussion-panel">
+          <textarea id="discussionTopic" class="discussion-topic" placeholder="输入讨论主题"></textarea>
+          <div id="discussionAgents" class="discussion-agents"></div>
+          <div class="discussion-controls">
+            <button id="startDiscussion" class="rag-btn" type="button">开始讨论</button>
+            <label><input id="discussionRounds" type="number" min="1" max="5" value="1" /> 轮</label>
+          </div>
+          <div id="discussionStatus" class="rag-status">Discussion: idle</div>
+          <div id="discussionDebug" class="discussion-debug"></div>
+        </div>
         <div id="threadList" class="thread-list"></div>
       </aside>
 
@@ -644,11 +718,19 @@
       const pdfFileEl = document.getElementById("pdfFile");
       const ragStatusEl = document.getElementById("ragStatus");
       const ragListEl = document.getElementById("ragList");
+      const discussionTopicEl = document.getElementById("discussionTopic");
+      const discussionAgentsEl = document.getElementById("discussionAgents");
+      const discussionRoundsEl = document.getElementById("discussionRounds");
+      const startDiscussionEl = document.getElementById("startDiscussion");
+      const discussionStatusEl = document.getElementById("discussionStatus");
+      const discussionDebugEl = document.getElementById("discussionDebug");
       const USER_ID_KEY = "tuge-simple-chat-user-id";
       const AGENT_ID_KEY = "tuge-simple-chat-agent-id";
       const DEFAULT_AGENT_ID = "default-single-agent";
 
       let threadId = null;
+      let activeMode = "chat";
+      let currentDiscussionRunId = null;
       let currentThreadTitle = "初始问候";
       let threads = [];
       let agents = [];
@@ -698,6 +780,23 @@
         agentSelectEl.title = agent?.description || "选择 agent";
       }
 
+      function renderDiscussionAgents() {
+        const preferred = new Set(["rag-agent", "code-agent", "report-agent"]);
+        discussionAgentsEl.innerHTML = "";
+        for (const agent of agents) {
+          const label = document.createElement("label");
+          label.className = "discussion-agent-option";
+          const text = document.createElement("span");
+          text.textContent = agent.name || agent.agent_id;
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.value = agent.agent_id;
+          input.checked = preferred.has(agent.agent_id);
+          label.append(text, input);
+          discussionAgentsEl.appendChild(label);
+        }
+      }
+
       async function loadAgents() {
         const res = await fetch("/scheduling/agents");
         if (!res.ok) throw new Error(await res.text());
@@ -715,6 +814,7 @@
           ? saved
           : DEFAULT_AGENT_ID;
         updateSelectedAgentMeta();
+        renderDiscussionAgents();
       }
 
       function addUserMessage(text) {
@@ -927,6 +1027,178 @@
         ingestDefaultEl.disabled = busy;
         pickPdfEl.disabled = busy;
         ragStatusEl.textContent = busy ? "RAG: 入库中" : ragStatusEl.textContent;
+      }
+
+      function setDiscussionBusy(busy, label = "") {
+        startDiscussionEl.disabled = busy;
+        discussionStatusEl.textContent = label || (busy ? "Discussion: running" : "Discussion: idle");
+      }
+
+      function selectedDiscussionParticipants() {
+        return [...discussionAgentsEl.querySelectorAll("input[type=checkbox]:checked")]
+          .map((item) => item.value);
+      }
+
+      function renderDiscussionDebug(turns = []) {
+        discussionDebugEl.innerHTML = "";
+        const debugTurns = turns.filter((turn) => turn.action !== "speak" || turn.error);
+        if (!debugTurns.length) {
+          discussionDebugEl.textContent = "暂无 pass / stop / error";
+          return;
+        }
+        for (const turn of debugTurns) {
+          const item = document.createElement("div");
+          item.className = "discussion-debug-item";
+          item.textContent = `${turn.agent_id} · ${turn.action || turn.status}: ${turn.error || turn.reason || ""}`;
+          discussionDebugEl.appendChild(item);
+        }
+      }
+
+      function renderDiscussionPayload(payload) {
+        activeMode = "discussion";
+        currentDiscussionRunId = payload.run?.id || currentDiscussionRunId;
+        threadId = payload.run?.public_thread_id || threadId;
+        currentThreadTitle = payload.run?.topic?.slice(0, 18) || "多 Agent 讨论";
+        messagesEl.innerHTML = "";
+
+        for (const message of payload.messages || []) {
+          const speaker = message.discussion?.speaker_name || message.discussion?.speaker_id;
+          if (message.role === "user") {
+            addUserMessage(speaker && speaker !== "User" ? `${speaker}: ${message.text || ""}` : message.text || "");
+          }
+          if (message.role === "assistant") {
+            const label = speaker ? `${speaker}: ` : "";
+            const nodes = addAssistantText(`${label}${message.text || ""}`);
+            renderSkills(nodes, message.turn?.skills);
+            renderSteps(nodes, message.turn?.steps || []);
+          }
+        }
+        if (!messagesEl.children.length) {
+          messagesEl.innerHTML = '<div id="empty" class="empty">还没有公开发言</div>';
+        }
+        renderDiscussionDebug(payload.turns || []);
+        renderThreads((payload.run?.final_output?.content || payload.run?.topic || "").slice(0, 36));
+        discussionStatusEl.textContent = `Discussion: ${payload.run?.status || "loaded"} · ${payload.turns?.length || 0} turns`;
+      }
+
+      function consumeDiscussionSingleEvent(nodes, event, payload) {
+        const single = payload.single_event || {};
+        const data = single.data || {};
+        if (event === "metadata") {
+          renderSkills(nodes, data.skills);
+          statusEl.textContent = `discussion: ${payload.agent_id}`;
+        }
+        if (event === "chunk") {
+          if (data.actions) {
+            for (const action of data.actions) upsertToolTrace(nodes, action);
+          }
+          if (data.observation) {
+            const observation = data.observation;
+            upsertToolTrace(nodes, observation.tool, {
+              id: observation.tool?.id,
+              result: observation.result,
+              error: observation.error,
+            });
+          }
+          const usage = data.usage;
+          if (usage) nodes.token.textContent = `${usage.total_tokens || 0} tokens`;
+        }
+        if (event === "final") {
+          const usage = data.usage;
+          if (usage) nodes.token.textContent = `${usage.total_tokens || 0} tokens`;
+        }
+      }
+
+      async function addDiscussionUserMessage(text) {
+        if (!currentDiscussionRunId) throw new Error("没有可插话的 discussion run");
+        const res = await fetch(`/scheduling/discussions/runs/${encodeURIComponent(currentDiscussionRunId)}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: text, user_id: userId }),
+        });
+        if (!res.ok) throw new Error(await responseErrorText(res));
+        addUserMessage(text);
+        discussionStatusEl.textContent = "Discussion: 已插话，后续 agent 会看到";
+      }
+
+      async function startDiscussion() {
+        const topic = discussionTopicEl.value.trim();
+        const participantAgentIds = selectedDiscussionParticipants();
+        if (!topic || !participantAgentIds.length) return;
+
+        activeMode = "discussion";
+        currentDiscussionRunId = null;
+        currentThreadTitle = topic.slice(0, 18);
+        messagesEl.innerHTML = "";
+        discussionDebugEl.innerHTML = "";
+        addUserMessage(topic);
+        setDiscussionBusy(true, "Discussion: starting");
+
+        const request = {
+          topic,
+          participant_agent_ids: participantAgentIds,
+          moderator_agent_id: participantAgentIds[participantAgentIds.length - 1],
+          user_id: userId,
+          max_rounds: Math.max(1, Math.min(5, Number(discussionRoundsEl.value || 1))),
+          stream: streamEl.checked,
+        };
+
+        if (!request.stream) {
+          const res = await fetch("/scheduling/discussions/runs", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(request),
+          });
+          if (!res.ok) throw new Error(await responseErrorText(res));
+          renderDiscussionPayload(await res.json());
+          setDiscussionBusy(false, "Discussion: completed");
+          await loadThreads();
+          return;
+        }
+
+        const res = await fetch("/scheduling/discussions/runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(request),
+        });
+        if (!res.ok || !res.body) throw new Error(await responseErrorText(res));
+
+        const turnNodes = new Map();
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          buffer = parseSse(buffer, (event, payload) => {
+            if (event === "discussion_started") {
+              currentDiscussionRunId = payload.run_id;
+              setDiscussionBusy(true, "Discussion: running");
+            }
+            if (event === "turn_started") {
+              const nodes = addAssistantText(`${payload.agent_id}: 思考中...`);
+              turnNodes.set(payload.turn_id, nodes);
+            }
+            if (["metadata", "chunk", "final"].includes(event)) {
+              const nodes = turnNodes.get(payload.turn_id);
+              if (nodes) consumeDiscussionSingleEvent(nodes, event, payload);
+            }
+            if (event === "turn_finished") {
+              const nodes = turnNodes.get(payload.turn_id) || addAssistantMessage();
+              const prefix = `${payload.agent_id} ${payload.action}`;
+              nodes.bubble.textContent = payload.action === "speak"
+                ? `${payload.agent_id}: ${payload.content || ""}`
+                : `${prefix}: ${payload.reason || ""}`;
+              discussionStatusEl.textContent = `Discussion: ${prefix}`;
+            }
+            if (event === "discussion_finished") {
+              renderDiscussionPayload(payload);
+              setDiscussionBusy(false, "Discussion: completed");
+            }
+          });
+        }
+        await loadThreads();
       }
 
       function renderRagInventory(data) {
@@ -1202,6 +1474,8 @@
 
       newChatEl.addEventListener("click", () => {
         threadId = null;
+        activeMode = "chat";
+        currentDiscussionRunId = null;
         currentThreadTitle = "新会话";
         messagesEl.innerHTML = '<div id="empty" class="empty">开始一轮最小 single-agent 对话</div>';
         renderThreads("");
@@ -1211,6 +1485,15 @@
       ingestDefaultEl.addEventListener("click", ingestDefaultPdf);
       pickPdfEl.addEventListener("click", () => pdfFileEl.click());
       pdfFileEl.addEventListener("change", () => ingestUploadedPdf(pdfFileEl.files?.[0]));
+      startDiscussionEl.addEventListener("click", async () => {
+        try {
+          await startDiscussion();
+          setBusy(false, "ready");
+        } catch (error) {
+          setDiscussionBusy(false, `Discussion: ${error.message}`);
+          setBusy(false, "error");
+        }
+      });
       agentSelectEl.addEventListener("change", () => {
         localStorage.setItem(AGENT_ID_KEY, selectedAgentId());
         updateSelectedAgentMeta();
@@ -1222,6 +1505,15 @@
         if (!text) return;
 
         inputEl.value = "";
+        if (activeMode === "discussion" && currentDiscussionRunId) {
+          try {
+            await addDiscussionUserMessage(text);
+          } catch (error) {
+            statusEl.textContent = `插话失败：${error.message}`;
+          }
+          return;
+        }
+
         currentThreadTitle = text.slice(0, 18);
         addUserMessage(text);
         const assistant = addAssistantMessage();

@@ -202,6 +202,7 @@ async def init_db():
     import db.models.message  # noqa: F401
     import db.models.thread  # noqa: F401
     import scheduling.agent_registry.models  # noqa: F401
+    import scheduling.discussion.models  # noqa: F401
     import tool.registry.models  # noqa: F401
 
     async with get_engine().begin() as conn:
