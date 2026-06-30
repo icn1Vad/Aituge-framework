@@ -7,12 +7,11 @@ from typing import Optional
 
 from common.system_constants import DEFAULT_TENANT_ID
 from data.RAG.tool_retrieval import ToolRetrievalRAG
-from db.db_context import create_db_session
 from llama_index.core.tools.function_tool import FunctionTool
 from service.agent import SingleAgentRunner, SingleAgentStreamEvent
 from skill import SkillBundle, build_skill_bundle, create_read_skill_tool
-from tool import ToolBundle, ToolProviderConfig, get_default_tool_list
-from tool.registry import create_enabled_tool_bundle
+from tool import ToolBundle
+from tool.registry import ToolManager
 
 from ..agent_registry.models import AgentProfileEntity
 
@@ -155,39 +154,16 @@ class SchedulingService:
         dataset_names: list[str],
     ) -> ToolBundle:
         bundles: list[ToolBundle] = []
-        wants_code = "code_interpreter" in tool_names or "local_python" in tool_names
-        wants_db_tools = bool(
-            {"enabled_db_tools", "aliyun-websearch", "web_search", "search"}
-            & set(tool_names)
-        )
         wants_rag = "rag_retrieval" in tool_names or "local_rag" in dataset_names
+        non_rag_tool_names = [name for name in tool_names if name != "rag_retrieval"]
 
-        if wants_code:
-            bundles.append(
-                get_default_tool_list().create_bundle(
-                    ToolProviderConfig(
-                        tool_name="code_interpreter",
-                        provider="local_python",
-                        config={
-                            "timeout_seconds": 20,
-                            "max_output_chars": 50_000,
-                            "work_dir": self.options.local_python_artifact_dir,
-                            "artifact_base_url": self.options.artifact_base_url,
-                            "keep_work_dir": True,
-                        },
-                    )
-                )
-            )
-
-        if wants_db_tools:
-            async with create_db_session() as session:
-                bundles.append(
-                    await create_enabled_tool_bundle(
-                        session=session,
-                        tenant_id=self.tenant_id,
-                    )
-                )
-
+        bundles.append(
+            await ToolManager(
+                local_python_artifact_dir=self.options.local_python_artifact_dir,
+                artifact_base_url=self.options.artifact_base_url,
+                tenant_id=self.tenant_id,
+            ).create_bundle(non_rag_tool_names)
+        )
         if wants_rag:
             bundles.append(self._build_rag_bundle())
 

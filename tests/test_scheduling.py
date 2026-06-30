@@ -1,6 +1,7 @@
 import asyncio
 
 import httpx
+from llama_index.core.tools.function_tool import FunctionTool
 
 from backend.local_code_chat_app import create_app
 from common.encrypt_utils import encrypt_key
@@ -15,6 +16,8 @@ from scheduling.agent_registry import (
 )
 from service.cache.session_history_manager import session_history_manager
 from service.thread.thread_service import ThreadService
+from tool import ToolBundle
+from tool.registry import ToolConfigEntity, ToolDefinition, get_default_tool_list
 import service.agent.single_agent_runner as runner_mod
 
 
@@ -51,6 +54,33 @@ async def _seed_llm_config():
                 encrypted_api_key=encrypt_key("test-key"),
                 provider_name="openai_like",
                 source="openai_like",
+            )
+        )
+
+
+async def _seed_fake_tool_config():
+    async with create_db_session() as session:
+        session.add(
+            ToolConfigEntity(
+                tenant_id=DEFAULT_TENANT_ID,
+                tool_name="fake_db_tool",
+                provider="fake",
+                enabled=True,
+                config_json="{}",
+            )
+        )
+
+
+async def _seed_web_search_tool_config():
+    async with create_db_session() as session:
+        session.add(
+            ToolConfigEntity(
+                tenant_id=DEFAULT_TENANT_ID,
+                tool_name="web_search",
+                provider="aliyun",
+                enabled=True,
+                config_json='{"search_count": 1}',
+                encrypted_secrets_json=encrypt_key('{"api_key": "test-iqs-key"}'),
             )
         )
 
@@ -103,6 +133,71 @@ def test_agent_registry_creates_default_profiles(tmp_path, monkeypatch):
         reset_engine_for_test()
 
 
+def test_scheduling_loads_new_named_db_tool_without_scheduler_change(tmp_path, monkeypatch):
+    async def run():
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'named-db-tool.db'}")
+        reset_engine_for_test()
+        monkeypatch.setattr(runner_mod, "ReactAgent", CapturingAgent)
+        monkeypatch.setattr(runner_mod, "create_llm", lambda config: object())
+
+        async def afake_tool(query: str = "") -> str:
+            return f"fake:{query}"
+
+        get_default_tool_list().register(
+            ToolDefinition(
+                tool_name="fake_db_tool",
+                provider="fake",
+                display_name="Fake DB Tool",
+                description="Fake DB-backed provider.",
+                llm_tool_names=("FakeDbTool",),
+                factory=lambda config: ToolBundle.from_tools(
+                    [
+                        FunctionTool.from_defaults(
+                            async_fn=afake_tool,
+                            name="FakeDbTool",
+                            description="Fake DB-backed tool.",
+                        )
+                    ]
+                ),
+            ),
+            make_default=True,
+        )
+
+        await init_db()
+        await _seed_llm_config()
+        await _seed_fake_tool_config()
+
+        app = create_app()
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/scheduling/agents/code-agent/chat",
+                json={
+                    "message": "use a fake db tool",
+                    "user_id": "scheduling-fake-tool-user",
+                    "stream": False,
+                    "extra_tools": ["fake_db_tool"],
+                },
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        content = body["response"]["choices"][0]["message"]["content"]
+        assert "LimitedLocalPythonInterpreter" in content
+        assert "FakeDbTool" in content
+
+        await session_history_manager.clear_history(
+            "scheduling-fake-tool-user",
+            body["thread_id"],
+        )
+        await _delete_thread(body["thread_id"])
+
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
+
+
 def test_scheduling_chat_assembles_profile_tools_and_skills(tmp_path, monkeypatch):
     async def run():
         monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'chat.db'}")
@@ -112,6 +207,7 @@ def test_scheduling_chat_assembles_profile_tools_and_skills(tmp_path, monkeypatc
 
         await init_db()
         await _seed_llm_config()
+        await _seed_web_search_tool_config()
 
         app = create_app()
         transport = httpx.ASGITransport(app=app)
@@ -138,6 +234,8 @@ def test_scheduling_chat_assembles_profile_tools_and_skills(tmp_path, monkeypatc
         assert body["agent"]["agent_id"] == "report-agent"
         assert body["skills"]["primary"]["name"] == "report-generator"
         assert "LimitedLocalPythonInterpreter" in content
+        assert "aliyun-websearch" in content
+        assert "search-knowledgebase" in content
         assert "ReadSkill" in content
         assert "report_identity=True" in content
         assert "report_skill_prompt=True" in content
