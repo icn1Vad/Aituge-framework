@@ -17,6 +17,7 @@ from db.db_context import create_db_session, init_db
 from scheduling.agent_registry import ensure_default_agent_profiles
 from scheduling.api import create_scheduling_router
 from scheduling.scheduler import SchedulingRuntimeOptions
+from task_manager import create_task_manager_router
 from tool import ToolBundle
 from tool.registry import ToolManager
 
@@ -128,15 +129,13 @@ def create_app() -> FastAPI:
         yield
 
     app = create_simple_chat_app(tool_provider=tool_provider, lifespan=lifespan)
-    app.include_router(
-        create_scheduling_router(
-            SchedulingRuntimeOptions(
-                local_python_artifact_dir=LOCAL_PYTHON_ARTIFACT_DIR,
-                artifact_base_url="/tool-artifacts/local-python",
-                rag_store=RAG_STORE,
-            )
-        )
+    scheduling_options = SchedulingRuntimeOptions(
+        local_python_artifact_dir=LOCAL_PYTHON_ARTIFACT_DIR,
+        artifact_base_url="/tool-artifacts/local-python",
+        rag_store=RAG_STORE,
     )
+    app.include_router(create_scheduling_router(scheduling_options))
+    app.include_router(create_task_manager_router(scheduling_options))
 
     @app.get("/rag/status")
     async def rag_status():

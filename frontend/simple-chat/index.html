@@ -122,6 +122,42 @@
         gap: 8px;
       }
 
+      .task-panel {
+        margin: 4px 12px 10px;
+        display: grid;
+        gap: 8px;
+      }
+
+      .task-grid {
+        display: grid;
+        grid-template-columns: 1fr 72px;
+        gap: 8px;
+      }
+
+      .task-input,
+      .task-select {
+        width: 100%;
+        min-width: 0;
+        height: 36px;
+        padding: 0 9px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        background: #fff;
+        color: #20242c;
+        font-size: 13px;
+      }
+
+      .task-textarea {
+        min-height: 74px;
+        width: 100%;
+        padding: 9px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        background: #fff;
+        font-size: 13px;
+        resize: vertical;
+      }
+
       .discussion-topic {
         min-height: 70px;
         width: 100%;
@@ -672,6 +708,24 @@
           <div id="discussionStatus" class="rag-status">Discussion: idle</div>
           <div id="discussionDebug" class="discussion-debug"></div>
         </div>
+        <div class="section-title">
+          <span>TaskManager</span>
+          <span>v1</span>
+        </div>
+        <div class="task-panel">
+          <input id="taskTopic" class="task-input" value="Agent architecture and TaskManager" />
+          <div class="task-grid">
+            <select id="taskPlatform" class="task-select">
+              <option value="douyin">douyin</option>
+              <option value="shipinhao">shipinhao</option>
+              <option value="xiaohongshu">xiaohongshu</option>
+            </select>
+            <input id="taskDuration" class="task-input" type="number" min="15" max="300" value="60" />
+          </div>
+          <textarea id="taskBrief" class="task-textarea">Use the meeting notes to explain the Agent layers and TaskManager boundary.</textarea>
+          <button id="runMediaTask" class="rag-btn" type="button">Run media script task</button>
+          <div id="taskStatus" class="rag-status">Task: idle</div>
+        </div>
         <div id="threadList" class="thread-list"></div>
       </aside>
 
@@ -724,6 +778,12 @@
       const startDiscussionEl = document.getElementById("startDiscussion");
       const discussionStatusEl = document.getElementById("discussionStatus");
       const discussionDebugEl = document.getElementById("discussionDebug");
+      const taskTopicEl = document.getElementById("taskTopic");
+      const taskPlatformEl = document.getElementById("taskPlatform");
+      const taskDurationEl = document.getElementById("taskDuration");
+      const taskBriefEl = document.getElementById("taskBrief");
+      const runMediaTaskEl = document.getElementById("runMediaTask");
+      const taskStatusEl = document.getElementById("taskStatus");
       const USER_ID_KEY = "tuge-simple-chat-user-id";
       const AGENT_ID_KEY = "tuge-simple-chat-agent-id";
       const DEFAULT_AGENT_ID = "default-single-agent";
@@ -1032,6 +1092,11 @@
       function setDiscussionBusy(busy, label = "") {
         startDiscussionEl.disabled = busy;
         discussionStatusEl.textContent = label || (busy ? "Discussion: running" : "Discussion: idle");
+      }
+
+      function setTaskBusy(busy, label = "") {
+        runMediaTaskEl.disabled = busy;
+        taskStatusEl.textContent = label || (busy ? "Task: running" : "Task: idle");
       }
 
       function selectedDiscussionParticipants() {
@@ -1358,6 +1423,80 @@
         }
       }
 
+      function buildMediaTaskPayload() {
+        return {
+          task_type: "media.script.generate",
+          title: taskTopicEl.value.trim() || "Media script task",
+          user_id: userId,
+          stream: true,
+          input_payload: {
+            topic: taskTopicEl.value.trim(),
+            platform: taskPlatformEl.value,
+            duration_seconds: Number(taskDurationEl.value || 60),
+            source_brief: taskBriefEl.value.trim(),
+            expected_output: "Return one JSON object following media-script-generator.",
+          },
+          metadata: {
+            source: "simple-chat-task-panel",
+          },
+        };
+      }
+
+      async function runMediaTask() {
+        const payload = buildMediaTaskPayload();
+        if (!payload.input_payload.topic) return;
+        activeMode = "task";
+        currentThreadTitle = payload.title.slice(0, 18);
+        addUserMessage(`TaskManager: ${payload.title}`);
+        const nodes = addAssistantMessage();
+        nodes.bubble.textContent = "";
+        setTaskBusy(true, "Task: streaming");
+        setBusy(true, "task");
+
+        const res = await fetch("/task-manager/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok || !res.body) throw new Error(await responseErrorText(res));
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let taskId = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          buffer = parseSse(buffer, async (event, payload) => {
+            taskId = payload.task_id || taskId;
+            taskStatusEl.textContent = `Task: ${event}${taskId ? ` / ${taskId.slice(0, 8)}` : ""}`;
+            const delta = payload.payload_json?.delta || "";
+            if (delta) {
+              nodes.bubble.textContent += delta;
+              nodes.bubble.scrollIntoView({ behavior: "smooth", block: "end" });
+            }
+            if (event === "task_failed") {
+              nodes.bubble.textContent += `\n\nTask failed: ${payload.message || payload.payload_json?.message || ""}`;
+            }
+            if (event === "task_succeeded" && taskId) {
+              const taskRes = await fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}`);
+              if (taskRes.ok) {
+                const taskBody = await taskRes.json();
+                const task = taskBody.task || {};
+                threadId = task.thread_id || threadId;
+                const result = task.result_payload_json || {};
+                nodes.bubble.textContent = JSON.stringify(result.structured || result, null, 2);
+                renderThreads((result.content || "").slice(0, 36));
+              }
+            }
+          });
+        }
+        await loadThreads();
+        setTaskBusy(false, taskId ? `Task: done / ${taskId.slice(0, 8)}` : "Task: done");
+        setBusy(false, "ready");
+      }
+
       function parseSse(buffer, onEvent) {
         const parts = buffer.split("\n\n");
         const rest = parts.pop() || "";
@@ -1497,6 +1636,14 @@
       agentSelectEl.addEventListener("change", () => {
         localStorage.setItem(AGENT_ID_KEY, selectedAgentId());
         updateSelectedAgentMeta();
+      });
+      runMediaTaskEl.addEventListener("click", async () => {
+        try {
+          await runMediaTask();
+        } catch (error) {
+          setTaskBusy(false, `Task: ${error.message}`);
+          setBusy(false, "error");
+        }
       });
 
       formEl.addEventListener("submit", async (event) => {
