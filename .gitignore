@@ -12,10 +12,14 @@ __pycache__/
 # Local virtual environments
 .venv/
 venv/
+.poetry-cache/
 
 # Runtime data
 backend/single-agent/tmp/
 localdata/private_config/
+localdata/external_skills/
+localdata/logs/
+localdata/redis/
 .local/
 *.private.json
 

@@ -1,3 +1,4 @@
+import asyncio
 from typing import Optional
 
 from db.redis_conn import REDIS_URL
@@ -8,9 +9,16 @@ from redis.asyncio import Redis
 class RedisCache:
     def __init__(self):
         self._client: Optional[Redis] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     def get_client(self) -> Redis:
-        if self._client is None:
+        current_loop = asyncio.get_running_loop()
+        if (
+            self._client is None
+            or self._loop is None
+            or self._loop.is_closed()
+            or self._loop is not current_loop
+        ):
             logger.info("Connecting to Redis for TUGE session cache.")
             self._client = Redis.from_url(
                 REDIS_URL,
@@ -18,6 +26,7 @@ class RedisCache:
                 socket_timeout=15,
                 socket_connect_timeout=15,
             )
+            self._loop = current_loop
         return self._client
 
     async def get(self, key: str) -> Optional[str]:
@@ -45,6 +54,7 @@ class RedisCache:
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+            self._loop = None
 
 
 cache_manager = RedisCache()
