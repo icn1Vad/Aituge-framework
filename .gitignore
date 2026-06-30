@@ -15,6 +15,9 @@ venv/
 
 # Runtime data
 backend/single-agent/tmp/
+localdata/private_config/
+.local/
+*.private.json
 
 # Nested worktrees
 aituge-registry/
