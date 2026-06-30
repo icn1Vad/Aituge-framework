@@ -5,7 +5,6 @@ from .manager import ToolManager
 from .models import ToolConfigEntity
 from .registry import ToolDefinition, ToolList
 from .service import (
-    create_enabled_tool_bundle,
     get_enabled_tool_configs,
     get_tool_configs_by_names,
 )
@@ -19,7 +18,6 @@ __all__ = [
     "ToolList",
     "ToolProviderConfig",
     "create_default_tool_list",
-    "create_enabled_tool_bundle",
     "get_default_tool_list",
     "get_enabled_tool_configs",
     "get_tool_configs_by_names",

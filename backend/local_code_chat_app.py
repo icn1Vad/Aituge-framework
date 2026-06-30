@@ -18,11 +18,7 @@ from scheduling.agent_registry import ensure_default_agent_profiles
 from scheduling.api import create_scheduling_router
 from scheduling.scheduler import SchedulingRuntimeOptions
 from tool import ToolBundle
-from tool.registry import (
-    ToolProviderConfig,
-    create_enabled_tool_bundle,
-    get_default_tool_list,
-)
+from tool.registry import ToolManager
 
 
 LOCAL_PYTHON_ARTIFACT_DIR = (
@@ -116,26 +112,13 @@ def _create_local_rag_bundle() -> ToolBundle:
 
 def create_app() -> FastAPI:
     async def tool_provider(_request):
-        local_python_bundle = get_default_tool_list().create_bundle(
-            ToolProviderConfig(
-                tool_name="code_interpreter",
-                provider="local_python",
-                config={
-                    "timeout_seconds": 20,
-                    "max_output_chars": 50_000,
-                    "work_dir": LOCAL_PYTHON_ARTIFACT_DIR,
-                    "artifact_base_url": "/tool-artifacts/local-python",
-                    "keep_work_dir": True,
-                },
-            )
-        )
-
-        async with create_db_session() as session:
-            db_tool_bundle = await create_enabled_tool_bundle(session)
-
+        tool_bundle = await ToolManager(
+            local_python_artifact_dir=LOCAL_PYTHON_ARTIFACT_DIR,
+            artifact_base_url="/tool-artifacts/local-python",
+        ).create_bundle(["code_interpreter", "enabled_db_tools"])
         rag_bundle = _create_local_rag_bundle()
 
-        return ToolBundle.combine([local_python_bundle, db_tool_bundle, rag_bundle])
+        return ToolBundle.combine([tool_bundle, rag_bundle])
 
     @asynccontextmanager
     async def lifespan(_app):
