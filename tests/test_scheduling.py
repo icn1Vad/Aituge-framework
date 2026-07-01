@@ -113,7 +113,6 @@ def test_agent_registry_creates_default_profiles(tmp_path, monkeypatch):
         }
         assert report_agent is not None
         assert report_agent.system_prompt.startswith("You are Report Agent")
-        assert report_agent.default_skills[0] == "report-generator"
         assert "code_interpreter" in report_agent.default_tools
 
         all_capable_agent = await get_agent_profile(session, "all-capable-agent")
@@ -124,7 +123,6 @@ def test_agent_registry_creates_default_profiles(tmp_path, monkeypatch):
             "enabled_db_tools",
             "rag_retrieval",
         ]
-        assert "report-generator" in all_capable_agent.default_skills
         assert all_capable_agent.runtime_config["tool_policy"] == "allowlist"
 
     try:
@@ -198,7 +196,7 @@ def test_scheduling_loads_new_named_db_tool_without_scheduler_change(tmp_path, m
         reset_engine_for_test()
 
 
-def test_scheduling_chat_assembles_profile_tools_and_skills(tmp_path, monkeypatch):
+def test_scheduling_chat_uses_only_explicit_skill_package(tmp_path, monkeypatch):
     async def run():
         monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'chat.db'}")
         reset_engine_for_test()
@@ -227,24 +225,46 @@ def test_scheduling_chat_assembles_profile_tools_and_skills(tmp_path, monkeypatc
                     "stream": False,
                 },
             )
+            explicit_response = await client.post(
+                "/scheduling/agents/report-agent/chat",
+                json={
+                    "message": "write a report with report package",
+                    "user_id": "scheduling-skill-test-user",
+                    "stream": False,
+                    "skill_package": "report-package",
+                },
+            )
 
         assert response.status_code == 200
         body = response.json()
         content = body["response"]["choices"][0]["message"]["content"]
         assert body["agent"]["agent_id"] == "report-agent"
-        assert body["skills"]["primary"]["name"] == "report-generator"
+        assert "skills" not in body
         assert "LimitedLocalPythonInterpreter" in content
         assert "aliyun-websearch" in content
         assert "search-knowledgebase" in content
-        assert "ReadSkill" in content
+        assert "ReadSkill" not in content
         assert "report_identity=True" in content
-        assert "report_skill_prompt=True" in content
+        assert "report_skill_prompt=False" in content
+
+        assert explicit_response.status_code == 200
+        explicit_body = explicit_response.json()
+        explicit_content = explicit_body["response"]["choices"][0]["message"]["content"]
+        assert explicit_body["skills"]["active_package"]["package_name"] == "report-package"
+        assert explicit_body["skills"]["active_package"]["primary"]["name"] == "report-generator"
+        assert "ReadSkill" in explicit_content
+        assert "report_skill_prompt=True" in explicit_content
 
         await session_history_manager.clear_history(
             "scheduling-test-user",
             body["thread_id"],
         )
         await _delete_thread(body["thread_id"])
+        await session_history_manager.clear_history(
+            "scheduling-skill-test-user",
+            explicit_body["thread_id"],
+        )
+        await _delete_thread(explicit_body["thread_id"])
 
     try:
         asyncio.run(run())

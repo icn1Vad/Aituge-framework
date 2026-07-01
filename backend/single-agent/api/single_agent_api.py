@@ -1,27 +1,29 @@
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from inspect import isawaitable
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from llama_index.core.tools.function_tool import FunctionTool
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+from db.db_context import create_db_session
 from service.agent import SingleAgentRunner
 from service.conversation import ConversationManager
-from skill import SkillBundle, build_skill_bundle, create_read_skill_tool, list_skills
+from skill import SkillManager, ensure_default_skill_packages, list_skill_packages
 
 
 class SingleAgentChatRequest(BaseModel):
-    messages: Optional[List[dict]] = None
+    model_config = ConfigDict(extra="forbid")
+
+    messages: Optional[list[dict]] = None
     message: Optional[str] = None
     model: str = "deepseek-v4-pro"
     thread_id: Optional[str] = None
     session_id: Optional[str] = None
     user_id: str = "default_user"
     stream: bool = False
-    primary_skill: Optional[str] = None
-    candidate_skills: Optional[List[str]] = None
+    skill_package: Optional[str] = None
 
 
 CleanupHook = Callable[[], Awaitable[None] | None]
@@ -63,19 +65,15 @@ def _coerce_tool_context(value: ToolProviderResult) -> SingleAgentToolContext:
         tools, cleanup = value
         return SingleAgentToolContext(tools=list(tools or []), cleanup=cleanup)
 
-    if isinstance(value, SkillBundle):
-        return _skill_context_from_bundle(value)
-
     if hasattr(value, "render_prompt") and not hasattr(value, "tools"):
-        skills = _skill_bundle_summary(value) if isinstance(value, SkillBundle) else {}
-        return SingleAgentToolContext(task_prompt=value.render_prompt(), skills=skills)
+        return SingleAgentToolContext(task_prompt=value.render_prompt())
 
     if hasattr(value, "tools"):
         cleanup = getattr(value, "cleanup", None) or getattr(value, "aclose", None)
         task_prompt = ""
         if hasattr(value, "render_prompt"):
             task_prompt = value.render_prompt()
-            skills = _skill_bundle_summary(value) if isinstance(value, SkillBundle) else {}
+            skills = {}
         elif hasattr(value, "task_prompt"):
             task_prompt = getattr(value, "task_prompt") or ""
             skills = getattr(value, "skills", {}) or {}
@@ -120,41 +118,15 @@ def _merge_tool_contexts(*contexts: SingleAgentToolContext) -> SingleAgentToolCo
     )
 
 
-def _skill_summary(skill):
-    return {
-        "name": skill.name,
-        "description": skill.description,
-        "tags": skill.metadata.tags,
-        "path": str(skill.path),
-    }
-
-
-def _skill_bundle_summary(bundle: SkillBundle) -> dict:
-    if not bundle.primary and not bundle.candidates:
-        return {}
-    return {
-        "primary": _skill_summary(bundle.primary) if bundle.primary else None,
-        "candidates": [_skill_summary(skill) for skill in bundle.candidates],
-    }
-
-
-def _skill_context_from_bundle(bundle: SkillBundle) -> SingleAgentToolContext:
-    read_skill_tool = create_read_skill_tool(bundle)
-    return SingleAgentToolContext(
-        tools=[read_skill_tool] if read_skill_tool else [],
-        task_prompt=bundle.render_prompt(),
-        skills=_skill_bundle_summary(bundle),
-    )
-
-
-def _build_request_skill_context(request: SingleAgentChatRequest) -> SingleAgentToolContext:
-    if not request.primary_skill and not request.candidate_skills:
+async def _build_request_skill_context(request: SingleAgentChatRequest) -> SingleAgentToolContext:
+    if not request.skill_package:
         return SingleAgentToolContext()
-    bundle = build_skill_bundle(
-        primary_skill=request.primary_skill,
-        candidate_skills=request.candidate_skills or [],
+    context = await SkillManager().create_context(request.skill_package)
+    return SingleAgentToolContext(
+        tools=context.tools,
+        task_prompt=context.task_prompt,
+        skills=context.skills,
     )
-    return _skill_context_from_bundle(bundle)
 
 
 async def _build_tool_context(
@@ -162,7 +134,7 @@ async def _build_tool_context(
     request: SingleAgentChatRequest,
 ) -> SingleAgentToolContext:
     try:
-        skill_context = _build_request_skill_context(request)
+        skill_context = await _build_request_skill_context(request)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -175,19 +147,12 @@ async def _build_tool_context(
 def create_router(tool_provider: Optional[ToolProvider] = None) -> APIRouter:
     router = APIRouter(prefix="/single-agent", tags=["single-agent"])
 
-    @router.get("/skills")
-    async def skills():
-        return {
-            "skills": [
-                {
-                    "name": skill.name,
-                    "description": skill.description,
-                    "tags": skill.tags,
-                    "path": str(skill.path),
-                }
-                for skill in list_skills()
-            ]
-        }
+    @router.get("/skill-packages")
+    async def skill_packages():
+        async with create_db_session() as session:
+            await ensure_default_skill_packages(session)
+            packages = await list_skill_packages(session, enabled_only=False)
+        return {"skill_packages": [package.to_read_model() for package in packages]}
 
     @router.get("/threads")
     async def threads(user_id: str = "default_user", limit: int = 50, offset: int = 0):

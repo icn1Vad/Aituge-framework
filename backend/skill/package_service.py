@@ -1,0 +1,156 @@
+"""DB-backed registry helpers for skill packages."""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime
+
+from common.system_constants import DEFAULT_TENANT_ID
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
+
+from .package_models import SkillPackageEntity
+
+
+DEFAULT_SKILL_PACKAGES = [
+    {
+        "package_name": "general-package",
+        "display_name": "General Task Package",
+        "description": "General task planning, review, debugging, and concise answer style.",
+        "tags": ["general", "task"],
+        "primary_skill": "task-style",
+        "auxiliary_skills": [
+            "implementation-plan",
+            "debugging-checklist",
+            "review-style",
+            "concise-summary",
+        ],
+    },
+    {
+        "package_name": "report-package",
+        "display_name": "Report Package",
+        "description": "Complete evidence-grounded report writing package.",
+        "tags": ["report", "analysis"],
+        "primary_skill": "report-generator",
+        "auxiliary_skills": [
+            "report-context-scope",
+            "report-executive-summary",
+            "report-analysis-findings",
+            "report-quantitative-calculation",
+            "report-chart-figure",
+            "report-code-verification",
+            "report-risk-actions",
+        ],
+    },
+]
+
+
+async def ensure_default_skill_packages(
+    session: AsyncSession,
+    tenant_id: str = DEFAULT_TENANT_ID,
+) -> None:
+    for definition in DEFAULT_SKILL_PACKAGES:
+        statement = select(SkillPackageEntity).where(
+            SkillPackageEntity.tenant_id == tenant_id,
+            SkillPackageEntity.package_name == definition["package_name"],
+        )
+        result = await session.exec(statement)
+        if result.first() is not None:
+            continue
+        session.add(
+            SkillPackageEntity(
+                tenant_id=tenant_id,
+                package_name=definition["package_name"],
+                display_name=definition["display_name"],
+                description=definition["description"],
+                tags_json=json.dumps(definition["tags"], ensure_ascii=True),
+                primary_skill=definition["primary_skill"],
+                auxiliary_skills_json=json.dumps(
+                    definition["auxiliary_skills"],
+                    ensure_ascii=True,
+                ),
+            )
+        )
+    await session.commit()
+
+
+async def list_skill_packages(
+    session: AsyncSession,
+    *,
+    tenant_id: str = DEFAULT_TENANT_ID,
+    enabled_only: bool = True,
+) -> list[SkillPackageEntity]:
+    statement = select(SkillPackageEntity).where(
+        SkillPackageEntity.tenant_id == tenant_id,
+    )
+    if enabled_only:
+        statement = statement.where(SkillPackageEntity.enabled == True)  # noqa: E712
+    statement = statement.order_by(SkillPackageEntity.created_at)
+    result = await session.exec(statement)
+    return list(result.all())
+
+
+async def get_skill_packages_by_names(
+    session: AsyncSession,
+    package_names: list[str],
+    *,
+    tenant_id: str = DEFAULT_TENANT_ID,
+) -> list[SkillPackageEntity]:
+    names = [name for name in dict.fromkeys(package_names) if name]
+    if not names:
+        return []
+    statement = select(SkillPackageEntity).where(
+        SkillPackageEntity.tenant_id == tenant_id,
+        SkillPackageEntity.package_name.in_(names),
+    )
+    result = await session.exec(statement)
+    found = {item.package_name: item for item in result.all()}
+    missing = [name for name in names if name not in found]
+    if missing:
+        raise ValueError(f"Skill package not found: {', '.join(missing)}")
+    return [found[name] for name in names]
+
+
+async def upsert_skill_package(
+    session: AsyncSession,
+    *,
+    package_name: str,
+    display_name: str = "",
+    description: str = "",
+    tags: list[str] | None = None,
+    primary_skill: str,
+    auxiliary_skills: list[str] | None = None,
+    tenant_id: str = DEFAULT_TENANT_ID,
+    enabled: bool = True,
+) -> SkillPackageEntity:
+    statement = select(SkillPackageEntity).where(
+        SkillPackageEntity.tenant_id == tenant_id,
+        SkillPackageEntity.package_name == package_name,
+    )
+    result = await session.exec(statement)
+    package = result.first()
+    now = datetime.utcnow()
+    values = {
+        "display_name": display_name,
+        "description": description,
+        "tags_json": json.dumps(tags or [], ensure_ascii=True),
+        "primary_skill": primary_skill,
+        "auxiliary_skills_json": json.dumps(auxiliary_skills or [], ensure_ascii=True),
+        "enabled": enabled,
+        "updated_at": now,
+    }
+    if package is None:
+        package = SkillPackageEntity(
+            tenant_id=tenant_id,
+            package_name=package_name,
+            created_at=now,
+            **values,
+        )
+        session.add(package)
+    else:
+        for key, value in values.items():
+            setattr(package, key, value)
+        session.add(package)
+    await session.commit()
+    await session.refresh(package)
+    return package

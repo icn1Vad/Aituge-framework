@@ -994,26 +994,27 @@
       }
 
       function renderSkills(nodes, skills) {
-        if (!skills?.primary && !skills?.candidates?.length) return;
-        const primary = skills.primary;
-        const candidates = skills.candidates || [];
-        const path = [primary?.name, ...candidates.map((skill) => skill.name)].filter(Boolean);
-        const result = candidates.length
-          ? candidates.map((skill) => `${skill.name}: ${skill.description || ""}`).join("\n")
+        const pkg = skills?.active_package;
+        if (!pkg) return;
+        const primary = pkg.primary?.name || null;
+        const auxiliary = pkg.auxiliary_index || [];
+        const path = [pkg.package_name, primary].filter(Boolean).join("-");
+        const result = auxiliary.length
+          ? auxiliary.map((skill) => `${skill.name}: ${skill.description || ""}`).join("\n")
           : "no auxiliary skills";
         upsertToolTrace(nodes, {
-          id: `skill-${primary?.name || "package"}`,
+          id: `skill-package-${path || "active"}`,
           function: {
-            name: `skill: ${primary?.name || "package"}`,
+            name: `skill package: ${pkg.package_name}`,
             arguments: JSON.stringify({
               type: "skill_package",
-              path,
-              primary: primary?.name || null,
-              auxiliary: candidates.map((skill) => skill.name),
+              package_name: pkg.package_name,
+              primary,
+              auxiliary_index: auxiliary.map((skill) => skill.name),
             }, null, 2),
           },
         }, {
-          id: `skill-${primary?.name || "package"}`,
+          id: `skill-package-${path || "active"}`,
           result,
         });
       }

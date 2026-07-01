@@ -116,7 +116,7 @@ def test_discussion_run_uses_public_thread_messages(tmp_path, monkeypatch):
         assert turns[2]["public_message_id"]
         assert turns[0]["response"]["choices"][0]["message"]["content"]
         assert turns[0]["steps"] == []
-        assert turns[2]["skills"]["primary"]["name"] == "report-generator"
+        assert turns[2]["skills"] is None
 
         messages = payload["messages"]
         public_texts = [message["text"] for message in messages]

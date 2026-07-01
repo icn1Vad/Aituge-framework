@@ -9,7 +9,7 @@ from common.system_constants import DEFAULT_TENANT_ID
 from data.RAG.tool_retrieval import ToolRetrievalRAG
 from llama_index.core.tools.function_tool import FunctionTool
 from service.agent import SingleAgentRunner, SingleAgentStreamEvent
-from skill import SkillBundle, build_skill_bundle, create_read_skill_tool
+from skill import SkillManager
 from tool import ToolBundle
 from tool.registry import ToolManager
 
@@ -40,24 +40,6 @@ def _dedupe(items: list[str]) -> list[str]:
             seen.add(item)
             values.append(item)
     return values
-
-
-def _skill_summary(skill) -> dict:
-    return {
-        "name": skill.name,
-        "description": skill.description,
-        "tags": skill.metadata.tags,
-        "path": str(skill.path),
-    }
-
-
-def _skill_bundle_summary(bundle: SkillBundle) -> dict:
-    if not bundle.primary and not bundle.candidates:
-        return {}
-    return {
-        "primary": _skill_summary(bundle.primary) if bundle.primary else None,
-        "candidates": [_skill_summary(skill) for skill in bundle.candidates],
-    }
 
 
 class SchedulingService:
@@ -138,8 +120,12 @@ class SchedulingService:
         tool_names = _dedupe(profile.default_tools + request.extra_tools)
         dataset_names = _dedupe(profile.default_datasets + request.extra_datasets)
         bundle = await self._build_tool_bundle(tool_names, dataset_names)
-        skill_context = self._build_skill_context(profile, request)
-        task_prompts = [item for item in [profile.system_prompt, skill_context.task_prompt] if item]
+        skill_context = await SkillManager(tenant_id=self.tenant_id).create_context(
+            request.skill_package
+        )
+        task_prompts = [
+            item for item in [profile.system_prompt, skill_context.task_prompt] if item
+        ]
 
         return SchedulingToolContext(
             tools=bundle.tools + skill_context.tools,
@@ -181,30 +167,3 @@ class SchedulingService:
             chunks=chunks,
         ).create_tools()
         return ToolBundle.from_tools(rag_tools)
-
-    def _build_skill_context(
-        self,
-        profile: AgentProfileEntity,
-        request: SchedulingChatRequest,
-    ) -> SchedulingToolContext:
-        if request.primary_skill or request.candidate_skills:
-            primary_skill = request.primary_skill
-            candidate_skills = request.candidate_skills or []
-        else:
-            profile_skills = _dedupe(profile.default_skills + request.extra_skills)
-            primary_skill = profile_skills[0] if profile_skills else None
-            candidate_skills = profile_skills[1:] if len(profile_skills) > 1 else []
-
-        if not primary_skill and not candidate_skills:
-            return SchedulingToolContext()
-
-        bundle = build_skill_bundle(
-            primary_skill=primary_skill,
-            candidate_skills=candidate_skills,
-        )
-        read_skill_tool = create_read_skill_tool(bundle)
-        return SchedulingToolContext(
-            tools=[read_skill_tool] if read_skill_tool else [],
-            task_prompt=bundle.render_prompt(),
-            skills=_skill_bundle_summary(bundle),
-        )

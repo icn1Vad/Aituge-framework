@@ -28,7 +28,6 @@ class AgentProfileEntity(SQLModel, table=True):
     model_id: str = Field(default="deepseek-v4-pro", max_length=120)
     system_prompt: str = ""
     default_tools_json: str = Field(default="[]")
-    default_skills_json: str = Field(default="[]")
     default_datasets_json: str = Field(default="[]")
     runtime_config_json: str = Field(default="{}")
     enabled: bool = True
@@ -38,11 +37,6 @@ class AgentProfileEntity(SQLModel, table=True):
     @property
     def default_tools(self) -> list[str]:
         value = _json_loads(self.default_tools_json, [])
-        return [str(item) for item in value] if isinstance(value, list) else []
-
-    @property
-    def default_skills(self) -> list[str]:
-        value = _json_loads(self.default_skills_json, [])
         return [str(item) for item in value] if isinstance(value, list) else []
 
     @property
@@ -64,11 +58,9 @@ class AgentProfileEntity(SQLModel, table=True):
             "model_id": self.model_id,
             "system_prompt": self.system_prompt,
             "default_tools": self.default_tools,
-            "default_skills": self.default_skills,
             "default_datasets": self.default_datasets,
             "runtime_config": self.runtime_config,
             "enabled": self.enabled,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
-
