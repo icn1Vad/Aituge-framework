@@ -741,6 +741,7 @@
               <option value="media.script.generate">media.script.generate</option>
               <option value="media.script.select">media.script.select</option>
               <option value="media.chat">media.chat</option>
+              <option value="table.audit">table.audit</option>
             </select>
             <input id="taskTopic" class="task-input" value="Agent architecture and TaskManager" />
             <div class="task-grid">
@@ -754,7 +755,11 @@
   {"id":"candidate-a","title":"TaskManager structure","content":"Explain task lifecycle, events, and item tracking."},
   {"id":"candidate-b","title":"Agent boundary","content":"Explain why business orchestration stays outside Single Agent."}
 ]</textarea>
-            <button id="runMediaTask" class="rag-btn" type="button">Run media script task</button>
+            <textarea id="taskRows" class="task-textarea task-items-textarea">[
+  {"id":"row-001","name":"A company","amount":12000,"note":"Contract amount is above the manual review line."},
+  {"id":"row-002","name":"B company","amount":800,"note":"Routine low-risk record."}
+]</textarea>
+            <button id="runMediaTask" class="rag-btn" type="button">Run TaskManager task</button>
             <div id="taskStatus" class="rag-status">Task: idle</div>
             <div id="taskDebug" class="rag-status task-debug">structure: idle</div>
           </div>
@@ -840,6 +845,7 @@
       const taskDurationEl = document.getElementById("taskDuration");
       const taskBriefEl = document.getElementById("taskBrief");
       const taskCandidatesEl = document.getElementById("taskCandidates");
+      const taskRowsEl = document.getElementById("taskRows");
       const runMediaTaskEl = document.getElementById("runMediaTask");
       const taskStatusEl = document.getElementById("taskStatus");
       const taskDebugEl = document.getElementById("taskDebug");
@@ -1492,7 +1498,13 @@
           expected_output: "Return one JSON object following the selected media task skill.",
         };
         if (taskType === "media.script.select") {
-          inputPayload.script_candidates = parseTaskCandidates();
+          inputPayload.script_candidates = parseJsonArray(taskCandidatesEl, "Task candidates");
+        }
+        if (taskType === "table.audit") {
+          inputPayload.rows = parseJsonArray(taskRowsEl, "Task rows");
+          inputPayload.audit_goal = taskBriefEl.value.trim() || "Audit each row and return item-level risk results.";
+          inputPayload.max_concurrency = 2;
+          inputPayload.failure_policy = "continue";
         }
         return {
           task_type: taskType,
@@ -1511,11 +1523,11 @@
         };
       }
 
-      function parseTaskCandidates() {
-        const text = taskCandidatesEl.value.trim();
+      function parseJsonArray(element, label) {
+        const text = element.value.trim();
         if (!text) return [];
         const parsed = JSON.parse(text);
-        if (!Array.isArray(parsed)) throw new Error("Task candidates must be a JSON array.");
+        if (!Array.isArray(parsed)) throw new Error(`${label} must be a JSON array.`);
         return parsed;
       }
 

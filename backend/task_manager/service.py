@@ -12,6 +12,7 @@ from db.db_context import create_db_session
 from scheduling.scheduler import SchedulingRuntimeOptions
 
 from .handlers.base import TaskHandlerEvent
+from .handlers.batch_item_scheduler import BatchItemSchedulerHandler
 from .handlers.scheduler_task import SchedulerTaskHandler
 from .models import TaskEntity, TaskEventEntity, TaskItemEntity, utc_now
 from .registry import TaskDefinition, get_task_definition
@@ -305,6 +306,8 @@ class TaskManagerService:
     def _get_handler(self, definition: TaskDefinition):
         if definition.handler == "scheduler":
             return SchedulerTaskHandler(self.options)
+        if definition.handler == "batch_item_scheduler":
+            return BatchItemSchedulerHandler(self.options)
         raise ValueError(f"Unsupported task handler '{definition.handler}'.")
 
     async def _prepare_run(self, task_id: str, request: TaskRunRequest | None) -> TaskEntity:

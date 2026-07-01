@@ -29,8 +29,11 @@ TaskManager does not own:
 - `backend/task_manager/service.py`: lifecycle and event persistence.
 - `backend/task_manager/handlers/base.py`: handler protocol and runtime event model.
 - `backend/task_manager/handlers/scheduler_task.py`: Scheduler-backed handler.
+- `backend/task_manager/handlers/batch_item_scheduler.py`: item-by-item Scheduler-backed batch handler.
+- `backend/task_manager/item_store.py`: item state and task progress persistence helpers.
 - `backend/skill/skills/media-script-generator/SKILL.md`: media script generation skill.
 - `backend/skill/skills/media-script-selector/SKILL.md`: media script selection skill.
+- `backend/skill/skills/table-audit/SKILL.md`: item-level table row audit skill.
 
 The router is mounted from `backend/local_code_chat_app.py`. The SQLModel tables are imported by `db.init_db()`.
 
@@ -66,6 +69,19 @@ Defaults:
 
 Continues a media task conversation with task lifecycle and event persistence.
 
+### `table.audit`
+
+Audits `input_payload.rows` one by one. Each row is persisted as a `tuge_task_item`, processed by `batch_item_scheduler`, and summarized into the task result.
+
+Defaults:
+
+- `handler`: `batch_item_scheduler`
+- `agent_id`: `default-single-agent`
+- `primary_skill`: `table-audit`
+- `candidate_skills`: none
+- `extra_tools`: `rag_retrieval`
+- `extra_datasets`: `local_rag`
+
 ## Database Tables
 
 ### `tuge_task`
@@ -79,7 +95,7 @@ Main task instance table.
 - `task_type`: business task type such as `media.script.generate`.
 - `status`: `created`, `running`, `succeeded`, `failed`, or `cancelled`.
 - `title`: display title.
-- `handler_name`: handler selected from the task registry, currently `scheduler`.
+- `handler_name`: handler selected from the task registry, such as `scheduler` or `batch_item_scheduler`.
 - `input_payload_json`: business input and resource references. Do not store large files or full PDFs here.
 - `result_payload_json`: final structured result, parsed JSON if available, usage, thread id, and session id.
 - `error_payload_json`: failure type, stage, message, and retryability.

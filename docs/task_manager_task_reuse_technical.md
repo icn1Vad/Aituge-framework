@@ -2,7 +2,7 @@
 
 ## 目标
 
-TaskManager 层负责把业务任务编排成可复用、可追踪、可恢复的任务流程。它不把业务流程塞进 Single Agent，也不直接改 Scheduler，而是在 TaskManager 内部完成：
+TaskManager 层完成：
 
 - 定义任务类型。
 - 校验和保存业务输入。
@@ -54,12 +54,12 @@ TaskManager 可以复用底层 Scheduler 和 Single Agent，但不能把业务�
 media.script.generate
 media.script.select
 media.chat
+table.audit
 ```
 
 以后可以扩展：
 
 ```text
-table.audit
 media.material.review
 media.script.batch_select
 form.search_fill
@@ -76,15 +76,17 @@ Task Definition 负责固定这些默认配置：
 
 ### 2. 复用 Handler
 
-Handler 是任务执行器。当前第一版是 `scheduler` handler，也就是把任务输入包装成 Scheduler 请求，然后复用现有 Agent Scheduler / Single Agent 能力。
-
-后续如果要做“逐行审查”，可以新增专门 handler：
+Handler 是任务执行器。当前已有两种执行模式：
 
 ```text
+scheduler
+一次 task -> 一次 Scheduler -> 一个整体结果
+
 batch_item_scheduler
+一次 task -> 多个 item -> 每个 item 调 Scheduler -> 汇总结果
 ```
 
-它可以循环处理 `tuge_task_item`：
+`batch_item_scheduler` 会循环处理 `tuge_task_item`：
 
 ```text
 读取 pending item
@@ -185,7 +187,7 @@ sequenceDiagram
     TM-->>FE: 返回 task / events / items
 ```
 
-第一版当前已经具备 `task / event / item` 的存储结构和查询接口；逐 item 调度 handler 可以在这个结构上继续加，不需要重做表结构。
+第一版当前已经具备 `task / event / item` 的存储结构、查询接口和逐 item 调度 handler；后续新增表格审查、素材打分、候选脚本批量评估时，优先复用 `batch_item_scheduler`，不需要重做表结构。
 
 ## 数据表字段说明
 
@@ -367,17 +369,18 @@ TaskManager 可以继续做：
 - `tuge_task_item` 逐项对象结构。
 - `media.script.generate` / `media.script.select` / `media.chat` 示例任务。
 - Scheduler handler 复用。
+- `batch_item_scheduler` 批处理 handler。
+- `table.audit` 表格逐行审查测试任务。
+- `table-audit` item 级审查 skill。
 - 前端 TaskManager 测试面板。
 - items / events / task 查询接口。
 
-下一步如果要真正支持“表格逐个审查”，建议新增：
+下一步如果要把“表格逐个审查”做成生产功能，建议补：
 
 ```text
-task_type: table.audit
-handler: batch_item_scheduler
-primary_skill: table-audit-skill
-input_payload.rows: 待审查表格行
-item_type: table_row
-result_payload_json: 汇总审查结果
-item.result_payload_json: 单行审查结果
+input schema: 严格校验 rows / audit_goal / failure_policy
+output schema: 严格校验 item result 和 summary
+failure policy: fail_fast / continue 的前端展示
+real table source: CSV/XLSX/数据库查询结果接入 Gateway
+production skill: 替换测试版 table-audit 规则
 ```

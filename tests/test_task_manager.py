@@ -21,6 +21,18 @@ class JsonCapturingAgent:
 
     async def run_async(self, state):
         async def gen():
+            if "# Table Audit" in self.system_prompt:
+                content = {
+                    "risk_level": "low",
+                    "passed": True,
+                    "issues": [],
+                    "reason": "The row is acceptable in the test fixture.",
+                    "recommended_action": "No action required.",
+                    "evidence": ["test fixture"],
+                }
+                yield TextChunk(delta=json.dumps(content, ensure_ascii=False))
+                return
+
             content = {
                 "final_script": {
                     "topic_name": "Agent 架构设计",
@@ -180,6 +192,58 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             assert any(event["step_id"] == "scheduler_request_build" for event in events)
             assert any(event["step_id"] == "agent_final" for event in events)
             assert all("token_usage_json" in event for event in events)
+
+            batch_response = await client.post(
+                "/task-manager/run",
+                json={
+                    "task_type": "table.audit",
+                    "title": "Table audit batch test",
+                    "task_key": "table-audit-smoke",
+                    "user_id": "task-manager-test-user",
+                    "stream": False,
+                    "input_payload": {
+                        "audit_goal": "Audit each row for risk.",
+                        "max_concurrency": 2,
+                        "failure_policy": "continue",
+                        "retry_per_item": 0,
+                        "rows": [
+                            {"id": "row-001", "name": "A company", "amount": 12000},
+                            {"id": "row-002", "name": "B company", "amount": 800},
+                            {"id": "row-003", "name": "C company", "amount": 4500},
+                        ],
+                    },
+                },
+            )
+            assert batch_response.status_code == 200
+            batch_body = batch_response.json()
+            batch_task = batch_body["task"]
+            batch_task_id = batch_task["id"]
+            assert batch_task["status"] == "succeeded"
+            assert batch_task["handler_name"] == "batch_item_scheduler"
+            assert batch_task["progress_current"] == batch_task["progress_total"] == 3
+            assert batch_task["result_payload_json"]["structured"]["summary"]["total"] == 3
+            assert batch_task["result_payload_json"]["structured"]["summary"]["succeeded"] == 3
+
+            batch_items_response = await client.get(f"/task-manager/tasks/{batch_task_id}/items")
+            assert batch_items_response.status_code == 200
+            batch_items = batch_items_response.json()["items"]
+            assert [item["item_key"] for item in batch_items] == ["row-001", "row-002", "row-003"]
+            assert all(item["item_type"] == "table_row" for item in batch_items)
+            assert all(item["status"] == "succeeded" for item in batch_items)
+            assert all(item["result_payload_json"]["result"]["risk_level"] == "low" for item in batch_items)
+
+            batch_events_response = await client.get(f"/task-manager/tasks/{batch_task_id}/events")
+            assert batch_events_response.status_code == 200
+            batch_events = batch_events_response.json()["events"]
+            batch_event_types = [event["event_type"] for event in batch_events]
+            assert "batch_started" in batch_event_types
+            assert "item_started" in batch_event_types
+            assert "item_succeeded" in batch_event_types
+            assert "batch_succeeded" in batch_event_types
+            assert any(event["item_id"] for event in batch_events if event["event_type"].startswith("item_"))
+
+            for item in batch_items:
+                await session_history_manager.clear_history("task-manager-test-user", f"{batch_task_id}:{item['id']}")
 
         await session_history_manager.clear_history("task-manager-test-user", task["session_id"])
         await _delete_thread(task["thread_id"])

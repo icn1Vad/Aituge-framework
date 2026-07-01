@@ -44,6 +44,16 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
         default_tools=["rag_retrieval"],
         default_datasets=["local_rag"],
     ),
+    "table.audit": TaskDefinition(
+        task_type="table.audit",
+        name="Table Row Audit",
+        description="Audit table rows one by one and return item-level results.",
+        handler="batch_item_scheduler",
+        default_primary_skill="table-audit",
+        default_candidate_skills=[],
+        default_tools=["rag_retrieval"],
+        default_datasets=["local_rag"],
+    ),
 }
 
 
