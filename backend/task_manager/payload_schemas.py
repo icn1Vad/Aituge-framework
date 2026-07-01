@@ -86,6 +86,9 @@ class DouyinAccountReportInput(TaskPayloadBase):
     account_id: str = ""
     account_name: Optional[str] = None
     platform: Literal["douyin"] = "douyin"
+    data_source: Literal["payload", "legacy_douyin_api"] = "payload"
+    legacy_api_base_url: Optional[str] = None
+    content_limit: int = Field(default=50, ge=1, le=200)
     analysis_scope: Literal["all_data", "month", "custom_range"] = "all_data"
     month: Optional[str] = None
     date_start: Optional[str] = None
@@ -107,6 +110,8 @@ class DouyinAccountReportInput(TaskPayloadBase):
             raise ValueError("month is required when analysis_scope is 'month'.")
         if self.analysis_scope == "custom_range" and not (self.date_start and self.date_end):
             raise ValueError("date_start and date_end are required when analysis_scope is 'custom_range'.")
+        if self.data_source == "legacy_douyin_api":
+            return self
         if not (self.report_context or self.metrics_summary or self.content_items or self.top_contents):
             raise ValueError(
                 "At least one of report_context, metrics_summary, content_items, or top_contents is required."
@@ -210,7 +215,7 @@ class DouyinAccountReportOutput(StrictPayload):
     sections: dict[str, Any] = Field(default_factory=dict)
     top_content_analysis: list[dict[str, Any]] = Field(default_factory=list)
     low_content_analysis: list[dict[str, Any]] = Field(default_factory=list)
-    data_limitations: list[str] = Field(default_factory=list)
+    data_limitations: list[Any] | str = Field(default_factory=list)
     next_month_actions: list[str] = Field(default_factory=list)
     export_markdown: str = ""
 

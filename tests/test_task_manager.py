@@ -12,6 +12,7 @@ from db.models.llm import LlmModelEntity
 from service.cache.session_history_manager import session_history_manager
 from service.thread.thread_service import ThreadService
 from task_manager.output_parser import parse_json_output
+import task_manager.adapters.legacy_douyin as legacy_douyin_adapter
 import service.agent.single_agent_runner as runner_mod
 
 
@@ -223,6 +224,90 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             )
             assert invalid_policy_response.status_code == 400
             assert "table_audit_input" in invalid_policy_response.text
+
+            async def fake_fetch_legacy_douyin_data(*, base_url, account_id, content_limit):
+                assert base_url == "http://legacy.test"
+                assert account_id == "acct_douyin_demo"
+                assert content_limit == 20
+                return (
+                    {
+                        "account": {
+                            "id": "acct_douyin_demo",
+                            "platform": "douyin",
+                            "account_name": "Legacy Douyin Demo",
+                        },
+                        "metrics": {
+                            "account_id": "acct_douyin_demo",
+                            "date": "2026-07-01",
+                            "fans_count": 73,
+                            "new_fans_count": 1,
+                            "profile_visit_count": 49,
+                            "publish_count": 2,
+                            "play_count": 300,
+                            "like_count": 30,
+                            "comment_count": 4,
+                            "share_count": 2,
+                            "collect_count": 1,
+                        },
+                    },
+                    {
+                        "items": [
+                            {
+                                "content_id": "video-001",
+                                "title": "Legacy top video",
+                                "url": "https://www.douyin.com/video/video-001",
+                                "publish_time": "2026-06-01T00:00:00+00:00",
+                                "play_count": 200,
+                                "like_count": 20,
+                                "comment_count": 3,
+                                "share_count": 1,
+                                "collect_count": 1,
+                                "raw": {
+                                    "derived": {
+                                        "completion_rate": 0.2,
+                                        "avg_view_second": 6.5,
+                                    }
+                                },
+                            },
+                            {
+                                "content_id": "video-002",
+                                "title": "Legacy lower video",
+                                "play_count": 100,
+                                "like_count": 10,
+                                "comment_count": 1,
+                                "share_count": 1,
+                                "collect_count": 0,
+                            },
+                        ]
+                    },
+                )
+
+            monkeypatch.setattr(
+                legacy_douyin_adapter,
+                "_fetch_legacy_douyin_data",
+                fake_fetch_legacy_douyin_data,
+            )
+            legacy_create_response = await client.post(
+                "/task-manager/tasks",
+                headers=headers,
+                json={
+                    "task_type": "analytics.douyin.account_report.generate",
+                    "title": "Legacy Douyin report",
+                    "input_payload": {
+                        "data_source": "legacy_douyin_api",
+                        "legacy_api_base_url": "http://legacy.test",
+                        "account_id": "acct_douyin_demo",
+                        "content_limit": 20,
+                    },
+                },
+            )
+            assert legacy_create_response.status_code == 200
+            legacy_payload = legacy_create_response.json()["task"]["input_payload_json"]
+            assert legacy_payload["data_source"] == "legacy_douyin_api"
+            assert legacy_payload["account_name"] == "Legacy Douyin Demo"
+            assert legacy_payload["metrics_summary"]["play_count"] == 300
+            assert legacy_payload["report_context"]["source"] == "legacy_douyin_api"
+            assert [item["id"] for item in legacy_payload["content_items"]] == ["video-001", "video-002"]
 
             missing_report_data_response = await client.post(
                 "/task-manager/tasks",

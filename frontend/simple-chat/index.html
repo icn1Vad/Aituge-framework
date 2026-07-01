@@ -1717,19 +1717,23 @@
           const contextObject = Array.isArray(reportContext)
             ? { notes: reportContext }
             : (reportContext || {});
+          const useLegacyDouyinApi = !Object.keys(contextObject).length && !contentItems.length;
+          const accountIdInput = taskTopicEl.value.trim();
           return {
             task_type: taskType,
             task_key: `simple-chat-${taskType}-${Date.now()}`,
-            title: taskTopicEl.value.trim() || "Douyin account all-data report",
+            title: useLegacyDouyinApi ? "Douyin legacy account all-data report" : (accountIdInput || "Douyin account all-data report"),
             user_id: userId,
             stream: true,
             input_payload: {
-              account_id: contextObject.account?.account_id || "demo-douyin-account",
-              account_name: contextObject.account?.account_name || taskTopicEl.value.trim() || "Douyin account",
+              data_source: useLegacyDouyinApi ? "legacy_douyin_api" : "payload",
+              account_id: contextObject.account?.account_id || accountIdInput || "demo-douyin-account",
+              account_name: contextObject.account?.account_name || (useLegacyDouyinApi ? "" : accountIdInput) || "Douyin account",
               platform: "douyin",
               analysis_scope: "all_data",
               report_depth: "deep",
               report_goal: taskBriefEl.value.trim() || "Generate a complete account operations report from all available data.",
+              content_limit: 12,
               report_context: contextObject,
               metrics_summary: contextObject.metrics_summary || {},
               content_items: contentItems,
@@ -1802,10 +1806,10 @@
       function applyTaskDefaults() {
         const taskType = taskTypeEl.value || "";
         if (taskType === "analytics.douyin.account_report.generate") {
-          taskTopicEl.value = "抖音账号全量数据运营分析";
-          taskBriefEl.value = "根据这个账号目前所有可用数据写一份完整运营分析报告，不按单月过滤。";
-          taskCandidatesEl.value = JSON.stringify(douyinAccountReportContextSample, null, 2);
-          taskRowsEl.value = JSON.stringify(douyinAccountReportContentSample, null, 2);
+          taskTopicEl.value = "acct_douyin_b3c184659b34";
+          taskBriefEl.value = "从旧系统抖音账号数据读取全部可用数据，写一份完整运营分析报告，不按单月过滤。";
+          taskCandidatesEl.value = "{}";
+          taskRowsEl.value = "[]";
           return;
         }
         if (taskType === "media.topic.search") {

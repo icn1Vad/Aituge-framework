@@ -10,6 +10,7 @@ from sqlmodel import select
 from db.db_context import create_db_session
 from scheduling.scheduler import SchedulingRuntimeOptions
 
+from .adapters.legacy_douyin import enrich_douyin_account_report_payload
 from .gateway.service import DataAccessGateway
 from .handlers.base import TaskHandlerEvent
 from .handlers.batch_item_scheduler import BatchItemSchedulerHandler
@@ -27,7 +28,8 @@ class TaskManagerService:
 
     async def create_task(self, request: TaskCreateRequest) -> TaskEntity:
         definition = get_task_definition(request.task_type)
-        input_payload = validate_input_payload(definition.input_schema_name, request.input_payload)
+        raw_input_payload = await _prepare_input_payload(request.task_type, request.input_payload)
+        input_payload = validate_input_payload(definition.input_schema_name, raw_input_payload)
         validated_refs = DataAccessGateway().validate_resource_refs(
             user_id=request.user_id,
             tenant_id=request.tenant_id,
@@ -553,6 +555,12 @@ class TaskManagerService:
 
 def _definition_snapshot(definition: TaskDefinition) -> dict[str, Any]:
     return asdict(definition)
+
+
+async def _prepare_input_payload(task_type: str, input_payload: dict[str, Any]) -> dict[str, Any]:
+    if task_type == "analytics.douyin.account_report.generate":
+        return await enrich_douyin_account_report_payload(dict(input_payload or {}))
+    return input_payload
 
 
 def _extract_task_items(input_payload: dict[str, Any]) -> list[dict[str, Any]]:

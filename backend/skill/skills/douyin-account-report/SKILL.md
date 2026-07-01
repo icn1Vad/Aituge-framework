@@ -92,3 +92,8 @@ evidence is partial.
 
 Keep JSON stable. Do not put long multi-line Markdown, code fences, triple
 quotes, or unescaped double quotes inside string values.
+
+Keep the complete JSON under 6000 Chinese characters. `top_content_analysis`
+must contain at most 3 items, and `low_content_analysis` must contain at most 2
+items. Each top or low content item should only include concise fields such as
+`id`, `title`, `play_count`, `reason`, and `recommended_action`.

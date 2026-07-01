@@ -11,6 +11,7 @@
 ```text
 前端/旧业务 OpenAPI
   -> TaskManager 创建任务
+  -> 可选：legacy_douyin_api adapter 拉取旧系统账号/作品数据
   -> input schema 校验
   -> report-agent
   -> douyin-account-report skill
@@ -28,6 +29,7 @@
   "account_id": "demo-douyin-account",
   "account_name": "Demo Douyin Account",
   "platform": "douyin",
+  "data_source": "payload",
   "analysis_scope": "all_data",
   "report_depth": "deep",
   "report_context": {},
@@ -39,6 +41,29 @@
   "missing_fields": []
 }
 ```
+
+如果要直接复用服务器旧系统 `/opt/media_military` 的抖音数据，可以只传：
+
+```json
+{
+  "task_type": "analytics.douyin.account_report.generate",
+  "input_payload": {
+    "data_source": "legacy_douyin_api",
+    "account_id": "acct_douyin_b3c184659b34",
+    "analysis_scope": "all_data",
+    "content_limit": 50
+  }
+}
+```
+
+TaskManager 会调用旧系统本机 API：
+
+```text
+GET http://127.0.0.1:8010/analytics/douyin/overview
+GET http://127.0.0.1:8010/analytics/douyin/contents
+```
+
+然后自动填充 `report_context`、`metrics_summary`、`content_items`、`top_contents`、`low_contents`、`warnings` 和 `missing_fields`。
 
 `analysis_scope` 支持：
 
