@@ -1531,11 +1531,19 @@
         return parsed;
       }
 
+      function taskRequestHeaders(extra = {}) {
+        return {
+          "X-User-Id": userId,
+          "X-Tenant-Id": "__default_tenant_id__",
+          ...extra,
+        };
+      }
+
       async function loadTaskStructure(taskId) {
         const [taskRes, itemsRes, eventsRes] = await Promise.all([
-          fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}`),
-          fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}/items`),
-          fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}/events?limit=20`),
+          fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}`, { headers: taskRequestHeaders() }),
+          fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}/items`, { headers: taskRequestHeaders() }),
+          fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}/events?limit=20`, { headers: taskRequestHeaders() }),
         ]);
         const taskBody = taskRes.ok ? await taskRes.json() : {};
         const itemsBody = itemsRes.ok ? await itemsRes.json() : {};
@@ -1579,7 +1587,7 @@
 
         const res = await fetch("/task-manager/stream", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: taskRequestHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify(payload),
         });
         if (!res.ok || !res.body) throw new Error(await responseErrorText(res));

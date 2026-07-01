@@ -12,6 +12,8 @@ from scheduling.scheduler import SchedulingChatRequest, SchedulingRuntimeOptions
 from task_manager import item_store
 from task_manager.handlers.base import TaskHandlerEvent
 from task_manager.models import TaskEntity, TaskItemEntity
+from task_manager.output_parser import parse_json_output
+from task_manager.payload_schemas import validate_output_payload
 from task_manager.registry import TaskDefinition
 
 
@@ -165,7 +167,45 @@ async def _process_item(
                 options=options,
                 queue=queue,
             )
-            parsed = _try_parse_json(content)
+            parse_result = parse_json_output(content)
+            parsed = parse_result.structured
+            if parse_result.error is not None:
+                await queue.put(
+                    TaskHandlerEvent(
+                        event_type="item_output_parse_failed",
+                        stage="result_validate",
+                        message="Task item output was not valid JSON.",
+                        step_id="item_output_parse",
+                        step_index=60,
+                        item_id=running_item.id,
+                        level="warning",
+                        payload={
+                            "item_key": running_item.item_key,
+                            "parser": parse_result.error,
+                        },
+                    )
+                )
+            elif definition.item_output_schema_name:
+                is_valid, validation_error = validate_output_payload(
+                    definition.item_output_schema_name,
+                    parsed,
+                )
+                if not is_valid:
+                    await queue.put(
+                        TaskHandlerEvent(
+                            event_type="item_output_validation_failed",
+                            stage="result_validate",
+                            message="Task item structured output did not match the registered output schema.",
+                            step_id="item_output_validate",
+                            step_index=61,
+                            item_id=running_item.id,
+                            level="warning",
+                            payload={
+                                "item_key": running_item.item_key,
+                                **(validation_error or {}),
+                            },
+                        )
+                    )
             result = {
                 "item_key": running_item.item_key,
                 "status": "succeeded",
@@ -353,23 +393,6 @@ def _aggregate_usage(items: list[dict[str, Any]]) -> dict[str, Any]:
             if isinstance(value, int):
                 totals[key] = totals.get(key, 0) + value
     return totals
-
-
-def _try_parse_json(content: str) -> Any:
-    text = content.strip()
-    if not text:
-        return None
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return None
 
 
 def _extract_delta(data: dict[str, Any]) -> str:

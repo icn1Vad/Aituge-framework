@@ -178,6 +178,16 @@ Schema 第一版采用严格校验：
 
 输出侧当前只做 warning 级校验：如果模型输出不是合法 JSON，记录 `output_parse_failed`；如果 parsed JSON 不满足 output schema，记录 `output_validation_failed`。第一版不直接让任务失败，因为强制 JSON / card tool-call 需要和 Scheduler / Single Agent owner 对齐。
 
+当前 TaskManager 自己已经做了增强解析：
+
+```text
+去 Markdown fence
+提取正文中的第一个 JSON object / array
+修复常见 trailing comma
+解析成功后进入 output schema 校验
+解析失败后记录 output_parse_failed
+```
+
 ## 表格审查示例流程
 
 ```mermaid
@@ -355,6 +365,15 @@ GET /task-manager/tasks/{task_id}/events
 /task-manager/tasks/{task_id}/events
 ```
 
+调用 TaskManager OpenAPI 时应带访问 header：
+
+```http
+X-User-Id: linzetao
+X-Tenant-Id: __default_tenant_id__
+```
+
+非 admin 调用方只能访问同 user / tenant 下的 task、items、events。
+
 推荐展示：
 
 ```text
@@ -400,6 +419,9 @@ TaskManager 可以继续做：
 - `table-audit` item 级审查 skill。
 - `payload_schemas.py` 输入强校验。
 - 结构化输出 warning 级校验事件。
+- `output_parser.py` 增强 JSON 解析。
+- `access.py` header 级 user / tenant 隔离。
+- `gateway/` resource reference 校验骨架。
 - 前端 TaskManager 测试面板。
 - items / events / task 查询接口。
 
@@ -410,4 +432,5 @@ output schema: 严格校验 item result 和 summary
 failure policy: fail_fast / continue 的前端展示
 real table source: CSV/XLSX/数据库查询结果接入 Gateway
 production skill: 替换测试版 table-audit 规则
+tool gateway: Tool Registry / Scheduler 层统一改走 Gateway-backed tools
 ```

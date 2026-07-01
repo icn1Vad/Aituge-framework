@@ -5,6 +5,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from common.system_constants import DEFAULT_TENANT_ID
+
 
 TaskStatus = str
 
@@ -18,6 +20,7 @@ class TaskCreateRequest(BaseModel):
     input_payload: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] = Field(default_factory=dict)
     user_id: str = "default_user"
+    tenant_id: str = DEFAULT_TENANT_ID
     stream: bool = True
     agent_id: Optional[str] = None
     thread_id: Optional[str] = None
@@ -133,3 +136,4 @@ class TaskDefinitionRead(BaseModel):
     default_datasets: list[str] = Field(default_factory=list)
     input_schema_name: Optional[str] = None
     output_schema_name: Optional[str] = None
+    item_output_schema_name: Optional[str] = None

@@ -16,6 +16,7 @@ class TaskDefinition:
     default_datasets: list[str] = field(default_factory=list)
     input_schema_name: str | None = None
     output_schema_name: str | None = None
+    item_output_schema_name: str | None = None
 
 
 _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
@@ -62,6 +63,7 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
         default_datasets=["local_rag"],
         input_schema_name="table_audit_input",
         output_schema_name="batch_task_output",
+        item_output_schema_name="table_audit_item_output",
     ),
 }
 

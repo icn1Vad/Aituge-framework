@@ -4,12 +4,19 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from .gateway.models import GatewayResourceRef
+
 
 class StrictPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class MediaScriptGenerateInput(StrictPayload):
+class TaskPayloadBase(StrictPayload):
+    resource_refs: list[GatewayResourceRef] = Field(default_factory=list)
+    validated_resource_refs: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class MediaScriptGenerateInput(TaskPayloadBase):
     topic: str = Field(min_length=1)
     platform: Literal["douyin"] = "douyin"
     duration_seconds: int = Field(default=60, ge=15, le=300)
@@ -22,7 +29,7 @@ class MediaScriptGenerateInput(StrictPayload):
     manual_direction: Optional[str] = None
 
 
-class MediaScriptSelectInput(StrictPayload):
+class MediaScriptSelectInput(TaskPayloadBase):
     topic: str = Field(min_length=1)
     script_candidates: list[dict[str, Any]] = Field(min_length=1)
     platform: Literal["douyin"] = "douyin"
@@ -32,7 +39,7 @@ class MediaScriptSelectInput(StrictPayload):
     selection_goal: Optional[str] = None
 
 
-class MediaChatInput(StrictPayload):
+class MediaChatInput(TaskPayloadBase):
     message: Optional[str] = None
     question: Optional[str] = None
     topic: Optional[str] = None
@@ -49,7 +56,7 @@ class MediaChatInput(StrictPayload):
         return self
 
 
-class TableAuditInput(StrictPayload):
+class TableAuditInput(TaskPayloadBase):
     rows: list[dict[str, Any]] = Field(min_length=1)
     audit_goal: str = Field(min_length=1)
     max_concurrency: int = Field(default=1, ge=1, le=8)

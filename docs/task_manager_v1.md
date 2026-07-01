@@ -27,7 +27,10 @@ TaskManager does not own:
 - `backend/task_manager/models.py`: SQLModel tables.
 - `backend/task_manager/registry.py`: code-level task registry.
 - `backend/task_manager/service.py`: lifecycle and event persistence.
+- `backend/task_manager/access.py`: TaskManager API user/tenant access context.
+- `backend/task_manager/output_parser.py`: resilient JSON extraction and repair for model outputs.
 - `backend/task_manager/payload_schemas.py`: task input and structured output validation schemas.
+- `backend/task_manager/gateway/`: resource reference validation primitives for the Data Access Gateway.
 - `backend/task_manager/handlers/base.py`: handler protocol and runtime event model.
 - `backend/task_manager/handlers/scheduler_task.py`: Scheduler-backed handler.
 - `backend/task_manager/handlers/batch_item_scheduler.py`: item-by-item Scheduler-backed batch handler.
@@ -113,6 +116,52 @@ Current input schemas:
 The first version uses strict Pydantic models with `extra="forbid"` so unknown top-level fields fail fast. This keeps old frontends and external callers from silently sending unusable fields.
 
 TaskManager also validates parsed structured output when `structured` is available. If the model output cannot be parsed as JSON, TaskManager records an `output_parse_failed` warning event and keeps `structured: null`. If parsed output does not match the registered output schema, TaskManager records an `output_validation_failed` warning event. The first version does not fail the whole task on output validation because model-side JSON stability is not guaranteed yet.
+
+The output parser handles common model formatting issues:
+
+- Markdown fences such as ````json`.
+- Explanatory text before or after the JSON.
+- The first balanced JSON object or array inside a larger string.
+- Trailing commas before `}` or `]`.
+
+## Access Control
+
+TaskManager API uses HTTP headers as the first reusable access boundary:
+
+```http
+X-User-Id: linzetao
+X-Tenant-Id: __default_tenant_id__
+X-Roles: admin
+```
+
+Create APIs use the header user and tenant as the authoritative owner, overriding body-level `user_id` / `tenant_id`. Query, item, event, and run APIs require the caller to match the task `user_id` and `tenant_id`, unless `X-Roles` contains `admin`.
+
+## Gateway Resource References
+
+Task inputs may reference external data through `resource_refs`; callers should not pass raw paths, credentials, connection strings, or SQL in `input_payload`.
+
+Example:
+
+```json
+{
+  "resource_refs": [
+    {
+      "type": "kb",
+      "id": "kb_1",
+      "operation": "search"
+    }
+  ]
+}
+```
+
+Supported first-version resource types:
+
+- `kb`
+- `file`
+- `table`
+- `api`
+
+TaskManager validates these refs before persistence and stores `validated_resource_refs` with the access scope. Deep execution through Gateway-backed tools is a later integration point with Tool Registry / Scheduler owners.
 
 ## Database Tables
 

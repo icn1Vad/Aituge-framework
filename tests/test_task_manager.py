@@ -11,6 +11,7 @@ from db.db_context import create_db_session, init_db, reset_engine_for_test
 from db.models.llm import LlmModelEntity
 from service.cache.session_history_manager import session_history_manager
 from service.thread.thread_service import ThreadService
+from task_manager.output_parser import parse_json_output
 import service.agent.single_agent_runner as runner_mod
 
 
@@ -113,6 +114,14 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
         app = create_app()
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            headers = {
+                "X-User-Id": "task-manager-test-user",
+                "X-Tenant-Id": DEFAULT_TENANT_ID,
+            }
+            other_user_headers = {
+                "X-User-Id": "other-user",
+                "X-Tenant-Id": DEFAULT_TENANT_ID,
+            }
             definitions = await client.get("/task-manager/definitions")
             assert definitions.status_code == 200
             assert any(
@@ -125,9 +134,11 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             )
             assert table_definition["input_schema_name"] == "table_audit_input"
             assert table_definition["output_schema_name"] == "batch_task_output"
+            assert table_definition["item_output_schema_name"] == "table_audit_item_output"
 
             missing_field_response = await client.post(
                 "/task-manager/tasks",
+                headers=headers,
                 json={
                     "task_type": "media.script.generate",
                     "title": "Missing topic",
@@ -142,6 +153,7 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
 
             extra_field_response = await client.post(
                 "/task-manager/tasks",
+                headers=headers,
                 json={
                     "task_type": "media.script.generate",
                     "title": "Extra field",
@@ -158,6 +170,7 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
 
             invalid_policy_response = await client.post(
                 "/task-manager/tasks",
+                headers=headers,
                 json={
                     "task_type": "table.audit",
                     "title": "Invalid policy",
@@ -173,6 +186,7 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
 
             create_response = await client.post(
                 "/task-manager/tasks",
+                headers=headers,
                 json={
                     "task_type": "media.script.generate",
                     "title": "生成短视频脚本",
@@ -190,12 +204,57 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             task_id = created_task["id"]
             assert created_task["root_task_id"] == task_id
             assert created_task["handler_name"] == "scheduler"
+            assert created_task["user_id"] == "task-manager-test-user"
+            assert created_task["tenant_id"] == DEFAULT_TENANT_ID
             assert created_task["definition_snapshot_json"]["task_type"] == "media.script.generate"
             assert created_task["progress_total"] == 1
             assert created_task["cancel_requested"] is False
 
+            forbidden_response = await client.get(f"/task-manager/tasks/{task_id}", headers=other_user_headers)
+            assert forbidden_response.status_code == 403
+
+            gateway_ref_response = await client.post(
+                "/task-manager/tasks",
+                headers=headers,
+                json={
+                    "task_type": "media.script.generate",
+                    "title": "Gateway ref smoke",
+                    "input_payload": {
+                        "topic": "Gateway",
+                        "platform": "douyin",
+                        "duration_seconds": 60,
+                        "resource_refs": [
+                            {"type": "kb", "id": "kb_1", "operation": "search"}
+                        ],
+                    },
+                },
+            )
+            assert gateway_ref_response.status_code == 200
+            gateway_payload = gateway_ref_response.json()["task"]["input_payload_json"]
+            assert gateway_payload["validated_resource_refs"][0]["id"] == "kb_1"
+
+            blocked_ref_response = await client.post(
+                "/task-manager/tasks",
+                headers=headers,
+                json={
+                    "task_type": "media.script.generate",
+                    "title": "Blocked ref",
+                    "input_payload": {
+                        "topic": "Gateway",
+                        "platform": "douyin",
+                        "duration_seconds": 60,
+                        "resource_refs": [
+                            {"type": "file", "id": "file_1", "metadata": {"path": "E:/secret.txt"}}
+                        ],
+                    },
+                },
+            )
+            assert blocked_ref_response.status_code == 400
+            assert "forbidden metadata keys" in blocked_ref_response.text
+
             item_create_response = await client.post(
                 "/task-manager/tasks",
+                headers=headers,
                 json={
                     "task_type": "media.script.select",
                     "title": "Script candidate structure test",
@@ -214,14 +273,18 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             item_task = item_create_response.json()["task"]
             assert item_task["task_key"] == "media-select-smoke"
             assert item_task["progress_total"] == 2
-            items_response = await client.get(f"/task-manager/tasks/{item_task['id']}/items")
+            items_response = await client.get(f"/task-manager/tasks/{item_task['id']}/items", headers=headers)
             assert items_response.status_code == 200
             items = items_response.json()["items"]
             assert [item["item_key"] for item in items] == ["candidate-a", "candidate-b"]
             assert all(item["item_type"] == "script_candidate" for item in items)
             assert all(item["status"] == "pending" for item in items)
 
-            run_response = await client.post(f"/task-manager/tasks/{task_id}/run", json={"stream": False})
+            run_response = await client.post(
+                f"/task-manager/tasks/{task_id}/run",
+                headers=headers,
+                json={"stream": False},
+            )
             assert run_response.status_code == 200
             body = run_response.json()
             task = body["task"]
@@ -233,7 +296,7 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             assert any(event["event_type"] == "task_started" for event in body["events"])
             assert any(event["event_type"] == "task_succeeded" for event in body["events"])
 
-            events_response = await client.get(f"/task-manager/tasks/{task_id}/events")
+            events_response = await client.get(f"/task-manager/tasks/{task_id}/events", headers=headers)
             assert events_response.status_code == 200
             event_types = [event["event_type"] for event in events_response.json()["events"]]
             assert "task_created" in event_types
@@ -246,6 +309,7 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
 
             batch_response = await client.post(
                 "/task-manager/run",
+                headers=headers,
                 json={
                     "task_type": "table.audit",
                     "title": "Table audit batch test",
@@ -275,7 +339,7 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             assert batch_task["result_payload_json"]["structured"]["summary"]["total"] == 3
             assert batch_task["result_payload_json"]["structured"]["summary"]["succeeded"] == 3
 
-            batch_items_response = await client.get(f"/task-manager/tasks/{batch_task_id}/items")
+            batch_items_response = await client.get(f"/task-manager/tasks/{batch_task_id}/items", headers=headers)
             assert batch_items_response.status_code == 200
             batch_items = batch_items_response.json()["items"]
             assert [item["item_key"] for item in batch_items] == ["row-001", "row-002", "row-003"]
@@ -283,7 +347,7 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             assert all(item["status"] == "succeeded" for item in batch_items)
             assert all(item["result_payload_json"]["result"]["risk_level"] == "low" for item in batch_items)
 
-            batch_events_response = await client.get(f"/task-manager/tasks/{batch_task_id}/events")
+            batch_events_response = await client.get(f"/task-manager/tasks/{batch_task_id}/events", headers=headers)
             assert batch_events_response.status_code == 200
             batch_events = batch_events_response.json()["events"]
             batch_event_types = [event["event_type"] for event in batch_events]
@@ -303,3 +367,10 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
         asyncio.run(run())
     finally:
         reset_engine_for_test()
+
+
+def test_output_parser_extracts_json_from_wrapped_content():
+    content = 'Here is the result:\n```json\n{"ok": true, "items": [1, 2,],}\n```\nDone.'
+    parsed = parse_json_output(content)
+    assert parsed.ok
+    assert parsed.structured == {"ok": True, "items": [1, 2]}

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import uuid
 from dataclasses import asdict
 from typing import Any, AsyncIterator, Optional
@@ -11,10 +10,12 @@ from sqlmodel import select
 from db.db_context import create_db_session
 from scheduling.scheduler import SchedulingRuntimeOptions
 
+from .gateway.service import DataAccessGateway
 from .handlers.base import TaskHandlerEvent
 from .handlers.batch_item_scheduler import BatchItemSchedulerHandler
 from .handlers.scheduler_task import SchedulerTaskHandler
 from .models import TaskEntity, TaskEventEntity, TaskItemEntity, utc_now
+from .output_parser import parse_json_output
 from .payload_schemas import validate_input_payload, validate_output_payload
 from .registry import TaskDefinition, get_task_definition
 from .schemas import TaskCreateRequest, TaskEventRead, TaskItemRead, TaskRead, TaskRunRequest
@@ -27,6 +28,13 @@ class TaskManagerService:
     async def create_task(self, request: TaskCreateRequest) -> TaskEntity:
         definition = get_task_definition(request.task_type)
         input_payload = validate_input_payload(definition.input_schema_name, request.input_payload)
+        validated_refs = DataAccessGateway().validate_resource_refs(
+            user_id=request.user_id,
+            tenant_id=request.tenant_id,
+            payload=input_payload,
+        )
+        if validated_refs:
+            input_payload = {**input_payload, "validated_resource_refs": validated_refs}
         task_id = uuid.uuid4().hex
         task_items = _extract_task_items(input_payload)
         task = TaskEntity(
@@ -44,6 +52,7 @@ class TaskManagerService:
             thread_id=request.thread_id,
             session_id=request.session_id,
             user_id=request.user_id,
+            tenant_id=request.tenant_id,
             stream_mode=request.stream,
             progress_total=len(task_items) or 1,
             priority=request.priority,
@@ -85,11 +94,19 @@ class TaskManagerService:
         async with create_db_session() as session:
             return await session.get(TaskEntity, task_id)
 
-    async def list_tasks(self, user_id: Optional[str] = None, limit: int = 50, offset: int = 0) -> list[TaskEntity]:
+    async def list_tasks(
+        self,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[TaskEntity]:
         async with create_db_session() as session:
             statement = select(TaskEntity).order_by(desc(TaskEntity.created_at)).offset(offset).limit(limit)
             if user_id:
                 statement = statement.where(TaskEntity.user_id == user_id)
+            if tenant_id:
+                statement = statement.where(TaskEntity.tenant_id == tenant_id)
             result = await session.exec(statement)
             return list(result.all())
 
@@ -161,7 +178,8 @@ class TaskManagerService:
                 if item.final_content is not None:
                     final_content = item.final_content
                     final_usage = item.usage
-                    structured_output = _try_parse_json(final_content)
+                    parse_result = parse_json_output(final_content)
+                    structured_output = parse_result.structured
                     event = await self.record_event_from_handler(task.id, task.current_run_id, item)
                     yield TaskEventRead.model_validate(event)
                     continue
@@ -204,7 +222,10 @@ class TaskManagerService:
                     level="warning",
                     stage="result_validate",
                     message="Task output was not valid JSON; structured output is null.",
-                    payload={"output_schema_name": definition.output_schema_name},
+                    payload={
+                        "output_schema_name": definition.output_schema_name,
+                        "parser": parse_json_output(final_content).error,
+                    },
                     step_id="output_parse",
                     step_index=95,
                 )
@@ -439,23 +460,6 @@ class TaskManagerService:
             await session.commit()
             await session.refresh(task)
             return task
-
-
-def _try_parse_json(content: str) -> Any:
-    text = content.strip()
-    if not text:
-        return None
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return None
 
 
 def _definition_snapshot(definition: TaskDefinition) -> dict[str, Any]:

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from scheduling.scheduler import SchedulingRuntimeOptions
 
+from .access import TaskAccessContext, assert_can_access_task, task_access_context
 from .registry import list_task_definitions
 from .schemas import (
     TaskCreateRequest,
@@ -38,15 +39,20 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
                     default_datasets=item.default_datasets,
                     input_schema_name=item.input_schema_name,
                     output_schema_name=item.output_schema_name,
+                    item_output_schema_name=item.item_output_schema_name,
                 )
                 for item in list_task_definitions()
             ]
         }
 
     @router.post("/tasks", response_model=TaskCreateResponse)
-    async def create_task(request: TaskCreateRequest):
+    async def create_task(
+        request: TaskCreateRequest,
+        context: TaskAccessContext = Depends(task_access_context),
+    ):
         try:
-            task = await TaskManagerService(options).create_task(request)
+            scoped_request = request.model_copy(update={"user_id": context.user_id, "tenant_id": context.tenant_id})
+            task = await TaskManagerService(options).create_task(scoped_request)
             return TaskCreateResponse(task=task_to_read(task))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -56,16 +62,28 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
         user_id: str | None = None,
         limit: int = Query(default=50, ge=1, le=200),
         offset: int = Query(default=0, ge=0),
+        context: TaskAccessContext = Depends(task_access_context),
     ):
         service = TaskManagerService(options)
-        rows = await service.list_tasks(user_id=user_id, limit=limit, offset=offset)
+        scoped_user_id = user_id if context.is_admin else context.user_id
+        scoped_tenant_id = None if context.is_admin else context.tenant_id
+        rows = await service.list_tasks(
+            user_id=scoped_user_id,
+            tenant_id=scoped_tenant_id,
+            limit=limit,
+            offset=offset,
+        )
         return {"tasks": [task_to_read(row) for row in rows]}
 
     @router.get("/tasks/{task_id}")
-    async def task(task_id: str):
+    async def task(
+        task_id: str,
+        context: TaskAccessContext = Depends(task_access_context),
+    ):
         row = await TaskManagerService(options).get_task(task_id)
         if row is None:
             raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
+        assert_can_access_task(row, context)
         return {"task": task_to_read(row)}
 
     @router.get("/tasks/{task_id}/events")
@@ -73,10 +91,13 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
         task_id: str,
         limit: int = Query(default=200, ge=1, le=1000),
         offset: int = Query(default=0, ge=0),
+        context: TaskAccessContext = Depends(task_access_context),
     ):
         service = TaskManagerService(options)
-        if await service.get_task(task_id) is None:
+        task_row = await service.get_task(task_id)
+        if task_row is None:
             raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
+        assert_can_access_task(task_row, context)
         rows = await service.list_events(task_id, limit=limit, offset=offset)
         return {"events": [event_to_read(row) for row in rows]}
 
@@ -85,19 +106,32 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
         task_id: str,
         limit: int = Query(default=200, ge=1, le=1000),
         offset: int = Query(default=0, ge=0),
+        context: TaskAccessContext = Depends(task_access_context),
     ):
         service = TaskManagerService(options)
-        if await service.get_task(task_id) is None:
+        task_row = await service.get_task(task_id)
+        if task_row is None:
             raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
+        assert_can_access_task(task_row, context)
         rows = await service.list_items(task_id, limit=limit, offset=offset)
         return {"items": [item_to_read(row) for row in rows]}
 
     @router.post("/tasks/{task_id}/run", response_model=TaskRunResponse)
-    async def run_task(task_id: str, request: TaskRunRequest | None = None):
+    async def run_task(
+        task_id: str,
+        request: TaskRunRequest | None = None,
+        context: TaskAccessContext = Depends(task_access_context),
+    ):
         service = TaskManagerService(options)
         events: list[TaskEventRead] = []
         try:
-            async for event in service.stream_task(task_id, request or TaskRunRequest(stream=False)):
+            task_row = await service.get_task(task_id)
+            if task_row is None:
+                raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
+            assert_can_access_task(task_row, context)
+            run_request = request or TaskRunRequest(stream=False)
+            run_request = run_request.model_copy(update={"user_id": context.user_id})
+            async for event in service.stream_task(task_id, run_request):
                 events.append(event)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -107,12 +141,22 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
         return TaskRunResponse(task=task_to_read(task), events=events)
 
     @router.post("/tasks/{task_id}/stream")
-    async def stream_task(task_id: str, request: TaskRunRequest | None = None):
+    async def stream_task(
+        task_id: str,
+        request: TaskRunRequest | None = None,
+        context: TaskAccessContext = Depends(task_access_context),
+    ):
         service = TaskManagerService(options)
 
         async def event_stream():
             try:
-                async for event in service.stream_task(task_id, request or TaskRunRequest(stream=True)):
+                task_row = await service.get_task(task_id)
+                if task_row is None:
+                    raise ValueError(f"Task '{task_id}' not found.")
+                assert_can_access_task(task_row, context)
+                run_request = request or TaskRunRequest(stream=True)
+                run_request = run_request.model_copy(update={"user_id": context.user_id})
+                async for event in service.stream_task(task_id, run_request):
                     yield f"event: {event.event_type}\ndata: {event.model_dump_json()}\n\n"
             except Exception as exc:
                 payload = json.dumps(
@@ -127,12 +171,16 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     @router.post("/run", response_model=TaskRunResponse)
-    async def create_and_run(request: TaskCreateRequest):
+    async def create_and_run(
+        request: TaskCreateRequest,
+        context: TaskAccessContext = Depends(task_access_context),
+    ):
         service = TaskManagerService(options)
         try:
-            task = await service.create_task(request)
+            scoped_request = request.model_copy(update={"user_id": context.user_id, "tenant_id": context.tenant_id})
+            task = await service.create_task(scoped_request)
             events: list[TaskEventRead] = []
-            async for event in service.stream_task(task.id, TaskRunRequest(stream=False)):
+            async for event in service.stream_task(task.id, TaskRunRequest(stream=False, user_id=context.user_id)):
                 events.append(event)
             task = await service.get_task(task.id)
             if task is None:
@@ -142,17 +190,21 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.post("/stream")
-    async def create_and_stream(request: TaskCreateRequest):
+    async def create_and_stream(
+        request: TaskCreateRequest,
+        context: TaskAccessContext = Depends(task_access_context),
+    ):
         service = TaskManagerService(options)
 
         async def event_stream():
             try:
-                task = await service.create_task(request)
+                scoped_request = request.model_copy(update={"user_id": context.user_id, "tenant_id": context.tenant_id})
+                task = await service.create_task(scoped_request)
                 yield (
                     "event: task_created\n"
                     f"data: {TaskEventRead.model_validate((await service.list_events(task.id, limit=1))[0]).model_dump_json()}\n\n"
                 )
-                async for event in service.stream_task(task.id, TaskRunRequest(stream=True)):
+                async for event in service.stream_task(task.id, TaskRunRequest(stream=True, user_id=context.user_id)):
                     yield f"event: {event.event_type}\ndata: {event.model_dump_json()}\n\n"
             except Exception as exc:
                 payload = json.dumps(
