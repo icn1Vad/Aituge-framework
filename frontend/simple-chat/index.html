@@ -793,6 +793,7 @@
                   <option value="media.script.generate">media.script.generate</option>
                   <option value="media.script.select">media.script.select</option>
                   <option value="media.chat">media.chat</option>
+                  <option value="ai.search.chat">ai.search.chat</option>
                   <option value="table.audit">table.audit</option>
                 </select>
                 <input id="taskTopic" class="task-input" value="Agent architecture and TaskManager" />
@@ -1556,6 +1557,31 @@
 
       function buildMediaTaskPayload() {
         const taskType = taskTypeEl.value || "media.script.generate";
+        if (taskType === "ai.search.chat") {
+          return {
+            task_type: taskType,
+            task_key: `simple-chat-${taskType}-${Date.now()}`,
+            title: taskTopicEl.value.trim() || "AI search chat",
+            user_id: userId,
+            stream: true,
+            input_payload: {
+              message: taskTopicEl.value.trim(),
+              search_goal: taskBriefEl.value.trim(),
+              platform: "web",
+              max_results: 5,
+              context: {
+                source: "simple-chat-task-panel",
+              },
+            },
+            output_schema: {
+              mode: "json_object",
+              task_type: taskType,
+            },
+            metadata: {
+              source: "simple-chat-task-panel",
+            },
+          };
+        }
         const inputPayload = {
           topic: taskTopicEl.value.trim(),
           platform: taskPlatformEl.value,
@@ -1642,7 +1668,7 @@
 
       async function runMediaTask() {
         const payload = buildMediaTaskPayload();
-        if (!payload.input_payload.topic) return;
+        if (!(payload.input_payload.topic || payload.input_payload.message)) return;
         activeMode = "task";
         currentThreadTitle = payload.title.slice(0, 18);
         addUserMessage(`TaskManager: ${payload.title}`);

@@ -214,6 +214,9 @@ class TaskManagerService:
                 "thread_id": task.thread_id,
                 "session_id": task.session_id,
             }
+            synced_items = await self._sync_result_items(task, structured_output)
+            if synced_items:
+                result["synced_items"] = synced_items
             if structured_output is None:
                 parse_failed = await self.record_event(
                     task_id=task.id,
@@ -255,7 +258,7 @@ class TaskManagerService:
                 event_type="task_succeeded",
                 stage="result_save",
                 message="Task succeeded.",
-                payload={"has_structured_output": structured_output is not None},
+                payload={"has_structured_output": structured_output is not None, "synced_items": synced_items},
                 step_id="task_finish",
                 step_index=99,
                 token_usage=final_usage,
@@ -399,6 +402,53 @@ class TaskManagerService:
             await session.commit()
             await session.refresh(task)
             return task
+
+    async def _sync_result_items(self, task: TaskEntity, structured_output: Any) -> dict[str, Any] | None:
+        if task.task_type != "ai.search.chat" or not isinstance(structured_output, dict):
+            return None
+        results = structured_output.get("results")
+        if not isinstance(results, list):
+            return None
+
+        now = utc_now()
+        created = 0
+        async with create_db_session() as session:
+            existing_result = await session.exec(select(TaskItemEntity).where(TaskItemEntity.task_id == task.id))
+            existing_items = {item.item_key: item for item in existing_result.all()}
+            for index, raw_item in enumerate(results, start=1):
+                if not isinstance(raw_item, dict):
+                    continue
+                item_key = str(raw_item.get("url") or raw_item.get("title") or f"search-result-{index}")[:160]
+                item = existing_items.get(item_key)
+                if item is None:
+                    item = TaskItemEntity(
+                        task_id=task.id,
+                        run_id=task.current_run_id,
+                        item_type="search_result",
+                        item_key=item_key,
+                        sequence=index,
+                        input_payload_json={
+                            "query_plan": structured_output.get("query_plan") or {},
+                            "source": "agent_structured_output",
+                        },
+                    )
+                    created += 1
+                item.run_id = task.current_run_id
+                item.status = "succeeded"
+                item.result_payload_json = raw_item
+                item.started_at = item.started_at or task.started_at or now
+                item.finished_at = now
+                item.updated_at = now
+                session.add(item)
+
+            task_row = await session.get(TaskEntity, task.id)
+            if task_row is not None:
+                task_row.progress_total = max(task_row.progress_total or 0, len(results) or 1)
+                task_row.progress_current = len(results) or task_row.progress_current
+                task_row.updated_at = now
+                session.add(task_row)
+            await session.commit()
+        return {"item_type": "search_result", "count": len(results), "created": created}
 
     async def _update_task_session(
         self,

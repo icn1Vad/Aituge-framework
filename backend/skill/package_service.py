@@ -66,6 +66,14 @@ DEFAULT_SKILL_PACKAGES = [
         "primary_skill": "table-audit",
         "auxiliary_skills": [],
     },
+    {
+        "package_name": "ai-search-package",
+        "display_name": "AI Search Package",
+        "description": "Source-backed conversational search with structured result cards.",
+        "tags": ["search", "web", "task-manager"],
+        "primary_skill": "ai-search",
+        "auxiliary_skills": [],
+    },
 ]
 
 

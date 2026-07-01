@@ -151,6 +151,27 @@ def _build_task_message(task: TaskEntity, definition: TaskDefinition) -> str:
             ]
         )
 
+    if task_type == "ai.search.chat":
+        user_message = payload.get("message") or ""
+        search_goal = payload.get("search_goal") or ""
+        max_results = payload.get("max_results") or 5
+        return "\n".join(
+            [
+                "Run an AI search chat task using the configured web search tool.",
+                "Call the web search tool for the user's search request before producing final results.",
+                "Rank and filter search results according to the user's goal.",
+                "Return exactly one valid JSON object matching the ai_search_output schema.",
+                "Do not add Markdown or explanation outside the JSON.",
+                "",
+                f"Task title: {task.title or definition.name}",
+                f"User search message: {user_message}",
+                f"Search goal: {search_goal}",
+                f"Maximum result cards: {max_results}",
+                "Full task input:",
+                pretty_payload,
+            ]
+        )
+
     return "\n".join(
         [
             f"Execute task_type: {task_type}",

@@ -56,6 +56,18 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
         input_schema_name="media_chat_input",
         output_schema_name="media_script_output",
     ),
+    "ai.search.chat": TaskDefinition(
+        task_type="ai.search.chat",
+        name="AI Search Chat",
+        description="Use the configured single agent and web search tool to answer search-oriented user messages.",
+        default_skill_package="ai-search-package",
+        default_primary_skill="ai-search",
+        default_candidate_skills=[],
+        default_tools=["web_search"],
+        default_datasets=[],
+        input_schema_name="ai_search_chat_input",
+        output_schema_name="ai_search_output",
+    ),
     "table.audit": TaskDefinition(
         task_type="table.audit",
         name="Table Row Audit",

@@ -56,6 +56,14 @@ class MediaChatInput(TaskPayloadBase):
         return self
 
 
+class AiSearchChatInput(TaskPayloadBase):
+    message: str = Field(min_length=1)
+    search_goal: str = ""
+    platform: Literal["web", "douyin", "xiaohongshu", "bilibili", "general"] = "web"
+    max_results: int = Field(default=5, ge=1, le=10)
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
 class TableAuditInput(TaskPayloadBase):
     rows: list[dict[str, Any]] = Field(min_length=1)
     audit_goal: str = Field(min_length=1)
@@ -73,6 +81,31 @@ class MediaScriptOutput(StrictPayload):
     final_script: dict[str, Any]
     readable_script: str
     hermes_agent_result: dict[str, Any]
+
+
+class AiSearchQueryPlan(StrictPayload):
+    user_goal: str
+    queries: list[str] = Field(default_factory=list)
+
+
+class AiSearchResultItem(StrictPayload):
+    rank: int = Field(ge=1)
+    title: str = Field(min_length=1)
+    url: str = ""
+    source_name: str = ""
+    content_excerpt: str = ""
+    published_at: str = ""
+    relevance_score: float = Field(ge=0, le=1)
+    recommendation: Literal["keep", "maybe", "drop"] = "keep"
+    reason: str = ""
+
+
+class AiSearchOutput(StrictPayload):
+    status: Literal["success", "partial", "search_failed", "needs_clarification"]
+    answer: str
+    query_plan: AiSearchQueryPlan
+    results: list[AiSearchResultItem] = Field(default_factory=list)
+    follow_up_suggestions: list[str] = Field(default_factory=list)
 
 
 class TableAuditItemOutput(StrictPayload):
@@ -100,11 +133,13 @@ _INPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "media_script_generate_input": MediaScriptGenerateInput,
     "media_script_select_input": MediaScriptSelectInput,
     "media_chat_input": MediaChatInput,
+    "ai_search_chat_input": AiSearchChatInput,
     "table_audit_input": TableAuditInput,
 }
 
 _OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "media_script_output": MediaScriptOutput,
+    "ai_search_output": AiSearchOutput,
     "table_audit_item_output": TableAuditItemOutput,
     "batch_task_output": BatchTaskOutput,
 }
