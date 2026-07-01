@@ -40,6 +40,9 @@ Reject or downgrade:
 
 - Use the web search tool for external, current, factual, or source-backed search requests.
 - Search freshness-first. Unless the user explicitly asks for a specific year or historical review, do not anchor queries on old years from the prompt. Use current words such as `最新`, `现行`, `官方`, `权威`, `通知`, `办法`, `规定`, `政策解读`, or `报考条件` when they fit the task.
+- Preserve the user's concrete intent. If the user asks for `军考政策` or `军校招生`, the planned queries and final topics must stay on that subject; do not replace it with generic veteran employment, certificates, or other business axes.
+- Business-axis fallback is allowed only for empty/hotspot discovery requests or when the user explicitly asks for broad topic discovery. It must not override a specific user search intent.
+- If the user message is garbled, unreadable, or too ambiguous to identify the search target, return `status="needs_clarification"` with empty `results` and ask for a clearer search phrase. Do not infer an unrelated broad topic.
 - Do not stop after one weak search if the first result set is thin, stale, generic, or off-domain. Try a clearer query that targets policy, official wording, credible media, or the specific audience/product bridge. Stay within the user's maximum result limit and avoid endless searching.
 - Do not invent titles, URLs, source names, publish dates, or search results.
 - If the search tool fails or returns no usable results, return `status="search_failed"` or `status="partial"` and explain what happened.
@@ -58,6 +61,8 @@ Reject or downgrade:
    - hotspot discovery: the user asks for today/recent hot topics;
    - general search chat: the user asks a normal factual/search question.
 2. Plan 2-5 search queries. Each query should have a reason and should be executable by a Chinese web search engine.
+   - For specific search mode, every query must preserve the user's main nouns/entities.
+   - For hotspot discovery mode, mix current hot topics with stable business axes.
 3. Call the web search tool before final output.
 4. Inspect title, source, snippet/content, URL, and date signals. Filter duplicates and low-quality pages.
 5. Aggregate useful sources into:
