@@ -90,7 +90,56 @@ def _extract_first_json_value(text: str) -> str | None:
 def _repair_candidates(text: str) -> list[str]:
     normalized = text.strip().replace("\ufeff", "")
     no_trailing_commas = re.sub(r",(\s*[}\]])", r"\1", normalized)
+    escaped_inner_quotes = _escape_unescaped_inner_quotes(no_trailing_commas)
     values = [normalized]
     if no_trailing_commas != normalized:
         values.append(no_trailing_commas)
+    if escaped_inner_quotes not in values:
+        values.append(escaped_inner_quotes)
     return values
+
+
+def _escape_unescaped_inner_quotes(text: str) -> str:
+    """Repair common model JSON mistakes like: "军医"5+3"一体化".
+
+    A quote inside a JSON string is only treated as closing when the next
+    non-space character can legally follow a JSON string boundary.
+    """
+
+    chars: list[str] = []
+    in_string = False
+    escape = False
+    length = len(text)
+
+    for index, char in enumerate(text):
+        if not in_string:
+            chars.append(char)
+            if char == '"':
+                in_string = True
+            continue
+
+        if escape:
+            chars.append(char)
+            escape = False
+            continue
+
+        if char == "\\":
+            chars.append(char)
+            escape = True
+            continue
+
+        if char == '"':
+            next_index = index + 1
+            while next_index < length and text[next_index].isspace():
+                next_index += 1
+            next_char = text[next_index] if next_index < length else ""
+            if next_char in {",", "}", "]", ":"} or not next_char:
+                chars.append(char)
+                in_string = False
+            else:
+                chars.append('\\"')
+            continue
+
+        chars.append(char)
+
+    return "".join(chars)
