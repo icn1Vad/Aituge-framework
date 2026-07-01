@@ -16,8 +16,13 @@ async def ensure_default_agent_profiles(session: AsyncSession) -> None:
         existing = await session.get(AgentProfileEntity, profile.agent_id)
         if existing is None:
             session.add(profile)
-        elif not existing.system_prompt and profile.system_prompt:
-            existing.system_prompt = profile.system_prompt
+        else:
+            changed = False
+            if not existing.system_prompt and profile.system_prompt:
+                existing.system_prompt = profile.system_prompt
+                changed = True
+            if not changed:
+                continue
             existing.updated_at = datetime.utcnow()
             session.add(existing)
     await session.commit()
@@ -51,7 +56,6 @@ async def upsert_agent_profile(
     model_id: str = "deepseek-v4-pro",
     system_prompt: str = "",
     default_tools: list[str] | None = None,
-    default_skills: list[str] | None = None,
     default_datasets: list[str] | None = None,
     runtime_config: dict[str, Any] | None = None,
     enabled: bool = True,
@@ -65,7 +69,6 @@ async def upsert_agent_profile(
         "model_id": model_id,
         "system_prompt": system_prompt,
         "default_tools_json": json.dumps(default_tools or [], ensure_ascii=True),
-        "default_skills_json": json.dumps(default_skills or [], ensure_ascii=True),
         "default_datasets_json": json.dumps(default_datasets or [], ensure_ascii=True),
         "runtime_config_json": json.dumps(runtime_config or {}, ensure_ascii=True),
         "enabled": enabled,

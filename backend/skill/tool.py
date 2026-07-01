@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from llama_index.core.tools.function_tool import FunctionTool
 
-from .bundle import SkillBundle
+from .models import Skill
 
 
-def create_read_skill_tool(bundle: SkillBundle) -> FunctionTool | None:
-    """Create a run-scoped tool that reads full auxiliary skill instructions."""
+def create_read_skill_tool_for_skills(skills: Iterable[Skill]) -> FunctionTool | None:
+    """Create a run-scoped tool that reads full selected auxiliary skills."""
 
-    available = {skill.name: skill for skill in bundle.candidates}
+    available = {skill.name: skill for skill in skills}
     if not available:
         return None
 

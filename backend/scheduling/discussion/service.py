@@ -83,6 +83,14 @@ def _assistant_content(response: dict[str, Any]) -> str:
     return str(message.get("content") or "")
 
 
+def _public_text_for_decision(decision: dict[str, str]) -> str:
+    if decision["action"] == "speak":
+        return decision["content"].strip()
+    if decision["action"] in {"pass", "stop"}:
+        return (decision["content"] or decision["reason"]).strip()
+    return ""
+
+
 class DiscussionService:
     def __init__(self, options: SchedulingRuntimeOptions) -> None:
         self.options = options
@@ -277,7 +285,8 @@ class DiscussionService:
             content = _assistant_content(result.get("response") or {})
             decision = _parse_decision(content)
             public_message = None
-            if decision["action"] == "speak":
+            public_text = _public_text_for_decision(decision)
+            if public_text:
                 async with create_db_session() as session:
                     fresh_run = await session.get(DiscussionRunEntity, run_id)
                     public_message = await self._create_public_message(
@@ -288,7 +297,7 @@ class DiscussionService:
                         speaker_name=participant.agent_profile_snapshot.get("name")
                         or participant.agent_id,
                         role="assistant",
-                        text=decision["content"],
+                        text=public_text,
                         round_index=round_index,
                         turn_id=turn.id,
                     )
@@ -372,7 +381,8 @@ class DiscussionService:
             ])
             decision = _parse_decision(final_content)
             public_message = None
-            if decision["action"] == "speak":
+            public_text = _public_text_for_decision(decision)
+            if public_text:
                 async with create_db_session() as session:
                     fresh_run = await session.get(DiscussionRunEntity, run_id)
                     public_message = await self._create_public_message(
@@ -383,7 +393,7 @@ class DiscussionService:
                         speaker_name=participant.agent_profile_snapshot.get("name")
                         or participant.agent_id,
                         role="assistant",
-                        text=decision["content"],
+                        text=public_text,
                         round_index=round_index,
                         turn_id=turn.id,
                     )
@@ -682,4 +692,3 @@ class DiscussionService:
             "discussion": meta or None,
             "created_at": message.created_at.isoformat(),
         }
-

@@ -135,6 +135,7 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             assert table_definition["input_schema_name"] == "table_audit_input"
             assert table_definition["output_schema_name"] == "batch_task_output"
             assert table_definition["item_output_schema_name"] == "table_audit_item_output"
+            assert table_definition["default_skill_package"] == "table-audit-package"
 
             missing_field_response = await client.post(
                 "/task-manager/tasks",

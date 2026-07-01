@@ -295,8 +295,7 @@ async def _run_scheduler_for_item(
         user_id=task.user_id,
         session_id=f"{task.id}:{item.id}",
         stream=True,
-        primary_skill=definition.default_primary_skill,
-        candidate_skills=definition.default_candidate_skills,
+        skill_package=definition.default_skill_package,
         extra_tools=definition.default_tools,
         extra_datasets=definition.default_datasets,
     )

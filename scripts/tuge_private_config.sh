@@ -75,7 +75,7 @@ from pathlib import Path
 root = Path(sys.argv[1])
 db_path = Path(sys.argv[2]).expanduser()
 out_path = Path(sys.argv[3]).expanduser()
-tables = ["tuge_llm_model", "tuge_tool_config", "tuge_agent_profile"]
+tables = ["tuge_llm_model", "tuge_tool_config", "tuge_agent_profile", "tuge_skill_package"]
 
 if not db_path.exists():
     raise SystemExit(f"SQLite database does not exist: {db_path}")
@@ -148,15 +148,20 @@ conn = sqlite3.connect(db_path)
 tables = payload.get("tables") or {}
 
 for table, rows in tables.items():
-    if table not in {"tuge_llm_model", "tuge_tool_config", "tuge_agent_profile"}:
+    if table not in {"tuge_llm_model", "tuge_tool_config", "tuge_agent_profile", "tuge_skill_package"}:
         print(f"Skipping unsupported table: {table}")
         continue
     rows = rows or []
     if not rows:
         print(f"{table}: 0 rows")
         continue
+    table_columns = {
+        row[1] for row in conn.execute(f"pragma table_info({table})").fetchall()
+    }
     for row in rows:
-        columns = list(row.keys())
+        columns = [column for column in row.keys() if column in table_columns]
+        if not columns:
+            continue
         placeholders = ", ".join("?" for _ in columns)
         column_sql = ", ".join(columns)
         values = [row[column] for column in columns]

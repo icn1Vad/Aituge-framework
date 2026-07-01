@@ -13,7 +13,7 @@ from data.RAG.tool_retrieval import (
     KnowledgeBaseFile,
     ToolRetrievalRAG,
 )
-from db.db_context import create_db_session
+from db.db_context import create_db_session, init_db, reset_engine_for_test
 import service.agent.single_agent_runner as runner_mod
 from service.cache.session_history_manager import session_history_manager
 from service.thread.thread_service import ThreadService
@@ -154,8 +154,19 @@ def _rag_bundle() -> ToolBundle:
 
 def test_combined_skill_artifact_search_and_rag_flow(monkeypatch, tmp_path: Path):
     async def run():
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'combined.db'}")
+        reset_engine_for_test()
+        await init_db()
         fake_llm = _ToolCallingFakeLlm()
-        monkeypatch.setattr(runner_mod, "create_llm", lambda config: fake_llm)
+
+        class FakeLlmRuntime:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def get_llm(self, model_id):
+                return fake_llm
+
+        monkeypatch.setattr(runner_mod, "LlmRuntime", FakeLlmRuntime)
 
         async def fake_aliyun_search(self, query: str):
             assert self.config.api_key == "test-key"
@@ -202,8 +213,7 @@ def test_combined_skill_artifact_search_and_rag_flow(monkeypatch, tmp_path: Path
                 json={
                     "message": "Run the full framework acceptance flow.",
                     "user_id": "combined-framework-test-user",
-                    "primary_skill": "report-generator",
-                    "candidate_skills": ["report-analysis-findings"],
+                    "skill_package": "report-package",
                     "stream": False,
                 },
             )
@@ -212,7 +222,7 @@ def test_combined_skill_artifact_search_and_rag_flow(monkeypatch, tmp_path: Path
         body = response.json()
         content = body["response"]["choices"][0]["message"]["content"]
         assert "combined framework ok" in content
-        assert body["skills"]["primary"]["name"] == "report-generator"
+        assert body["skills"]["active_package"]["primary"]["name"] == "report-generator"
 
         steps = body["response"]["steps"]
         step_names = {step["tool"]["function"]["name"] for step in steps}
@@ -238,4 +248,7 @@ def test_combined_skill_artifact_search_and_rag_flow(monkeypatch, tmp_path: Path
         )
         await _delete_thread(body["thread_id"])
 
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()

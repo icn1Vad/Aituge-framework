@@ -112,23 +112,26 @@ def test_discussion_run_uses_public_thread_messages(tmp_path, monkeypatch):
         turns = payload["turns"]
         assert [turn["action"] for turn in turns] == ["speak", "pass", "speak"]
         assert turns[0]["public_message_id"]
-        assert turns[1]["public_message_id"] is None
+        assert turns[1]["public_message_id"]
         assert turns[2]["public_message_id"]
         assert turns[0]["response"]["choices"][0]["message"]["content"]
         assert turns[0]["steps"] == []
-        assert turns[2]["skills"]["primary"]["name"] == "report-generator"
+        assert turns[2]["skills"] is None
 
         messages = payload["messages"]
         public_texts = [message["text"] for message in messages]
         assert public_texts == [
             "讨论内部审计制度如何检索和写报告",
             "rag contribution",
+            "no code needed",
             "report saw rag",
             "补充：请优先考虑可验证依据",
         ]
         assert messages[1]["discussion"]["speaker_id"] == "rag-agent"
         assert messages[1]["discussion"]["turn_id"] == turns[0]["id"]
-        assert messages[2]["turn"]["agent_id"] == "report-agent"
+        assert messages[2]["discussion"]["speaker_id"] == "code-agent"
+        assert messages[2]["turn"]["action"] == "pass"
+        assert messages[3]["turn"]["agent_id"] == "report-agent"
 
         for participant in payload["participants"]:
             await session_history_manager.clear_history(

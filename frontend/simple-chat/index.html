@@ -37,12 +37,12 @@
       }
 
       aside {
+        height: 100vh;
         min-width: 0;
         display: flex;
         flex-direction: column;
         border-right: 1px solid var(--line);
         background: var(--sidebar);
-        overflow-y: auto;
       }
 
       .brand {
@@ -73,6 +73,7 @@
 
       .nav-item,
       .thread {
+        border: 0;
         height: 38px;
         display: flex;
         align-items: center;
@@ -80,11 +81,16 @@
         padding: 0 10px;
         border-radius: 8px;
         color: #3f4652;
+        background: transparent;
+        font-family: inherit;
         font-size: 14px;
+        text-align: left;
+        cursor: pointer;
       }
 
       .nav-item.active {
         color: #222733;
+        background: #e9eef6;
       }
 
       .section-title {
@@ -94,6 +100,27 @@
         padding: 14px 16px 8px;
         color: #4b5563;
         font-size: 14px;
+      }
+
+      .sidebar-view {
+        min-height: 0;
+        display: none;
+        flex: 1;
+        overflow: hidden;
+      }
+
+      .sidebar-view.active {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .sidebar-scroll {
+        min-height: 0;
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        overflow: auto;
+        padding-bottom: 12px;
       }
 
       .new-chat {
@@ -299,7 +326,7 @@
       .rag-list {
         display: grid;
         gap: 8px;
-        max-height: 290px;
+        max-height: calc(100vh - 250px);
         overflow: auto;
       }
 
@@ -369,8 +396,17 @@
       }
 
       .thread-list {
+        min-height: 120px;
+        flex: 1;
         padding: 0 12px 16px;
         overflow: auto;
+      }
+
+      .history-section {
+        min-height: 0;
+        display: flex;
+        flex: 1;
+        flex-direction: column;
       }
 
       .thread {
@@ -724,70 +760,88 @@
           <div>PAI-RAG</div>
         </div>
         <nav class="nav">
-          <div class="nav-item">▣ 知识库</div>
-          <div class="nav-item">▤ 应用</div>
-          <div class="nav-item">⚖ 评估</div>
-          <div class="nav-item active">○ 对话</div>
+          <button class="nav-item" type="button" data-sidebar-view="rag">▣ 知识库</button>
+          <button class="nav-item" type="button">▤ 应用</button>
+          <button class="nav-item" type="button">⚖ 评估</button>
+          <button class="nav-item active" type="button" data-sidebar-view="chat">○ 对话</button>
         </nav>
-        <div class="section-title">
-          <span>对话</span>
-          <span>⌃</span>
-        </div>
-        <button id="newChat" class="new-chat" type="button">＋ 新建对话</button>
-        <details class="task-drawer" open>
-          <summary><span>TaskManager v1</span><span>media</span></summary>
-          <div class="task-panel">
-            <select id="taskType" class="task-select">
-              <option value="media.script.generate">media.script.generate</option>
-              <option value="media.script.select">media.script.select</option>
-              <option value="media.chat">media.chat</option>
-              <option value="table.audit">table.audit</option>
-            </select>
-            <input id="taskTopic" class="task-input" value="Agent architecture and TaskManager" />
-            <div class="task-grid">
-              <select id="taskPlatform" class="task-select">
-                <option value="douyin">douyin</option>
-              </select>
-              <input id="taskDuration" class="task-input" type="number" min="15" max="300" value="60" />
+        <div id="chatSidebar" class="sidebar-view active" data-sidebar-panel="chat">
+          <div class="sidebar-scroll">
+            <div class="section-title">
+              <span>多 Agent 讨论</span>
+              <span>beta</span>
             </div>
-            <textarea id="taskBrief" class="task-textarea">Use the meeting notes to explain the Agent layers and TaskManager boundary.</textarea>
-            <textarea id="taskCandidates" class="task-textarea task-items-textarea">[
+            <div class="discussion-panel">
+              <textarea id="discussionTopic" class="discussion-topic" placeholder="输入讨论主题"></textarea>
+              <div id="discussionAgents" class="discussion-agents"></div>
+              <div class="discussion-controls">
+                <button id="startDiscussion" class="rag-btn" type="button">开始讨论</button>
+                <label><input id="discussionRounds" type="number" min="1" max="5" value="1" /> 轮</label>
+              </div>
+              <div id="discussionStatus" class="rag-status">Discussion: idle</div>
+              <div id="discussionDebug" class="discussion-debug"></div>
+            </div>
+            <div class="section-title">
+              <span>对话</span>
+              <span>⌃</span>
+            </div>
+            <button id="newChat" class="new-chat" type="button">＋ 新建对话</button>
+            <details class="task-drawer" open>
+              <summary><span>TaskManager v1</span><span>task</span></summary>
+              <div class="task-panel">
+                <select id="taskType" class="task-select">
+                  <option value="media.script.generate">media.script.generate</option>
+                  <option value="media.script.select">media.script.select</option>
+                  <option value="media.chat">media.chat</option>
+                  <option value="table.audit">table.audit</option>
+                </select>
+                <input id="taskTopic" class="task-input" value="Agent architecture and TaskManager" />
+                <div class="task-grid">
+                  <select id="taskPlatform" class="task-select">
+                    <option value="douyin">douyin</option>
+                  </select>
+                  <input id="taskDuration" class="task-input" type="number" min="15" max="300" value="60" />
+                </div>
+                <textarea id="taskBrief" class="task-textarea">Use the meeting notes to explain the Agent layers and TaskManager boundary.</textarea>
+                <textarea id="taskCandidates" class="task-textarea task-items-textarea">[
   {"id":"candidate-a","title":"TaskManager structure","content":"Explain task lifecycle, events, and item tracking."},
   {"id":"candidate-b","title":"Agent boundary","content":"Explain why business orchestration stays outside Single Agent."}
 ]</textarea>
-            <textarea id="taskRows" class="task-textarea task-items-textarea">[
+                <textarea id="taskRows" class="task-textarea task-items-textarea">[
   {"id":"row-001","name":"A company","amount":12000,"note":"Contract amount is above the manual review line."},
   {"id":"row-002","name":"B company","amount":800,"note":"Routine low-risk record."}
 ]</textarea>
-            <button id="runMediaTask" class="rag-btn" type="button">Run TaskManager task</button>
-            <div id="taskStatus" class="rag-status">Task: idle</div>
-            <div id="taskDebug" class="rag-status task-debug">structure: idle</div>
+                <button id="runMediaTask" class="rag-btn" type="button">Run TaskManager task</button>
+                <div id="taskStatus" class="rag-status">Task: idle</div>
+                <div id="taskDebug" class="rag-status task-debug">structure: idle</div>
+              </div>
+            </details>
+            <div class="history-section">
+              <div class="section-title">
+                <span>历史记录</span>
+                <span>scroll</span>
+              </div>
+              <div id="threadList" class="thread-list"></div>
+            </div>
           </div>
-        </details>
-        <div class="rag-panel">
-          <div class="rag-actions">
-            <button id="ingestDefault" class="rag-btn" type="button">入库默认PDF</button>
-            <button id="pickPdf" class="rag-btn" type="button" title="选择PDF">＋</button>
+        </div>
+        <div id="ragSidebar" class="sidebar-view" data-sidebar-panel="rag">
+          <div class="sidebar-scroll">
+            <div class="section-title">
+              <span>知识库</span>
+              <span>RAG</span>
+            </div>
+            <div class="rag-panel">
+              <div class="rag-actions">
+                <button id="ingestDefault" class="rag-btn" type="button">入库默认PDF</button>
+                <button id="pickPdf" class="rag-btn" type="button" title="选择PDF">＋</button>
+              </div>
+              <input id="pdfFile" class="rag-file" type="file" accept="application/pdf,.pdf" />
+              <div id="ragStatus" class="rag-status">RAG: 未加载</div>
+              <div id="ragList" class="rag-list"></div>
+            </div>
           </div>
-          <input id="pdfFile" class="rag-file" type="file" accept="application/pdf,.pdf" />
-          <div id="ragStatus" class="rag-status">RAG: 未加载</div>
-          <div id="ragList" class="rag-list"></div>
         </div>
-        <div class="section-title">
-          <span>多 Agent 讨论</span>
-          <span>beta</span>
-        </div>
-        <div class="discussion-panel">
-          <textarea id="discussionTopic" class="discussion-topic" placeholder="输入讨论主题"></textarea>
-          <div id="discussionAgents" class="discussion-agents"></div>
-          <div class="discussion-controls">
-            <button id="startDiscussion" class="rag-btn" type="button">开始讨论</button>
-            <label><input id="discussionRounds" type="number" min="1" max="5" value="1" /> 轮</label>
-          </div>
-          <div id="discussionStatus" class="rag-status">Discussion: idle</div>
-          <div id="discussionDebug" class="discussion-debug"></div>
-        </div>
-        <div id="threadList" class="thread-list"></div>
       </aside>
 
       <section class="workspace">
@@ -849,6 +903,8 @@
       const runMediaTaskEl = document.getElementById("runMediaTask");
       const taskStatusEl = document.getElementById("taskStatus");
       const taskDebugEl = document.getElementById("taskDebug");
+      const sidebarNavItems = [...document.querySelectorAll("[data-sidebar-view]")];
+      const sidebarPanels = [...document.querySelectorAll("[data-sidebar-panel]")];
       const USER_ID_KEY = "tuge-simple-chat-user-id";
       const AGENT_ID_KEY = "tuge-simple-chat-agent-id";
       const DEFAULT_AGENT_ID = "default-single-agent";
@@ -867,6 +923,15 @@
 
       function ensureStarted() {
         document.getElementById("empty")?.remove();
+      }
+
+      function switchSidebarView(view) {
+        for (const item of sidebarNavItems) {
+          item.classList.toggle("active", item.dataset.sidebarView === view);
+        }
+        for (const panel of sidebarPanels) {
+          panel.classList.toggle("active", panel.dataset.sidebarPanel === view);
+        }
       }
 
       function renderThreads(preview = "") {
@@ -1119,26 +1184,27 @@
       }
 
       function renderSkills(nodes, skills) {
-        if (!skills?.primary && !skills?.candidates?.length) return;
-        const primary = skills.primary;
-        const candidates = skills.candidates || [];
-        const path = [primary?.name, ...candidates.map((skill) => skill.name)].filter(Boolean);
-        const result = candidates.length
-          ? candidates.map((skill) => `${skill.name}: ${skill.description || ""}`).join("\n")
+        const pkg = skills?.active_package;
+        if (!pkg) return;
+        const primary = pkg.primary?.name || null;
+        const auxiliary = pkg.auxiliary_index || [];
+        const path = [pkg.package_name, primary].filter(Boolean).join("-");
+        const result = auxiliary.length
+          ? auxiliary.map((skill) => `${skill.name}: ${skill.description || ""}`).join("\n")
           : "no auxiliary skills";
         upsertToolTrace(nodes, {
-          id: `skill-${primary?.name || "package"}`,
+          id: `skill-package-${path || "active"}`,
           function: {
-            name: `skill: ${primary?.name || "package"}`,
+            name: `skill package: ${pkg.package_name}`,
             arguments: JSON.stringify({
               type: "skill_package",
-              path,
-              primary: primary?.name || null,
-              auxiliary: candidates.map((skill) => skill.name),
+              package_name: pkg.package_name,
+              primary,
+              auxiliary_index: auxiliary.map((skill) => skill.name),
             }, null, 2),
           },
         }, {
-          id: `skill-${primary?.name || "package"}`,
+          id: `skill-package-${path || "active"}`,
           result,
         });
       }
@@ -1661,15 +1727,24 @@
         };
       }
 
+      function visibleHistoryThreads(items) {
+        const titles = new Set(items.map((thread) => thread.title || ""));
+        return items.filter((thread) => {
+          const title = thread.title || "";
+          const baseTitle = title.replace(/ \/ [a-z0-9][a-z0-9-]*-agent$/i, "");
+          return baseTitle === title || !titles.has(baseTitle);
+        });
+      }
+
       async function loadThreads() {
         const res = await fetch(`/single-agent/threads?user_id=${encodeURIComponent(userId)}`);
         if (!res.ok) return;
         const data = await res.json();
-        threads = (data.threads || []).map((thread) => ({
+        threads = visibleHistoryThreads((data.threads || []).map((thread) => ({
           id: thread.id,
           title: thread.title || "新会话",
           preview: thread.updated_at || "",
-        }));
+        })));
         renderThreads("");
       }
 
@@ -1774,10 +1849,6 @@
           setBusy(false, "error");
         }
       });
-      agentSelectEl.addEventListener("change", () => {
-        localStorage.setItem(AGENT_ID_KEY, selectedAgentId());
-        updateSelectedAgentMeta();
-      });
       runMediaTaskEl.addEventListener("click", async () => {
         try {
           await runMediaTask();
@@ -1785,6 +1856,13 @@
           setTaskBusy(false, `Task: ${error.message}`);
           setBusy(false, "error");
         }
+      });
+      for (const item of sidebarNavItems) {
+        item.addEventListener("click", () => switchSidebarView(item.dataset.sidebarView));
+      }
+      agentSelectEl.addEventListener("change", () => {
+        localStorage.setItem(AGENT_ID_KEY, selectedAgentId());
+        updateSelectedAgentMeta();
       });
 
       formEl.addEventListener("submit", async (event) => {

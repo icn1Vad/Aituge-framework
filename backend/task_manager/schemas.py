@@ -130,6 +130,7 @@ class TaskDefinitionRead(BaseModel):
     description: str = ""
     handler: str
     default_agent_id: str
+    default_skill_package: Optional[str] = None
     default_primary_skill: Optional[str] = None
     default_candidate_skills: list[str] = Field(default_factory=list)
     default_tools: list[str] = Field(default_factory=list)

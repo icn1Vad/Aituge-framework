@@ -17,6 +17,7 @@ from db.db_context import create_db_session, init_db
 from scheduling.agent_registry import ensure_default_agent_profiles
 from scheduling.api import create_scheduling_router
 from scheduling.scheduler import SchedulingRuntimeOptions
+from skill import ensure_default_skill_packages
 from task_manager import create_task_manager_router
 from tool import ToolBundle
 from tool.registry import ToolManager
@@ -125,6 +126,7 @@ def create_app() -> FastAPI:
     async def lifespan(_app):
         await init_db()
         async with create_db_session() as session:
+            await ensure_default_skill_packages(session)
             await ensure_default_agent_profiles(session)
         yield
 

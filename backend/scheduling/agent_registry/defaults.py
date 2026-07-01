@@ -6,32 +6,11 @@ from typing import Any
 from .models import AgentProfileEntity
 
 
-REPORT_SKILLS = [
-    "report-generator",
-    "report-context-scope",
-    "report-executive-summary",
-    "report-analysis-findings",
-    "report-quantitative-calculation",
-    "report-chart-figure",
-    "report-code-verification",
-    "report-risk-actions",
-]
-
-GENERAL_SKILLS = [
-    "task-style",
-    "implementation-plan",
-    "debugging-checklist",
-    "review-style",
-    "concise-summary",
-]
-
 ALL_CAPABILITY_TOOLS = [
     "code_interpreter",
     "enabled_db_tools",
     "rag_retrieval",
 ]
-
-ALL_CAPABILITY_SKILLS = GENERAL_SKILLS + REPORT_SKILLS
 
 DEFAULT_SINGLE_AGENT_PROMPT = (
     "You are Default Single Agent, a general-purpose TUGE single agent. "
@@ -60,7 +39,6 @@ def _profile_definition(
     name: str,
     description: str,
     default_tools: list[str],
-    default_skills: list[str] | None = None,
     default_datasets: list[str] | None = None,
     model_id: str = "deepseek-v4-pro",
     system_prompt: str = "",
@@ -73,7 +51,6 @@ def _profile_definition(
         "model_id": model_id,
         "system_prompt": system_prompt,
         "default_tools_json": json.dumps(default_tools, ensure_ascii=True),
-        "default_skills_json": json.dumps(default_skills or [], ensure_ascii=True),
         "default_datasets_json": json.dumps(default_datasets or [], ensure_ascii=True),
         "runtime_config_json": json.dumps(runtime_config or {}, ensure_ascii=True),
     }
@@ -93,7 +70,6 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
         name="Report Agent",
         description="Single agent preloaded with report-writing skills plus code, search, and RAG tools.",
         default_tools=["code_interpreter", "enabled_db_tools", "rag_retrieval"],
-        default_skills=REPORT_SKILLS,
         default_datasets=["local_rag"],
         system_prompt=REPORT_AGENT_PROMPT,
     ),
@@ -102,7 +78,6 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
         name="All Capable Agent",
         description="Single agent with every currently registered local capability enabled by allowlist.",
         default_tools=ALL_CAPABILITY_TOOLS,
-        default_skills=ALL_CAPABILITY_SKILLS,
         default_datasets=["local_rag"],
         system_prompt=ALL_CAPABLE_AGENT_PROMPT,
         runtime_config={"tool_policy": "allowlist", "skill_policy": "allowlist"},

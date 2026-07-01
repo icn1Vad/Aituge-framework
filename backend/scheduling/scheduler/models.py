@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SchedulingRuntimeOptions(BaseModel):
@@ -15,6 +15,8 @@ class SchedulingRuntimeOptions(BaseModel):
 
 
 class SchedulingChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     messages: Optional[list[dict]] = None
     message: Optional[str] = None
     model: Optional[str] = None
@@ -22,9 +24,6 @@ class SchedulingChatRequest(BaseModel):
     session_id: Optional[str] = None
     user_id: str = "default_user"
     stream: bool = False
-    primary_skill: Optional[str] = None
-    candidate_skills: Optional[list[str]] = None
-    extra_tools: list[str] = []
-    extra_skills: list[str] = []
-    extra_datasets: list[str] = []
-
+    extra_tools: list[str] = Field(default_factory=list)
+    skill_package: Optional[str] = None
+    extra_datasets: list[str] = Field(default_factory=list)

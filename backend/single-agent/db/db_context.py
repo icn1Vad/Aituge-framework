@@ -203,6 +203,7 @@ async def init_db():
     import db.models.thread  # noqa: F401
     import scheduling.agent_registry.models  # noqa: F401
     import scheduling.discussion.models  # noqa: F401
+    import skill.package_models  # noqa: F401
     import task_manager.models  # noqa: F401
     import tool.registry.models  # noqa: F401
 

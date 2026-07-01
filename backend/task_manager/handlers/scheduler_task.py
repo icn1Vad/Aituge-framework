@@ -37,8 +37,7 @@ class SchedulerTaskHandler:
             thread_id=task.thread_id,
             session_id=task.session_id,
             stream=True,
-            primary_skill=definition.default_primary_skill,
-            candidate_skills=definition.default_candidate_skills,
+            skill_package=definition.default_skill_package,
             extra_tools=definition.default_tools,
             extra_datasets=definition.default_datasets,
         )
@@ -51,8 +50,9 @@ class SchedulerTaskHandler:
             step_index=10,
             payload={
                 "agent_id": profile.agent_id,
-                "primary_skill": request.primary_skill,
-                "candidate_skills": request.candidate_skills or [],
+                "skill_package": request.skill_package,
+                "primary_skill": definition.default_primary_skill,
+                "candidate_skills": definition.default_candidate_skills,
                 "extra_tools": request.extra_tools,
                 "extra_datasets": request.extra_datasets,
             },
@@ -115,12 +115,12 @@ def _build_task_message(task: TaskEntity, definition: TaskDefinition) -> str:
     if task_type == "media.script.generate":
         return "\n".join(
             [
-                "请根据下面的新媒体任务输入生成短视频脚本。",
-                "必须遵循 media-script-generator skill 的输出结构和边界要求。",
-                "最终只输出一个 JSON 对象，不要在 JSON 外写 Markdown 或解释。",
+                "Generate a short-video script from the media task input below.",
+                "Follow the media-script-generator skill output structure and boundaries.",
+                "Return exactly one valid JSON object. Do not add Markdown or explanation outside the JSON.",
                 "",
-                f"任务名称：{task.title or definition.name}",
-                "任务输入：",
+                f"Task title: {task.title or definition.name}",
+                "Task input:",
                 pretty_payload,
             ]
         )
@@ -128,12 +128,12 @@ def _build_task_message(task: TaskEntity, definition: TaskDefinition) -> str:
     if task_type == "media.script.select":
         return "\n".join(
             [
-                "请根据下面的新媒体脚本候选做脚本选择。",
-                "必须遵循 media-script-selector skill，返回结构化选择结果。",
-                "最终只输出一个 JSON 对象，不要在 JSON 外写 Markdown 或解释。",
+                "Select the best media script candidate from the input below.",
+                "Follow the media-script-selector skill and return a structured selection result.",
+                "Return exactly one valid JSON object. Do not add Markdown or explanation outside the JSON.",
                 "",
-                f"任务名称：{task.title or definition.name}",
-                "任务输入：",
+                f"Task title: {task.title or definition.name}",
+                "Task input:",
                 pretty_payload,
             ]
         )
@@ -142,20 +142,20 @@ def _build_task_message(task: TaskEntity, definition: TaskDefinition) -> str:
         user_message = payload.get("message") or payload.get("question") or ""
         return "\n".join(
             [
-                "请作为新媒体脚本任务助手继续对话。",
-                "如涉及脚本修改、选择或风险判断，请沿用已有 thread/session 上下文。",
+                "Continue the conversation as a media script task assistant.",
+                "If the user asks for edits, selection, or risk checks, use the existing thread/session context.",
                 "",
-                f"用户问题：{user_message}",
-                "补充输入：",
+                f"User message: {user_message}",
+                "Additional input:",
                 pretty_payload,
             ]
         )
 
     return "\n".join(
         [
-            f"请执行任务类型：{task_type}",
-            f"任务名称：{task.title or definition.name}",
-            "任务输入：",
+            f"Execute task_type: {task_type}",
+            f"Task title: {task.title or definition.name}",
+            "Task input:",
             pretty_payload,
         ]
     )

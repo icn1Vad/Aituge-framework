@@ -4,11 +4,16 @@ import httpx
 
 from api.single_agent_api import create_app
 from common.llm.models import TextChunk
-from db.db_context import create_db_session
+from db.db_context import create_db_session, init_db, reset_engine_for_test
 import service.agent.single_agent_runner as runner_mod
 from service.cache.session_history_manager import session_history_manager
 from service.thread.thread_service import ThreadService
-from skill import SkillBundle, load_skill
+from skill import (
+    SkillManager,
+    ensure_default_skill_packages,
+    get_skill_packages_by_names,
+    upsert_skill_package,
+)
 
 
 async def _delete_thread(thread_id: str):
@@ -19,221 +24,107 @@ async def _delete_thread(thread_id: str):
             pass
 
 
-def test_api_accepts_task_owned_skill_bundle(monkeypatch):
+def test_skill_manager_builds_report_package_context(tmp_path, monkeypatch):
     async def run():
-        class CapturingAgent:
-            def __init__(self, llm, system_prompt, tools):
-                self.system_prompt = system_prompt
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'skill-manager.db'}")
+        reset_engine_for_test()
+        await init_db()
 
-            async def run_async(self, state):
-                async def gen():
-                    assert "# Task Style Skill" in self.system_prompt
-                    yield TextChunk(delta="task-style loaded")
+        context = await SkillManager().create_context("report-package")
 
-                return gen()
+        assert "# Report Generator Skill" in context.task_prompt
+        assert "report-analysis-findings: Turn evidence" in context.task_prompt
+        assert [tool.metadata.name for tool in context.tools] == ["ReadSkill"]
+        active_package = context.skills["active_package"]
+        assert active_package["package_name"] == "report-package"
+        assert active_package["primary"]["name"] == "report-generator"
+        assert active_package["auxiliary_index"][0]["name"] == "report-context-scope"
 
-        def skill_provider(_request):
-            return SkillBundle.from_skills(primary=load_skill("task-style"))
-
-        monkeypatch.setattr(runner_mod, "ReactAgent", CapturingAgent)
-        monkeypatch.setattr(runner_mod, "create_llm", lambda config: object())
-
-        app = create_app(tool_provider=skill_provider)
-        transport = httpx.ASGITransport(app=app)
-
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.post(
-                "/single-agent/chat",
-                json={
-                    "message": "hello skill",
-                    "user_id": "skill-provider-test-user",
-                    "stream": False,
-                },
-            )
-            assert response.status_code == 200
-            body = response.json()
-            assert body["response"]["choices"][0]["message"]["content"] == (
-                "task-style loaded"
-            )
-
-        await session_history_manager.clear_history(
-            "skill-provider-test-user",
-            body["thread_id"],
-        )
-        await _delete_thread(body["thread_id"])
-
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
 
 
-def test_api_loads_skills_from_request_fields(monkeypatch):
+def test_skill_manager_empty_and_disabled_packages(tmp_path, monkeypatch):
     async def run():
-        class CapturingAgent:
-            def __init__(self, llm, system_prompt, tools):
-                self.system_prompt = system_prompt
-                self.tools = tools
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'skill-disabled.db'}")
+        reset_engine_for_test()
+        await init_db()
+        async with create_db_session() as session:
+            await ensure_default_skill_packages(session)
+            packages = await get_skill_packages_by_names(session, ["report-package"])
+            packages[0].enabled = False
+            session.add(packages[0])
 
-            async def run_async(self, state):
-                async def gen():
-                    assert "# Task Style Skill" in self.system_prompt
-                    assert "review-style: Add a brief risk check" in self.system_prompt
-                    assert [tool.metadata.name for tool in self.tools] == ["ReadSkill"]
-                    yield TextChunk(delta="request skill fields loaded")
+        empty = await SkillManager().create_context(None)
+        blank = await SkillManager().create_context("")
+        disabled = await SkillManager().create_context("report-package")
 
-                return gen()
+        assert empty.tools == []
+        assert empty.task_prompt == ""
+        assert empty.skills == {}
+        assert blank.tools == []
+        assert blank.task_prompt == ""
+        assert blank.skills == {}
+        assert disabled.tools == []
+        assert disabled.task_prompt == ""
+        assert disabled.skills == {}
 
-        monkeypatch.setattr(runner_mod, "ReactAgent", CapturingAgent)
-        monkeypatch.setattr(runner_mod, "create_llm", lambda config: object())
-
-        app = create_app()
-        transport = httpx.ASGITransport(app=app)
-
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.post(
-                "/single-agent/chat",
-                json={
-                    "message": "hello request skill",
-                    "user_id": "skill-request-test-user",
-                    "primary_skill": "task-style",
-                    "candidate_skills": ["review-style"],
-                    "stream": False,
-                },
-            )
-            assert response.status_code == 200
-            body = response.json()
-            assert body["response"]["choices"][0]["message"]["content"] == (
-                "request skill fields loaded"
-            )
-            assert body["skills"]["primary"]["name"] == "task-style"
-            assert body["skills"]["candidates"][0]["name"] == "review-style"
-
-        await session_history_manager.clear_history(
-            "skill-request-test-user",
-            body["thread_id"],
-        )
-        await _delete_thread(body["thread_id"])
-
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
 
 
-def test_api_stream_metadata_includes_request_skills(monkeypatch):
+def test_skill_manager_unknown_package_errors(tmp_path, monkeypatch):
     async def run():
-        class CapturingAgent:
-            def __init__(self, llm, system_prompt, tools):
-                self.system_prompt = system_prompt
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'skill-missing.db'}")
+        reset_engine_for_test()
+        await init_db()
+        try:
+            await SkillManager().create_context("missing-package")
+        except ValueError as exc:
+            assert "missing-package" in str(exc)
+        else:
+            raise AssertionError("missing skill package should raise")
 
-            async def run_async(self, state):
-                async def gen():
-                    yield TextChunk(delta="stream skill fields loaded")
-
-                return gen()
-
-        monkeypatch.setattr(runner_mod, "ReactAgent", CapturingAgent)
-        monkeypatch.setattr(runner_mod, "create_llm", lambda config: object())
-
-        app = create_app()
-        transport = httpx.ASGITransport(app=app)
-        thread_id = None
-
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.post(
-                "/single-agent/chat",
-                json={
-                    "message": "hello stream skill",
-                    "user_id": "skill-stream-test-user",
-                    "primary_skill": "task-style",
-                    "candidate_skills": ["review-style"],
-                    "stream": True,
-                },
-            )
-
-        assert response.status_code == 200
-        assert '"skills"' in response.text
-        assert '"primary":{"name":"task-style"' in response.text
-        assert '"candidates":[{"name":"review-style"' in response.text
-        for line in response.text.splitlines():
-            if line.startswith("data: ") and '"event":"metadata"' in line:
-                thread_id = line.split('"thread_id":"', 1)[1].split('"', 1)[0]
-                break
-
-        if thread_id:
-            await session_history_manager.clear_history("skill-stream-test-user", thread_id)
-            await _delete_thread(thread_id)
-
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
 
 
-def test_api_lists_available_skills():
+def test_skill_manager_package_with_missing_skill_errors(tmp_path, monkeypatch):
     async def run():
-        app = create_app()
-        transport = httpx.ASGITransport(app=app)
-
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get("/single-agent/skills")
-
-        assert response.status_code == 200
-        names = {skill["name"] for skill in response.json()["skills"]}
-        assert {
-            "implementation-plan",
-            "debugging-checklist",
-            "concise-summary",
-            "report-generator",
-            "report-executive-summary",
-        }.issubset(names)
-
-    asyncio.run(run())
-
-
-def test_api_injects_different_skill_types_from_request(monkeypatch):
-    async def run():
-        class CapturingAgent:
-            def __init__(self, llm, system_prompt, tools):
-                self.system_prompt = system_prompt
-                self.tools = tools
-
-            async def run_async(self, state):
-                async def gen():
-                    assert "# Debugging Checklist Skill" in self.system_prompt
-                    assert "implementation-plan: Structure coding tasks" in self.system_prompt
-                    assert "concise-summary: Summarize results" in self.system_prompt
-                    assert [tool.metadata.name for tool in self.tools] == ["ReadSkill"]
-                    yield TextChunk(delta="debug skill package loaded")
-
-                return gen()
-
-        monkeypatch.setattr(runner_mod, "ReactAgent", CapturingAgent)
-        monkeypatch.setattr(runner_mod, "create_llm", lambda config: object())
-
-        app = create_app()
-        transport = httpx.ASGITransport(app=app)
-
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.post(
-                "/single-agent/chat",
-                json={
-                    "message": "debug this",
-                    "user_id": "skill-types-test-user",
-                    "primary_skill": "debugging-checklist",
-                    "candidate_skills": ["implementation-plan", "concise-summary"],
-                    "stream": False,
-                },
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'skill-broken.db'}")
+        reset_engine_for_test()
+        await init_db()
+        async with create_db_session() as session:
+            await upsert_skill_package(
+                session,
+                package_name="broken-package",
+                primary_skill="not-a-real-skill",
             )
-            assert response.status_code == 200
-            body = response.json()
-            assert body["response"]["choices"][0]["message"]["content"] == (
-                "debug skill package loaded"
-            )
+        try:
+            await SkillManager().create_context("broken-package")
+        except ValueError as exc:
+            assert "not-a-real-skill" in str(exc)
+        else:
+            raise AssertionError("package with missing skill should raise")
 
-        await session_history_manager.clear_history(
-            "skill-types-test-user",
-            body["thread_id"],
-        )
-        await _delete_thread(body["thread_id"])
-
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
 
 
-def test_api_injects_report_generator_skill_package(monkeypatch):
+def test_api_loads_skill_package_from_request(tmp_path, monkeypatch):
     async def run():
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'skill-api.db'}")
+        reset_engine_for_test()
+        await init_db()
+
         class CapturingAgent:
             def __init__(self, llm, system_prompt, tools):
                 self.system_prompt = system_prompt
@@ -244,14 +135,20 @@ def test_api_injects_report_generator_skill_package(monkeypatch):
                     assert "# Report Generator Skill" in self.system_prompt
                     assert "report-executive-summary: Write the report opening" in self.system_prompt
                     assert "report-analysis-findings: Turn evidence" in self.system_prompt
-                    assert "report-risk-actions: Close a report" in self.system_prompt
                     assert [tool.metadata.name for tool in self.tools] == ["ReadSkill"]
-                    yield TextChunk(delta="report skill package loaded")
+                    yield TextChunk(delta="request skill package loaded")
 
                 return gen()
 
+        class FakeLlmRuntime:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def get_llm(self, model_id):
+                return object()
+
         monkeypatch.setattr(runner_mod, "ReactAgent", CapturingAgent)
-        monkeypatch.setattr(runner_mod, "create_llm", lambda config: object())
+        monkeypatch.setattr(runner_mod, "LlmRuntime", FakeLlmRuntime)
 
         app = create_app()
         transport = httpx.ASGITransport(app=app)
@@ -260,31 +157,112 @@ def test_api_injects_report_generator_skill_package(monkeypatch):
             response = await client.post(
                 "/single-agent/chat",
                 json={
-                    "message": "write a complete report",
-                    "user_id": "report-skill-test-user",
-                    "primary_skill": "report-generator",
-                    "candidate_skills": [
-                        "report-executive-summary",
-                        "report-context-scope",
-                        "report-analysis-findings",
-                        "report-quantitative-calculation",
-                        "report-chart-figure",
-                        "report-code-verification",
-                        "report-risk-actions",
-                    ],
+                    "message": "hello request skill package",
+                    "user_id": "skill-package-request-test-user",
+                    "skill_package": "report-package",
                     "stream": False,
                 },
             )
             assert response.status_code == 200
             body = response.json()
             assert body["response"]["choices"][0]["message"]["content"] == (
-                "report skill package loaded"
+                "request skill package loaded"
             )
+            assert body["skills"]["active_package"]["package_name"] == "report-package"
 
         await session_history_manager.clear_history(
-            "report-skill-test-user",
+            "skill-package-request-test-user",
             body["thread_id"],
         )
         await _delete_thread(body["thread_id"])
 
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
+
+
+def test_api_stream_metadata_includes_skill_package(tmp_path, monkeypatch):
+    async def run():
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'skill-stream.db'}")
+        reset_engine_for_test()
+        await init_db()
+
+        class CapturingAgent:
+            def __init__(self, llm, system_prompt, tools):
+                self.system_prompt = system_prompt
+
+            async def run_async(self, state):
+                async def gen():
+                    yield TextChunk(delta="stream skill package loaded")
+
+                return gen()
+
+        class FakeLlmRuntime:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def get_llm(self, model_id):
+                return object()
+
+        monkeypatch.setattr(runner_mod, "ReactAgent", CapturingAgent)
+        monkeypatch.setattr(runner_mod, "LlmRuntime", FakeLlmRuntime)
+
+        app = create_app()
+        transport = httpx.ASGITransport(app=app)
+        thread_id = None
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/single-agent/chat",
+                json={
+                    "message": "hello stream skill package",
+                    "user_id": "skill-package-stream-test-user",
+                    "skill_package": "general-package",
+                    "stream": True,
+                },
+            )
+
+        assert response.status_code == 200
+        assert '"skills"' in response.text
+        assert '"active_package"' in response.text
+        assert '"package_name":"general-package"' in response.text
+        assert '"primary":{"name":"task-style"' in response.text
+        for line in response.text.splitlines():
+            if line.startswith("data: ") and '"event":"metadata"' in line:
+                thread_id = line.split('"thread_id":"', 1)[1].split('"', 1)[0]
+                break
+
+        if thread_id:
+            await session_history_manager.clear_history(
+                "skill-package-stream-test-user",
+                thread_id,
+            )
+            await _delete_thread(thread_id)
+
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
+
+
+def test_api_lists_available_skill_packages(tmp_path, monkeypatch):
+    async def run():
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'skill-list.db'}")
+        reset_engine_for_test()
+        await init_db()
+        app = create_app()
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/single-agent/skill-packages")
+
+        assert response.status_code == 200
+        packages = {item["package_name"]: item for item in response.json()["skill_packages"]}
+        assert packages["general-package"]["primary_skill"] == "task-style"
+        assert packages["report-package"]["primary_skill"] == "report-generator"
+
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
