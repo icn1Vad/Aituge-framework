@@ -218,6 +218,7 @@ class DouyinAccountReportOutput(StrictPayload):
     data_limitations: list[Any] | str = Field(default_factory=list)
     next_month_actions: list[str] = Field(default_factory=list)
     export_markdown: str = ""
+    legacy_monthly_report: dict[str, Any] = Field(default_factory=dict)
 
 
 class TableAuditItemOutput(StrictPayload):

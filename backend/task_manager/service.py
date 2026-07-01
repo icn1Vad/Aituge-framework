@@ -10,6 +10,7 @@ from sqlmodel import select
 from db.db_context import create_db_session
 from scheduling.scheduler import SchedulingRuntimeOptions
 
+from .adapters.douyin_report_compat import add_legacy_monthly_report
 from .adapters.legacy_douyin import enrich_douyin_account_report_payload
 from .gateway.service import DataAccessGateway
 from .handlers.base import TaskHandlerEvent
@@ -216,6 +217,12 @@ class TaskManagerService:
                 "thread_id": task.thread_id,
                 "session_id": task.session_id,
             }
+            if task.task_type == "analytics.douyin.account_report.generate":
+                structured_output = add_legacy_monthly_report(
+                    structured_output,
+                    task.input_payload_json or {},
+                )
+                result["structured"] = structured_output
             synced_items = await self._sync_result_items(task, structured_output)
             if synced_items:
                 result["synced_items"] = synced_items

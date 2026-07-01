@@ -479,6 +479,10 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
                 == "all_data"
             )
             assert "export_markdown" in douyin_report_task["result_payload_json"]["structured"]
+            legacy_monthly = douyin_report_task["result_payload_json"]["structured"]["legacy_monthly_report"]
+            assert legacy_monthly["sections"]["conclusion"]["overall_summary"]
+            assert legacy_monthly["sections"]["content_and_script_clues"]["content_performance"]
+            assert legacy_monthly["sections"]["interaction_and_comments"]["comment_count_analysis"]
 
             batch_response = await client.post(
                 "/task-manager/run",

@@ -116,3 +116,29 @@ Agent 可以负责报告扩写、归纳、行动建议，但不能编造数据�
 ```
 
 `export_markdown` 是给前端快速预览或后续导出复用的可读版本，不替代结构化字段。
+
+## 旧前端兼容输出
+
+旧前端 `MonthlyReportPanel` 固定读取：
+
+```text
+report_json.sections.conclusion
+report_json.sections.audience_and_traffic
+report_json.sections.interaction_and_comments
+report_json.sections.content_and_script_clues
+```
+
+所以 TaskManager 会在结构化结果里额外写入：
+
+```text
+result_payload_json.structured.legacy_monthly_report
+```
+
+这个对象就是旧前端可直接展示的自然语言报告结构。旧前端接入新接口时，可以把它当成原来的 `report_json` 使用：
+
+```ts
+const structured = response.task.result_payload_json.structured;
+const reportJson = structured.legacy_monthly_report;
+```
+
+这样页面展示的仍然是自然语言段落、指标卡片、要点列表和内容明细表，而不是原始 JSON。
