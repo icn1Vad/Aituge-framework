@@ -42,6 +42,7 @@
         flex-direction: column;
         border-right: 1px solid var(--line);
         background: var(--sidebar);
+        overflow-y: auto;
       }
 
       .brand {
@@ -123,9 +124,42 @@
       }
 
       .task-panel {
-        margin: 4px 12px 10px;
+        margin: 8px 12px 10px;
         display: grid;
         gap: 8px;
+      }
+
+      .task-drawer {
+        margin: 0 0 4px;
+      }
+
+      .task-drawer summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 8px 12px 0;
+        padding: 8px 10px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        background: #fff;
+        color: #20242c;
+        cursor: pointer;
+        font-size: 13px;
+        list-style: none;
+      }
+
+      .task-drawer summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .task-drawer summary::after {
+        content: "v";
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .task-drawer[open] summary::after {
+        content: "^";
       }
 
       .task-grid {
@@ -685,6 +719,28 @@
           <span>⌃</span>
         </div>
         <button id="newChat" class="new-chat" type="button">＋ 新建对话</button>
+        <details class="task-drawer" open>
+          <summary><span>TaskManager v1</span><span>media</span></summary>
+          <div class="task-panel">
+            <select id="taskType" class="task-select">
+              <option value="media.script.generate">media.script.generate</option>
+              <option value="media.script.select">media.script.select</option>
+              <option value="media.chat">media.chat</option>
+            </select>
+            <input id="taskTopic" class="task-input" value="Agent architecture and TaskManager" />
+            <div class="task-grid">
+              <select id="taskPlatform" class="task-select">
+                <option value="douyin">douyin</option>
+                <option value="shipinhao">shipinhao</option>
+                <option value="xiaohongshu">xiaohongshu</option>
+              </select>
+              <input id="taskDuration" class="task-input" type="number" min="15" max="300" value="60" />
+            </div>
+            <textarea id="taskBrief" class="task-textarea">Use the meeting notes to explain the Agent layers and TaskManager boundary.</textarea>
+            <button id="runMediaTask" class="rag-btn" type="button">Run media script task</button>
+            <div id="taskStatus" class="rag-status">Task: idle</div>
+          </div>
+        </details>
         <div class="rag-panel">
           <div class="rag-actions">
             <button id="ingestDefault" class="rag-btn" type="button">入库默认PDF</button>
@@ -707,24 +763,6 @@
           </div>
           <div id="discussionStatus" class="rag-status">Discussion: idle</div>
           <div id="discussionDebug" class="discussion-debug"></div>
-        </div>
-        <div class="section-title">
-          <span>TaskManager</span>
-          <span>v1</span>
-        </div>
-        <div class="task-panel">
-          <input id="taskTopic" class="task-input" value="Agent architecture and TaskManager" />
-          <div class="task-grid">
-            <select id="taskPlatform" class="task-select">
-              <option value="douyin">douyin</option>
-              <option value="shipinhao">shipinhao</option>
-              <option value="xiaohongshu">xiaohongshu</option>
-            </select>
-            <input id="taskDuration" class="task-input" type="number" min="15" max="300" value="60" />
-          </div>
-          <textarea id="taskBrief" class="task-textarea">Use the meeting notes to explain the Agent layers and TaskManager boundary.</textarea>
-          <button id="runMediaTask" class="rag-btn" type="button">Run media script task</button>
-          <div id="taskStatus" class="rag-status">Task: idle</div>
         </div>
         <div id="threadList" class="thread-list"></div>
       </aside>
@@ -778,6 +816,7 @@
       const startDiscussionEl = document.getElementById("startDiscussion");
       const discussionStatusEl = document.getElementById("discussionStatus");
       const discussionDebugEl = document.getElementById("discussionDebug");
+      const taskTypeEl = document.getElementById("taskType");
       const taskTopicEl = document.getElementById("taskTopic");
       const taskPlatformEl = document.getElementById("taskPlatform");
       const taskDurationEl = document.getElementById("taskDuration");
@@ -1425,7 +1464,7 @@
 
       function buildMediaTaskPayload() {
         return {
-          task_type: "media.script.generate",
+          task_type: taskTypeEl.value || "media.script.generate",
           title: taskTopicEl.value.trim() || "Media script task",
           user_id: userId,
           stream: true,
