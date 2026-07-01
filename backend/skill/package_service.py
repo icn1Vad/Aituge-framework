@@ -66,6 +66,30 @@ DEFAULT_SKILL_PACKAGES = [
         "primary_skill": "table-audit",
         "auxiliary_skills": [],
     },
+    {
+        "package_name": "ai-search-package",
+        "display_name": "AI Search Package",
+        "description": "Source-backed conversational search with structured result cards.",
+        "tags": ["search", "web", "task-manager"],
+        "primary_skill": "ai-search",
+        "auxiliary_skills": [],
+    },
+    {
+        "package_name": "media-topic-search-package",
+        "display_name": "Media Topic Search Package",
+        "description": "Freshness-first source search and topic aggregation for new-media planning.",
+        "tags": ["media", "topic", "search", "task-manager"],
+        "primary_skill": "media-topic-search",
+        "auxiliary_skills": [],
+    },
+    {
+        "package_name": "douyin-account-report-package",
+        "display_name": "Douyin Account Report Package",
+        "description": "Fact-grounded Douyin account operations reporting across all available data or a requested range.",
+        "tags": ["douyin", "analytics", "report", "task-manager"],
+        "primary_skill": "douyin-account-report",
+        "auxiliary_skills": [],
+    },
 ]
 
 

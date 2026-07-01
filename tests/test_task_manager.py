@@ -12,6 +12,7 @@ from db.models.llm import LlmModelEntity
 from service.cache.session_history_manager import session_history_manager
 from service.thread.thread_service import ThreadService
 from task_manager.output_parser import parse_json_output
+import task_manager.adapters.legacy_douyin as legacy_douyin_adapter
 import service.agent.single_agent_runner as runner_mod
 
 
@@ -22,6 +23,37 @@ class JsonCapturingAgent:
 
     async def run_async(self, state):
         async def gen():
+            if "# Douyin Account Report Skill" in self.system_prompt:
+                content = {
+                    "status": "partial_data",
+                    "account_id": "demo-douyin-account",
+                    "account_name": "Demo Douyin Account",
+                    "platform": "douyin",
+                    "analysis_scope": "all_data",
+                    "covered_period": {"scope": "all_available_data"},
+                    "warnings": ["sample data only"],
+                    "missing_fields": ["comment_text", "full_script_text"],
+                    "executive_summary": "The account has usable all-data evidence but lacks comment text and scripts.",
+                    "key_metrics": {"play_count": 18600, "publish_count": 3},
+                    "sections": {
+                        "overall_performance": {
+                            "title": "Overall performance",
+                            "summary": "The sample content has uneven performance.",
+                            "findings": ["video-001 is the strongest item."],
+                            "evidence": ["video-001 play_count=9200"],
+                            "limitations": ["No monthly split required for this all-data task."],
+                            "next_actions": ["Expand the strongest topic type."],
+                        }
+                    },
+                    "top_content_analysis": [{"id": "video-001", "reason": "Highest play count."}],
+                    "low_content_analysis": [{"id": "video-003", "reason": "Lowest play count."}],
+                    "data_limitations": ["No comment text."],
+                    "next_month_actions": ["Publish follow-up policy explainer."],
+                    "export_markdown": "# Account report\n\nSample report.",
+                }
+                yield TextChunk(delta=json.dumps(content, ensure_ascii=False))
+                return
+
             if "# Table Audit" in self.system_prompt:
                 content = {
                     "risk_level": "low",
@@ -132,10 +164,18 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
                 item for item in definitions.json()["definitions"]
                 if item["task_type"] == "table.audit"
             )
+            douyin_report_definition = next(
+                item for item in definitions.json()["definitions"]
+                if item["task_type"] == "analytics.douyin.account_report.generate"
+            )
             assert table_definition["input_schema_name"] == "table_audit_input"
             assert table_definition["output_schema_name"] == "batch_task_output"
             assert table_definition["item_output_schema_name"] == "table_audit_item_output"
             assert table_definition["default_skill_package"] == "table-audit-package"
+            assert douyin_report_definition["default_agent_id"] == "report-agent"
+            assert douyin_report_definition["default_skill_package"] == "douyin-account-report-package"
+            assert douyin_report_definition["input_schema_name"] == "douyin_account_report_input"
+            assert douyin_report_definition["output_schema_name"] == "douyin_account_report_output"
 
             missing_field_response = await client.post(
                 "/task-manager/tasks",
@@ -184,6 +224,104 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             )
             assert invalid_policy_response.status_code == 400
             assert "table_audit_input" in invalid_policy_response.text
+
+            async def fake_fetch_legacy_douyin_data(*, base_url, account_id, content_limit):
+                assert base_url == "http://legacy.test"
+                assert account_id == "acct_douyin_demo"
+                assert content_limit == 20
+                return (
+                    {
+                        "account": {
+                            "id": "acct_douyin_demo",
+                            "platform": "douyin",
+                            "account_name": "Legacy Douyin Demo",
+                        },
+                        "metrics": {
+                            "account_id": "acct_douyin_demo",
+                            "date": "2026-07-01",
+                            "fans_count": 73,
+                            "new_fans_count": 1,
+                            "profile_visit_count": 49,
+                            "publish_count": 2,
+                            "play_count": 300,
+                            "like_count": 30,
+                            "comment_count": 4,
+                            "share_count": 2,
+                            "collect_count": 1,
+                        },
+                    },
+                    {
+                        "items": [
+                            {
+                                "content_id": "video-001",
+                                "title": "Legacy top video",
+                                "url": "https://www.douyin.com/video/video-001",
+                                "publish_time": "2026-06-01T00:00:00+00:00",
+                                "play_count": 200,
+                                "like_count": 20,
+                                "comment_count": 3,
+                                "share_count": 1,
+                                "collect_count": 1,
+                                "raw": {
+                                    "derived": {
+                                        "completion_rate": 0.2,
+                                        "avg_view_second": 6.5,
+                                    }
+                                },
+                            },
+                            {
+                                "content_id": "video-002",
+                                "title": "Legacy lower video",
+                                "play_count": 100,
+                                "like_count": 10,
+                                "comment_count": 1,
+                                "share_count": 1,
+                                "collect_count": 0,
+                            },
+                        ]
+                    },
+                )
+
+            monkeypatch.setattr(
+                legacy_douyin_adapter,
+                "_fetch_legacy_douyin_data",
+                fake_fetch_legacy_douyin_data,
+            )
+            legacy_create_response = await client.post(
+                "/task-manager/tasks",
+                headers=headers,
+                json={
+                    "task_type": "analytics.douyin.account_report.generate",
+                    "title": "Legacy Douyin report",
+                    "input_payload": {
+                        "data_source": "legacy_douyin_api",
+                        "legacy_api_base_url": "http://legacy.test",
+                        "account_id": "acct_douyin_demo",
+                        "content_limit": 20,
+                    },
+                },
+            )
+            assert legacy_create_response.status_code == 200
+            legacy_payload = legacy_create_response.json()["task"]["input_payload_json"]
+            assert legacy_payload["data_source"] == "legacy_douyin_api"
+            assert legacy_payload["account_name"] == "Legacy Douyin Demo"
+            assert legacy_payload["metrics_summary"]["play_count"] == 300
+            assert legacy_payload["report_context"]["source"] == "legacy_douyin_api"
+            assert [item["id"] for item in legacy_payload["content_items"]] == ["video-001", "video-002"]
+
+            missing_report_data_response = await client.post(
+                "/task-manager/tasks",
+                headers=headers,
+                json={
+                    "task_type": "analytics.douyin.account_report.generate",
+                    "title": "Missing report data",
+                    "input_payload": {
+                        "analysis_scope": "all_data",
+                    },
+                },
+            )
+            assert missing_report_data_response.status_code == 400
+            assert "douyin_account_report_input" in missing_report_data_response.text
 
             create_response = await client.post(
                 "/task-manager/tasks",
@@ -307,6 +445,44 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             assert any(event["step_id"] == "scheduler_request_build" for event in events)
             assert any(event["step_id"] == "agent_final" for event in events)
             assert all("token_usage_json" in event for event in events)
+
+            douyin_report_response = await client.post(
+                "/task-manager/run",
+                headers=headers,
+                json={
+                    "task_type": "analytics.douyin.account_report.generate",
+                    "title": "Douyin all-data report",
+                    "user_id": "task-manager-test-user",
+                    "stream": False,
+                    "input_payload": {
+                        "account_id": "demo-douyin-account",
+                        "account_name": "Demo Douyin Account",
+                        "analysis_scope": "all_data",
+                        "report_depth": "deep",
+                        "report_context": {
+                            "metrics_summary": {"play_count": 18600, "publish_count": 3},
+                            "missing_fields": ["comment_text", "full_script_text"],
+                        },
+                        "content_items": [
+                            {"id": "video-001", "title": "A", "play_count": 9200},
+                            {"id": "video-003", "title": "C", "play_count": 3300},
+                        ],
+                    },
+                },
+            )
+            assert douyin_report_response.status_code == 200
+            douyin_report_task = douyin_report_response.json()["task"]
+            assert douyin_report_task["status"] == "succeeded"
+            assert douyin_report_task["agent_id"] == "report-agent"
+            assert (
+                douyin_report_task["result_payload_json"]["structured"]["analysis_scope"]
+                == "all_data"
+            )
+            assert "export_markdown" in douyin_report_task["result_payload_json"]["structured"]
+            legacy_monthly = douyin_report_task["result_payload_json"]["structured"]["legacy_monthly_report"]
+            assert legacy_monthly["sections"]["conclusion"]["overall_summary"]
+            assert legacy_monthly["sections"]["content_and_script_clues"]["content_performance"]
+            assert legacy_monthly["sections"]["interaction_and_comments"]["comment_count_analysis"]
 
             batch_response = await client.post(
                 "/task-manager/run",
