@@ -1,7 +1,9 @@
-from llama_index.core.base.llms.types import ChatMessage, MessageRole
-from typing import List, Tuple, Any
-from transformers import AutoTokenizer
 from pathlib import Path
+from typing import Any, List, Tuple
+
+from llama_index.core.base.llms.types import ChatMessage, MessageRole
+from transformers import AutoTokenizer
+
 
 TOKENIZATION_MODEL = str(
     Path(__file__).resolve().parent.parent
@@ -21,22 +23,13 @@ def estimate_tokens_in_text(
     return_offsets_mapping: bool = True,
     tokenizer: Any = None,
 ) -> int:
-    """
-    Estimate token length for a given text.
-
-    Args:
-        text (str): The text to estimate the tokens length for.
-
-    Returns:
-        int: The estimated tokens length.
-
-    """
     if not text:
         return 0
     tokenizer = tokenizer or get_tokenizer()
     result = tokenizer(text, return_offsets_mapping=return_offsets_mapping, return_attention_mask=False, add_special_tokens=False)
     token_ids = result["input_ids"]
     return len(token_ids)
+
 
 def truncate(
     text: str,
@@ -57,11 +50,9 @@ def truncate(
     if max_token > len(token_ids):
         text = text[start_token_offset_mapping_left:]
         return text, len(token_ids[start_token:])
-    else:
-        # start_token大于等于0, 此时max_token大于start_token,大于等于1
-        last_token_offset_mapping_right = offset_mapping[max_token - 1][1]
-        text = text[start_token_offset_mapping_left:last_token_offset_mapping_right]
-        return text, max_token - start_token
+    last_token_offset_mapping_right = offset_mapping[max_token - 1][1]
+    text = text[start_token_offset_mapping_left:last_token_offset_mapping_right]
+    return text, max_token - start_token
 
 
 def get_message_context(msg: ChatMessage) -> str:
@@ -69,27 +60,15 @@ def get_message_context(msg: ChatMessage) -> str:
         return ""
     if isinstance(msg.content, str):
         return msg.content
-    else:
-        text = []
-        for item in msg.content:
-            if not item.text:
-                return None
-            text.append(item.text)
-        text = "\n".join(text)
-        return text
+    text = []
+    for item in msg.content:
+        if not item.text:
+            return None
+        text.append(item.text)
+    return "\n".join(text)
 
 
-def estimate_tokens_in_message(message: ChatMessage, tokenizer: Any = None) -> str:
-    """
-    Estimate tokens length for a single message.
-
-    Args:
-        message (OpenAIMessage): The message to estimate the tokens length for.
-
-    Returns:
-        int: The estimated tokens length.
-
-    """
+def estimate_tokens_in_message(message: ChatMessage, tokenizer: Any = None) -> int:
     tokens = 0
 
     if message.role:
