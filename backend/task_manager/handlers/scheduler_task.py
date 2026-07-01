@@ -157,9 +157,12 @@ def _build_task_message(task: TaskEntity, definition: TaskDefinition) -> str:
         max_results = payload.get("max_results") or 5
         return "\n".join(
             [
-                "Run an AI search chat task using the configured web search tool.",
-                "Call the web search tool for the user's search request before producing final results.",
-                "Rank and filter search results according to the user's goal.",
+                "Run a source-backed AI search task using the configured web search tool.",
+                "Use the ai-search skill as a freshness-first search and new-media topic discovery workflow.",
+                "First plan 2-5 executable Chinese search queries with reasons. Then call the web search tool.",
+                "Inspect source authority, freshness, relevance, and business bridge before producing final results.",
+                "If the user is looking for new-media topics or reliable material sources, aggregate sources into topic_suggestions.",
+                "Do not force weak sources into business conversion. Put weak evidence and caveats in evidence_summary or risks.",
                 "Return exactly one valid JSON object matching the ai_search_output schema.",
                 "Do not add Markdown or explanation outside the JSON.",
                 "The JSON must parse with json.loads. Do not put raw ASCII double quotes inside string values; escape them or use Chinese quotes.",

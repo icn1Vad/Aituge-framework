@@ -86,6 +86,8 @@ class MediaScriptOutput(StrictPayload):
 class AiSearchQueryPlan(StrictPayload):
     user_goal: str
     queries: list[str] = Field(default_factory=list)
+    mode: Optional[Literal["specific_search", "hotspot_discovery", "general_search_chat"]] = None
+    query_reasons: list[str] = Field(default_factory=list)
 
 
 class AiSearchResultItem(StrictPayload):
@@ -100,11 +102,38 @@ class AiSearchResultItem(StrictPayload):
     reason: str = ""
 
 
+class AiSearchEvidenceSummary(StrictPayload):
+    confirmed: list[str] = Field(default_factory=list)
+    weak_or_missing: list[str] = Field(default_factory=list)
+    source_quality_notes: list[str] = Field(default_factory=list)
+
+
+class AiSearchBusinessBridge(StrictPayload):
+    level: Literal["none", "soft", "medium", "strong"] = "none"
+    axis: str = ""
+    placement: str = ""
+
+
+class AiSearchTopicSuggestion(StrictPayload):
+    topic_title: str = Field(min_length=1)
+    topic_intro: str = ""
+    content_direction: str = ""
+    writing_outline: list[str] = Field(default_factory=list)
+    business_bridge: AiSearchBusinessBridge = Field(default_factory=AiSearchBusinessBridge)
+    why_now: str = ""
+    supporting_result_ranks: list[int] = Field(default_factory=list)
+    risk_notes: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+
+
 class AiSearchOutput(StrictPayload):
     status: Literal["success", "partial", "search_failed", "needs_clarification"]
     answer: str
     query_plan: AiSearchQueryPlan
+    evidence_summary: Optional[AiSearchEvidenceSummary] = None
     results: list[AiSearchResultItem] = Field(default_factory=list)
+    topic_suggestions: list[AiSearchTopicSuggestion] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
     follow_up_suggestions: list[str] = Field(default_factory=list)
 
 
