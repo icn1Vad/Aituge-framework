@@ -916,9 +916,26 @@
       let currentThreadTitle = "初始问候";
       let threads = [];
       let agents = [];
+
+      function createBrowserUserId() {
+        if (globalThis.crypto?.randomUUID) {
+          return `web-${globalThis.crypto.randomUUID()}`;
+        }
+        try {
+          const values = new Uint32Array(4);
+          globalThis.crypto?.getRandomValues?.(values);
+          if (values.some(Boolean)) {
+            return `web-${[...values].map((value) => value.toString(16)).join("-")}`;
+          }
+        } catch {
+          // HTTP/IP test pages may not expose Web Crypto APIs.
+        }
+        return `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      }
+
       let userId = localStorage.getItem(USER_ID_KEY);
       if (!userId) {
-        userId = `web-${crypto.randomUUID()}`;
+        userId = createBrowserUserId();
         localStorage.setItem(USER_ID_KEY, userId);
       }
 
