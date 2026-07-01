@@ -40,7 +40,7 @@ Reject or downgrade:
 
 Use a two-stage workflow:
 
-1. Plan 2-5 executable Chinese search queries.
+1. Plan 1-3 executable Chinese search queries.
 2. Call the web search tool before final output.
 3. Inspect results and produce source cards plus topic cards.
 
@@ -49,10 +49,12 @@ For specific user intent:
 - Preserve the user's core nouns/entities in every query.
 - If the user asks about `军考政策`, `军校招生`, `直招军士`, or another concrete target, do not replace it with generic veteran employment or certificate fallback.
 - Add freshness and authority terms only when useful: `最新`, `现行`, `官方`, `权威`, `通知`, `办法`, `规定`, `政策解读`, `报考条件`.
+- Use at most 3 web search tool calls for one task. Prefer fewer high-quality queries over many overlapping queries.
+- After search returns results, select at most 5 source cards and at most 5 topic suggestions for the final JSON.
 
 For broad topic discovery or empty/hotspot-style requests:
 
-- Mix current sources with stable business axes.
+- Mix current sources with stable business axes, still using at most 3 web search tool calls.
 - Good fallback axes include current-month veteran employment, active-service certificates/retention, military education upgrade, CAAC/drone training, enlistment planning, and civilian-post planning.
 
 If the user message is garbled, unreadable, or too ambiguous to identify the target, return `status="needs_clarification"` with empty `results` and `topic_suggestions`. Do not guess a broad topic.

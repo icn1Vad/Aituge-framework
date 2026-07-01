@@ -159,7 +159,8 @@ def _build_task_message(task: TaskEntity, definition: TaskDefinition) -> str:
             [
                 "Run a source-backed AI search task using the configured web search tool.",
                 "Use the ai-search skill as a freshness-first search and new-media topic discovery workflow.",
-                "First plan 2-5 executable Chinese search queries with reasons. Then call the web search tool.",
+                "First plan 1-3 executable Chinese search queries with reasons. Then call the web search tool.",
+                "Use at most 3 web search tool calls for one task, then select the best source cards and topic suggestions.",
                 "Preserve the user's concrete search intent and main nouns/entities in every planned query.",
                 "Do not replace a specific search request with generic business-axis fallback topics.",
                 "If the user message is unreadable or too ambiguous, return status='needs_clarification' instead of searching a guessed broad topic.",
