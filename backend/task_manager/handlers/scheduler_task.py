@@ -162,6 +162,7 @@ def _build_task_message(task: TaskEntity, definition: TaskDefinition) -> str:
                 "Rank and filter search results according to the user's goal.",
                 "Return exactly one valid JSON object matching the ai_search_output schema.",
                 "Do not add Markdown or explanation outside the JSON.",
+                "The JSON must parse with json.loads. Do not put raw ASCII double quotes inside string values; escape them or use Chinese quotes.",
                 "",
                 f"Task title: {task.title or definition.name}",
                 f"User search message: {user_message}",
