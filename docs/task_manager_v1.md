@@ -27,6 +27,7 @@ TaskManager does not own:
 - `backend/task_manager/models.py`: SQLModel tables.
 - `backend/task_manager/registry.py`: code-level task registry.
 - `backend/task_manager/service.py`: lifecycle and event persistence.
+- `backend/task_manager/payload_schemas.py`: task input and structured output validation schemas.
 - `backend/task_manager/handlers/base.py`: handler protocol and runtime event model.
 - `backend/task_manager/handlers/scheduler_task.py`: Scheduler-backed handler.
 - `backend/task_manager/handlers/batch_item_scheduler.py`: item-by-item Scheduler-backed batch handler.
@@ -51,6 +52,8 @@ Defaults:
 - `candidate_skills`: `media-script-selector`
 - `extra_tools`: `rag_retrieval`
 - `extra_datasets`: `local_rag`
+- `input_schema`: `media_script_generate_input`
+- `output_schema`: `media_script_output`
 
 ### `media.script.select`
 
@@ -64,10 +67,22 @@ Defaults:
 - `candidate_skills`: `media-script-generator`
 - `extra_tools`: `rag_retrieval`
 - `extra_datasets`: `local_rag`
+- `input_schema`: `media_script_select_input`
 
 ### `media.chat`
 
 Continues a media task conversation with task lifecycle and event persistence.
+
+Defaults:
+
+- `handler`: `scheduler`
+- `agent_id`: `default-single-agent`
+- `primary_skill`: `media-script-generator`
+- `candidate_skills`: `media-script-selector`
+- `extra_tools`: `rag_retrieval`
+- `extra_datasets`: `local_rag`
+- `input_schema`: `media_chat_input`
+- `output_schema`: `media_script_output`
 
 ### `table.audit`
 
@@ -81,6 +96,23 @@ Defaults:
 - `candidate_skills`: none
 - `extra_tools`: `rag_retrieval`
 - `extra_datasets`: `local_rag`
+- `input_schema`: `table_audit_input`
+- `output_schema`: `batch_task_output`
+
+## Payload Validation
+
+TaskManager validates `input_payload` before creating a task. Invalid payloads return HTTP 400 and are not persisted.
+
+Current input schemas:
+
+- `media_script_generate_input`
+- `media_script_select_input`
+- `media_chat_input`
+- `table_audit_input`
+
+The first version uses strict Pydantic models with `extra="forbid"` so unknown top-level fields fail fast. This keeps old frontends and external callers from silently sending unusable fields.
+
+TaskManager also validates parsed structured output when `structured` is available. If the model output cannot be parsed as JSON, TaskManager records an `output_parse_failed` warning event and keeps `structured: null`. If parsed output does not match the registered output schema, TaskManager records an `output_validation_failed` warning event. The first version does not fail the whole task on output validation because model-side JSON stability is not guaranteed yet.
 
 ## Database Tables
 

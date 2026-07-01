@@ -14,6 +14,8 @@ class TaskDefinition:
     default_candidate_skills: list[str] = field(default_factory=list)
     default_tools: list[str] = field(default_factory=list)
     default_datasets: list[str] = field(default_factory=list)
+    input_schema_name: str | None = None
+    output_schema_name: str | None = None
 
 
 _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
@@ -25,6 +27,8 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
         default_candidate_skills=["media-script-selector"],
         default_tools=["rag_retrieval"],
         default_datasets=["local_rag"],
+        input_schema_name="media_script_generate_input",
+        output_schema_name="media_script_output",
     ),
     "media.script.select": TaskDefinition(
         task_type="media.script.select",
@@ -34,6 +38,7 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
         default_candidate_skills=["media-script-generator"],
         default_tools=["rag_retrieval"],
         default_datasets=["local_rag"],
+        input_schema_name="media_script_select_input",
     ),
     "media.chat": TaskDefinition(
         task_type="media.chat",
@@ -43,6 +48,8 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
         default_candidate_skills=["media-script-selector"],
         default_tools=["rag_retrieval"],
         default_datasets=["local_rag"],
+        input_schema_name="media_chat_input",
+        output_schema_name="media_script_output",
     ),
     "table.audit": TaskDefinition(
         task_type="table.audit",
@@ -53,6 +60,8 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
         default_candidate_skills=[],
         default_tools=["rag_retrieval"],
         default_datasets=["local_rag"],
+        input_schema_name="table_audit_input",
+        output_schema_name="batch_task_output",
     ),
 }
 

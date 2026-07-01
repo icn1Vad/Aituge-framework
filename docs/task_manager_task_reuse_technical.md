@@ -73,6 +73,10 @@ Task Definition 负责固定这些默认配置：
 - `default_candidate_skills`
 - `default_tools`
 - `default_datasets`
+- `input_schema_name`
+- `output_schema_name`
+
+创建任务时，TaskManager 会按 `input_schema_name` 校验 `input_payload`。校验失败直接返回 HTTP 400，不创建 task。
 
 ### 2. 复用 Handler
 
@@ -151,6 +155,28 @@ TaskManager 会创建：
 2 条 tuge_task_item
 若干条 tuge_task_event
 ```
+
+### 4. 复用 Schema 校验
+
+每个 `task_type` 绑定自己的输入 schema。当前已有：
+
+```text
+media.script.generate -> media_script_generate_input
+media.script.select   -> media_script_select_input
+media.chat            -> media_chat_input
+table.audit           -> table_audit_input
+```
+
+Schema 第一版采用严格校验：
+
+```text
+少字段：失败
+错字段：失败
+未知字段：失败
+错误枚举值：失败
+```
+
+输出侧当前只做 warning 级校验：如果模型输出不是合法 JSON，记录 `output_parse_failed`；如果 parsed JSON 不满足 output schema，记录 `output_validation_failed`。第一版不直接让任务失败，因为强制 JSON / card tool-call 需要和 Scheduler / Single Agent owner 对齐。
 
 ## 表格审查示例流程
 
@@ -372,13 +398,14 @@ TaskManager 可以继续做：
 - `batch_item_scheduler` 批处理 handler。
 - `table.audit` 表格逐行审查测试任务。
 - `table-audit` item 级审查 skill。
+- `payload_schemas.py` 输入强校验。
+- 结构化输出 warning 级校验事件。
 - 前端 TaskManager 测试面板。
 - items / events / task 查询接口。
 
 下一步如果要把“表格逐个审查”做成生产功能，建议补：
 
 ```text
-input schema: 严格校验 rows / audit_goal / failure_policy
 output schema: 严格校验 item result 和 summary
 failure policy: fail_fast / continue 的前端展示
 real table source: CSV/XLSX/数据库查询结果接入 Gateway

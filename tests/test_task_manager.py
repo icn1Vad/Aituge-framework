@@ -119,6 +119,57 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
                 item["task_type"] == "media.script.generate"
                 for item in definitions.json()["definitions"]
             )
+            table_definition = next(
+                item for item in definitions.json()["definitions"]
+                if item["task_type"] == "table.audit"
+            )
+            assert table_definition["input_schema_name"] == "table_audit_input"
+            assert table_definition["output_schema_name"] == "batch_task_output"
+
+            missing_field_response = await client.post(
+                "/task-manager/tasks",
+                json={
+                    "task_type": "media.script.generate",
+                    "title": "Missing topic",
+                    "input_payload": {
+                        "platform": "douyin",
+                        "duration_seconds": 60,
+                    },
+                },
+            )
+            assert missing_field_response.status_code == 400
+            assert "media_script_generate_input" in missing_field_response.text
+
+            extra_field_response = await client.post(
+                "/task-manager/tasks",
+                json={
+                    "task_type": "media.script.generate",
+                    "title": "Extra field",
+                    "input_payload": {
+                        "topic": "TaskManager",
+                        "platform": "douyin",
+                        "duration_seconds": 60,
+                        "unexpected_field": "must fail",
+                    },
+                },
+            )
+            assert extra_field_response.status_code == 400
+            assert "unexpected_field" in extra_field_response.text
+
+            invalid_policy_response = await client.post(
+                "/task-manager/tasks",
+                json={
+                    "task_type": "table.audit",
+                    "title": "Invalid policy",
+                    "input_payload": {
+                        "audit_goal": "Audit rows.",
+                        "failure_policy": "skip_everything",
+                        "rows": [{"id": "row-001"}],
+                    },
+                },
+            )
+            assert invalid_policy_response.status_code == 400
+            assert "table_audit_input" in invalid_policy_response.text
 
             create_response = await client.post(
                 "/task-manager/tasks",

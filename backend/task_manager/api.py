@@ -36,6 +36,8 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
                     default_candidate_skills=item.default_candidate_skills,
                     default_tools=item.default_tools,
                     default_datasets=item.default_datasets,
+                    input_schema_name=item.input_schema_name,
+                    output_schema_name=item.output_schema_name,
                 )
                 for item in list_task_definitions()
             ]

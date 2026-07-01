@@ -15,6 +15,7 @@ from .handlers.base import TaskHandlerEvent
 from .handlers.batch_item_scheduler import BatchItemSchedulerHandler
 from .handlers.scheduler_task import SchedulerTaskHandler
 from .models import TaskEntity, TaskEventEntity, TaskItemEntity, utc_now
+from .payload_schemas import validate_input_payload, validate_output_payload
 from .registry import TaskDefinition, get_task_definition
 from .schemas import TaskCreateRequest, TaskEventRead, TaskItemRead, TaskRead, TaskRunRequest
 
@@ -25,8 +26,9 @@ class TaskManagerService:
 
     async def create_task(self, request: TaskCreateRequest) -> TaskEntity:
         definition = get_task_definition(request.task_type)
+        input_payload = validate_input_payload(definition.input_schema_name, request.input_payload)
         task_id = uuid.uuid4().hex
-        task_items = _extract_task_items(request.input_payload)
+        task_items = _extract_task_items(input_payload)
         task = TaskEntity(
             id=task_id,
             parent_task_id=request.parent_task_id,
@@ -35,7 +37,7 @@ class TaskManagerService:
             task_type=request.task_type,
             title=request.title or definition.name,
             handler_name=definition.handler,
-            input_payload_json=request.input_payload,
+            input_payload_json=input_payload,
             definition_snapshot_json=_definition_snapshot(definition),
             output_schema_json=request.output_schema,
             agent_id=request.agent_id or definition.default_agent_id,
@@ -194,6 +196,37 @@ class TaskManagerService:
                 "thread_id": task.thread_id,
                 "session_id": task.session_id,
             }
+            if structured_output is None:
+                parse_failed = await self.record_event(
+                    task_id=task.id,
+                    run_id=task.current_run_id,
+                    event_type="output_parse_failed",
+                    level="warning",
+                    stage="result_validate",
+                    message="Task output was not valid JSON; structured output is null.",
+                    payload={"output_schema_name": definition.output_schema_name},
+                    step_id="output_parse",
+                    step_index=95,
+                )
+                yield TaskEventRead.model_validate(parse_failed)
+            else:
+                is_valid, validation_error = validate_output_payload(
+                    definition.output_schema_name,
+                    structured_output,
+                )
+                if not is_valid:
+                    validation_failed = await self.record_event(
+                        task_id=task.id,
+                        run_id=task.current_run_id,
+                        event_type="output_validation_failed",
+                        level="warning",
+                        stage="result_validate",
+                        message="Task structured output did not match the registered output schema.",
+                        payload=validation_error or {},
+                        step_id="output_validate",
+                        step_index=96,
+                    )
+                    yield TaskEventRead.model_validate(validation_failed)
             task = await self._finish_task(task.id, status="succeeded", result=result)
             succeeded = await self.record_event(
                 task_id=task.id,
@@ -317,6 +350,7 @@ class TaskManagerService:
                 raise ValueError(f"Task '{task_id}' not found.")
             if task.status == "running":
                 raise ValueError(f"Task '{task_id}' is already running.")
+            definition = get_task_definition(task.task_type)
 
             if request:
                 if request.stream is not None:
@@ -324,7 +358,8 @@ class TaskManagerService:
                 if request.user_id:
                     task.user_id = request.user_id
                 if request.input_patch:
-                    task.input_payload_json = {**(task.input_payload_json or {}), **request.input_patch}
+                    patched_input = {**(task.input_payload_json or {}), **request.input_patch}
+                    task.input_payload_json = validate_input_payload(definition.input_schema_name, patched_input)
                 if request.metadata_patch:
                     task.metadata_json = {**(task.metadata_json or {}), **request.metadata_patch}
 

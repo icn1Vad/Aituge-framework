@@ -131,3 +131,5 @@ class TaskDefinitionRead(BaseModel):
     default_candidate_skills: list[str] = Field(default_factory=list)
     default_tools: list[str] = Field(default_factory=list)
     default_datasets: list[str] = Field(default_factory=list)
+    input_schema_name: Optional[str] = None
+    output_schema_name: Optional[str] = None
