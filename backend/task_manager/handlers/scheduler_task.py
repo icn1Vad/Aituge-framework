@@ -179,6 +179,35 @@ def _build_task_message(task: TaskEntity, definition: TaskDefinition) -> str:
             ]
         )
 
+    if task_type == "media.topic.search":
+        user_message = payload.get("message") or payload.get("topic_query") or ""
+        search_goal = payload.get("search_goal") or ""
+        max_results = payload.get("max_results") or 5
+        max_topics = payload.get("max_topics") or 5
+        return "\n".join(
+            [
+                "Run a reusable new-media topic search task using the configured web search tool.",
+                "Use the media-topic-search skill as the task authority.",
+                "This task should produce reliable source cards and operator-ready topic suggestions.",
+                "First plan 2-5 executable Chinese search queries with reasons. Then call the web search tool.",
+                "Preserve the user's concrete search intent and main nouns/entities in every planned query.",
+                "Do not replace a specific search request with generic business-axis fallback topics.",
+                "If the user message is unreadable or too ambiguous, return status='needs_clarification' instead of searching a guessed broad topic.",
+                "Inspect source authority, freshness, relevance, and media business bridge before producing final results.",
+                "Return exactly one valid JSON object matching the media_topic_search_output schema.",
+                "Do not add Markdown or explanation outside the JSON.",
+                "The JSON must parse with json.loads. Do not put raw ASCII double quotes inside string values; escape them or use Chinese quotes.",
+                "",
+                f"Task title: {task.title or definition.name}",
+                f"User topic search message: {user_message}",
+                f"Search goal: {search_goal}",
+                f"Maximum source cards: {max_results}",
+                f"Maximum topic suggestions: {max_topics}",
+                "Full task input:",
+                pretty_payload,
+            ]
+        )
+
     return "\n".join(
         [
             f"Execute task_type: {task_type}",

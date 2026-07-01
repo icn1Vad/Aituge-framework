@@ -68,6 +68,18 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
         input_schema_name="ai_search_chat_input",
         output_schema_name="ai_search_output",
     ),
+    "media.topic.search": TaskDefinition(
+        task_type="media.topic.search",
+        name="Media Topic Search",
+        description="Search reliable sources and aggregate them into reusable new-media topic suggestions.",
+        default_skill_package="media-topic-search-package",
+        default_primary_skill="media-topic-search",
+        default_candidate_skills=[],
+        default_tools=["web_search"],
+        default_datasets=[],
+        input_schema_name="media_topic_search_input",
+        output_schema_name="media_topic_search_output",
+    ),
     "table.audit": TaskDefinition(
         task_type="table.audit",
         name="Table Row Audit",

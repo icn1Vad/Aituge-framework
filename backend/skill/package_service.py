@@ -74,6 +74,14 @@ DEFAULT_SKILL_PACKAGES = [
         "primary_skill": "ai-search",
         "auxiliary_skills": [],
     },
+    {
+        "package_name": "media-topic-search-package",
+        "display_name": "Media Topic Search Package",
+        "description": "Freshness-first source search and topic aggregation for new-media planning.",
+        "tags": ["media", "topic", "search", "task-manager"],
+        "primary_skill": "media-topic-search",
+        "auxiliary_skills": [],
+    },
 ]
 
 

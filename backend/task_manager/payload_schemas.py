@@ -64,6 +64,24 @@ class AiSearchChatInput(TaskPayloadBase):
     context: dict[str, Any] = Field(default_factory=dict)
 
 
+class MediaTopicSearchInput(TaskPayloadBase):
+    message: Optional[str] = None
+    topic_query: Optional[str] = None
+    search_goal: str = ""
+    platform: Literal["douyin", "wechat_video", "xiaohongshu", "bilibili", "general"] = "douyin"
+    max_results: int = Field(default=5, ge=1, le=10)
+    max_topics: int = Field(default=5, ge=1, le=8)
+    business_axes: list[str] = Field(default_factory=list)
+    account_context: dict[str, Any] = Field(default_factory=dict)
+    context: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def require_message_or_topic_query(self):
+        if not (self.message or self.topic_query):
+            raise ValueError("One of message or topic_query is required.")
+        return self
+
+
 class TableAuditInput(TaskPayloadBase):
     rows: list[dict[str, Any]] = Field(min_length=1)
     audit_goal: str = Field(min_length=1)
@@ -163,12 +181,14 @@ _INPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "media_script_select_input": MediaScriptSelectInput,
     "media_chat_input": MediaChatInput,
     "ai_search_chat_input": AiSearchChatInput,
+    "media_topic_search_input": MediaTopicSearchInput,
     "table_audit_input": TableAuditInput,
 }
 
 _OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "media_script_output": MediaScriptOutput,
     "ai_search_output": AiSearchOutput,
+    "media_topic_search_output": AiSearchOutput,
     "table_audit_item_output": TableAuditItemOutput,
     "batch_task_output": BatchTaskOutput,
 }

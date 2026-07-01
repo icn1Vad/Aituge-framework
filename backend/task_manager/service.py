@@ -404,7 +404,7 @@ class TaskManagerService:
             return task
 
     async def _sync_result_items(self, task: TaskEntity, structured_output: Any) -> dict[str, Any] | None:
-        if task.task_type != "ai.search.chat" or not isinstance(structured_output, dict):
+        if task.task_type not in {"ai.search.chat", "media.topic.search"} or not isinstance(structured_output, dict):
             return None
         results = structured_output.get("results") if isinstance(structured_output.get("results"), list) else []
         topic_suggestions = (

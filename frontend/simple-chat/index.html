@@ -790,7 +790,8 @@
               <summary><span>TaskManager v1</span><span>task</span></summary>
               <div class="task-panel">
                 <select id="taskType" class="task-select">
-                  <option value="ai.search.chat" selected>ai.search.chat</option>
+                  <option value="media.topic.search" selected>media.topic.search</option>
+                  <option value="ai.search.chat">ai.search.chat</option>
                   <option value="media.script.generate">media.script.generate</option>
                   <option value="media.script.select">media.script.select</option>
                   <option value="media.chat">media.chat</option>
@@ -1586,6 +1587,38 @@
               search_goal: taskBriefEl.value.trim(),
               platform: "web",
               max_results: 5,
+              context: {
+                source: "simple-chat-task-panel",
+              },
+            },
+            output_schema: {
+              mode: "json_object",
+              task_type: taskType,
+            },
+            metadata: {
+              source: "simple-chat-task-panel",
+            },
+          };
+        }
+        if (taskType === "media.topic.search") {
+          return {
+            task_type: taskType,
+            task_key: `simple-chat-${taskType}-${Date.now()}`,
+            title: taskTopicEl.value.trim() || "Media topic search",
+            user_id: userId,
+            stream: true,
+            input_payload: {
+              message: taskTopicEl.value.trim(),
+              topic_query: taskTopicEl.value.trim(),
+              search_goal: taskBriefEl.value.trim(),
+              platform: taskPlatformEl.value || "douyin",
+              max_results: 5,
+              max_topics: 5,
+              business_axes: ["military_career_growth", "education", "certificate", "drone", "veteran_employment"],
+              account_context: {
+                channel: "douyin",
+                positioning: "military career growth and planning",
+              },
               context: {
                 source: "simple-chat-task-panel",
               },
