@@ -47,6 +47,8 @@ class SchedulerTaskHandler:
             event_type="scheduler_request_built",
             stage="scheduler_request_build",
             message="Scheduler request built.",
+            step_id="scheduler_request_build",
+            step_index=10,
             payload={
                 "agent_id": profile.agent_id,
                 "primary_skill": request.primary_skill,
@@ -64,6 +66,8 @@ class SchedulerTaskHandler:
                     event_type="agent_metadata",
                     stage="agent_stream",
                     message="Agent stream metadata received.",
+                    step_id="agent_metadata",
+                    step_index=20,
                     payload=payload,
                     thread_id=event.thread_id,
                     session_id=event.session_id,
@@ -76,11 +80,14 @@ class SchedulerTaskHandler:
                     event_type="agent_final",
                     stage="agent_stream",
                     message="Agent stream finished.",
+                    step_id="agent_final",
+                    step_index=40,
                     payload=payload,
                     thread_id=event.thread_id,
                     session_id=event.session_id,
                     final_content=str(data.get("content") or ""),
                     usage=data.get("usage"),
+                    token_usage=data.get("usage"),
                 )
                 continue
 
@@ -91,6 +98,8 @@ class SchedulerTaskHandler:
                 event_type=event_type,
                 stage="agent_stream",
                 message=message,
+                step_id="agent_stream",
+                step_index=30,
                 payload=payload,
                 delta=delta,
                 thread_id=event.thread_id,

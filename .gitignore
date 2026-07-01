@@ -20,6 +20,7 @@ localdata/private_config/
 localdata/external_skills/
 localdata/logs/
 localdata/redis/
+localdata/*.log
 .local/
 *.private.json
 

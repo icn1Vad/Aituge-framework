@@ -208,6 +208,8 @@ async def init_db():
 
     async with get_engine().begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
+    from task_manager.models import ensure_task_manager_schema
+    await ensure_task_manager_schema(get_engine())
 
 
 @asynccontextmanager

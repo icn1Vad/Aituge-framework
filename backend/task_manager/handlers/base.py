@@ -14,6 +14,13 @@ class TaskHandlerEvent:
     message: str
     payload: dict[str, Any] = field(default_factory=dict)
     level: str = "info"
+    step_id: str | None = None
+    step_index: int | None = None
+    item_id: str | None = None
+    duration_ms: int | None = None
+    token_usage: dict[str, Any] | None = None
+    error_code: str | None = None
+    visible: bool = True
     delta: str = ""
     thread_id: str | None = None
     session_id: str | None = None

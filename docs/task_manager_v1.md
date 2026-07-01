@@ -73,12 +73,18 @@ Continues a media task conversation with task lifecycle and event persistence.
 Main task instance table.
 
 - `id`: unique task id.
+- `parent_task_id`: parent task id for split tasks or subflows.
+- `root_task_id`: root task id for a task tree. Root tasks point to themselves.
+- `task_key`: optional business idempotency or trace key from the caller.
 - `task_type`: business task type such as `media.script.generate`.
 - `status`: `created`, `running`, `succeeded`, `failed`, or `cancelled`.
 - `title`: display title.
+- `handler_name`: handler selected from the task registry, currently `scheduler`.
 - `input_payload_json`: business input and resource references. Do not store large files or full PDFs here.
 - `result_payload_json`: final structured result, parsed JSON if available, usage, thread id, and session id.
 - `error_payload_json`: failure type, stage, message, and retryability.
+- `definition_snapshot_json`: registry definition captured at task creation time.
+- `output_schema_json`: expected output contract provided by the caller.
 - `agent_id`: Agent Profile used by this task.
 - `thread_id`: SQLite conversation thread id from Single Agent.
 - `session_id`: Redis live-context session id from Single Agent.
@@ -87,7 +93,10 @@ Main task instance table.
 - `stream_mode`: whether the task was requested as streaming.
 - `current_run_id`: current run attempt id.
 - `attempt_count`: number of execution attempts.
-- `created_at`, `started_at`, `finished_at`, `updated_at`: lifecycle timestamps.
+- `progress_current`, `progress_total`: task-level progress counters.
+- `cancel_requested`: cooperative cancellation flag for future long-running handlers.
+- `priority`: scheduling priority placeholder.
+- `created_at`, `started_at`, `finished_at`, `expires_at`, `updated_at`: lifecycle timestamps.
 - `metadata_json`: request metadata such as source, version, or request id.
 
 ### `tuge_task_event`
@@ -97,13 +106,36 @@ Task timeline and debugging event table.
 - `id`: unique event id.
 - `task_id`: owning task id.
 - `run_id`: owning run attempt id.
+- `parent_event_id`: optional parent event id.
 - `sequence`: per-task event sequence.
 - `event_type`: `task_created`, `task_started`, `scheduler_request_built`, `stream_chunk`, `agent_metadata`, `agent_final`, `task_succeeded`, `task_failed`, etc.
 - `level`: `info`, `warning`, or `error`.
 - `stage`: `task_manager`, `scheduler_request_build`, `agent_stream`, `result_save`, etc.
+- `step_id`, `step_index`: stable step identifiers for timeline display and debugging.
+- `item_id`: optional related `tuge_task_item.id`.
+- `duration_ms`: optional step duration.
+- `token_usage_json`: token usage for agent-related events when available.
+- `error_code`: structured error code or exception class.
+- `visible`: whether the event should be shown in normal UI timelines.
 - `message`: short readable log message.
 - `payload_json`: bounded event details. Stream chunks are buffered before being persisted.
 - `created_at`: event timestamp.
+
+### `tuge_task_item`
+
+Per-object work table for script candidates, table rows, files, or other batch items. The first version creates items from `input_payload.items`, `input_payload.rows`, or `input_payload.script_candidates`; future handlers can update each item while running.
+
+- `id`: unique item id.
+- `task_id`: owning task id.
+- `run_id`: run attempt id once an item is processed.
+- `item_type`: `item`, `table_row`, `script_candidate`, etc.
+- `item_key`: caller-facing item id, row key, candidate id, or generated key.
+- `sequence`: item order inside the task.
+- `status`: `pending`, `running`, `succeeded`, `failed`, or `skipped`.
+- `input_payload_json`: bounded input for this item.
+- `result_payload_json`: item-level result.
+- `error_payload_json`: item-level error.
+- `created_at`, `started_at`, `finished_at`, `updated_at`: item lifecycle timestamps.
 
 ## API
 
@@ -170,21 +202,28 @@ GET /task-manager/tasks/{task_id}
 GET /task-manager/tasks/{task_id}/events
 ```
 
+### Query Items
+
+```http
+GET /task-manager/tasks/{task_id}/items
+```
+
 ## Frontend Test Flow
 
 1. Start the local app.
 2. Open `http://127.0.0.1:8894/`.
 3. In the left sidebar, find `TaskManager v1`.
-4. Fill in topic, platform, duration, and source brief.
-5. Click `Run media script task`.
+4. For generation testing, keep `media.script.generate`, fill topic, duration, and source brief, then click `Run media script task`.
+5. For structure/item testing, switch to `media.script.select`. The candidate JSON textarea is sent as `input_payload.script_candidates`, and each candidate is persisted as one `tuge_task_item`.
 6. Watch the assistant area stream output.
-7. After success, the final structured result is rendered in the assistant bubble.
-8. The sidebar status shows the task id prefix.
+7. After success, the final assistant bubble includes both the model result and a `task_manager` block with `task_id`, `handler`, `progress`, and `item_count`.
+8. The sidebar `structure` box shows the durable task snapshot, item list, and recent event steps.
 9. Use API calls to inspect durable records:
 
 ```powershell
 Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8894/task-manager/tasks/{task_id}
 Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8894/task-manager/tasks/{task_id}/events
+Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8894/task-manager/tasks/{task_id}/items
 ```
 
 ## Automated Tests
@@ -201,10 +240,10 @@ Full test suite:
 E:\MyProjects\AIflamework\.tools\poetry-venv\Scripts\poetry.exe run pytest -q
 ```
 
-Current verified result:
+Current verified commands:
 
-- `tests/test_task_manager.py`: `1 passed`
-- full suite: `59 passed`
+- `.\.venv\Scripts\python.exe -m pytest tests/test_task_manager.py`
+- `.\.venv\Scripts\python.exe -m compileall backend/task_manager backend/single-agent/db/db_context.py`
 
 ## Coordination Needed With Ning Ruixuan
 

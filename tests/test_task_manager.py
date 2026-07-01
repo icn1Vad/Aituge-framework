@@ -123,13 +123,47 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
                 },
             )
             assert create_response.status_code == 200
-            task_id = create_response.json()["task"]["id"]
+            created_task = create_response.json()["task"]
+            task_id = created_task["id"]
+            assert created_task["root_task_id"] == task_id
+            assert created_task["handler_name"] == "scheduler"
+            assert created_task["definition_snapshot_json"]["task_type"] == "media.script.generate"
+            assert created_task["progress_total"] == 1
+            assert created_task["cancel_requested"] is False
+
+            item_create_response = await client.post(
+                "/task-manager/tasks",
+                json={
+                    "task_type": "media.script.select",
+                    "title": "Script candidate structure test",
+                    "task_key": "media-select-smoke",
+                    "user_id": "task-manager-test-user",
+                    "input_payload": {
+                        "topic": "TaskManager",
+                        "script_candidates": [
+                            {"id": "candidate-a", "title": "A", "content": "A script"},
+                            {"id": "candidate-b", "title": "B", "content": "B script"},
+                        ],
+                    },
+                },
+            )
+            assert item_create_response.status_code == 200
+            item_task = item_create_response.json()["task"]
+            assert item_task["task_key"] == "media-select-smoke"
+            assert item_task["progress_total"] == 2
+            items_response = await client.get(f"/task-manager/tasks/{item_task['id']}/items")
+            assert items_response.status_code == 200
+            items = items_response.json()["items"]
+            assert [item["item_key"] for item in items] == ["candidate-a", "candidate-b"]
+            assert all(item["item_type"] == "script_candidate" for item in items)
+            assert all(item["status"] == "pending" for item in items)
 
             run_response = await client.post(f"/task-manager/tasks/{task_id}/run", json={"stream": False})
             assert run_response.status_code == 200
             body = run_response.json()
             task = body["task"]
             assert task["status"] == "succeeded"
+            assert task["progress_current"] == task["progress_total"] == 1
             assert task["thread_id"]
             assert task["session_id"]
             assert task["result_payload_json"]["structured"]["final_script"]["topic_name"] == "Agent 架构设计"
@@ -142,6 +176,10 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             assert "task_created" in event_types
             assert "scheduler_request_built" in event_types
             assert "agent_final" in event_types
+            events = events_response.json()["events"]
+            assert any(event["step_id"] == "scheduler_request_build" for event in events)
+            assert any(event["step_id"] == "agent_final" for event in events)
+            assert all("token_usage_json" in event for event in events)
 
         await session_history_manager.clear_history("task-manager-test-user", task["session_id"])
         await _delete_thread(task["thread_id"])

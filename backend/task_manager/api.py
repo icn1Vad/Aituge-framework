@@ -16,7 +16,7 @@ from .schemas import (
     TaskRunRequest,
     TaskRunResponse,
 )
-from .service import TaskManagerService, event_to_read, task_to_read
+from .service import TaskManagerService, event_to_read, item_to_read, task_to_read
 
 
 def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
@@ -77,6 +77,18 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
             raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
         rows = await service.list_events(task_id, limit=limit, offset=offset)
         return {"events": [event_to_read(row) for row in rows]}
+
+    @router.get("/tasks/{task_id}/items")
+    async def task_items(
+        task_id: str,
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+    ):
+        service = TaskManagerService(options)
+        if await service.get_task(task_id) is None:
+            raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
+        rows = await service.list_items(task_id, limit=limit, offset=offset)
+        return {"items": [item_to_read(row) for row in rows]}
 
     @router.post("/tasks/{task_id}/run", response_model=TaskRunResponse)
     async def run_task(task_id: str, request: TaskRunRequest | None = None):

@@ -192,6 +192,21 @@
         resize: vertical;
       }
 
+      .task-items-textarea {
+        min-height: 86px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+      }
+
+      .task-debug {
+        min-height: 44px;
+        max-height: 120px;
+        overflow: auto;
+        white-space: pre-wrap;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 11px;
+      }
+
       .discussion-topic {
         min-height: 70px;
         width: 100%;
@@ -731,14 +746,17 @@
             <div class="task-grid">
               <select id="taskPlatform" class="task-select">
                 <option value="douyin">douyin</option>
-                <option value="shipinhao">shipinhao</option>
-                <option value="xiaohongshu">xiaohongshu</option>
               </select>
               <input id="taskDuration" class="task-input" type="number" min="15" max="300" value="60" />
             </div>
             <textarea id="taskBrief" class="task-textarea">Use the meeting notes to explain the Agent layers and TaskManager boundary.</textarea>
+            <textarea id="taskCandidates" class="task-textarea task-items-textarea">[
+  {"id":"candidate-a","title":"TaskManager structure","content":"Explain task lifecycle, events, and item tracking."},
+  {"id":"candidate-b","title":"Agent boundary","content":"Explain why business orchestration stays outside Single Agent."}
+]</textarea>
             <button id="runMediaTask" class="rag-btn" type="button">Run media script task</button>
             <div id="taskStatus" class="rag-status">Task: idle</div>
+            <div id="taskDebug" class="rag-status task-debug">structure: idle</div>
           </div>
         </details>
         <div class="rag-panel">
@@ -821,8 +839,10 @@
       const taskPlatformEl = document.getElementById("taskPlatform");
       const taskDurationEl = document.getElementById("taskDuration");
       const taskBriefEl = document.getElementById("taskBrief");
+      const taskCandidatesEl = document.getElementById("taskCandidates");
       const runMediaTaskEl = document.getElementById("runMediaTask");
       const taskStatusEl = document.getElementById("taskStatus");
+      const taskDebugEl = document.getElementById("taskDebug");
       const USER_ID_KEY = "tuge-simple-chat-user-id";
       const AGENT_ID_KEY = "tuge-simple-chat-agent-id";
       const DEFAULT_AGENT_ID = "default-single-agent";
@@ -1463,22 +1483,75 @@
       }
 
       function buildMediaTaskPayload() {
+        const taskType = taskTypeEl.value || "media.script.generate";
+        const inputPayload = {
+          topic: taskTopicEl.value.trim(),
+          platform: taskPlatformEl.value,
+          duration_seconds: Number(taskDurationEl.value || 60),
+          source_brief: taskBriefEl.value.trim(),
+          expected_output: "Return one JSON object following the selected media task skill.",
+        };
+        if (taskType === "media.script.select") {
+          inputPayload.script_candidates = parseTaskCandidates();
+        }
         return {
-          task_type: taskTypeEl.value || "media.script.generate",
+          task_type: taskType,
+          task_key: `simple-chat-${taskType}-${Date.now()}`,
           title: taskTopicEl.value.trim() || "Media script task",
           user_id: userId,
           stream: true,
-          input_payload: {
-            topic: taskTopicEl.value.trim(),
-            platform: taskPlatformEl.value,
-            duration_seconds: Number(taskDurationEl.value || 60),
-            source_brief: taskBriefEl.value.trim(),
-            expected_output: "Return one JSON object following media-script-generator.",
+          input_payload: inputPayload,
+          output_schema: {
+            mode: "json_object",
+            task_type: taskType,
           },
           metadata: {
             source: "simple-chat-task-panel",
           },
         };
+      }
+
+      function parseTaskCandidates() {
+        const text = taskCandidatesEl.value.trim();
+        if (!text) return [];
+        const parsed = JSON.parse(text);
+        if (!Array.isArray(parsed)) throw new Error("Task candidates must be a JSON array.");
+        return parsed;
+      }
+
+      async function loadTaskStructure(taskId) {
+        const [taskRes, itemsRes, eventsRes] = await Promise.all([
+          fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}`),
+          fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}/items`),
+          fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}/events?limit=20`),
+        ]);
+        const taskBody = taskRes.ok ? await taskRes.json() : {};
+        const itemsBody = itemsRes.ok ? await itemsRes.json() : {};
+        const eventsBody = eventsRes.ok ? await eventsRes.json() : {};
+        const task = taskBody.task || {};
+        const items = itemsBody.items || [];
+        const events = eventsBody.events || [];
+        const summary = {
+          task_id: task.id,
+          status: task.status,
+          handler: task.handler_name,
+          progress: `${task.progress_current || 0}/${task.progress_total || 0}`,
+          root_task_id: task.root_task_id,
+          task_key: task.task_key,
+          items: items.map((item) => ({
+            key: item.item_key,
+            type: item.item_type,
+            status: item.status,
+          })),
+          recent_events: events.slice(-6).map((event) => ({
+            seq: event.sequence,
+            type: event.event_type,
+            step: event.step_id,
+            stage: event.stage,
+          })),
+        };
+        taskDebugEl.textContent = JSON.stringify(summary, null, 2);
+        return { task, items, events };
       }
 
       async function runMediaTask() {
@@ -1519,18 +1592,27 @@
               nodes.bubble.textContent += `\n\nTask failed: ${payload.message || payload.payload_json?.message || ""}`;
             }
             if (event === "task_succeeded" && taskId) {
-              const taskRes = await fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}`);
-              if (taskRes.ok) {
-                const taskBody = await taskRes.json();
-                const task = taskBody.task || {};
-                threadId = task.thread_id || threadId;
-                const result = task.result_payload_json || {};
-                nodes.bubble.textContent = JSON.stringify(result.structured || result, null, 2);
-                renderThreads((result.content || "").slice(0, 36));
-              }
+              const { task, items } = await loadTaskStructure(taskId);
+              threadId = task.thread_id || threadId;
+              const result = task.result_payload_json || {};
+              nodes.bubble.textContent = JSON.stringify(
+                {
+                  result: result.structured || result,
+                  task_manager: {
+                    task_id: task.id,
+                    handler: task.handler_name,
+                    progress: `${task.progress_current || 0}/${task.progress_total || 0}`,
+                    item_count: items.length,
+                  },
+                },
+                null,
+                2
+              );
+              renderThreads((result.content || "").slice(0, 36));
             }
           });
         }
+        if (taskId) await loadTaskStructure(taskId);
         await loadThreads();
         setTaskBusy(false, taskId ? `Task: done / ${taskId.slice(0, 8)}` : "Task: done");
         setBusy(false, "ready");

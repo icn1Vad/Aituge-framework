@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import asdict
 from typing import Any, AsyncIterator, Optional
 
 from sqlalchemy import desc
@@ -12,9 +13,9 @@ from scheduling.scheduler import SchedulingRuntimeOptions
 
 from .handlers.base import TaskHandlerEvent
 from .handlers.scheduler_task import SchedulerTaskHandler
-from .models import TaskEntity, TaskEventEntity, utc_now
+from .models import TaskEntity, TaskEventEntity, TaskItemEntity, utc_now
 from .registry import TaskDefinition, get_task_definition
-from .schemas import TaskCreateRequest, TaskEventRead, TaskRead, TaskRunRequest
+from .schemas import TaskCreateRequest, TaskEventRead, TaskItemRead, TaskRead, TaskRunRequest
 
 
 class TaskManagerService:
@@ -23,19 +24,41 @@ class TaskManagerService:
 
     async def create_task(self, request: TaskCreateRequest) -> TaskEntity:
         definition = get_task_definition(request.task_type)
+        task_id = uuid.uuid4().hex
+        task_items = _extract_task_items(request.input_payload)
         task = TaskEntity(
+            id=task_id,
+            parent_task_id=request.parent_task_id,
+            root_task_id=request.root_task_id or request.parent_task_id or task_id,
+            task_key=request.task_key,
             task_type=request.task_type,
             title=request.title or definition.name,
+            handler_name=definition.handler,
             input_payload_json=request.input_payload,
+            definition_snapshot_json=_definition_snapshot(definition),
+            output_schema_json=request.output_schema,
             agent_id=request.agent_id or definition.default_agent_id,
             thread_id=request.thread_id,
             session_id=request.session_id,
             user_id=request.user_id,
             stream_mode=request.stream,
+            progress_total=len(task_items) or 1,
+            priority=request.priority,
+            expires_at=request.expires_at,
             metadata_json=request.metadata,
         )
         async with create_db_session() as session:
             session.add(task)
+            for index, item in enumerate(task_items, start=1):
+                session.add(
+                    TaskItemEntity(
+                        task_id=task.id,
+                        item_type=item["item_type"],
+                        item_key=item["item_key"],
+                        sequence=index,
+                        input_payload_json=item["payload"],
+                    )
+                )
             await session.commit()
             await session.refresh(task)
         await self.record_event(
@@ -44,7 +67,14 @@ class TaskManagerService:
             event_type="task_created",
             stage="task_manager",
             message="Task created.",
-            payload={"task_type": task.task_type, "agent_id": task.agent_id},
+            step_id="task_create",
+            step_index=0,
+            payload={
+                "task_type": task.task_type,
+                "agent_id": task.agent_id,
+                "handler_name": task.handler_name,
+                "item_count": len(task_items),
+            },
         )
         return task
 
@@ -66,6 +96,18 @@ class TaskManagerService:
                 select(TaskEventEntity)
                 .where(TaskEventEntity.task_id == task_id)
                 .order_by(TaskEventEntity.sequence)
+                .offset(offset)
+                .limit(limit)
+            )
+            result = await session.exec(statement)
+            return list(result.all())
+
+    async def list_items(self, task_id: str, limit: int = 200, offset: int = 0) -> list[TaskItemEntity]:
+        async with create_db_session() as session:
+            statement = (
+                select(TaskItemEntity)
+                .where(TaskItemEntity.task_id == task_id)
+                .order_by(TaskItemEntity.sequence)
                 .offset(offset)
                 .limit(limit)
             )
@@ -100,6 +142,8 @@ class TaskManagerService:
             stage="task_manager",
             message="Task started.",
             payload={"attempt_count": task.attempt_count, "task_type": task.task_type},
+            step_id="task_start",
+            step_index=1,
         )
         yield TaskEventRead.model_validate(started)
 
@@ -137,6 +181,8 @@ class TaskManagerService:
                     stage="agent_stream",
                     message="Buffered agent stream chunk received.",
                     payload={"delta": "".join(stream_buffer)},
+                    step_id="agent_stream",
+                    step_index=30,
                 )
                 yield TaskEventRead.model_validate(event)
 
@@ -155,6 +201,9 @@ class TaskManagerService:
                 stage="result_save",
                 message="Task succeeded.",
                 payload={"has_structured_output": structured_output is not None},
+                step_id="task_finish",
+                step_index=99,
+                token_usage=final_usage,
             )
             yield TaskEventRead.model_validate(succeeded)
         except Exception as exc:
@@ -173,6 +222,9 @@ class TaskManagerService:
                 stage="task_manager",
                 message=str(exc),
                 payload=error,
+                step_id="task_finish",
+                step_index=99,
+                error_code=exc.__class__.__name__,
             )
             yield TaskEventRead.model_validate(failed)
             raise
@@ -191,6 +243,13 @@ class TaskManagerService:
             stage=event.stage,
             message=event.message,
             payload=event.payload,
+            step_id=event.step_id,
+            step_index=event.step_index,
+            item_id=event.item_id,
+            duration_ms=event.duration_ms,
+            token_usage=event.token_usage or event.usage,
+            error_code=event.error_code,
+            visible=event.visible,
         )
 
     async def record_event(
@@ -203,6 +262,14 @@ class TaskManagerService:
         message: str,
         payload: dict[str, Any] | None = None,
         level: str = "info",
+        parent_event_id: str | None = None,
+        step_id: str | None = None,
+        step_index: int | None = None,
+        item_id: str | None = None,
+        duration_ms: int | None = None,
+        token_usage: dict[str, Any] | None = None,
+        error_code: str | None = None,
+        visible: bool = True,
     ) -> TaskEventEntity:
         async with create_db_session() as session:
             statement = (
@@ -215,10 +282,18 @@ class TaskManagerService:
             event = TaskEventEntity(
                 task_id=task_id,
                 run_id=run_id,
+                parent_event_id=parent_event_id,
                 sequence=(latest.sequence + 1) if latest else 1,
                 event_type=event_type,
                 level=level,
                 stage=stage,
+                step_id=step_id,
+                step_index=step_index,
+                item_id=item_id,
+                duration_ms=duration_ms,
+                token_usage_json=token_usage or {},
+                error_code=error_code,
+                visible=visible,
                 message=message,
                 payload_json=payload or {},
             )
@@ -253,6 +328,9 @@ class TaskManagerService:
             task.status = "running"
             task.current_run_id = uuid.uuid4().hex
             task.attempt_count += 1
+            task.progress_current = 0
+            if not task.progress_total:
+                task.progress_total = 1
             task.started_at = utc_now()
             task.finished_at = None
             task.error_payload_json = None
@@ -299,9 +377,27 @@ class TaskManagerService:
             task.status = status
             task.result_payload_json = result
             task.error_payload_json = error
-            task.finished_at = utc_now()
-            task.updated_at = utc_now()
+            now = utc_now()
+            if status == "succeeded":
+                task.progress_current = task.progress_total or 1
+            task.finished_at = now
+            task.updated_at = now
             session.add(task)
+            item_result = await session.exec(select(TaskItemEntity).where(TaskItemEntity.task_id == task_id))
+            for item in item_result.all():
+                if item.status not in {"pending", "running"}:
+                    continue
+                item.run_id = task.current_run_id
+                item.started_at = item.started_at or task.started_at or now
+                item.finished_at = now
+                item.updated_at = now
+                if status == "succeeded":
+                    item.status = "succeeded"
+                    item.result_payload_json = item.result_payload_json or {"processed_by": "task_level_handler"}
+                elif status == "failed":
+                    item.status = "failed"
+                    item.error_payload_json = item.error_payload_json or error
+                session.add(item)
             await session.commit()
             await session.refresh(task)
             return task
@@ -324,9 +420,50 @@ def _try_parse_json(content: str) -> Any:
         return None
 
 
+def _definition_snapshot(definition: TaskDefinition) -> dict[str, Any]:
+    return asdict(definition)
+
+
+def _extract_task_items(input_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    for source_key, item_type in (
+        ("items", "item"),
+        ("rows", "table_row"),
+        ("script_candidates", "script_candidate"),
+    ):
+        raw_items = input_payload.get(source_key)
+        if isinstance(raw_items, list):
+            items: list[dict[str, Any]] = []
+            for index, raw_item in enumerate(raw_items, start=1):
+                if isinstance(raw_item, dict):
+                    payload = raw_item
+                    item_key = (
+                        raw_item.get("id")
+                        or raw_item.get("key")
+                        or raw_item.get("name")
+                        or raw_item.get("title")
+                        or f"{source_key}-{index}"
+                    )
+                else:
+                    payload = {"value": raw_item}
+                    item_key = f"{source_key}-{index}"
+                items.append(
+                    {
+                        "item_type": item_type,
+                        "item_key": str(item_key),
+                        "payload": payload,
+                    }
+                )
+            return items
+    return []
+
+
 def task_to_read(task: TaskEntity) -> TaskRead:
     return TaskRead.model_validate(task)
 
 
 def event_to_read(event: TaskEventEntity) -> TaskEventRead:
     return TaskEventRead.model_validate(event)
+
+
+def item_to_read(item: TaskItemEntity) -> TaskItemRead:
+    return TaskItemRead.model_validate(item)
