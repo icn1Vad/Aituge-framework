@@ -22,6 +22,37 @@ class JsonCapturingAgent:
 
     async def run_async(self, state):
         async def gen():
+            if "# Douyin Account Report Skill" in self.system_prompt:
+                content = {
+                    "status": "partial_data",
+                    "account_id": "demo-douyin-account",
+                    "account_name": "Demo Douyin Account",
+                    "platform": "douyin",
+                    "analysis_scope": "all_data",
+                    "covered_period": {"scope": "all_available_data"},
+                    "warnings": ["sample data only"],
+                    "missing_fields": ["comment_text", "full_script_text"],
+                    "executive_summary": "The account has usable all-data evidence but lacks comment text and scripts.",
+                    "key_metrics": {"play_count": 18600, "publish_count": 3},
+                    "sections": {
+                        "overall_performance": {
+                            "title": "Overall performance",
+                            "summary": "The sample content has uneven performance.",
+                            "findings": ["video-001 is the strongest item."],
+                            "evidence": ["video-001 play_count=9200"],
+                            "limitations": ["No monthly split required for this all-data task."],
+                            "next_actions": ["Expand the strongest topic type."],
+                        }
+                    },
+                    "top_content_analysis": [{"id": "video-001", "reason": "Highest play count."}],
+                    "low_content_analysis": [{"id": "video-003", "reason": "Lowest play count."}],
+                    "data_limitations": ["No comment text."],
+                    "next_month_actions": ["Publish follow-up policy explainer."],
+                    "export_markdown": "# Account report\n\nSample report.",
+                }
+                yield TextChunk(delta=json.dumps(content, ensure_ascii=False))
+                return
+
             if "# Table Audit" in self.system_prompt:
                 content = {
                     "risk_level": "low",
@@ -132,10 +163,18 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
                 item for item in definitions.json()["definitions"]
                 if item["task_type"] == "table.audit"
             )
+            douyin_report_definition = next(
+                item for item in definitions.json()["definitions"]
+                if item["task_type"] == "analytics.douyin.account_report.generate"
+            )
             assert table_definition["input_schema_name"] == "table_audit_input"
             assert table_definition["output_schema_name"] == "batch_task_output"
             assert table_definition["item_output_schema_name"] == "table_audit_item_output"
             assert table_definition["default_skill_package"] == "table-audit-package"
+            assert douyin_report_definition["default_agent_id"] == "report-agent"
+            assert douyin_report_definition["default_skill_package"] == "douyin-account-report-package"
+            assert douyin_report_definition["input_schema_name"] == "douyin_account_report_input"
+            assert douyin_report_definition["output_schema_name"] == "douyin_account_report_output"
 
             missing_field_response = await client.post(
                 "/task-manager/tasks",
@@ -184,6 +223,20 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             )
             assert invalid_policy_response.status_code == 400
             assert "table_audit_input" in invalid_policy_response.text
+
+            missing_report_data_response = await client.post(
+                "/task-manager/tasks",
+                headers=headers,
+                json={
+                    "task_type": "analytics.douyin.account_report.generate",
+                    "title": "Missing report data",
+                    "input_payload": {
+                        "analysis_scope": "all_data",
+                    },
+                },
+            )
+            assert missing_report_data_response.status_code == 400
+            assert "douyin_account_report_input" in missing_report_data_response.text
 
             create_response = await client.post(
                 "/task-manager/tasks",
@@ -307,6 +360,40 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             assert any(event["step_id"] == "scheduler_request_build" for event in events)
             assert any(event["step_id"] == "agent_final" for event in events)
             assert all("token_usage_json" in event for event in events)
+
+            douyin_report_response = await client.post(
+                "/task-manager/run",
+                headers=headers,
+                json={
+                    "task_type": "analytics.douyin.account_report.generate",
+                    "title": "Douyin all-data report",
+                    "user_id": "task-manager-test-user",
+                    "stream": False,
+                    "input_payload": {
+                        "account_id": "demo-douyin-account",
+                        "account_name": "Demo Douyin Account",
+                        "analysis_scope": "all_data",
+                        "report_depth": "deep",
+                        "report_context": {
+                            "metrics_summary": {"play_count": 18600, "publish_count": 3},
+                            "missing_fields": ["comment_text", "full_script_text"],
+                        },
+                        "content_items": [
+                            {"id": "video-001", "title": "A", "play_count": 9200},
+                            {"id": "video-003", "title": "C", "play_count": 3300},
+                        ],
+                    },
+                },
+            )
+            assert douyin_report_response.status_code == 200
+            douyin_report_task = douyin_report_response.json()["task"]
+            assert douyin_report_task["status"] == "succeeded"
+            assert douyin_report_task["agent_id"] == "report-agent"
+            assert (
+                douyin_report_task["result_payload_json"]["structured"]["analysis_scope"]
+                == "all_data"
+            )
+            assert "export_markdown" in douyin_report_task["result_payload_json"]["structured"]
 
             batch_response = await client.post(
                 "/task-manager/run",

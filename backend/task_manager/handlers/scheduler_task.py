@@ -209,6 +209,33 @@ def _build_task_message(task: TaskEntity, definition: TaskDefinition) -> str:
             ]
         )
 
+    if task_type == "analytics.douyin.account_report.generate":
+        analysis_scope = payload.get("analysis_scope") or "all_data"
+        report_goal = payload.get("report_goal") or ""
+        return "\n".join(
+            [
+                "Generate a fact-grounded Douyin account operations analysis report.",
+                "Use the douyin-account-report skill as the task authority.",
+                "Default to analyzing all available account data, not only one calendar month.",
+                "Only use month or date range boundaries when analysis_scope explicitly requests them.",
+                "Do not call any tools for this first TaskManager version. Do not call ReadSkill or code tools.",
+                "Use only the data already present in Full task input.",
+                "Do not invent metrics, audience profiles, comments, benchmarks, retention, or script quality evidence.",
+                "If data is missing, explain the limitation and still produce a useful partial report.",
+                "Return exactly one valid JSON object matching the douyin_account_report_output schema.",
+                "Do not add Markdown or explanation outside the JSON.",
+                "The JSON must parse with json.loads. Escape raw double quotes inside string values.",
+                "Set export_markdown to an empty string for now; do not put multi-line Markdown inside JSON.",
+                "Keep each section concise: summary plus up to 4 findings, 4 evidence strings, 4 limitations, and 4 next_actions.",
+                "",
+                f"Task title: {task.title or definition.name}",
+                f"Analysis scope: {analysis_scope}",
+                f"Report goal: {report_goal}",
+                "Full task input:",
+                pretty_payload,
+            ]
+        )
+
     return "\n".join(
         [
             f"Execute task_type: {task_type}",

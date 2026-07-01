@@ -82,6 +82,14 @@ DEFAULT_SKILL_PACKAGES = [
         "primary_skill": "media-topic-search",
         "auxiliary_skills": [],
     },
+    {
+        "package_name": "douyin-account-report-package",
+        "display_name": "Douyin Account Report Package",
+        "description": "Fact-grounded Douyin account operations reporting across all available data or a requested range.",
+        "tags": ["douyin", "analytics", "report", "task-manager"],
+        "primary_skill": "douyin-account-report",
+        "auxiliary_skills": [],
+    },
 ]
 
 

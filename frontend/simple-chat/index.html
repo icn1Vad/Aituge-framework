@@ -791,6 +791,7 @@
               <div class="task-panel">
                 <select id="taskType" class="task-select">
                   <option value="media.topic.search" selected>media.topic.search</option>
+                  <option value="analytics.douyin.account_report.generate">analytics.douyin.account_report.generate</option>
                   <option value="ai.search.chat">ai.search.chat</option>
                   <option value="media.script.generate">media.script.generate</option>
                   <option value="media.script.select">media.script.select</option>
@@ -1573,6 +1574,84 @@
         }
       }
 
+      const douyinAccountReportContextSample = {
+        account: {
+          account_id: "demo-douyin-account",
+          account_name: "Demo Douyin Account",
+          platform: "douyin"
+        },
+        data_coverage: {
+          scope: "all_available_data",
+          account_metrics_days: 4,
+          content_count: 3,
+          audience_profile: "missing_data",
+          comment_content: "missing_permission",
+          previous_period: "missing_data",
+          benchmark: "missing_data"
+        },
+        metrics_summary: {
+          fans_count: 1280,
+          new_fans_count: 86,
+          profile_visit_count: 420,
+          publish_count: 3,
+          play_count: 18600,
+          like_count: 760,
+          comment_count: 95,
+          share_count: 44,
+          collect_count: 38,
+          interaction_rate: 0.0504
+        },
+        missing_fields: [
+          "age_distribution",
+          "gender_distribution",
+          "region_distribution",
+          "traffic_source",
+          "comment_text",
+          "full_script_text",
+          "benchmark_data",
+          "previous_period_data"
+        ],
+        warnings: [
+          "This is a sample all-data context for TaskManager testing.",
+          "Do not write month-over-month or benchmark conclusions."
+        ]
+      };
+
+      const douyinAccountReportContentSample = [
+        {
+          id: "video-001",
+          title: "军考政策解读：报名节点和材料准备",
+          publish_time: "2026-05-18",
+          play_count: 9200,
+          like_count: 420,
+          comment_count: 55,
+          share_count: 25,
+          collect_count: 20,
+          note: "Highest play count in current all-data sample."
+        },
+        {
+          id: "video-002",
+          title: "退役后职业规划的三个选择",
+          publish_time: "2026-06-03",
+          play_count: 6100,
+          like_count: 260,
+          comment_count: 28,
+          share_count: 14,
+          collect_count: 12
+        },
+        {
+          id: "video-003",
+          title: "无人机培训证书适合哪些人",
+          publish_time: "2026-06-21",
+          play_count: 3300,
+          like_count: 80,
+          comment_count: 12,
+          share_count: 5,
+          collect_count: 6,
+          note: "Lower engagement than the other sample items."
+        }
+      ];
+
       function buildMediaTaskPayload() {
         const taskType = taskTypeEl.value || "media.script.generate";
         if (taskType === "ai.search.chat") {
@@ -1632,6 +1711,43 @@
             },
           };
         }
+        if (taskType === "analytics.douyin.account_report.generate") {
+          const reportContext = parseJsonValue(taskCandidatesEl, "Report context");
+          const contentItems = parseJsonArray(taskRowsEl, "Content items");
+          const contextObject = Array.isArray(reportContext)
+            ? { notes: reportContext }
+            : (reportContext || {});
+          return {
+            task_type: taskType,
+            task_key: `simple-chat-${taskType}-${Date.now()}`,
+            title: taskTopicEl.value.trim() || "Douyin account all-data report",
+            user_id: userId,
+            stream: true,
+            input_payload: {
+              account_id: contextObject.account?.account_id || "demo-douyin-account",
+              account_name: contextObject.account?.account_name || taskTopicEl.value.trim() || "Douyin account",
+              platform: "douyin",
+              analysis_scope: "all_data",
+              report_depth: "deep",
+              report_goal: taskBriefEl.value.trim() || "Generate a complete account operations report from all available data.",
+              report_context: contextObject,
+              metrics_summary: contextObject.metrics_summary || {},
+              content_items: contentItems,
+              top_contents: contentItems.slice(0, 3),
+              low_contents: contentItems.slice(-2),
+              warnings: contextObject.warnings || [],
+              missing_fields: contextObject.missing_fields || [],
+              operator_notes: "This TaskManager test uses all available sample data instead of a monthly-only window.",
+            },
+            output_schema: {
+              mode: "json_object",
+              task_type: taskType,
+            },
+            metadata: {
+              source: "simple-chat-task-panel",
+            },
+          };
+        }
         const inputPayload = {
           topic: taskTopicEl.value.trim(),
           platform: taskPlatformEl.value,
@@ -1671,6 +1787,31 @@
         const parsed = JSON.parse(text);
         if (!Array.isArray(parsed)) throw new Error(`${label} must be a JSON array.`);
         return parsed;
+      }
+
+      function parseJsonValue(element, label) {
+        const text = element.value.trim();
+        if (!text) return {};
+        try {
+          return JSON.parse(text);
+        } catch (error) {
+          throw new Error(`${label} must be valid JSON.`);
+        }
+      }
+
+      function applyTaskDefaults() {
+        const taskType = taskTypeEl.value || "";
+        if (taskType === "analytics.douyin.account_report.generate") {
+          taskTopicEl.value = "抖音账号全量数据运营分析";
+          taskBriefEl.value = "根据这个账号目前所有可用数据写一份完整运营分析报告，不按单月过滤。";
+          taskCandidatesEl.value = JSON.stringify(douyinAccountReportContextSample, null, 2);
+          taskRowsEl.value = JSON.stringify(douyinAccountReportContentSample, null, 2);
+          return;
+        }
+        if (taskType === "media.topic.search") {
+          taskTopicEl.value = "找适合抖音新媒体选题的可靠来源";
+          taskBriefEl.value = "找适合抖音新媒体选题的可靠来源，优先政策解读、官方信息、近期热点";
+        }
       }
 
       function taskRequestHeaders(extra = {}) {
@@ -1933,6 +2074,7 @@
           setBusy(false, "error");
         }
       });
+      taskTypeEl.addEventListener("change", applyTaskDefaults);
       for (const item of sidebarNavItems) {
         item.addEventListener("click", () => switchSidebarView(item.dataset.sidebarView));
       }
