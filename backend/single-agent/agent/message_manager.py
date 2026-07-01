@@ -1,7 +1,7 @@
 from typing import List
 from dataclasses import dataclass, field
 from loguru import logger
-from memory.utils import estimate_tokens_in_text, truncate, get_tokenizer
+from common.tokenization import estimate_tokens_in_text, truncate, get_tokenizer
 from common.llm.models import DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS
 
 
