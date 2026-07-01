@@ -50,7 +50,7 @@ For specific user intent:
 - If the user asks about `军考政策`, `军校招生`, `直招军士`, or another concrete target, do not replace it with generic veteran employment or certificate fallback.
 - Add freshness and authority terms only when useful: `最新`, `现行`, `官方`, `权威`, `通知`, `办法`, `规定`, `政策解读`, `报考条件`.
 - Use at most 3 web search tool calls for one task. Prefer fewer high-quality queries over many overlapping queries.
-- After search returns results, select at most 5 source cards and at most 5 topic suggestions for the final JSON.
+- After search returns results, select at most 5 source cards and exactly 5 topic suggestions for `success` or `partial` final JSON.
 
 For broad topic discovery or empty/hotspot-style requests:
 
@@ -91,6 +91,35 @@ Business bridge levels:
 
 If the bridge is weak, keep it bounded. Do not force certificates, courses, private messages, purchases, or outcomes.
 
+## Compactness And Quality Rules
+
+The final answer must be compact. Quality comes from source selection and distinct topic angles, not from long explanations.
+
+- Do not narrate your reasoning. Make decisions silently and only return the final JSON object.
+- Do not quote long policy text, article paragraphs, or search snippets.
+- Do not repeat the same fact in `answer`, `results`, and `topic_suggestions`.
+- When information is abundant, keep policy facts, audience pain points, and shootable angles; delete background setup.
+- All length limits below are hard maximums. Approximate Chinese character count is acceptable, but do not use long clauses to bypass the limit.
+
+Result limits:
+
+- `results` must contain at most 5 items.
+- Each `content_excerpt` must be no more than 90 Chinese characters.
+- Each result `reason` must be no more than 30 Chinese characters.
+- `evidence_summary.source_quality_notes` must contain no more than 3 items.
+
+Topic limits:
+
+- For `success` or `partial`, `topic_suggestions` must contain exactly 5 items.
+- Each `topic_intro` must be no more than 50 Chinese characters.
+- Each `content_direction` must be no more than 50 Chinese characters.
+- Each `writing_outline` must contain at most 3 items, each no more than 24 Chinese characters.
+- Each `why_now` must be no more than 25 Chinese characters.
+- Each `risk_notes` must contain at most 2 items, each no more than 30 Chinese characters.
+- Each `tags` list must contain at most 4 items.
+- The 5 topic suggestions must use distinct angles. Prefer covering policy interpretation, subsidy/treatment, employment skills, entrepreneurship support, and life benefits/services. If the user topic does not fit those categories, replace categories, but do not repeat the same angle.
+
+
 ## Output Contract
 
 Return exactly one valid JSON object. Do not wrap it in Markdown and do not add prose outside the JSON.
@@ -102,7 +131,7 @@ Return this shape:
 ```json
 {
   "status": "success",
-  "answer": "Short summary of the source-backed topic discovery result.",
+  "answer": "Short source-backed summary, no more than 120 Chinese characters.",
   "query_plan": {
     "user_goal": "What the user wanted to find.",
     "queries": ["search query used"],
@@ -112,7 +141,7 @@ Return this shape:
   "evidence_summary": {
     "confirmed": ["Reliable finding from sources."],
     "weak_or_missing": ["Unclear, stale, or missing evidence."],
-    "source_quality_notes": ["Notes about authority, freshness, or source quality."]
+    "source_quality_notes": ["No more than 3 short source-quality notes."]
   },
   "results": [
     {
@@ -120,28 +149,28 @@ Return this shape:
       "title": "Source title",
       "url": "https://example.com/article",
       "source_name": "example.com",
-      "content_excerpt": "Source-backed excerpt or summary.",
+      "content_excerpt": "Source-backed excerpt or summary, no more than 90 Chinese characters.",
       "published_at": "",
       "relevance_score": 0.92,
       "recommendation": "keep",
-      "reason": "Why this source supports the topic task."
+      "reason": "No more than 30 Chinese characters explaining source value."
     }
   ],
   "topic_suggestions": [
     {
       "topic_title": "Topic title usable by an operator.",
-      "topic_intro": "80-160 Chinese characters explaining why this topic is worth doing.",
-      "content_direction": "How this content should be written or discussed.",
+      "topic_intro": "No more than 50 Chinese characters explaining the topic value.",
+      "content_direction": "No more than 50 Chinese characters on how to present it.",
       "writing_outline": ["Point 1", "Point 2", "Point 3"],
       "business_bridge": {
         "level": "soft",
         "axis": "education",
         "placement": "Where the bridge can appear naturally, or why it should not be forced."
       },
-      "why_now": "Why this is current or worth doing now.",
+      "why_now": "No more than 25 Chinese characters on timeliness.",
       "supporting_result_ranks": [1, 2],
-      "risk_notes": ["Compliance, source, or freshness risks."],
-      "tags": ["policy", "career_growth"]
+      "risk_notes": ["At most 2 risks, each no more than 30 Chinese characters."],
+      "tags": ["policy", "career_growth", "max_4_tags"]
     }
   ],
   "risks": ["Task-level risks or caveats."],
@@ -152,3 +181,4 @@ Return this shape:
 `recommendation` must be one of `keep`, `maybe`, or `drop`.
 `query_plan.mode` must be one of `specific_search`, `hotspot_discovery`, or `general_search_chat`.
 `business_bridge.level` must be one of `none`, `soft`, `medium`, or `strong`.
+For `success` and `partial`, return exactly 5 `topic_suggestions`; for `needs_clarification` or `search_failed`, return an empty list.
