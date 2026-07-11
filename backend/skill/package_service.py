@@ -59,6 +59,14 @@ DEFAULT_SKILL_PACKAGES = [
         "auxiliary_skills": ["media-script-selector"],
     },
     {
+        "package_name": "media-script-chat-package",
+        "display_name": "Media Script Chat Package",
+        "description": "Read-only, context-grounded conversation about one current media script.",
+        "tags": ["media", "script", "chat", "task-manager"],
+        "primary_skill": "media-script-chat",
+        "auxiliary_skills": [],
+    },
+    {
         "package_name": "media-script-research-package",
         "display_name": "Media Script Research Package",
         "description": "Build a source-backed research bundle for one media script task.",
