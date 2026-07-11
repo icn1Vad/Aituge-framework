@@ -132,6 +132,33 @@ class TableAuditInput(TaskPayloadBase):
     expected_output: str = ""
 
 
+class PipelineDemoInput(TaskPayloadBase):
+    goal: str = Field(min_length=1)
+    context: dict[str, Any] = Field(default_factory=dict)
+    require_human_review: bool = False
+
+
+class PipelineDemoAnalysis(StrictPayload):
+    summary: str = Field(min_length=1)
+    steps: list[str] = Field(min_length=1)
+    risks: list[str] = Field(default_factory=list)
+
+
+class PipelineDemoNormalized(StrictPayload):
+    summary: str = Field(min_length=1)
+    steps: list[str] = Field(min_length=1)
+    risks: list[str] = Field(default_factory=list)
+    normalized: Literal[True] = True
+
+
+class PipelineDemoResult(StrictPayload):
+    status: Literal["success", "needs_human_review"]
+    summary: str = Field(min_length=1)
+    steps: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    artifact_ids: list[str] = Field(default_factory=list)
+
+
 class MediaScriptOutput(StrictPayload):
     final_script: dict[str, Any]
     readable_script: str
@@ -250,6 +277,7 @@ _INPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "media_topic_search_input": MediaTopicSearchInput,
     "douyin_account_report_input": DouyinAccountReportInput,
     "table_audit_input": TableAuditInput,
+    "pipeline_demo_input": PipelineDemoInput,
 }
 
 _OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
@@ -259,7 +287,27 @@ _OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "douyin_account_report_output": DouyinAccountReportOutput,
     "table_audit_item_output": TableAuditItemOutput,
     "batch_task_output": BatchTaskOutput,
+    "pipeline_demo_analysis": PipelineDemoAnalysis,
+    "pipeline_demo_normalized": PipelineDemoNormalized,
+    "pipeline_demo_result": PipelineDemoResult,
 }
+
+
+def register_input_schema(name: str, schema: type[BaseModel]) -> None:
+    _register_schema(_INPUT_SCHEMAS, name, schema)
+
+
+def register_output_schema(name: str, schema: type[BaseModel]) -> None:
+    _register_schema(_OUTPUT_SCHEMAS, name, schema)
+
+
+def _register_schema(registry: dict[str, type[BaseModel]], name: str, schema: type[BaseModel]) -> None:
+    if not name:
+        raise ValueError("Schema name is required.")
+    existing = registry.get(name)
+    if existing is not None and existing is not schema:
+        raise ValueError(f"Schema '{name}' is already registered.")
+    registry[name] = schema
 
 
 def validate_input_payload(schema_name: str | None, payload: dict[str, Any]) -> dict[str, Any]:
@@ -285,3 +333,17 @@ def validate_output_payload(schema_name: str | None, payload: Any) -> tuple[bool
         return True, None
     except ValidationError as exc:
         return False, {"schema_name": schema_name, "errors": exc.errors()}
+
+
+def validate_stage_payload(schema_name: str | None, payload: Any) -> dict[str, Any]:
+    if not schema_name:
+        if not isinstance(payload, dict):
+            raise ValueError("Stage payload must be a JSON object.")
+        return payload
+    schema = _OUTPUT_SCHEMAS.get(schema_name) or _INPUT_SCHEMAS.get(schema_name)
+    if schema is None:
+        raise ValueError(f"Unknown stage schema '{schema_name}'.")
+    try:
+        return schema.model_validate(payload).model_dump(exclude_none=True)
+    except ValidationError as exc:
+        raise ValueError(f"Stage payload does not match schema '{schema_name}': {exc.errors()}") from exc

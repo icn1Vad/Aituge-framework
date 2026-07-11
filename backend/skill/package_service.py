@@ -14,6 +14,14 @@ from .package_models import SkillPackageEntity
 
 DEFAULT_SKILL_PACKAGES = [
     {
+        "package_name": "pipeline-demo-package",
+        "display_name": "Pipeline Demo Package",
+        "description": "Business-neutral structured output package for Pipeline runtime validation.",
+        "tags": ["pipeline", "task-manager", "test"],
+        "primary_skill": "pipeline-demo",
+        "auxiliary_skills": [],
+    },
+    {
         "package_name": "general-package",
         "display_name": "General Task Package",
         "description": "General task planning, review, debugging, and concise answer style.",

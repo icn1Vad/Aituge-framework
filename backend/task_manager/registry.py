@@ -18,9 +18,22 @@ class TaskDefinition:
     input_schema_name: str | None = None
     output_schema_name: str | None = None
     item_output_schema_name: str | None = None
+    pipeline_id: str | None = None
 
 
 _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
+    "pipeline.demo": TaskDefinition(
+        task_type="pipeline.demo",
+        name="Pipeline Runtime Demo",
+        description="Business-neutral multi-stage task for validating Pipeline runtime and event streaming.",
+        handler="pipeline",
+        default_agent_id="default-single-agent",
+        default_skill_package="pipeline-demo-package",
+        default_primary_skill="pipeline-demo",
+        input_schema_name="pipeline_demo_input",
+        output_schema_name="pipeline_demo_result",
+        pipeline_id="pipeline-demo-v1",
+    ),
     "media.script.generate": TaskDefinition(
         task_type="media.script.generate",
         name="Media Script Generation",
