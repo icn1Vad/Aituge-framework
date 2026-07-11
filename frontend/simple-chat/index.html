@@ -1894,11 +1894,15 @@
         };
       }
 
+      const taskManagerApiBase = window.location.pathname.startsWith("/script-pipeline-test")
+        ? "/script-pipeline-test/task-manager"
+        : "/task-manager";
+
       async function loadTaskStructure(taskId) {
         const [taskRes, itemsRes, eventsRes] = await Promise.all([
-          fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}`, { headers: taskRequestHeaders() }),
-          fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}/items`, { headers: taskRequestHeaders() }),
-          fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}/events?limit=20`, { headers: taskRequestHeaders() }),
+          fetch(`${taskManagerApiBase}/tasks/${encodeURIComponent(taskId)}`, { headers: taskRequestHeaders() }),
+          fetch(`${taskManagerApiBase}/tasks/${encodeURIComponent(taskId)}/items`, { headers: taskRequestHeaders() }),
+          fetch(`${taskManagerApiBase}/tasks/${encodeURIComponent(taskId)}/events?limit=20`, { headers: taskRequestHeaders() }),
         ]);
         const taskBody = taskRes.ok ? await taskRes.json() : {};
         const itemsBody = itemsRes.ok ? await itemsRes.json() : {};
@@ -1931,11 +1935,11 @@
 
       async function loadPipelineStructure(taskId, runId) {
         const [taskRes, runRes, stagesRes, eventsRes, artifactsRes] = await Promise.all([
-          fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}`, { headers: taskRequestHeaders() }),
-          fetch(`/task-manager/runs/${encodeURIComponent(runId)}`, { headers: taskRequestHeaders() }),
-          fetch(`/task-manager/runs/${encodeURIComponent(runId)}/stages`, { headers: taskRequestHeaders() }),
-          fetch(`/task-manager/runs/${encodeURIComponent(runId)}/events?limit=200`, { headers: taskRequestHeaders() }),
-          fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}/artifacts`, { headers: taskRequestHeaders() }),
+          fetch(`${taskManagerApiBase}/tasks/${encodeURIComponent(taskId)}`, { headers: taskRequestHeaders() }),
+          fetch(`${taskManagerApiBase}/runs/${encodeURIComponent(runId)}`, { headers: taskRequestHeaders() }),
+          fetch(`${taskManagerApiBase}/runs/${encodeURIComponent(runId)}/stages`, { headers: taskRequestHeaders() }),
+          fetch(`${taskManagerApiBase}/runs/${encodeURIComponent(runId)}/events?limit=200`, { headers: taskRequestHeaders() }),
+          fetch(`${taskManagerApiBase}/tasks/${encodeURIComponent(taskId)}/artifacts`, { headers: taskRequestHeaders() }),
         ]);
         const task = taskRes.ok ? (await taskRes.json()).task : {};
         const run = runRes.ok ? (await runRes.json()).run : {};
@@ -1978,7 +1982,7 @@
       }
 
       async function consumePipelineStream(taskId, runId, nodes, afterSequence = 0) {
-        const url = `/task-manager/runs/${encodeURIComponent(runId)}/events/stream?after_sequence=${afterSequence}`;
+        const url = `${taskManagerApiBase}/runs/${encodeURIComponent(runId)}/events/stream?after_sequence=${afterSequence}`;
         const res = await fetch(url, { headers: taskRequestHeaders() });
         if (!res.ok || !res.body) throw new Error(await responseErrorText(res));
         const reader = res.body.getReader();
@@ -2032,14 +2036,14 @@
         setTaskBusy(true, "Pipeline: creating");
         setBusy(true, "pipeline");
         const idempotencyBase = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-        const createRes = await fetch("/task-manager/tasks", {
+        const createRes = await fetch(`${taskManagerApiBase}/tasks`, {
           method: "POST",
           headers: taskRequestHeaders({ "Content-Type": "application/json", "Idempotency-Key": `task-${idempotencyBase}` }),
           body: JSON.stringify(payload),
         });
         if (!createRes.ok) throw new Error(await responseErrorText(createRes));
         activePipelineTaskId = (await createRes.json()).task.id;
-        const startRes = await fetch(`/task-manager/tasks/${encodeURIComponent(activePipelineTaskId)}/runs`, {
+        const startRes = await fetch(`${taskManagerApiBase}/tasks/${encodeURIComponent(activePipelineTaskId)}/runs`, {
           method: "POST",
           headers: taskRequestHeaders({ "Content-Type": "application/json", "Idempotency-Key": `run-${idempotencyBase}` }),
           body: "{}",
@@ -2067,7 +2071,7 @@
         setTaskBusy(true, "Task: streaming");
         setBusy(true, "task");
 
-        const res = await fetch("/task-manager/stream", {
+        const res = await fetch(`${taskManagerApiBase}/stream`, {
           method: "POST",
           headers: taskRequestHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify(payload),
@@ -2283,7 +2287,7 @@
         if (!activePipelineRunId) return;
         cancelPipelineRunEl.disabled = true;
         try {
-          const res = await fetch(`/task-manager/runs/${encodeURIComponent(activePipelineRunId)}/cancel`, {
+          const res = await fetch(`${taskManagerApiBase}/runs/${encodeURIComponent(activePipelineRunId)}/cancel`, {
             method: "POST",
             headers: taskRequestHeaders(),
           });
@@ -2299,7 +2303,7 @@
         approvePipelineRunEl.disabled = true;
         setTaskBusy(true, "Pipeline: resuming");
         try {
-          const res = await fetch(`/task-manager/runs/${encodeURIComponent(activePipelineRunId)}/review`, {
+          const res = await fetch(`${taskManagerApiBase}/runs/${encodeURIComponent(activePipelineRunId)}/review`, {
             method: "POST",
             headers: taskRequestHeaders({ "Content-Type": "application/json" }),
             body: JSON.stringify({
