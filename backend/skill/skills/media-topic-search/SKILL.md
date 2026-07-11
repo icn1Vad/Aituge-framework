@@ -57,6 +57,10 @@ For broad topic discovery or empty/hotspot-style requests:
 - Mix current sources with stable business axes, still using at most 3 web search tool calls.
 - Good fallback axes include current-month veteran employment, active-service certificates/retention, military education upgrade, CAAC/drone training, enlistment planning, and civilian-post planning.
 
+When the task input contains `search_mode`, it is authoritative. Use that exact value in
+`query_plan.mode`; do not reinterpret `hotspot_discovery` as `specific_search` merely because
+the request also names preferred business axes.
+
 If the user message is garbled, unreadable, or too ambiguous to identify the target, return `status="needs_clarification"` with empty `results` and `topic_suggestions`. Do not guess a broad topic.
 
 ## Evidence Rules

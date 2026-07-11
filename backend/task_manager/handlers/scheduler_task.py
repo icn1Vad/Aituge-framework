@@ -183,8 +183,14 @@ def _build_task_message(task: TaskEntity, definition: TaskDefinition) -> str:
     if task_type == "media.topic.search":
         user_message = payload.get("message") or payload.get("topic_query") or ""
         search_goal = payload.get("search_goal") or ""
+        search_mode = payload.get("search_mode") or "specific_search"
         max_results = payload.get("max_results") or 5
         max_topics = payload.get("max_topics") or 5
+        mode_instruction = (
+            "Treat this as broad current-hotspot discovery. Search across recent signals and keep only naturally related topics."
+            if search_mode == "hotspot_discovery"
+            else "Treat this as a specific search. Preserve the user's concrete target in every query."
+        )
         return "\n".join(
             [
                 "Run a reusable new-media topic search task using the configured web search tool.",
@@ -195,6 +201,8 @@ def _build_task_message(task: TaskEntity, definition: TaskDefinition) -> str:
                 "Do not replace a specific search request with generic business-axis fallback topics.",
                 "If the user message is unreadable or too ambiguous, return status='needs_clarification' instead of searching a guessed broad topic.",
                 "Inspect source authority, freshness, relevance, and media business bridge before producing final results.",
+                f"Requested search mode: {search_mode}. This value is authoritative; query_plan.mode must equal it exactly.",
+                mode_instruction,
                 "Return exactly one valid JSON object matching the media_topic_search_output schema.",
                 "Do not add Markdown or explanation outside the JSON.",
                 "The JSON must parse with json.loads. Do not put raw ASCII double quotes inside string values; escape them or use Chinese quotes.",
@@ -202,6 +210,7 @@ def _build_task_message(task: TaskEntity, definition: TaskDefinition) -> str:
                 f"Task title: {task.title or definition.name}",
                 f"User topic search message: {user_message}",
                 f"Search goal: {search_goal}",
+                f"Search mode: {search_mode}",
                 f"Maximum source cards: {max_results}",
                 f"Maximum topic suggestions: {max_topics}",
                 "Full task input:",

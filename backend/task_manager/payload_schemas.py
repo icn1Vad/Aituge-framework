@@ -68,6 +68,7 @@ class MediaTopicSearchInput(TaskPayloadBase):
     message: Optional[str] = None
     topic_query: Optional[str] = None
     search_goal: str = ""
+    search_mode: Literal["specific_search", "hotspot_discovery", "general_search_chat"] = "specific_search"
     platform: Literal["douyin", "wechat_video", "xiaohongshu", "bilibili", "general"] = "douyin"
     max_results: int = Field(default=5, ge=1, le=10)
     max_topics: int = Field(default=5, ge=1, le=8)
