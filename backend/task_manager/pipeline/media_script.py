@@ -16,6 +16,12 @@ def _gateway_url(path: str) -> str:
     return f"{base}{path}"
 
 
+def _finding_text(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("message") or item.get("code") or item)
+    return str(item)
+
+
 async def _post_gateway(path: str, payload: dict[str, Any], context: StageExecutionContext) -> dict[str, Any]:
     headers = {
         "x-user-id": context.task.user_id,
@@ -97,8 +103,8 @@ async def finalize_media_script(context: StageExecutionContext) -> StageServiceR
         "deterministic_score": checks.get("score"),
         "risks": list(dict.fromkeys([
             *[str(item) for item in (writer.get("hermes_agent_result") or {}).get("risks") or []],
-            *[str(item.get("message") or item.get("code") or item) for item in checks.get("findings") or []],
-            *[str(item.get("message") or item.get("code") or item) for item in review.get("compliance_findings") or []],
+            *[_finding_text(item) for item in checks.get("findings") or []],
+            *[_finding_text(item) for item in review.get("compliance_findings") or []],
         ])),
         "human_override": approved,
     }

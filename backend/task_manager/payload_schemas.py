@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from .gateway.models import GatewayResourceRef
 
@@ -244,6 +244,20 @@ class MediaStoryboardDraft(StrictPayload):
     visual_direction: list[str] | str = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
+    @field_validator("storyboard_plan", mode="before")
+    @classmethod
+    def normalize_storyboard_plan(cls, value):
+        if isinstance(value, str):
+            return {"summary": value}
+        return value
+
+    @field_validator("warnings", mode="before")
+    @classmethod
+    def normalize_warnings(cls, value):
+        if isinstance(value, str):
+            return [value]
+        return value
+
 
 class MediaScriptCheckResult(StrictPayload):
     passed: bool
@@ -257,9 +271,9 @@ class MediaScriptCheckResult(StrictPayload):
 class MediaScriptReviewResult(StrictPayload):
     recommendation: Literal["pass", "needs_human_review", "reject"]
     summary: str = Field(min_length=1)
-    compliance_findings: list[dict[str, Any]] = Field(default_factory=list)
-    quality_findings: list[dict[str, Any]] = Field(default_factory=list)
-    storyboard_findings: list[dict[str, Any]] = Field(default_factory=list)
+    compliance_findings: list[str | dict[str, Any]] = Field(default_factory=list)
+    quality_findings: list[str | dict[str, Any]] = Field(default_factory=list)
+    storyboard_findings: list[str | dict[str, Any]] = Field(default_factory=list)
     revise_instruction: str = ""
 
 

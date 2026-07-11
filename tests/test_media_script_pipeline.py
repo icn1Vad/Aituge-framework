@@ -61,14 +61,14 @@ class MediaPipelineAgent:
             },
             "storyboard": {
                 "storyboard": [{"time": "0-6s", "scene": "Presenter", "shot": "medium", "action": "faces camera", "voiceover": "This policy is not automatic for everyone.", "subtitle_focus": "Check eligibility", "visual_prompt": "document and presenter"}],
-                "storyboard_plan": {"shot_count": 1},
+                "storyboard_plan": "One presenter shot supported by a document close-up.",
                 "visual_direction": ["Document close-up"],
-                "warnings": [],
+                "warnings": "Keep policy dates visible on screen.",
             },
             "review": {
                 "recommendation": "pass",
                 "summary": "Evidence and boundaries are acceptable.",
-                "compliance_findings": [],
+                "compliance_findings": ["Keep the official-source qualifier."],
                 "quality_findings": [],
                 "storyboard_findings": [],
                 "revise_instruction": "",
