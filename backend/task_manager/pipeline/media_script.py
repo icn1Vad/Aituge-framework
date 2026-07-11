@@ -50,6 +50,21 @@ async def run_media_script_checks(context: StageExecutionContext) -> StageServic
     return StageServiceResult(output=output, summary="Completed deterministic script and storyboard checks.")
 
 
+async def prepare_research_context(context: StageExecutionContext) -> StageServiceResult:
+    source = context.stage_input
+    output = {
+        "topic_card": source.get("topic_card") or {},
+        "source_brief": source.get("source_brief") or {},
+        "material_full": source.get("material_full") or {},
+        "material_comments": source.get("material_comments") or {},
+        "current_persona": source.get("current_persona") or {},
+        "persona_context": source.get("persona_context") or {},
+        "user_constraints": source.get("user_constraints") or {},
+        "warnings": source.get("warnings") or [],
+    }
+    return StageServiceResult(output=output, summary="Prepared the bounded research input.")
+
+
 async def finalize_media_script(context: StageExecutionContext) -> StageServiceResult:
     artifacts = dict(context.stage_input.get("artifacts") or {})
     writer = dict(artifacts.get("media_script_writer_draft") or {})
@@ -102,7 +117,7 @@ async def finalize_media_script(context: StageExecutionContext) -> StageServiceR
         "readable_script": writer.get("readable_script") or final_script.get("voiceover") or "",
         "workflow_trace": [
             {"node": stage_id, "status": "done"}
-            for stage_id in ("context", "research", "writer", "storyboard", "deterministic_checks", "review", "finalize")
+            for stage_id in ("context", "research_context", "research", "writer", "storyboard", "deterministic_checks", "review", "finalize")
         ],
     }
     output = {
@@ -135,6 +150,7 @@ async def finalize_media_script(context: StageExecutionContext) -> StageServiceR
 
 
 register_stage_handler("media_script_context_gateway", load_media_script_context)
+register_stage_handler("media_script_research_context", prepare_research_context)
 register_stage_handler("media_script_checks_gateway", run_media_script_checks)
 register_stage_handler("media_script_finalize", finalize_media_script)
 
@@ -162,10 +178,21 @@ MEDIA_SCRIPT_PIPELINE = PipelineDefinition(
             service_handler="media_script_context_gateway",
         ),
         StageDefinition(
+            stage_id="research_context",
+            name="Prepare bounded research context",
+            stage_type="deterministic",
+            depends_on=("context",),
+            input_schema="media_script_context_bundle",
+            output_schema="media_script_research_context",
+            input_adapter="single_dependency",
+            artifact_type="media_script_research_context",
+            service_handler="media_script_research_context",
+        ),
+        StageDefinition(
             stage_id="research",
             name="Research evidence and angle",
             stage_type="agent",
-            depends_on=("context",),
+            depends_on=("research_context",),
             output_schema="media_script_research_bundle",
             input_adapter="single_dependency",
             artifact_type="media_script_research_bundle",

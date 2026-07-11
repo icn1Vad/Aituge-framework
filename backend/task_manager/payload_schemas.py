@@ -190,15 +190,46 @@ class MediaScriptContextBundle(StrictPayload):
     warnings: list[str] = Field(default_factory=list)
 
 
+class MediaScriptResearchControversy(StrictPayload):
+    issue: str = Field(min_length=1)
+    detail: str = ""
+    severity: str = ""
+
+
+class MediaScriptRecommendedAngle(StrictPayload):
+    main_angle: str = Field(min_length=1)
+    rationale: str = ""
+    suggested_structure: str = ""
+    persona_fit: str = ""
+    formula_suggestion: str = ""
+
+
+class MediaScriptResearchRisk(StrictPayload):
+    risk: str = Field(min_length=1)
+    detail: str = ""
+    mitigation: str = ""
+
+
 class MediaScriptResearchBundle(StrictPayload):
     topic_summary: str = Field(min_length=1)
     key_facts: list[dict[str, Any]] = Field(default_factory=list)
     usable_materials: list[dict[str, Any]] = Field(default_factory=list)
     audience_questions: list[str] = Field(default_factory=list)
-    controversies: list[str] = Field(default_factory=list)
+    controversies: list[str | MediaScriptResearchControversy] = Field(default_factory=list)
     source_evidence: list[dict[str, Any]] = Field(default_factory=list)
-    recommended_angle: str = Field(min_length=1)
-    risks: list[str] = Field(default_factory=list)
+    recommended_angle: str | MediaScriptRecommendedAngle
+    risks: list[str | MediaScriptResearchRisk] = Field(default_factory=list)
+
+
+class MediaScriptResearchContext(StrictPayload):
+    topic_card: dict[str, Any]
+    source_brief: dict[str, Any] = Field(default_factory=dict)
+    material_full: dict[str, Any] = Field(default_factory=dict)
+    material_comments: dict[str, Any] = Field(default_factory=dict)
+    current_persona: dict[str, Any] = Field(default_factory=dict)
+    persona_context: dict[str, Any] = Field(default_factory=dict)
+    user_constraints: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class MediaScriptWriterDraft(StrictPayload):
@@ -358,6 +389,7 @@ _OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "pipeline_demo_normalized": PipelineDemoNormalized,
     "pipeline_demo_result": PipelineDemoResult,
     "media_script_context_bundle": MediaScriptContextBundle,
+    "media_script_research_context": MediaScriptResearchContext,
     "media_script_research_bundle": MediaScriptResearchBundle,
     "media_script_writer_draft": MediaScriptWriterDraft,
     "media_storyboard_draft": MediaStoryboardDraft,

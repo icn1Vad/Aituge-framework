@@ -15,6 +15,7 @@ Single Agent, or ReactAgent behavior.
 ```text
 media.script.pipeline.generate
   -> context (gateway)
+  -> research_context (deterministic)
   -> research (media-research-agent)
   -> writer (media-writer-agent)
   -> storyboard (media-storyboard-agent)
@@ -31,7 +32,8 @@ Each successful stage creates one immutable Artifact. The final Artifact type is
 | Stage | Input | Output | Responsibility |
 | --- | --- | --- | --- |
 | `context` | `media_script_generate_input` | `media_script_context_bundle` | Load the topic card, source material, comments, persona, selected master-library cards, and risk rules through the legacy Gateway. |
-| `research` | `media_script_context_bundle` | `media_script_research_bundle` | Verify evidence and select one bounded content angle. |
+| `research_context` | `media_script_context_bundle` | `media_script_research_context` | Keep the topic, source, audience, constraints, and persona while excluding large writing-only rule and master-library payloads. |
+| `research` | `media_script_research_context` | `media_script_research_bundle` | Verify evidence and select one bounded content angle. |
 | `writer` | Context and research Artifacts | `media_script_writer_draft` | Generate the complete voiceover draft. |
 | `storyboard` | Context and writer Artifacts | `media_storyboard_draft` | Generate executable shots without changing factual claims. |
 | `deterministic_checks` | Context, writer, and storyboard Artifacts | `media_script_check_result` | Reuse legacy deterministic quality and boundary checks. |

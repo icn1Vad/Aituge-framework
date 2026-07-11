@@ -161,7 +161,7 @@ def test_media_script_pipeline_runs_all_stages(tmp_path, monkeypatch):
             assert status == "succeeded"
             stages = (await client.get(f"/task-manager/runs/{run_id}/stages", headers=headers)).json()["stages"]
             assert [item["stage_id"] for item in stages] == [
-                "context", "research", "writer", "storyboard", "deterministic_checks", "review", "finalize"
+                "context", "research_context", "research", "writer", "storyboard", "deterministic_checks", "review", "finalize"
             ]
             artifacts = (await client.get(f"/task-manager/tasks/{task_id}/artifacts", headers=headers)).json()["artifacts"]
             assert artifacts[-1]["artifact_type"] == "media_script_output"
