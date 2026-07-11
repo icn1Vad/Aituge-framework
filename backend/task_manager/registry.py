@@ -46,6 +46,18 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
         input_schema_name="media_script_generate_input",
         output_schema_name="media_script_output",
     ),
+    "media.script.pipeline.generate": TaskDefinition(
+        task_type="media.script.pipeline.generate",
+        name="Media Script Pipeline Generation",
+        description="Generate and review a short-video script through the staged media Pipeline.",
+        handler="pipeline",
+        default_agent_id="media-writer-agent",
+        default_skill_package="media-script-writer-package",
+        default_primary_skill="media-script-writer",
+        input_schema_name="media_script_generate_input",
+        output_schema_name="media_script_output",
+        pipeline_id="media-script-pipeline-v1",
+    ),
     "media.script.select": TaskDefinition(
         task_type="media.script.select",
         name="Media Script Selection",

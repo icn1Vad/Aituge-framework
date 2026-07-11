@@ -18,6 +18,9 @@ class TaskPayloadBase(StrictPayload):
 
 class MediaScriptGenerateInput(TaskPayloadBase):
     topic: str = Field(min_length=1)
+    topic_card_id: Optional[str] = None
+    source_material_id: Optional[str] = None
+    topic_card: dict[str, Any] = Field(default_factory=dict)
     platform: Literal["douyin"] = "douyin"
     duration_seconds: int = Field(default=60, ge=15, le=300)
     source_brief: str = ""
@@ -27,6 +30,11 @@ class MediaScriptGenerateInput(TaskPayloadBase):
     materials: list[dict[str, Any]] = Field(default_factory=list)
     comments: list[Any] = Field(default_factory=list)
     manual_direction: Optional[str] = None
+    persona_id: Optional[str] = None
+    parent_script_id: Optional[str] = None
+    conversation_thread_id: Optional[str] = None
+    require_human_review: bool = False
+    context: dict[str, Any] = Field(default_factory=dict)
 
 
 class MediaScriptSelectInput(TaskPayloadBase):
@@ -163,6 +171,65 @@ class MediaScriptOutput(StrictPayload):
     final_script: dict[str, Any]
     readable_script: str
     hermes_agent_result: dict[str, Any]
+    workflow_state: dict[str, Any] = Field(default_factory=dict)
+    generation_meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class MediaScriptContextBundle(StrictPayload):
+    topic_card: dict[str, Any]
+    source_brief: dict[str, Any] = Field(default_factory=dict)
+    current_persona: dict[str, Any] = Field(default_factory=dict)
+    persona_context: dict[str, Any] = Field(default_factory=dict)
+    material_full: dict[str, Any] = Field(default_factory=dict)
+    material_comments: dict[str, Any] = Field(default_factory=dict)
+    script_stack_recommendation: dict[str, Any] = Field(default_factory=dict)
+    material_analysis: dict[str, Any] = Field(default_factory=dict)
+    product_intent: dict[str, Any] = Field(default_factory=dict)
+    rules: dict[str, Any] = Field(default_factory=dict)
+    user_constraints: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class MediaScriptResearchBundle(StrictPayload):
+    topic_summary: str = Field(min_length=1)
+    key_facts: list[dict[str, Any]] = Field(default_factory=list)
+    usable_materials: list[dict[str, Any]] = Field(default_factory=list)
+    audience_questions: list[str] = Field(default_factory=list)
+    controversies: list[str] = Field(default_factory=list)
+    source_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    recommended_angle: str = Field(min_length=1)
+    risks: list[str] = Field(default_factory=list)
+
+
+class MediaScriptWriterDraft(StrictPayload):
+    final_script: dict[str, Any]
+    readable_script: str = Field(min_length=1)
+    hermes_agent_result: dict[str, Any]
+
+
+class MediaStoryboardDraft(StrictPayload):
+    storyboard: list[dict[str, Any]] = Field(default_factory=list)
+    storyboard_plan: dict[str, Any] = Field(default_factory=dict)
+    visual_direction: list[str] | str = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class MediaScriptCheckResult(StrictPayload):
+    passed: bool
+    high_risk: bool
+    score: float = Field(ge=0, le=100)
+    findings: list[dict[str, Any]] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class MediaScriptReviewResult(StrictPayload):
+    recommendation: Literal["pass", "needs_human_review", "reject"]
+    summary: str = Field(min_length=1)
+    compliance_findings: list[dict[str, Any]] = Field(default_factory=list)
+    quality_findings: list[dict[str, Any]] = Field(default_factory=list)
+    storyboard_findings: list[dict[str, Any]] = Field(default_factory=list)
+    revise_instruction: str = ""
 
 
 class AiSearchQueryPlan(StrictPayload):
@@ -290,6 +357,12 @@ _OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "pipeline_demo_analysis": PipelineDemoAnalysis,
     "pipeline_demo_normalized": PipelineDemoNormalized,
     "pipeline_demo_result": PipelineDemoResult,
+    "media_script_context_bundle": MediaScriptContextBundle,
+    "media_script_research_bundle": MediaScriptResearchBundle,
+    "media_script_writer_draft": MediaScriptWriterDraft,
+    "media_storyboard_draft": MediaStoryboardDraft,
+    "media_script_check_result": MediaScriptCheckResult,
+    "media_script_review_result": MediaScriptReviewResult,
 }
 
 

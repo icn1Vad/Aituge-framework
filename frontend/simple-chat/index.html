@@ -808,6 +808,7 @@
                   <option value="analytics.douyin.account_report.generate">analytics.douyin.account_report.generate</option>
                   <option value="ai.search.chat">ai.search.chat</option>
                   <option value="media.script.generate">media.script.generate</option>
+                  <option value="media.script.pipeline.generate">media.script.pipeline.generate</option>
                   <option value="media.script.select">media.script.select</option>
                   <option value="media.chat">media.chat</option>
                   <option value="table.audit">table.audit</option>
@@ -1803,6 +1804,13 @@
           source_brief: taskBriefEl.value.trim(),
           expected_output: "Return one JSON object following the selected media task skill.",
         };
+        if (taskType === "media.script.pipeline.generate") {
+          inputPayload.manual_direction = taskBriefEl.value.trim();
+          inputPayload.require_human_review = taskHumanReviewEl.checked;
+          inputPayload.context = {
+            source: "simple-chat-media-script-pipeline",
+          };
+        }
         if (taskType === "media.script.select") {
           inputPayload.script_candidates = parseJsonArray(taskCandidatesEl, "Task candidates");
         }
@@ -1849,13 +1857,18 @@
 
       function applyTaskDefaults() {
         const taskType = taskTypeEl.value || "";
-        const isPipeline = taskType === "pipeline.demo";
+        const isPipeline = ["pipeline.demo", "media.script.pipeline.generate"].includes(taskType);
         taskHumanReviewEl.disabled = !isPipeline;
         cancelPipelineRunEl.hidden = !isPipeline;
         approvePipelineRunEl.hidden = !isPipeline;
         if (isPipeline) {
-          taskTopicEl.value = "Design a reusable multi-stage task workflow";
-          taskBriefEl.value = "Return a concise plan with explicit steps and risks. This is a framework test with no business data.";
+          const isScriptPipeline = taskType === "media.script.pipeline.generate";
+          taskTopicEl.value = isScriptPipeline
+            ? "Veteran vocational skills and career planning"
+            : "Design a reusable multi-stage task workflow";
+          taskBriefEl.value = isScriptPipeline
+            ? "Create a grounded 60-second Douyin script. Avoid guaranteed outcomes and keep policy claims source-bounded."
+            : "Return a concise plan with explicit steps and risks. This is a framework test with no business data.";
           taskCandidatesEl.value = "[]";
           taskRowsEl.value = "[]";
           return;
@@ -1929,7 +1942,10 @@
         const stages = stagesRes.ok ? (await stagesRes.json()).stages || [] : [];
         const events = eventsRes.ok ? (await eventsRes.json()).events || [] : [];
         const artifacts = artifactsRes.ok ? (await artifactsRes.json()).artifacts || [] : [];
-        const finalArtifact = [...artifacts].reverse().find((item) => item.artifact_type === "pipeline_demo_result");
+        const finalArtifactType = task.task_type === "media.script.pipeline.generate"
+          ? "media_script_output"
+          : "pipeline_demo_result";
+        const finalArtifact = [...artifacts].reverse().find((item) => item.artifact_type === finalArtifactType);
         taskDebugEl.textContent = JSON.stringify(
           {
             task_id: task.id,
@@ -2038,7 +2054,7 @@
 
       async function runMediaTask() {
         const payload = buildMediaTaskPayload();
-        if (payload.task_type === "pipeline.demo") {
+        if (["pipeline.demo", "media.script.pipeline.generate"].includes(payload.task_type)) {
           await runPipelineDemo(payload);
           return;
         }

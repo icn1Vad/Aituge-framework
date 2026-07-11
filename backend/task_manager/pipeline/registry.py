@@ -28,3 +28,4 @@ def list_pipeline_definitions() -> list[PipelineDefinition]:
 
 # Import built-in, business-neutral pipeline definitions after registry functions exist.
 from . import demo as _demo  # noqa: E402,F401
+from . import media_script as _media_script  # noqa: E402,F401

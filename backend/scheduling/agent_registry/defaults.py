@@ -32,6 +32,22 @@ CODE_AGENT_PROMPT = (
     "You are Code Agent, a TUGE single agent specialized in local Python "
     "execution, calculation, verification, and artifact generation."
 )
+MEDIA_RESEARCH_AGENT_PROMPT = (
+    "You are Media Research Agent. Build a factual evidence package for one short-video script task. "
+    "Use only the supplied business context and allowed search tool; do not write the final script."
+)
+MEDIA_WRITER_AGENT_PROMPT = (
+    "You are Media Writer Agent. Write one complete speakable short-video script from verified research, "
+    "persona, and master-library context. Do not perform unrelated research."
+)
+MEDIA_STORYBOARD_AGENT_PROMPT = (
+    "You are Media Storyboard Agent. Convert the approved script draft into executable shots while "
+    "preserving narration, persona, timing, and visual continuity."
+)
+MEDIA_REVIEW_AGENT_PROMPT = (
+    "You are Media Review Agent. Review script, storyboard, evidence, and deterministic findings for "
+    "compliance, factual risk, quality, and production feasibility."
+)
 
 
 def _profile_definition(
@@ -96,6 +112,34 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
         description="Single agent focused on local Python execution and artifact generation.",
         default_tools=["code_interpreter"],
         system_prompt=CODE_AGENT_PROMPT,
+    ),
+    _profile_definition(
+        agent_id="media-research-agent",
+        name="Media Research Agent",
+        description="Evidence research for the media script Pipeline.",
+        default_tools=["web_search"],
+        system_prompt=MEDIA_RESEARCH_AGENT_PROMPT,
+    ),
+    _profile_definition(
+        agent_id="media-writer-agent",
+        name="Media Writer Agent",
+        description="Structured short-video script writer.",
+        default_tools=[],
+        system_prompt=MEDIA_WRITER_AGENT_PROMPT,
+    ),
+    _profile_definition(
+        agent_id="media-storyboard-agent",
+        name="Media Storyboard Agent",
+        description="Executable storyboard generator for media scripts.",
+        default_tools=[],
+        system_prompt=MEDIA_STORYBOARD_AGENT_PROMPT,
+    ),
+    _profile_definition(
+        agent_id="media-review-agent",
+        name="Media Review Agent",
+        description="Compliance, quality, and storyboard reviewer.",
+        default_tools=[],
+        system_prompt=MEDIA_REVIEW_AGENT_PROMPT,
     ),
 ]
 
