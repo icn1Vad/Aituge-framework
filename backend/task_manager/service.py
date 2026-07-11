@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import asdict
 from typing import Any, AsyncIterator, Optional
@@ -19,6 +20,10 @@ from .output_parser import parse_json_output
 from .payload_schemas import validate_input_payload, validate_output_payload
 from .registry import TaskDefinition, get_task_definition
 from .schemas import TaskCreateRequest, TaskEventRead, TaskItemRead, TaskRead, TaskRunRequest
+
+
+STREAM_EVENT_BUFFER_CHARS = 1000
+MAX_EVENT_PAYLOAD_CHARS = 8192
 
 
 class TaskManagerService:
@@ -186,7 +191,7 @@ class TaskManagerService:
 
                 if item.delta:
                     stream_buffer.append(item.delta)
-                    if sum(len(part) for part in stream_buffer) < 400:
+                    if sum(len(part) for part in stream_buffer) < STREAM_EVENT_BUFFER_CHARS:
                         continue
                     item.payload = {**item.payload, "delta": "".join(stream_buffer)}
                     stream_buffer.clear()
@@ -353,7 +358,7 @@ class TaskManagerService:
                 error_code=error_code,
                 visible=visible,
                 message=message,
-                payload_json=payload or {},
+                payload_json=_bounded_event_payload(payload or {}),
             )
             session.add(event)
             await session.commit()
@@ -549,6 +554,17 @@ class TaskManagerService:
             await session.commit()
             await session.refresh(task)
             return task
+
+
+def _bounded_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+    if len(encoded) <= MAX_EVENT_PAYLOAD_CHARS:
+        return payload
+    return {
+        "truncated": True,
+        "original_chars": len(encoded),
+        "preview": encoded[: MAX_EVENT_PAYLOAD_CHARS // 2],
+    }
 
 
 def _definition_snapshot(definition: TaskDefinition) -> dict[str, Any]:

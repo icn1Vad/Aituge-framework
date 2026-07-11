@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,6 +19,47 @@ from .schemas import (
     TaskRunResponse,
 )
 from .service import TaskManagerService, event_to_read, item_to_read, task_to_read
+
+
+_STREAM_DONE = object()
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def _track_background(coroutine) -> asyncio.Task:
+    task = asyncio.create_task(coroutine)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
+
+
+async def _run_task_to_queue(
+    service: TaskManagerService,
+    task_id: str,
+    request: TaskRunRequest,
+    queue: asyncio.Queue,
+) -> None:
+    try:
+        async for event in service.stream_task(task_id, request):
+            await queue.put(event)
+    except Exception as exc:
+        await queue.put(exc)
+    finally:
+        await queue.put(_STREAM_DONE)
+
+
+async def _queued_sse(queue: asyncio.Queue, task_id: str):
+    while True:
+        item = await queue.get()
+        if item is _STREAM_DONE:
+            return
+        if isinstance(item, Exception):
+            payload = json.dumps(
+                {"task_id": task_id, "message": str(item), "type": item.__class__.__name__},
+                ensure_ascii=False,
+            )
+            yield f"event: task_failed\ndata: {payload}\n\n"
+            continue
+        yield f"event: {item.event_type}\ndata: {item.model_dump_json()}\n\n"
 
 
 def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
@@ -148,28 +190,14 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
         context: TaskAccessContext = Depends(task_access_context),
     ):
         service = TaskManagerService(options)
-
-        async def event_stream():
-            try:
-                task_row = await service.get_task(task_id)
-                if task_row is None:
-                    raise ValueError(f"Task '{task_id}' not found.")
-                assert_can_access_task(task_row, context)
-                run_request = request or TaskRunRequest(stream=True)
-                run_request = run_request.model_copy(update={"user_id": context.user_id})
-                async for event in service.stream_task(task_id, run_request):
-                    yield f"event: {event.event_type}\ndata: {event.model_dump_json()}\n\n"
-            except Exception as exc:
-                payload = json.dumps(
-                    {"task_id": task_id, "message": str(exc), "type": exc.__class__.__name__},
-                    ensure_ascii=False,
-                )
-                yield (
-                    "event: task_failed\n"
-                    f"data: {payload}\n\n"
-                )
-
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+        task_row = await service.get_task(task_id)
+        if task_row is None:
+            raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
+        assert_can_access_task(task_row, context)
+        run_request = (request or TaskRunRequest(stream=True)).model_copy(update={"user_id": context.user_id})
+        queue: asyncio.Queue = asyncio.Queue()
+        _track_background(_run_task_to_queue(service, task_id, run_request, queue))
+        return StreamingResponse(_queued_sse(queue, task_id), media_type="text/event-stream")
 
     @router.post("/run", response_model=TaskRunResponse)
     async def create_and_run(
@@ -196,26 +224,27 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
         context: TaskAccessContext = Depends(task_access_context),
     ):
         service = TaskManagerService(options)
+        try:
+            scoped_request = request.model_copy(update={"user_id": context.user_id, "tenant_id": context.tenant_id})
+            task = await service.create_task(scoped_request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        created = TaskEventRead.model_validate((await service.list_events(task.id, limit=1))[0])
+        queue: asyncio.Queue = asyncio.Queue()
+        _track_background(
+            _run_task_to_queue(
+                service,
+                task.id,
+                TaskRunRequest(stream=True, user_id=context.user_id),
+                queue,
+            )
+        )
 
         async def event_stream():
-            try:
-                scoped_request = request.model_copy(update={"user_id": context.user_id, "tenant_id": context.tenant_id})
-                task = await service.create_task(scoped_request)
-                yield (
-                    "event: task_created\n"
-                    f"data: {TaskEventRead.model_validate((await service.list_events(task.id, limit=1))[0]).model_dump_json()}\n\n"
-                )
-                async for event in service.stream_task(task.id, TaskRunRequest(stream=True, user_id=context.user_id)):
-                    yield f"event: {event.event_type}\ndata: {event.model_dump_json()}\n\n"
-            except Exception as exc:
-                payload = json.dumps(
-                    {"message": str(exc), "type": exc.__class__.__name__},
-                    ensure_ascii=False,
-                )
-                yield (
-                    "event: task_failed\n"
-                    f"data: {payload}\n\n"
-                )
+            yield f"event: task_created\ndata: {created.model_dump_json()}\n\n"
+            async for block in _queued_sse(queue, task.id):
+                yield block
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 

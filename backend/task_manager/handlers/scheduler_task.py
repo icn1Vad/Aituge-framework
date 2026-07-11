@@ -60,7 +60,6 @@ class SchedulerTaskHandler:
 
         service = SchedulingService(self.options)
         async for event in service.stream_chat(profile, request):
-            payload = event.model_dump(exclude_none=True)
             if event.event == "metadata":
                 yield TaskHandlerEvent(
                     event_type="agent_metadata",
@@ -68,7 +67,7 @@ class SchedulerTaskHandler:
                     message="Agent stream metadata received.",
                     step_id="agent_metadata",
                     step_index=20,
-                    payload=payload,
+                    payload={"source_event": "metadata", "agent_id": profile.agent_id},
                     thread_id=event.thread_id,
                     session_id=event.session_id,
                 )
@@ -76,35 +75,29 @@ class SchedulerTaskHandler:
 
             if event.event == "final":
                 data = event.data or {}
+                content = str(data.get("content") or "")
+                usage = data.get("usage")
                 yield TaskHandlerEvent(
                     event_type="agent_final",
                     stage="agent_stream",
                     message="Agent stream finished.",
                     step_id="agent_final",
                     step_index=40,
-                    payload=payload,
+                    payload={
+                        "source_event": "final",
+                        "content_chars": len(content),
+                        "usage": usage or {},
+                    },
                     thread_id=event.thread_id,
                     session_id=event.session_id,
-                    final_content=str(data.get("content") or ""),
-                    usage=data.get("usage"),
-                    token_usage=data.get("usage"),
+                    final_content=content,
+                    usage=usage,
+                    token_usage=usage,
                 )
                 continue
 
-            delta = _extract_delta(event.data or {})
-            event_type = "stream_chunk" if delta else "agent_event"
-            message = "Agent stream chunk received." if delta else f"Agent event '{event.event}' received."
-            yield TaskHandlerEvent(
-                event_type=event_type,
-                stage="agent_stream",
-                message=message,
-                step_id="agent_stream",
-                step_index=30,
-                payload=payload,
-                delta=delta,
-                thread_id=event.thread_id,
-                session_id=event.session_id,
-            )
+            for translated in _translate_chunk_event(event):
+                yield translated
 
 
 def _build_task_message(task: TaskEntity, definition: TaskDefinition) -> str:
@@ -234,3 +227,78 @@ def _extract_delta(data: dict[str, Any]) -> str:
         return ""
     delta = choices[0].get("delta") or {}
     return str(delta.get("content") or "")
+
+
+def _translate_chunk_event(event) -> list[TaskHandlerEvent]:
+    data = event.data if isinstance(event.data, dict) else {}
+    delta = _extract_delta(data)
+    if delta:
+        return [
+            TaskHandlerEvent(
+                event_type="stream_chunk",
+                stage="agent_stream",
+                message="Agent stream chunk received.",
+                step_id="agent_stream",
+                step_index=30,
+                payload={"source_event": "chunk"},
+                delta=delta,
+                thread_id=event.thread_id,
+                session_id=event.session_id,
+            )
+        ]
+
+    translated: list[TaskHandlerEvent] = []
+    for action in data.get("actions") or []:
+        if not isinstance(action, dict):
+            continue
+        tool_name, tool_call_id = _tool_identity(action)
+        translated.append(
+            TaskHandlerEvent(
+                event_type="tool_started",
+                stage="tool_execution",
+                message=f"Tool '{tool_name}' started.",
+                step_id=f"tool_started:{tool_call_id or tool_name}",
+                step_index=25,
+                payload={
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "status": "started",
+                },
+                thread_id=event.thread_id,
+                session_id=event.session_id,
+            )
+        )
+
+    observation = data.get("observation")
+    if isinstance(observation, dict):
+        tool = observation.get("tool") if isinstance(observation.get("tool"), dict) else {}
+        tool_name, tool_call_id = _tool_identity(tool)
+        result = observation.get("result")
+        error = str(observation.get("error") or "")
+        translated.append(
+            TaskHandlerEvent(
+                event_type="tool_completed",
+                stage="tool_execution",
+                message=f"Tool '{tool_name}' completed." if not error else f"Tool '{tool_name}' returned an error.",
+                level="warning" if error else "info",
+                step_id=f"tool_completed:{tool_call_id or tool_name}",
+                step_index=35,
+                payload={
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "status": "failed" if error else "completed",
+                    "result_chars": len(result) if isinstance(result, str) else 0,
+                    "error": error[:500],
+                },
+                thread_id=event.thread_id,
+                session_id=event.session_id,
+            )
+        )
+
+    # Reasoning tokens, cumulative citations and raw observations are intentionally omitted.
+    return translated
+
+
+def _tool_identity(payload: dict[str, Any]) -> tuple[str, str]:
+    function = payload.get("function") if isinstance(payload.get("function"), dict) else {}
+    return str(function.get("name") or "unknown_tool"), str(payload.get("id") or "")
