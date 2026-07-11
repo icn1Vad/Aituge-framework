@@ -18,9 +18,22 @@ class TaskDefinition:
     input_schema_name: str | None = None
     output_schema_name: str | None = None
     item_output_schema_name: str | None = None
+    pipeline_id: str | None = None
 
 
 _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
+    "pipeline.demo": TaskDefinition(
+        task_type="pipeline.demo",
+        name="Pipeline Runtime Demo",
+        description="Business-neutral multi-stage task for validating Pipeline runtime and event streaming.",
+        handler="pipeline",
+        default_agent_id="default-single-agent",
+        default_skill_package="pipeline-demo-package",
+        default_primary_skill="pipeline-demo",
+        input_schema_name="pipeline_demo_input",
+        output_schema_name="pipeline_demo_result",
+        pipeline_id="pipeline-demo-v1",
+    ),
     "media.script.generate": TaskDefinition(
         task_type="media.script.generate",
         name="Media Script Generation",
@@ -32,6 +45,18 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
         default_datasets=["local_rag"],
         input_schema_name="media_script_generate_input",
         output_schema_name="media_script_output",
+    ),
+    "media.script.pipeline.generate": TaskDefinition(
+        task_type="media.script.pipeline.generate",
+        name="Media Script Pipeline Generation",
+        description="Generate and review a short-video script through the staged media Pipeline.",
+        handler="pipeline",
+        default_agent_id="media-writer-agent",
+        default_skill_package="media-script-writer-package",
+        default_primary_skill="media-script-writer",
+        input_schema_name="media_script_generate_input",
+        output_schema_name="media_script_output",
+        pipeline_id="media-script-pipeline-v1",
     ),
     "media.script.select": TaskDefinition(
         task_type="media.script.select",
@@ -46,15 +71,14 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
     ),
     "media.chat": TaskDefinition(
         task_type="media.chat",
-        name="Media Task Chat",
-        description="Continue a media task conversation with TaskManager lifecycle and event recording.",
-        default_skill_package="media-script-generate-package",
-        default_primary_skill="media-script-generator",
-        default_candidate_skills=["media-script-selector"],
-        default_tools=["rag_retrieval"],
-        default_datasets=["local_rag"],
+        name="Media Script Chat",
+        description="Answer questions about the current media script without mutating artifacts or rerunning its Pipeline.",
+        default_skill_package="media-script-chat-package",
+        default_primary_skill="media-script-chat",
+        default_candidate_skills=[],
+        default_tools=[],
+        default_datasets=[],
         input_schema_name="media_chat_input",
-        output_schema_name="media_script_output",
     ),
     "ai.search.chat": TaskDefinition(
         task_type="ai.search.chat",
@@ -79,6 +103,22 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
         default_datasets=[],
         input_schema_name="media_topic_search_input",
         output_schema_name="media_topic_search_output",
+    ),
+    "analytics.douyin.account_report.generate": TaskDefinition(
+        task_type="analytics.douyin.account_report.generate",
+        name="Douyin Account Data Report",
+        description=(
+            "Generate a fact-grounded Douyin account analysis report from all available "
+            "account data by default, with optional month or custom range support."
+        ),
+        default_agent_id="report-agent",
+        default_skill_package="douyin-account-report-package",
+        default_primary_skill="douyin-account-report",
+        default_candidate_skills=[],
+        default_tools=[],
+        default_datasets=[],
+        input_schema_name="douyin_account_report_input",
+        output_schema_name="douyin_account_report_output",
     ),
     "table.audit": TaskDefinition(
         task_type="table.audit",

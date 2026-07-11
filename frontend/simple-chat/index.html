@@ -195,6 +195,19 @@
         gap: 8px;
       }
 
+      .task-action-grid {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      }
+
+      .task-check {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 28px;
+        color: #57627a;
+        font-size: 12px;
+      }
+
       .task-input,
       .task-select {
         width: 100%;
@@ -790,9 +803,12 @@
               <summary><span>TaskManager v1</span><span>task</span></summary>
               <div class="task-panel">
                 <select id="taskType" class="task-select">
-                  <option value="media.topic.search" selected>media.topic.search</option>
+                  <option value="pipeline.demo" selected>pipeline.demo</option>
+                  <option value="media.topic.search">media.topic.search</option>
+                  <option value="analytics.douyin.account_report.generate">analytics.douyin.account_report.generate</option>
                   <option value="ai.search.chat">ai.search.chat</option>
                   <option value="media.script.generate">media.script.generate</option>
+                  <option value="media.script.pipeline.generate">media.script.pipeline.generate</option>
                   <option value="media.script.select">media.script.select</option>
                   <option value="media.chat">media.chat</option>
                   <option value="table.audit">table.audit</option>
@@ -813,7 +829,12 @@
   {"id":"row-001","name":"A company","amount":12000,"note":"Contract amount is above the manual review line."},
   {"id":"row-002","name":"B company","amount":800,"note":"Routine low-risk record."}
 ]</textarea>
+                <label class="task-check"><input id="taskHumanReview" type="checkbox" /> Pause for human review</label>
                 <button id="runMediaTask" class="rag-btn" type="button">Run TaskManager task</button>
+                <div class="task-grid task-action-grid">
+                  <button id="cancelPipelineRun" class="rag-btn" type="button" disabled>Cancel run</button>
+                  <button id="approvePipelineRun" class="rag-btn" type="button" disabled>Approve &amp; resume</button>
+                </div>
                 <div id="taskStatus" class="rag-status">Task: idle</div>
                 <div id="taskDebug" class="rag-status task-debug">structure: idle</div>
               </div>
@@ -902,7 +923,10 @@
       const taskBriefEl = document.getElementById("taskBrief");
       const taskCandidatesEl = document.getElementById("taskCandidates");
       const taskRowsEl = document.getElementById("taskRows");
+      const taskHumanReviewEl = document.getElementById("taskHumanReview");
       const runMediaTaskEl = document.getElementById("runMediaTask");
+      const cancelPipelineRunEl = document.getElementById("cancelPipelineRun");
+      const approvePipelineRunEl = document.getElementById("approvePipelineRun");
       const taskStatusEl = document.getElementById("taskStatus");
       const taskDebugEl = document.getElementById("taskDebug");
       const sidebarNavItems = [...document.querySelectorAll("[data-sidebar-view]")];
@@ -914,6 +938,10 @@
       let threadId = null;
       let activeMode = "chat";
       let currentDiscussionRunId = null;
+      let activePipelineTaskId = null;
+      let activePipelineRunId = null;
+      let activePipelineNodes = null;
+      let activePipelineSequence = 0;
       let currentThreadTitle = "初始问候";
       let threads = [];
       let agents = [];
@@ -1573,8 +1601,104 @@
         }
       }
 
+      const douyinAccountReportContextSample = {
+        account: {
+          account_id: "demo-douyin-account",
+          account_name: "Demo Douyin Account",
+          platform: "douyin"
+        },
+        data_coverage: {
+          scope: "all_available_data",
+          account_metrics_days: 4,
+          content_count: 3,
+          audience_profile: "missing_data",
+          comment_content: "missing_permission",
+          previous_period: "missing_data",
+          benchmark: "missing_data"
+        },
+        metrics_summary: {
+          fans_count: 1280,
+          new_fans_count: 86,
+          profile_visit_count: 420,
+          publish_count: 3,
+          play_count: 18600,
+          like_count: 760,
+          comment_count: 95,
+          share_count: 44,
+          collect_count: 38,
+          interaction_rate: 0.0504
+        },
+        missing_fields: [
+          "age_distribution",
+          "gender_distribution",
+          "region_distribution",
+          "traffic_source",
+          "comment_text",
+          "full_script_text",
+          "benchmark_data",
+          "previous_period_data"
+        ],
+        warnings: [
+          "This is a sample all-data context for TaskManager testing.",
+          "Do not write month-over-month or benchmark conclusions."
+        ]
+      };
+
+      const douyinAccountReportContentSample = [
+        {
+          id: "video-001",
+          title: "军考政策解读：报名节点和材料准备",
+          publish_time: "2026-05-18",
+          play_count: 9200,
+          like_count: 420,
+          comment_count: 55,
+          share_count: 25,
+          collect_count: 20,
+          note: "Highest play count in current all-data sample."
+        },
+        {
+          id: "video-002",
+          title: "退役后职业规划的三个选择",
+          publish_time: "2026-06-03",
+          play_count: 6100,
+          like_count: 260,
+          comment_count: 28,
+          share_count: 14,
+          collect_count: 12
+        },
+        {
+          id: "video-003",
+          title: "无人机培训证书适合哪些人",
+          publish_time: "2026-06-21",
+          play_count: 3300,
+          like_count: 80,
+          comment_count: 12,
+          share_count: 5,
+          collect_count: 6,
+          note: "Lower engagement than the other sample items."
+        }
+      ];
+
       function buildMediaTaskPayload() {
         const taskType = taskTypeEl.value || "media.script.generate";
+        if (taskType === "pipeline.demo") {
+          return {
+            task_type: taskType,
+            title: taskTopicEl.value.trim() || "Pipeline runtime demo",
+            stream: true,
+            input: {
+              goal: taskTopicEl.value.trim() || "Validate the reusable Pipeline runtime",
+              context: {
+                details: taskBriefEl.value.trim(),
+                source: "simple-chat-pipeline-panel",
+              },
+              require_human_review: taskHumanReviewEl.checked,
+            },
+            client_context: {
+              source: "simple-chat-pipeline-panel",
+            },
+          };
+        }
         if (taskType === "ai.search.chat") {
           return {
             task_type: taskType,
@@ -1632,6 +1756,47 @@
             },
           };
         }
+        if (taskType === "analytics.douyin.account_report.generate") {
+          const reportContext = parseJsonValue(taskCandidatesEl, "Report context");
+          const contentItems = parseJsonArray(taskRowsEl, "Content items");
+          const contextObject = Array.isArray(reportContext)
+            ? { notes: reportContext }
+            : (reportContext || {});
+          const useLegacyDouyinApi = !Object.keys(contextObject).length && !contentItems.length;
+          const accountIdInput = taskTopicEl.value.trim();
+          return {
+            task_type: taskType,
+            task_key: `simple-chat-${taskType}-${Date.now()}`,
+            title: useLegacyDouyinApi ? "Douyin legacy account all-data report" : (accountIdInput || "Douyin account all-data report"),
+            user_id: userId,
+            stream: true,
+            input_payload: {
+              data_source: useLegacyDouyinApi ? "legacy_douyin_api" : "payload",
+              account_id: contextObject.account?.account_id || accountIdInput || "demo-douyin-account",
+              account_name: contextObject.account?.account_name || (useLegacyDouyinApi ? "" : accountIdInput) || "Douyin account",
+              platform: "douyin",
+              analysis_scope: "all_data",
+              report_depth: "deep",
+              report_goal: taskBriefEl.value.trim() || "Generate a complete account operations report from all available data.",
+              content_limit: 12,
+              report_context: contextObject,
+              metrics_summary: contextObject.metrics_summary || {},
+              content_items: contentItems,
+              top_contents: contentItems.slice(0, 3),
+              low_contents: contentItems.slice(-2),
+              warnings: contextObject.warnings || [],
+              missing_fields: contextObject.missing_fields || [],
+              operator_notes: "This TaskManager test uses all available sample data instead of a monthly-only window.",
+            },
+            output_schema: {
+              mode: "json_object",
+              task_type: taskType,
+            },
+            metadata: {
+              source: "simple-chat-task-panel",
+            },
+          };
+        }
         const inputPayload = {
           topic: taskTopicEl.value.trim(),
           platform: taskPlatformEl.value,
@@ -1639,6 +1804,13 @@
           source_brief: taskBriefEl.value.trim(),
           expected_output: "Return one JSON object following the selected media task skill.",
         };
+        if (taskType === "media.script.pipeline.generate") {
+          inputPayload.manual_direction = taskBriefEl.value.trim();
+          inputPayload.require_human_review = taskHumanReviewEl.checked;
+          inputPayload.context = {
+            source: "simple-chat-media-script-pipeline",
+          };
+        }
         if (taskType === "media.script.select") {
           inputPayload.script_candidates = parseJsonArray(taskCandidatesEl, "Task candidates");
         }
@@ -1673,6 +1845,47 @@
         return parsed;
       }
 
+      function parseJsonValue(element, label) {
+        const text = element.value.trim();
+        if (!text) return {};
+        try {
+          return JSON.parse(text);
+        } catch (error) {
+          throw new Error(`${label} must be valid JSON.`);
+        }
+      }
+
+      function applyTaskDefaults() {
+        const taskType = taskTypeEl.value || "";
+        const isPipeline = ["pipeline.demo", "media.script.pipeline.generate"].includes(taskType);
+        taskHumanReviewEl.disabled = !isPipeline;
+        cancelPipelineRunEl.hidden = !isPipeline;
+        approvePipelineRunEl.hidden = !isPipeline;
+        if (isPipeline) {
+          const isScriptPipeline = taskType === "media.script.pipeline.generate";
+          taskTopicEl.value = isScriptPipeline
+            ? "Veteran vocational skills and career planning"
+            : "Design a reusable multi-stage task workflow";
+          taskBriefEl.value = isScriptPipeline
+            ? "Create a grounded 60-second Douyin script. Avoid guaranteed outcomes and keep policy claims source-bounded."
+            : "Return a concise plan with explicit steps and risks. This is a framework test with no business data.";
+          taskCandidatesEl.value = "[]";
+          taskRowsEl.value = "[]";
+          return;
+        }
+        if (taskType === "analytics.douyin.account_report.generate") {
+          taskTopicEl.value = "acct_douyin_b3c184659b34";
+          taskBriefEl.value = "从旧系统抖音账号数据读取全部可用数据，写一份完整运营分析报告，不按单月过滤。";
+          taskCandidatesEl.value = "{}";
+          taskRowsEl.value = "[]";
+          return;
+        }
+        if (taskType === "media.topic.search") {
+          taskTopicEl.value = "找适合抖音新媒体选题的可靠来源";
+          taskBriefEl.value = "找适合抖音新媒体选题的可靠来源，优先政策解读、官方信息、近期热点";
+        }
+      }
+
       function taskRequestHeaders(extra = {}) {
         return {
           "X-User-Id": userId,
@@ -1681,11 +1894,15 @@
         };
       }
 
+      const taskManagerApiBase = window.location.pathname.startsWith("/script-pipeline-test")
+        ? "/script-pipeline-test/task-manager"
+        : "/task-manager";
+
       async function loadTaskStructure(taskId) {
         const [taskRes, itemsRes, eventsRes] = await Promise.all([
-          fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}`, { headers: taskRequestHeaders() }),
-          fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}/items`, { headers: taskRequestHeaders() }),
-          fetch(`/task-manager/tasks/${encodeURIComponent(taskId)}/events?limit=20`, { headers: taskRequestHeaders() }),
+          fetch(`${taskManagerApiBase}/tasks/${encodeURIComponent(taskId)}`, { headers: taskRequestHeaders() }),
+          fetch(`${taskManagerApiBase}/tasks/${encodeURIComponent(taskId)}/items`, { headers: taskRequestHeaders() }),
+          fetch(`${taskManagerApiBase}/tasks/${encodeURIComponent(taskId)}/events?limit=20`, { headers: taskRequestHeaders() }),
         ]);
         const taskBody = taskRes.ok ? await taskRes.json() : {};
         const itemsBody = itemsRes.ok ? await itemsRes.json() : {};
@@ -1716,8 +1933,135 @@
         return { task, items, events };
       }
 
+      async function loadPipelineStructure(taskId, runId) {
+        const [taskRes, runRes, stagesRes, eventsRes, artifactsRes] = await Promise.all([
+          fetch(`${taskManagerApiBase}/tasks/${encodeURIComponent(taskId)}`, { headers: taskRequestHeaders() }),
+          fetch(`${taskManagerApiBase}/runs/${encodeURIComponent(runId)}`, { headers: taskRequestHeaders() }),
+          fetch(`${taskManagerApiBase}/runs/${encodeURIComponent(runId)}/stages`, { headers: taskRequestHeaders() }),
+          fetch(`${taskManagerApiBase}/runs/${encodeURIComponent(runId)}/events?limit=200`, { headers: taskRequestHeaders() }),
+          fetch(`${taskManagerApiBase}/tasks/${encodeURIComponent(taskId)}/artifacts`, { headers: taskRequestHeaders() }),
+        ]);
+        const task = taskRes.ok ? (await taskRes.json()).task : {};
+        const run = runRes.ok ? (await runRes.json()).run : {};
+        const stages = stagesRes.ok ? (await stagesRes.json()).stages || [] : [];
+        const events = eventsRes.ok ? (await eventsRes.json()).events || [] : [];
+        const artifacts = artifactsRes.ok ? (await artifactsRes.json()).artifacts || [] : [];
+        const finalArtifactType = task.task_type === "media.script.pipeline.generate"
+          ? "media_script_output"
+          : "pipeline_demo_result";
+        const finalArtifact = [...artifacts].reverse().find((item) => item.artifact_type === finalArtifactType);
+        taskDebugEl.textContent = JSON.stringify(
+          {
+            task_id: task.id,
+            run_id: run.id,
+            status: run.status || task.status,
+            outcome: run.outcome,
+            current_stage: run.current_stage_id,
+            stages: stages.map((item) => ({
+              stage: item.stage_id,
+              type: item.stage_type,
+              attempt: item.attempt,
+              status: item.status,
+              artifact: item.output_artifact_id,
+            })),
+            artifacts: artifacts.map((item) => ({
+              id: item.id,
+              type: item.artifact_type,
+              version: item.artifact_version,
+            })),
+            last_events: events.slice(-10).map((item) => ({
+              sequence: item.sequence,
+              type: item.event_type,
+              stage: item.stage_id,
+            })),
+          },
+          null,
+          2
+        );
+        return { task, run, stages, events, artifacts, finalArtifact };
+      }
+
+      async function consumePipelineStream(taskId, runId, nodes, afterSequence = 0) {
+        const url = `${taskManagerApiBase}/runs/${encodeURIComponent(runId)}/events/stream?after_sequence=${afterSequence}`;
+        const res = await fetch(url, { headers: taskRequestHeaders() });
+        if (!res.ok || !res.body) throw new Error(await responseErrorText(res));
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          buffer = parseSse(buffer, (event, envelope) => {
+            activePipelineSequence = Math.max(activePipelineSequence, Number(envelope.sequence || 0));
+            const stage = envelope.stage_id ? ` / ${envelope.stage_id}` : "";
+            taskStatusEl.textContent = `Pipeline: ${event}${stage}`;
+            const delta = envelope.payload?.delta || "";
+            if (delta) {
+              nodes.bubble.textContent += delta;
+              nodes.bubble.scrollIntoView({ behavior: "smooth", block: "end" });
+            }
+            if (event === "human_review_required") {
+              approvePipelineRunEl.disabled = false;
+              cancelPipelineRunEl.disabled = false;
+            }
+            if (event === "task_failed" || event === "task_cancelled") {
+              nodes.bubble.textContent += `\n\n${event}: ${envelope.message || ""}`;
+            }
+          });
+        }
+        let structure = await loadPipelineStructure(taskId, runId);
+        for (let attempt = 0; attempt < 10 && structure.run.status === "running"; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          structure = await loadPipelineStructure(taskId, runId);
+        }
+        const status = structure.run.status || structure.task.status;
+        if (structure.finalArtifact?.content_json) {
+          nodes.bubble.textContent = JSON.stringify(structure.finalArtifact.content_json, null, 2);
+        }
+        approvePipelineRunEl.disabled = status !== "waiting_human";
+        cancelPipelineRunEl.disabled = !["running", "waiting_human"].includes(status);
+        taskStatusEl.textContent = `Pipeline: ${status} / ${runId.slice(0, 8)}`;
+        return structure;
+      }
+
+      async function runPipelineDemo(payload) {
+        activeMode = "task";
+        currentThreadTitle = payload.title.slice(0, 18);
+        addUserMessage(`Pipeline: ${payload.title}`);
+        const nodes = addAssistantMessage();
+        nodes.bubble.textContent = "";
+        activePipelineNodes = nodes;
+        activePipelineSequence = 0;
+        setTaskBusy(true, "Pipeline: creating");
+        setBusy(true, "pipeline");
+        const idempotencyBase = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+        const createRes = await fetch(`${taskManagerApiBase}/tasks`, {
+          method: "POST",
+          headers: taskRequestHeaders({ "Content-Type": "application/json", "Idempotency-Key": `task-${idempotencyBase}` }),
+          body: JSON.stringify(payload),
+        });
+        if (!createRes.ok) throw new Error(await responseErrorText(createRes));
+        activePipelineTaskId = (await createRes.json()).task.id;
+        const startRes = await fetch(`${taskManagerApiBase}/tasks/${encodeURIComponent(activePipelineTaskId)}/runs`, {
+          method: "POST",
+          headers: taskRequestHeaders({ "Content-Type": "application/json", "Idempotency-Key": `run-${idempotencyBase}` }),
+          body: "{}",
+        });
+        if (!startRes.ok) throw new Error(await responseErrorText(startRes));
+        activePipelineRunId = (await startRes.json()).run_id;
+        cancelPipelineRunEl.disabled = false;
+        const structure = await consumePipelineStream(activePipelineTaskId, activePipelineRunId, nodes);
+        setTaskBusy(false, `Pipeline: ${structure.run.status} / ${activePipelineRunId.slice(0, 8)}`);
+        setBusy(false, "ready");
+      }
+
       async function runMediaTask() {
         const payload = buildMediaTaskPayload();
+        if (["pipeline.demo", "media.script.pipeline.generate"].includes(payload.task_type)) {
+          await runPipelineDemo(payload);
+          return;
+        }
         if (!(payload.input_payload.topic || payload.input_payload.message)) return;
         activeMode = "task";
         currentThreadTitle = payload.title.slice(0, 18);
@@ -1727,7 +2071,7 @@
         setTaskBusy(true, "Task: streaming");
         setBusy(true, "task");
 
-        const res = await fetch("/task-manager/stream", {
+        const res = await fetch(`${taskManagerApiBase}/stream`, {
           method: "POST",
           headers: taskRequestHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify(payload),
@@ -1907,6 +2251,12 @@
         threadId = null;
         activeMode = "chat";
         currentDiscussionRunId = null;
+        activePipelineTaskId = null;
+        activePipelineRunId = null;
+        activePipelineNodes = null;
+        activePipelineSequence = 0;
+        cancelPipelineRunEl.disabled = true;
+        approvePipelineRunEl.disabled = true;
         currentThreadTitle = "新会话";
         messagesEl.innerHTML = '<div id="empty" class="empty">开始一轮最小 single-agent 对话</div>';
         renderThreads("");
@@ -1933,6 +2283,51 @@
           setBusy(false, "error");
         }
       });
+      cancelPipelineRunEl.addEventListener("click", async () => {
+        if (!activePipelineRunId) return;
+        cancelPipelineRunEl.disabled = true;
+        try {
+          const res = await fetch(`${taskManagerApiBase}/runs/${encodeURIComponent(activePipelineRunId)}/cancel`, {
+            method: "POST",
+            headers: taskRequestHeaders(),
+          });
+          if (!res.ok) throw new Error(await responseErrorText(res));
+          taskStatusEl.textContent = `Pipeline: cancellation requested / ${activePipelineRunId.slice(0, 8)}`;
+        } catch (error) {
+          taskStatusEl.textContent = `Pipeline: ${error.message}`;
+          cancelPipelineRunEl.disabled = false;
+        }
+      });
+      approvePipelineRunEl.addEventListener("click", async () => {
+        if (!activePipelineRunId || !activePipelineTaskId || !activePipelineNodes) return;
+        approvePipelineRunEl.disabled = true;
+        setTaskBusy(true, "Pipeline: resuming");
+        try {
+          const res = await fetch(`${taskManagerApiBase}/runs/${encodeURIComponent(activePipelineRunId)}/review`, {
+            method: "POST",
+            headers: taskRequestHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({
+              action: "approve",
+              comment: "Approved from the TaskManager test page.",
+              resume_from_stage: "finalize",
+            }),
+          });
+          if (!res.ok) throw new Error(await responseErrorText(res));
+          const structure = await consumePipelineStream(
+            activePipelineTaskId,
+            activePipelineRunId,
+            activePipelineNodes,
+            activePipelineSequence
+          );
+          setTaskBusy(false, `Pipeline: ${structure.run.status} / ${activePipelineRunId.slice(0, 8)}`);
+          setBusy(false, "ready");
+        } catch (error) {
+          setTaskBusy(false, `Pipeline: ${error.message}`);
+          setBusy(false, "error");
+          approvePipelineRunEl.disabled = false;
+        }
+      });
+      taskTypeEl.addEventListener("change", applyTaskDefaults);
       for (const item of sidebarNavItems) {
         item.addEventListener("click", () => switchSidebarView(item.dataset.sidebarView));
       }
@@ -1984,6 +2379,7 @@
       });
 
       renderThreads("");
+      applyTaskDefaults();
       loadAgents().catch((error) => {
         statusEl.textContent = "agent load failed";
         agentSelectEl.innerHTML = `<option value="${DEFAULT_AGENT_ID}">Default Single Agent</option>`;

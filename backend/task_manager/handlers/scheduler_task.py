@@ -135,8 +135,11 @@ def _build_task_message(task: TaskEntity, definition: TaskDefinition) -> str:
         user_message = payload.get("message") or payload.get("question") or ""
         return "\n".join(
             [
-                "Continue the conversation as a media script task assistant.",
-                "If the user asks for edits, selection, or risk checks, use the existing thread/session context.",
+                "Answer as a read-only media script conversation assistant.",
+                "Use the media-script-chat skill and the bounded current-script context below.",
+                "Do not rewrite or mutate the script, create artifacts, rerun a Pipeline, or claim that an edit was saved.",
+                "If the user requests an edit, explain the suggested change in natural language only.",
+                "Return a concise natural-language answer, not a complete script JSON object.",
                 "",
                 f"User message: {user_message}",
                 "Additional input:",
@@ -206,6 +209,36 @@ def _build_task_message(task: TaskEntity, definition: TaskDefinition) -> str:
                 f"Search mode: {search_mode}",
                 f"Maximum source cards: {max_results}",
                 f"Maximum topic suggestions: {max_topics}",
+                "Full task input:",
+                pretty_payload,
+            ]
+        )
+
+    if task_type == "analytics.douyin.account_report.generate":
+        analysis_scope = payload.get("analysis_scope") or "all_data"
+        report_goal = payload.get("report_goal") or ""
+        return "\n".join(
+            [
+                "Generate a fact-grounded Douyin account operations analysis report.",
+                "Use the douyin-account-report skill as the task authority.",
+                "Default to analyzing all available account data, not only one calendar month.",
+                "Only use month or date range boundaries when analysis_scope explicitly requests them.",
+                "Do not call any tools for this first TaskManager version. Do not call ReadSkill or code tools.",
+                "Use only the data already present in Full task input.",
+                "Do not invent metrics, audience profiles, comments, benchmarks, retention, or script quality evidence.",
+                "If data is missing, explain the limitation and still produce a useful partial report.",
+                "Return exactly one valid JSON object matching the douyin_account_report_output schema.",
+                "Do not add Markdown or explanation outside the JSON.",
+                "The JSON must parse with json.loads. Escape raw double quotes inside string values.",
+                "Set export_markdown to an empty string for now; do not put multi-line Markdown inside JSON.",
+                "Keep each section concise: summary plus up to 4 findings, 4 evidence strings, 4 limitations, and 4 next_actions.",
+                "Keep the complete JSON under 6000 Chinese characters.",
+                "top_content_analysis must contain at most 3 items. low_content_analysis must contain at most 2 items.",
+                "Each top/low content item should only include id, title, play_count, reason, and recommended_action.",
+                "",
+                f"Task title: {task.title or definition.name}",
+                f"Analysis scope: {analysis_scope}",
+                f"Report goal: {report_goal}",
                 "Full task input:",
                 pretty_payload,
             ]

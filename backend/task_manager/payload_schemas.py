@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from .gateway.models import GatewayResourceRef
 
@@ -18,6 +18,9 @@ class TaskPayloadBase(StrictPayload):
 
 class MediaScriptGenerateInput(TaskPayloadBase):
     topic: str = Field(min_length=1)
+    topic_card_id: Optional[str] = None
+    source_material_id: Optional[str] = None
+    topic_card: dict[str, Any] = Field(default_factory=dict)
     platform: Literal["douyin"] = "douyin"
     duration_seconds: int = Field(default=60, ge=15, le=300)
     source_brief: str = ""
@@ -27,6 +30,11 @@ class MediaScriptGenerateInput(TaskPayloadBase):
     materials: list[dict[str, Any]] = Field(default_factory=list)
     comments: list[Any] = Field(default_factory=list)
     manual_direction: Optional[str] = None
+    persona_id: Optional[str] = None
+    parent_script_id: Optional[str] = None
+    conversation_thread_id: Optional[str] = None
+    require_human_review: bool = False
+    context: dict[str, Any] = Field(default_factory=dict)
 
 
 class MediaScriptSelectInput(TaskPayloadBase):
@@ -83,6 +91,43 @@ class MediaTopicSearchInput(TaskPayloadBase):
         return self
 
 
+class DouyinAccountReportInput(TaskPayloadBase):
+    account_id: str = ""
+    account_name: Optional[str] = None
+    platform: Literal["douyin"] = "douyin"
+    data_source: Literal["payload", "legacy_douyin_api"] = "payload"
+    legacy_api_base_url: Optional[str] = None
+    content_limit: int = Field(default=50, ge=1, le=200)
+    analysis_scope: Literal["all_data", "month", "custom_range"] = "all_data"
+    month: Optional[str] = None
+    date_start: Optional[str] = None
+    date_end: Optional[str] = None
+    report_depth: Literal["standard", "deep"] = "deep"
+    report_goal: str = "Generate a complete Douyin account operations analysis report from all available data."
+    report_context: dict[str, Any] = Field(default_factory=dict)
+    metrics_summary: dict[str, Any] = Field(default_factory=dict)
+    content_items: list[dict[str, Any]] = Field(default_factory=list)
+    top_contents: list[dict[str, Any]] = Field(default_factory=list)
+    low_contents: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    missing_fields: list[str] = Field(default_factory=list)
+    operator_notes: str = ""
+
+    @model_validator(mode="after")
+    def validate_scope_fields(self):
+        if self.analysis_scope == "month" and not self.month:
+            raise ValueError("month is required when analysis_scope is 'month'.")
+        if self.analysis_scope == "custom_range" and not (self.date_start and self.date_end):
+            raise ValueError("date_start and date_end are required when analysis_scope is 'custom_range'.")
+        if self.data_source == "legacy_douyin_api":
+            return self
+        if not (self.report_context or self.metrics_summary or self.content_items or self.top_contents):
+            raise ValueError(
+                "At least one of report_context, metrics_summary, content_items, or top_contents is required."
+            )
+        return self
+
+
 class TableAuditInput(TaskPayloadBase):
     rows: list[dict[str, Any]] = Field(min_length=1)
     audit_goal: str = Field(min_length=1)
@@ -96,10 +141,141 @@ class TableAuditInput(TaskPayloadBase):
     expected_output: str = ""
 
 
+class PipelineDemoInput(TaskPayloadBase):
+    goal: str = Field(min_length=1)
+    context: dict[str, Any] = Field(default_factory=dict)
+    require_human_review: bool = False
+
+
+class PipelineDemoAnalysis(StrictPayload):
+    summary: str = Field(min_length=1)
+    steps: list[str] = Field(min_length=1)
+    risks: list[str] = Field(default_factory=list)
+
+
+class PipelineDemoNormalized(StrictPayload):
+    summary: str = Field(min_length=1)
+    steps: list[str] = Field(min_length=1)
+    risks: list[str] = Field(default_factory=list)
+    normalized: Literal[True] = True
+
+
+class PipelineDemoResult(StrictPayload):
+    status: Literal["success", "needs_human_review"]
+    summary: str = Field(min_length=1)
+    steps: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    artifact_ids: list[str] = Field(default_factory=list)
+
+
 class MediaScriptOutput(StrictPayload):
     final_script: dict[str, Any]
     readable_script: str
     hermes_agent_result: dict[str, Any]
+    workflow_state: dict[str, Any] = Field(default_factory=dict)
+    generation_meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class MediaScriptContextBundle(StrictPayload):
+    topic_card: dict[str, Any]
+    source_brief: dict[str, Any] = Field(default_factory=dict)
+    current_persona: dict[str, Any] = Field(default_factory=dict)
+    persona_context: dict[str, Any] = Field(default_factory=dict)
+    material_full: dict[str, Any] = Field(default_factory=dict)
+    material_comments: dict[str, Any] = Field(default_factory=dict)
+    script_stack_recommendation: dict[str, Any] = Field(default_factory=dict)
+    material_analysis: dict[str, Any] = Field(default_factory=dict)
+    product_intent: dict[str, Any] = Field(default_factory=dict)
+    rules: dict[str, Any] = Field(default_factory=dict)
+    user_constraints: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class MediaScriptResearchControversy(StrictPayload):
+    issue: str = Field(min_length=1)
+    detail: str = ""
+    severity: str = ""
+
+
+class MediaScriptRecommendedAngle(StrictPayload):
+    main_angle: str = Field(min_length=1)
+    rationale: str = ""
+    suggested_structure: str = ""
+    persona_fit: str = ""
+    formula_suggestion: str = ""
+
+
+class MediaScriptResearchRisk(StrictPayload):
+    risk: str = Field(min_length=1)
+    detail: str = ""
+    mitigation: str = ""
+
+
+class MediaScriptResearchBundle(StrictPayload):
+    topic_summary: str = Field(min_length=1)
+    key_facts: list[dict[str, Any]] = Field(default_factory=list)
+    usable_materials: list[dict[str, Any]] = Field(default_factory=list)
+    audience_questions: list[str] = Field(default_factory=list)
+    controversies: list[str | MediaScriptResearchControversy] = Field(default_factory=list)
+    source_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    recommended_angle: str | MediaScriptRecommendedAngle
+    risks: list[str | MediaScriptResearchRisk] = Field(default_factory=list)
+
+
+class MediaScriptResearchContext(StrictPayload):
+    topic_card: dict[str, Any]
+    source_brief: dict[str, Any] = Field(default_factory=dict)
+    material_full: dict[str, Any] = Field(default_factory=dict)
+    material_comments: dict[str, Any] = Field(default_factory=dict)
+    current_persona: dict[str, Any] = Field(default_factory=dict)
+    persona_context: dict[str, Any] = Field(default_factory=dict)
+    user_constraints: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class MediaScriptWriterDraft(StrictPayload):
+    final_script: dict[str, Any]
+    readable_script: str = Field(min_length=1)
+    hermes_agent_result: dict[str, Any]
+
+
+class MediaStoryboardDraft(StrictPayload):
+    storyboard: list[dict[str, Any]] = Field(default_factory=list)
+    storyboard_plan: dict[str, Any] = Field(default_factory=dict)
+    visual_direction: list[str] | str = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+    @field_validator("storyboard_plan", mode="before")
+    @classmethod
+    def normalize_storyboard_plan(cls, value):
+        if isinstance(value, str):
+            return {"summary": value}
+        return value
+
+    @field_validator("warnings", mode="before")
+    @classmethod
+    def normalize_warnings(cls, value):
+        if isinstance(value, str):
+            return [value]
+        return value
+
+
+class MediaScriptCheckResult(StrictPayload):
+    passed: bool
+    high_risk: bool
+    score: float = Field(ge=0, le=100)
+    findings: list[dict[str, Any]] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class MediaScriptReviewResult(StrictPayload):
+    recommendation: Literal["pass", "needs_human_review", "reject"]
+    summary: str = Field(min_length=1)
+    compliance_findings: list[str | dict[str, Any]] = Field(default_factory=list)
+    quality_findings: list[str | dict[str, Any]] = Field(default_factory=list)
+    storyboard_findings: list[str | dict[str, Any]] = Field(default_factory=list)
+    revise_instruction: str = ""
 
 
 class AiSearchQueryPlan(StrictPayload):
@@ -156,6 +332,35 @@ class AiSearchOutput(StrictPayload):
     follow_up_suggestions: list[str] = Field(default_factory=list)
 
 
+class DouyinReportSection(StrictPayload):
+    title: str = Field(min_length=1)
+    summary: str = ""
+    findings: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    next_actions: list[str] = Field(default_factory=list)
+
+
+class DouyinAccountReportOutput(StrictPayload):
+    status: Literal["success", "partial_data", "insufficient_data"]
+    account_id: str = ""
+    account_name: str = ""
+    platform: Literal["douyin"] = "douyin"
+    analysis_scope: Literal["all_data", "month", "custom_range"]
+    covered_period: dict[str, Any] | str = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    missing_fields: list[str] = Field(default_factory=list)
+    executive_summary: str
+    key_metrics: dict[str, Any] = Field(default_factory=dict)
+    sections: dict[str, Any] = Field(default_factory=dict)
+    top_content_analysis: list[dict[str, Any]] = Field(default_factory=list)
+    low_content_analysis: list[dict[str, Any]] = Field(default_factory=list)
+    data_limitations: list[Any] | str = Field(default_factory=list)
+    next_month_actions: list[str] = Field(default_factory=list)
+    export_markdown: str = ""
+    legacy_monthly_report: dict[str, Any] = Field(default_factory=dict)
+
+
 class TableAuditItemOutput(StrictPayload):
     risk_level: Literal["low", "medium", "high", "unknown"]
     passed: bool
@@ -183,16 +388,46 @@ _INPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "media_chat_input": MediaChatInput,
     "ai_search_chat_input": AiSearchChatInput,
     "media_topic_search_input": MediaTopicSearchInput,
+    "douyin_account_report_input": DouyinAccountReportInput,
     "table_audit_input": TableAuditInput,
+    "pipeline_demo_input": PipelineDemoInput,
 }
 
 _OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "media_script_output": MediaScriptOutput,
     "ai_search_output": AiSearchOutput,
     "media_topic_search_output": AiSearchOutput,
+    "douyin_account_report_output": DouyinAccountReportOutput,
     "table_audit_item_output": TableAuditItemOutput,
     "batch_task_output": BatchTaskOutput,
+    "pipeline_demo_analysis": PipelineDemoAnalysis,
+    "pipeline_demo_normalized": PipelineDemoNormalized,
+    "pipeline_demo_result": PipelineDemoResult,
+    "media_script_context_bundle": MediaScriptContextBundle,
+    "media_script_research_context": MediaScriptResearchContext,
+    "media_script_research_bundle": MediaScriptResearchBundle,
+    "media_script_writer_draft": MediaScriptWriterDraft,
+    "media_storyboard_draft": MediaStoryboardDraft,
+    "media_script_check_result": MediaScriptCheckResult,
+    "media_script_review_result": MediaScriptReviewResult,
 }
+
+
+def register_input_schema(name: str, schema: type[BaseModel]) -> None:
+    _register_schema(_INPUT_SCHEMAS, name, schema)
+
+
+def register_output_schema(name: str, schema: type[BaseModel]) -> None:
+    _register_schema(_OUTPUT_SCHEMAS, name, schema)
+
+
+def _register_schema(registry: dict[str, type[BaseModel]], name: str, schema: type[BaseModel]) -> None:
+    if not name:
+        raise ValueError("Schema name is required.")
+    existing = registry.get(name)
+    if existing is not None and existing is not schema:
+        raise ValueError(f"Schema '{name}' is already registered.")
+    registry[name] = schema
 
 
 def validate_input_payload(schema_name: str | None, payload: dict[str, Any]) -> dict[str, Any]:
@@ -218,3 +453,17 @@ def validate_output_payload(schema_name: str | None, payload: Any) -> tuple[bool
         return True, None
     except ValidationError as exc:
         return False, {"schema_name": schema_name, "errors": exc.errors()}
+
+
+def validate_stage_payload(schema_name: str | None, payload: Any) -> dict[str, Any]:
+    if not schema_name:
+        if not isinstance(payload, dict):
+            raise ValueError("Stage payload must be a JSON object.")
+        return payload
+    schema = _OUTPUT_SCHEMAS.get(schema_name) or _INPUT_SCHEMAS.get(schema_name)
+    if schema is None:
+        raise ValueError(f"Unknown stage schema '{schema_name}'.")
+    try:
+        return schema.model_validate(payload).model_dump(exclude_none=True)
+    except ValidationError as exc:
+        raise ValueError(f"Stage payload does not match schema '{schema_name}': {exc.errors()}") from exc

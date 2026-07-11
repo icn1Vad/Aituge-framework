@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from common.system_constants import DEFAULT_TENANT_ID
 
@@ -16,6 +16,7 @@ class TaskCreateRequest(BaseModel):
     parent_task_id: Optional[str] = None
     root_task_id: Optional[str] = None
     task_key: Optional[str] = None
+    idempotency_key: Optional[str] = None
     title: str = ""
     input_payload: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] = Field(default_factory=dict)
@@ -29,12 +30,25 @@ class TaskCreateRequest(BaseModel):
     expires_at: Optional[datetime] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def accept_v1_api_aliases(cls, value):
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        if "input_payload" not in normalized and "input" in normalized:
+            normalized["input_payload"] = normalized["input"]
+        if "metadata" not in normalized and "client_context" in normalized:
+            normalized["metadata"] = normalized["client_context"]
+        return normalized
+
 
 class TaskRunRequest(BaseModel):
     stream: Optional[bool] = None
     user_id: Optional[str] = None
     input_patch: dict[str, Any] = Field(default_factory=dict)
     metadata_patch: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: Optional[str] = None
 
 
 class TaskRead(BaseModel):
@@ -44,6 +58,7 @@ class TaskRead(BaseModel):
     parent_task_id: Optional[str] = None
     root_task_id: Optional[str] = None
     task_key: Optional[str] = None
+    idempotency_key: Optional[str] = None
     task_type: str
     status: TaskStatus
     title: str
@@ -79,6 +94,7 @@ class TaskEventRead(BaseModel):
     id: str
     task_id: str
     run_id: Optional[str] = None
+    schema_version: str = "1.0"
     parent_event_id: Optional[str] = None
     sequence: int
     event_type: str
@@ -87,6 +103,11 @@ class TaskEventRead(BaseModel):
     step_id: Optional[str] = None
     step_index: Optional[int] = None
     item_id: Optional[str] = None
+    stage_run_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    tool_call_id: Optional[str] = None
+    stream_semantics: str = "status"
+    source_json: dict[str, Any] = Field(default_factory=dict)
     duration_ms: Optional[int] = None
     token_usage_json: dict[str, Any]
     error_code: Optional[str] = None
@@ -138,3 +159,90 @@ class TaskDefinitionRead(BaseModel):
     input_schema_name: Optional[str] = None
     output_schema_name: Optional[str] = None
     item_output_schema_name: Optional[str] = None
+    pipeline_id: Optional[str] = None
+
+
+class TaskRunRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    task_id: str
+    idempotency_key: Optional[str] = None
+    pipeline_id: str
+    pipeline_version: str
+    status: str
+    outcome: Optional[str] = None
+    current_stage_id: Optional[str] = None
+    cancel_requested: bool
+    pause_requested: bool
+    warning_count: int
+    error_code: Optional[str] = None
+    error_message: str
+    metadata_json: dict[str, Any]
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskStageRunRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    task_id: str
+    run_id: str
+    stage_id: str
+    stage_type: str
+    attempt: int
+    status: str
+    agent_id: Optional[str] = None
+    thread_id: Optional[str] = None
+    session_id: Optional[str] = None
+    input_artifact_ids_json: list[str]
+    output_artifact_id: Optional[str] = None
+    error_code: Optional[str] = None
+    error_message: str
+    metadata_json: dict[str, Any]
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    duration_ms: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskArtifactRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    task_id: str
+    run_id: str
+    stage_run_id: str
+    artifact_type: str
+    artifact_version: int
+    schema_name: str
+    schema_version: str
+    content_json: Optional[dict[str, Any]] = None
+    content_uri: Optional[str] = None
+    summary: str
+    parent_artifact_ids_json: list[str]
+    checksum: str
+    metadata_json: dict[str, Any]
+    created_at: datetime
+
+
+class TaskRunStartResponse(BaseModel):
+    task_id: str
+    run_id: str
+    status: str
+    stream_url: str
+
+
+class HumanReviewRequest(BaseModel):
+    action: str
+    comment: str = ""
+    patch: dict[str, Any] = Field(default_factory=dict)
+    resume_from_stage: Optional[str] = None
+
+
+class StageRetryRequest(BaseModel):
+    comment: str = ""

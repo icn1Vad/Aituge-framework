@@ -5,21 +5,38 @@ import uuid
 from dataclasses import asdict
 from typing import Any, AsyncIterator, Optional
 
+from loguru import logger
 from sqlalchemy import desc
 from sqlmodel import select
 
 from db.db_context import create_db_session
 from scheduling.scheduler import SchedulingRuntimeOptions
 
+from .adapters.douyin_report_compat import add_legacy_monthly_report
+from .adapters.legacy_douyin import enrich_douyin_account_report_payload
 from .gateway.service import DataAccessGateway
 from .handlers.base import TaskHandlerEvent
 from .handlers.batch_item_scheduler import BatchItemSchedulerHandler
+from .handlers.pipeline_task import PipelineTaskHandler
 from .handlers.scheduler_task import SchedulerTaskHandler
-from .models import TaskEntity, TaskEventEntity, TaskItemEntity, utc_now
+from .models import TaskEntity, TaskEventEntity, TaskItemEntity, TaskRunEntity, utc_now
 from .output_parser import parse_json_output
 from .payload_schemas import validate_input_payload, validate_output_payload
 from .registry import TaskDefinition, get_task_definition
+from .runtime import executor_lock, get_event_broker, start_background_run
 from .schemas import TaskCreateRequest, TaskEventRead, TaskItemRead, TaskRead, TaskRunRequest
+from .pipeline.registry import get_pipeline_definition
+from .pipeline.store import (
+    create_artifact,
+    create_stage_run,
+    get_artifact,
+    get_run,
+    list_artifacts,
+    list_stage_runs,
+    list_task_runs,
+    update_run,
+    update_stage_run,
+)
 
 
 STREAM_EVENT_BUFFER_CHARS = 1000
@@ -32,7 +49,24 @@ class TaskManagerService:
 
     async def create_task(self, request: TaskCreateRequest) -> TaskEntity:
         definition = get_task_definition(request.task_type)
-        input_payload = validate_input_payload(definition.input_schema_name, request.input_payload)
+        if request.idempotency_key:
+            async with create_db_session() as session:
+                result = await session.exec(
+                    select(TaskEntity)
+                    .where(TaskEntity.user_id == request.user_id)
+                    .where(TaskEntity.tenant_id == request.tenant_id)
+                    .where(TaskEntity.idempotency_key == request.idempotency_key)
+                )
+                existing = result.first()
+                if existing is not None:
+                    if existing.task_type != request.task_type:
+                        raise ValueError(
+                            f"Idempotency key '{request.idempotency_key}' already belongs to "
+                            f"task_type '{existing.task_type}'."
+                        )
+                    return existing
+        raw_input_payload = await _prepare_input_payload(request.task_type, request.input_payload)
+        input_payload = validate_input_payload(definition.input_schema_name, raw_input_payload)
         validated_refs = DataAccessGateway().validate_resource_refs(
             user_id=request.user_id,
             tenant_id=request.tenant_id,
@@ -47,6 +81,7 @@ class TaskManagerService:
             parent_task_id=request.parent_task_id,
             root_task_id=request.root_task_id or request.parent_task_id or task_id,
             task_key=request.task_key,
+            idempotency_key=request.idempotency_key,
             task_type=request.task_type,
             title=request.title or definition.name,
             handler_name=definition.handler,
@@ -120,7 +155,7 @@ class TaskManagerService:
             statement = (
                 select(TaskEventEntity)
                 .where(TaskEventEntity.task_id == task_id)
-                .order_by(TaskEventEntity.sequence)
+                .order_by(TaskEventEntity.created_at, TaskEventEntity.sequence)
                 .offset(offset)
                 .limit(limit)
             )
@@ -139,6 +174,43 @@ class TaskManagerService:
             result = await session.exec(statement)
             return list(result.all())
 
+    async def list_runs(self, task_id: str) -> list[TaskRunEntity]:
+        return await list_task_runs(task_id)
+
+    async def get_run(self, run_id: str) -> TaskRunEntity | None:
+        return await get_run(run_id)
+
+    async def list_run_events(
+        self,
+        run_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 1000,
+        event_type: str | None = None,
+        stage_id: str | None = None,
+    ) -> list[TaskEventEntity]:
+        async with create_db_session() as session:
+            statement = (
+                select(TaskEventEntity)
+                .where(TaskEventEntity.run_id == run_id)
+                .where(TaskEventEntity.sequence > after_sequence)
+            )
+            if event_type:
+                statement = statement.where(TaskEventEntity.event_type == event_type)
+            if stage_id:
+                statement = statement.where(TaskEventEntity.stage == stage_id)
+            result = await session.exec(statement.order_by(TaskEventEntity.sequence).limit(limit))
+            return list(result.all())
+
+    async def list_run_stages(self, run_id: str):
+        return await list_stage_runs(run_id)
+
+    async def list_task_artifacts(self, task_id: str):
+        return await list_artifacts(task_id=task_id)
+
+    async def get_artifact(self, artifact_id: str):
+        return await get_artifact(artifact_id)
+
     async def run_task(self, task_id: str, request: TaskRunRequest | None = None) -> TaskEntity:
         async for _ in self.stream_task(task_id, request):
             pass
@@ -153,12 +225,221 @@ class TaskManagerService:
         request: TaskRunRequest | None = None,
     ) -> AsyncIterator[TaskEventRead]:
         task = await self._prepare_run(task_id, request)
+        async for event in self._stream_prepared_task(task):
+            yield event
+
+    async def start_task_run(
+        self,
+        task_id: str,
+        request: TaskRunRequest | None = None,
+    ) -> TaskRunEntity:
+        if request and request.idempotency_key:
+            async with create_db_session() as session:
+                result = await session.exec(
+                    select(TaskRunEntity)
+                    .where(TaskRunEntity.task_id == task_id)
+                    .where(TaskRunEntity.idempotency_key == request.idempotency_key)
+                )
+                existing = result.first()
+                if existing is not None:
+                    return existing
+        task = await self._prepare_run(task_id, request)
+        if not task.current_run_id:
+            raise ValueError(f"Task '{task_id}' did not create a run.")
+        run = await get_run(task.current_run_id)
+        if run is None:
+            raise ValueError(f"Run '{task.current_run_id}' not found.")
+        start_background_run(run.id, self._drain_prepared_task(task.id))
+        return run
+
+    async def _drain_prepared_task(self, task_id: str) -> None:
+        task = await self.get_task(task_id)
+        if task is None:
+            raise ValueError(f"Task '{task_id}' not found.")
+        if not task.current_run_id:
+            raise ValueError(f"Task '{task_id}' has no active run.")
+        async with executor_lock(task.current_run_id) as acquired:
+            if not acquired:
+                return
+            async for _ in self._stream_prepared_task(task):
+                pass
+
+    async def request_cancel(self, run_id: str) -> TaskRunEntity:
+        run = await get_run(run_id)
+        if run is None:
+            raise ValueError(f"Run '{run_id}' not found.")
+        run = await update_run(run_id, cancel_requested=True)
+        async with create_db_session() as session:
+            task = await session.get(TaskEntity, run.task_id)
+            if task is not None:
+                task.cancel_requested = True
+                task.updated_at = utc_now()
+                session.add(task)
+                await session.commit()
+        if run.status == "waiting_human":
+            await update_run(run_id, status="cancelled", outcome="cancelled", finished_at=utc_now())
+            await self._finish_task(run.task_id, status="cancelled", outcome="cancelled")
+            await self.record_event(
+                task_id=run.task_id,
+                run_id=run.id,
+                event_type="task_cancelled",
+                stage=run.current_stage_id or "pipeline",
+                message="Run cancelled while waiting for human review.",
+                payload={"run_id": run.id},
+                source={"type": "task_manager", "id": run.task_id},
+            )
+            run = (await get_run(run_id)) or run
+        return run
+
+    async def submit_human_review(
+        self,
+        run_id: str,
+        *,
+        action: str,
+        comment: str = "",
+        patch: dict[str, Any] | None = None,
+        resume_from_stage: str | None = None,
+    ) -> TaskRunEntity:
+        if action not in {"approve", "reject", "revise_input", "rerun_stage"}:
+            raise ValueError(f"Unsupported review action '{action}'.")
+        run = await get_run(run_id)
+        if run is None:
+            raise ValueError(f"Run '{run_id}' not found.")
+        if run.status != "waiting_human":
+            raise ValueError(f"Run '{run_id}' is not waiting for human review.")
+        task = await self.get_task(run.task_id)
+        if task is None:
+            raise ValueError(f"Task '{run.task_id}' not found.")
+        if action == "reject":
+            error = {"type": "human_rejected", "message": comment or "Human reviewer rejected the run."}
+            await self._finish_task(task.id, status="failed", error=error, outcome="failure")
+            await self.record_event(
+                task_id=task.id,
+                run_id=run.id,
+                event_type="task_failed",
+                stage=run.current_stage_id or "human_review",
+                message=error["message"],
+                payload=error,
+                level="error",
+                source={"type": "human", "id": task.user_id},
+            )
+            return (await get_run(run_id)) or run
+
+        definition = get_task_definition(task.task_type)
+        review_patch = dict(patch or {})
+        if review_patch:
+            updated_input = validate_input_payload(
+                definition.input_schema_name,
+                {**(task.input_payload_json or {}), **review_patch},
+            )
+            async with create_db_session() as session:
+                task_row = await session.get(TaskEntity, task.id)
+                if task_row is None:
+                    raise ValueError(f"Task '{task.id}' not found.")
+                task_row.input_payload_json = updated_input
+                task_row.updated_at = utc_now()
+                session.add(task_row)
+                await session.commit()
+            task.input_payload_json = updated_input
+
+        review_attempts = [item for item in await list_stage_runs(run_id) if item.stage_id == "human_review"]
+        stage_run = await create_stage_run(
+            task_id=task.id,
+            run_id=run.id,
+            stage_id="human_review",
+            stage_type="deterministic",
+            attempt=len(review_attempts) + 1,
+            agent_id=None,
+            input_artifact_ids=[],
+        )
+        review_content = {
+            "action": action,
+            "comment": comment,
+            "patch": review_patch,
+            "resume_from_stage": resume_from_stage or run.current_stage_id,
+        }
+        artifact = await create_artifact(
+            task_id=task.id,
+            run_id=run.id,
+            stage_run_id=stage_run.id,
+            artifact_type="human_review",
+            schema_name="",
+            content=review_content,
+            parent_artifact_ids=[],
+            summary=comment,
+        )
+        await update_stage_run(
+            stage_run.id,
+            status="succeeded",
+            output_artifact_id=artifact.id,
+            finished_at=utc_now(),
+        )
+        metadata = {
+            **(run.metadata_json or {}),
+            "human_review": review_content,
+            "resume_from_stage": resume_from_stage or run.current_stage_id,
+        }
+        run = await update_run(
+            run.id,
+            status="running",
+            outcome=None,
+            cancel_requested=False,
+            metadata_json=metadata,
+            finished_at=None,
+        )
+        async with create_db_session() as session:
+            task_row = await session.get(TaskEntity, task.id)
+            if task_row is None:
+                raise ValueError(f"Task '{task.id}' not found.")
+            task_row.status = "running"
+            task_row.cancel_requested = False
+            task_row.finished_at = None
+            task_row.updated_at = utc_now()
+            session.add(task_row)
+            await session.commit()
+        await self.record_event(
+            task_id=task.id,
+            run_id=run.id,
+            event_type="human_review_submitted",
+            stage="human_review",
+            message=comment or f"Human review action '{action}' submitted.",
+            payload={**review_content, "artifact_id": artifact.id},
+            stream_semantics="reference",
+            source={"type": "human", "id": task.user_id},
+        )
+        await self.record_event(
+            task_id=task.id,
+            run_id=run.id,
+            event_type="pipeline_resumed",
+            stage=resume_from_stage or run.current_stage_id or "pipeline",
+            message="Pipeline resumed after human review.",
+            payload={"resume_from_stage": resume_from_stage or run.current_stage_id},
+            source={"type": "task_manager", "id": task.id},
+        )
+        start_background_run(run.id, self._drain_prepared_task(task.id))
+        return run
+
+    async def _stream_prepared_task(self, task: TaskEntity) -> AsyncIterator[TaskEventRead]:
         definition = get_task_definition(task.task_type)
         handler = self._get_handler(definition)
         final_content = ""
         final_usage = None
         structured_output: Any = None
         stream_buffer: list[str] = []
+        buffered_item: TaskHandlerEvent | None = None
+        terminal_status: str | None = None
+        terminal_outcome: str | None = None
+
+        async def flush_stream_buffer() -> TaskEventEntity | None:
+            nonlocal buffered_item
+            if buffered_item is None or not stream_buffer:
+                return None
+            buffered_item.payload = {**buffered_item.payload, "delta": "".join(stream_buffer)}
+            buffered_item.delta = ""
+            stream_buffer.clear()
+            event = await self.record_event_from_handler(task.id, task.current_run_id, buffered_item)
+            buffered_item = None
+            return event
 
         started = await self.record_event(
             task_id=task.id,
@@ -174,6 +455,30 @@ class TaskManagerService:
 
         try:
             async for item in handler.stream(task=task, definition=definition):
+                if item.delta:
+                    buffer_key = (item.event_type, item.stage, item.stage_run_id, item.agent_id)
+                    current_key = (
+                        buffered_item.event_type,
+                        buffered_item.stage,
+                        buffered_item.stage_run_id,
+                        buffered_item.agent_id,
+                    ) if buffered_item else None
+                    if buffered_item is not None and current_key != buffer_key:
+                        flushed = await flush_stream_buffer()
+                        if flushed is not None:
+                            yield TaskEventRead.model_validate(flushed)
+                    buffered_item = buffered_item or item
+                    stream_buffer.append(item.delta)
+                    if sum(len(part) for part in stream_buffer) < 400:
+                        continue
+                    flushed = await flush_stream_buffer()
+                    if flushed is not None:
+                        yield TaskEventRead.model_validate(flushed)
+                    continue
+
+                flushed = await flush_stream_buffer()
+                if flushed is not None:
+                    yield TaskEventRead.model_validate(flushed)
                 if item.thread_id or item.session_id:
                     task = await self._update_task_session(
                         task.id,
@@ -182,35 +487,29 @@ class TaskManagerService:
                     )
                 if item.final_content is not None:
                     final_content = item.final_content
-                    final_usage = item.usage
-                    parse_result = parse_json_output(final_content)
-                    structured_output = parse_result.structured
-                    event = await self.record_event_from_handler(task.id, task.current_run_id, item)
-                    yield TaskEventRead.model_validate(event)
-                    continue
-
-                if item.delta:
-                    stream_buffer.append(item.delta)
-                    if sum(len(part) for part in stream_buffer) < STREAM_EVENT_BUFFER_CHARS:
-                        continue
-                    item.payload = {**item.payload, "delta": "".join(stream_buffer)}
-                    stream_buffer.clear()
+                    final_usage = item.usage or item.token_usage
+                    structured_output = item.structured_output
+                    if structured_output is None:
+                        parse_result = parse_json_output(final_content)
+                        structured_output = parse_result.structured
+                terminal_status = item.terminal_status or terminal_status
+                terminal_outcome = item.outcome or terminal_outcome
 
                 event = await self.record_event_from_handler(task.id, task.current_run_id, item)
                 yield TaskEventRead.model_validate(event)
 
-            if stream_buffer:
-                event = await self.record_event(
-                    task_id=task.id,
-                    run_id=task.current_run_id,
-                    event_type="stream_chunk",
-                    stage="agent_stream",
-                    message="Buffered agent stream chunk received.",
-                    payload={"delta": "".join(stream_buffer)},
-                    step_id="agent_stream",
-                    step_index=30,
+            flushed = await flush_stream_buffer()
+            if flushed is not None:
+                yield TaskEventRead.model_validate(flushed)
+
+            if terminal_status in {"waiting_human", "cancelled"}:
+                await self._finish_task(
+                    task.id,
+                    status=terminal_status,
+                    result={"structured": structured_output} if structured_output is not None else None,
+                    outcome=terminal_outcome,
                 )
-                yield TaskEventRead.model_validate(event)
+                return
 
             result = {
                 "content": final_content,
@@ -219,6 +518,12 @@ class TaskManagerService:
                 "thread_id": task.thread_id,
                 "session_id": task.session_id,
             }
+            if task.task_type == "analytics.douyin.account_report.generate":
+                structured_output = add_legacy_monthly_report(
+                    structured_output,
+                    task.input_payload_json or {},
+                )
+                result["structured"] = structured_output
             synced_items = await self._sync_result_items(task, structured_output)
             if synced_items:
                 result["synced_items"] = synced_items
@@ -238,6 +543,8 @@ class TaskManagerService:
                     step_index=95,
                 )
                 yield TaskEventRead.model_validate(parse_failed)
+                if definition.handler == "pipeline":
+                    raise ValueError("Pipeline final output is not valid JSON.")
             else:
                 is_valid, validation_error = validate_output_payload(
                     definition.output_schema_name,
@@ -256,7 +563,8 @@ class TaskManagerService:
                         step_index=96,
                     )
                     yield TaskEventRead.model_validate(validation_failed)
-            task = await self._finish_task(task.id, status="succeeded", result=result)
+                    if definition.handler == "pipeline":
+                        raise ValueError("Pipeline final output failed its registered schema.")
             succeeded = await self.record_event(
                 task_id=task.id,
                 run_id=task.current_run_id,
@@ -267,6 +575,14 @@ class TaskManagerService:
                 step_id="task_finish",
                 step_index=99,
                 token_usage=final_usage,
+                stream_semantics="status",
+                source={"type": "task_manager", "id": task.id},
+            )
+            task = await self._finish_task(
+                task.id,
+                status="succeeded",
+                result=result,
+                outcome=terminal_outcome or "success",
             )
             yield TaskEventRead.model_validate(succeeded)
         except Exception as exc:
@@ -276,7 +592,6 @@ class TaskManagerService:
                 "message": str(exc),
                 "retryable": True,
             }
-            task = await self._finish_task(task.id, status="failed", error=error)
             failed = await self.record_event(
                 task_id=task.id,
                 run_id=task.current_run_id,
@@ -289,6 +604,7 @@ class TaskManagerService:
                 step_index=99,
                 error_code=exc.__class__.__name__,
             )
+            task = await self._finish_task(task.id, status="failed", error=error, outcome="failure")
             yield TaskEventRead.model_validate(failed)
             raise
 
@@ -313,6 +629,11 @@ class TaskManagerService:
             token_usage=event.token_usage or event.usage,
             error_code=event.error_code,
             visible=event.visible,
+            stage_run_id=event.stage_run_id,
+            agent_id=event.agent_id,
+            tool_call_id=event.tool_call_id,
+            stream_semantics=event.stream_semantics,
+            source=event.source,
         )
 
     async def record_event(
@@ -333,14 +654,19 @@ class TaskManagerService:
         token_usage: dict[str, Any] | None = None,
         error_code: str | None = None,
         visible: bool = True,
+        stage_run_id: str | None = None,
+        agent_id: str | None = None,
+        tool_call_id: str | None = None,
+        stream_semantics: str = "status",
+        source: dict[str, Any] | None = None,
     ) -> TaskEventEntity:
         async with create_db_session() as session:
-            statement = (
-                select(TaskEventEntity)
-                .where(TaskEventEntity.task_id == task_id)
-                .order_by(desc(TaskEventEntity.sequence))
-                .limit(1)
-            )
+            statement = select(TaskEventEntity).where(TaskEventEntity.task_id == task_id)
+            statement = statement.where(
+                TaskEventEntity.run_id == run_id
+                if run_id is not None
+                else TaskEventEntity.run_id.is_(None)
+            ).order_by(desc(TaskEventEntity.sequence)).limit(1)
             latest = (await session.exec(statement)).first()
             event = TaskEventEntity(
                 task_id=task_id,
@@ -353,6 +679,11 @@ class TaskManagerService:
                 step_id=step_id,
                 step_index=step_index,
                 item_id=item_id,
+                stage_run_id=stage_run_id,
+                agent_id=agent_id,
+                tool_call_id=tool_call_id,
+                stream_semantics=stream_semantics,
+                source_json=source or {},
                 duration_ms=duration_ms,
                 token_usage_json=token_usage or {},
                 error_code=error_code,
@@ -363,13 +694,20 @@ class TaskManagerService:
             session.add(event)
             await session.commit()
             await session.refresh(event)
-            return event
+        if run_id:
+            try:
+                await get_event_broker().publish(run_id, event_to_envelope(event))
+            except Exception as exc:  # Event persistence remains authoritative if the live broker is unavailable.
+                logger.warning("Task event broker publish failed for run {}: {}", run_id, exc)
+        return event
 
     def _get_handler(self, definition: TaskDefinition):
         if definition.handler == "scheduler":
             return SchedulerTaskHandler(self.options)
         if definition.handler == "batch_item_scheduler":
             return BatchItemSchedulerHandler(self.options)
+        if definition.handler == "pipeline":
+            return PipelineTaskHandler(self.options)
         raise ValueError(f"Unsupported task handler '{definition.handler}'.")
 
     async def _prepare_run(self, task_id: str, request: TaskRunRequest | None) -> TaskEntity:
@@ -403,7 +741,22 @@ class TaskManagerService:
             task.error_payload_json = None
             task.result_payload_json = None
             task.updated_at = utc_now()
+            pipeline_id = definition.pipeline_id or ""
+            pipeline_version = ""
+            if pipeline_id:
+                pipeline_version = get_pipeline_definition(pipeline_id).version
+            run = TaskRunEntity(
+                id=task.current_run_id,
+                task_id=task.id,
+                idempotency_key=request.idempotency_key if request else None,
+                pipeline_id=pipeline_id,
+                pipeline_version=pipeline_version,
+                status="running",
+                started_at=task.started_at,
+                metadata_json={"request_metadata": dict(request.metadata_patch) if request else {}},
+            )
             session.add(task)
+            session.add(run)
             await session.commit()
             await session.refresh(task)
             return task
@@ -522,6 +875,7 @@ class TaskManagerService:
         status: str,
         result: dict[str, Any] | None = None,
         error: dict[str, Any] | None = None,
+        outcome: str | None = None,
     ) -> TaskEntity:
         async with create_db_session() as session:
             task = await session.get(TaskEntity, task_id)
@@ -533,9 +887,19 @@ class TaskManagerService:
             now = utc_now()
             if status == "succeeded":
                 task.progress_current = task.progress_total or 1
-            task.finished_at = now
+            task.finished_at = None if status == "waiting_human" else now
             task.updated_at = now
             session.add(task)
+            if task.current_run_id:
+                run = await session.get(TaskRunEntity, task.current_run_id)
+                if run is not None:
+                    run.status = status
+                    run.outcome = outcome
+                    run.error_code = str((error or {}).get("type") or "") or None
+                    run.error_message = str((error or {}).get("message") or "")
+                    run.finished_at = None if status == "waiting_human" else now
+                    run.updated_at = now
+                    session.add(run)
             item_result = await session.exec(select(TaskItemEntity).where(TaskItemEntity.task_id == task_id))
             for item in item_result.all():
                 if item.status not in {"pending", "running"}:
@@ -569,6 +933,12 @@ def _bounded_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _definition_snapshot(definition: TaskDefinition) -> dict[str, Any]:
     return asdict(definition)
+
+
+async def _prepare_input_payload(task_type: str, input_payload: dict[str, Any]) -> dict[str, Any]:
+    if task_type == "analytics.douyin.account_report.generate":
+        return await enrich_douyin_account_report_payload(dict(input_payload or {}))
+    return input_payload
 
 
 def _extract_task_items(input_payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -610,6 +980,27 @@ def task_to_read(task: TaskEntity) -> TaskRead:
 
 def event_to_read(event: TaskEventEntity) -> TaskEventRead:
     return TaskEventRead.model_validate(event)
+
+
+def event_to_envelope(event: TaskEventEntity) -> dict[str, Any]:
+    return {
+        "schema_version": event.schema_version,
+        "event_id": event.id,
+        "task_id": event.task_id,
+        "run_id": event.run_id,
+        "sequence": event.sequence,
+        "event_type": event.event_type,
+        "stream_semantics": event.stream_semantics,
+        "stage_id": event.stage,
+        "stage_run_id": event.stage_run_id,
+        "agent_id": event.agent_id,
+        "tool_call_id": event.tool_call_id,
+        "source": event.source_json or {},
+        "payload": event.payload_json or {},
+        "message": event.message,
+        "level": event.level,
+        "created_at": event.created_at.isoformat() + "Z",
+    }
 
 
 def item_to_read(item: TaskItemEntity) -> TaskItemRead:
