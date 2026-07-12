@@ -35,6 +35,68 @@ class MediaScriptGenerateInput(TaskPayloadBase):
     conversation_thread_id: Optional[str] = None
     require_human_review: bool = False
     context: dict[str, Any] = Field(default_factory=dict)
+    revision_mode: bool = False
+    base_script_id: Optional[str] = None
+    base_artifact_id: Optional[str] = None
+    proposal_artifact_id: Optional[str] = None
+    previous_script: dict[str, Any] = Field(default_factory=dict)
+    change_proposal: dict[str, Any] = Field(default_factory=dict)
+    preserve_fields: list[str] = Field(default_factory=list)
+    parent_task_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_revision_context(self):
+        if not self.revision_mode:
+            return self
+        missing = []
+        if not self.base_script_id:
+            missing.append("base_script_id")
+        if not self.proposal_artifact_id:
+            missing.append("proposal_artifact_id")
+        if not self.previous_script:
+            missing.append("previous_script")
+        if not self.change_proposal:
+            missing.append("change_proposal")
+        if missing:
+            raise ValueError(f"Revision mode requires: {', '.join(missing)}.")
+        return self
+
+
+class MediaScriptChangeProposalInput(TaskPayloadBase):
+    message: str = Field(min_length=1)
+    base_script_id: str = Field(min_length=1)
+    base_artifact_id: Optional[str] = None
+    conversation_thread_id: Optional[str] = None
+    recent_messages: list[dict[str, Any]] = Field(default_factory=list)
+    current_script: dict[str, Any] = Field(default_factory=dict)
+    topic_card: dict[str, Any] = Field(default_factory=dict)
+    persona: dict[str, Any] = Field(default_factory=dict)
+    user_constraints: dict[str, Any] = Field(default_factory=dict)
+
+
+class MediaScriptProposalChange(StrictPayload):
+    field: str = Field(min_length=1)
+    instruction: str = Field(min_length=1)
+
+
+class MediaScriptChangeProposalOutput(StrictPayload):
+    status: Literal["pending_confirmation", "needs_clarification"]
+    summary: str = Field(min_length=1)
+    reason: str = ""
+    target_fields: list[str] = Field(default_factory=list)
+    changes: list[MediaScriptProposalChange] = Field(default_factory=list)
+    preserve_fields: list[str] = Field(default_factory=list)
+    storyboard_regeneration_required: bool = False
+    warnings: list[str] = Field(default_factory=list)
+    clarification_question: str = ""
+
+    @model_validator(mode="after")
+    def validate_status_contract(self):
+        if self.status == "pending_confirmation" and not (self.target_fields and self.changes):
+            raise ValueError("A pending proposal requires target_fields and changes.")
+        if self.status == "needs_clarification" and not self.clarification_question:
+            raise ValueError("A clarification question is required when status is needs_clarification.")
+        return self
 
 
 class MediaScriptSelectInput(TaskPayloadBase):
@@ -383,6 +445,7 @@ class BatchTaskOutput(StrictPayload):
 
 _INPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "media_script_generate_input": MediaScriptGenerateInput,
+    "media_script_change_proposal_input": MediaScriptChangeProposalInput,
     "media_script_select_input": MediaScriptSelectInput,
     "media_chat_input": MediaChatInput,
     "ai_search_chat_input": AiSearchChatInput,
@@ -394,6 +457,7 @@ _INPUT_SCHEMAS: dict[str, type[BaseModel]] = {
 
 _OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "media_script_output": MediaScriptOutput,
+    "media_script_change_proposal_output": MediaScriptChangeProposalOutput,
     "ai_search_output": AiSearchOutput,
     "media_topic_search_output": AiSearchOutput,
     "douyin_account_report_output": DouyinAccountReportOutput,
