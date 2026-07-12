@@ -16,29 +16,15 @@ from task_manager.runtime.broker import reset_event_broker_for_test
 
 class MediaPipelineAgent:
     def __init__(self, llm, system_prompt, tools):
-        if "Media Script Research" in system_prompt:
-            self.stage = "research"
-        elif "Media Script Writer" in system_prompt:
+        if "Media Script Writer" in system_prompt:
             self.stage = "writer"
         elif "Media Storyboard" in system_prompt:
             self.stage = "storyboard"
-        elif "Media Script Review" in system_prompt:
-            self.stage = "review"
         else:
             raise AssertionError(system_prompt[:500])
 
     async def run_async(self, state):
         payloads = {
-            "research": {
-                "topic_summary": "Explain a verified transition policy update.",
-                "key_facts": [{"claim": "Policy applies after verification.", "source": "official", "confidence": 0.9}],
-                "usable_materials": [],
-                "audience_questions": ["Who is eligible?"],
-                "controversies": [],
-                "source_evidence": [{"title": "Official notice", "url": "https://example.test", "source_name": "official", "supports": "eligibility"}],
-                "recommended_angle": "Explain the eligibility boundary.",
-                "risks": [],
-            },
             "writer": {
                 "final_script": {
                     "topic_name": "Policy boundary",
@@ -64,14 +50,6 @@ class MediaPipelineAgent:
                 "storyboard_plan": "One presenter shot supported by a document close-up.",
                 "visual_direction": ["Document close-up"],
                 "warnings": "Keep policy dates visible on screen.",
-            },
-            "review": {
-                "recommendation": "pass",
-                "summary": "Evidence and boundaries are acceptable.",
-                "compliance_findings": ["Keep the official-source qualifier."],
-                "quality_findings": [],
-                "storyboard_findings": [],
-                "revise_instruction": "",
             },
         }
 
@@ -99,7 +77,7 @@ async def _seed_llm_config():
         )
 
 
-def test_media_script_pipeline_runs_all_stages(tmp_path, monkeypatch):
+def test_media_script_lite_pipeline_runs_writer_and_storyboard_agents(tmp_path, monkeypatch):
     async def run():
         monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'media-pipeline.db'}")
         monkeypatch.setenv("TASK_EVENT_BROKER", "memory")
@@ -127,12 +105,12 @@ def test_media_script_pipeline_runs_all_stages(tmp_path, monkeypatch):
                     "warnings": [],
                 }
             return {
-                "passed": True,
-                "high_risk": False,
-                "score": 86,
-                "findings": [],
+                "passed": False,
+                "high_risk": True,
+                "score": 42,
+                "findings": [{"code": "duration_warning", "message": "Script exceeds the target duration."}],
                 "metrics": {},
-                "warnings": [],
+                "warnings": ["Deterministic warnings do not pause the Lite Pipeline."],
             }
 
         monkeypatch.setattr(media_pipeline, "_post_gateway", fake_gateway)
@@ -144,7 +122,12 @@ def test_media_script_pipeline_runs_all_stages(tmp_path, monkeypatch):
                 headers=headers,
                 json={
                     "task_type": "media.script.pipeline.generate",
-                    "input_payload": {"topic": "Policy boundary", "topic_card_id": "topic-1", "duration_seconds": 60},
+                    "input_payload": {
+                        "topic": "Policy boundary",
+                        "topic_card_id": "topic-1",
+                        "duration_seconds": 60,
+                        "require_human_review": True,
+                    },
                 },
             )
             assert created.status_code == 200, created.text
@@ -161,12 +144,18 @@ def test_media_script_pipeline_runs_all_stages(tmp_path, monkeypatch):
             assert status == "succeeded"
             stages = (await client.get(f"/task-manager/runs/{run_id}/stages", headers=headers)).json()["stages"]
             assert [item["stage_id"] for item in stages] == [
-                "context", "research_context", "research", "writer", "storyboard", "deterministic_checks", "review", "finalize"
+                "context", "writer", "storyboard", "deterministic_checks", "finalize"
             ]
             artifacts = (await client.get(f"/task-manager/tasks/{task_id}/artifacts", headers=headers)).json()["artifacts"]
             assert artifacts[-1]["artifact_type"] == "media_script_output"
-            assert artifacts[-1]["content_json"]["generation_meta"]["workflow"] == "media-script-pipeline-v1"
-            assert artifacts[-1]["content_json"]["final_script"]["storyboard"]
+            output = artifacts[-1]["content_json"]
+            assert output["generation_meta"]["workflow"] == "media-script-lite-pipeline-v1"
+            assert output["generation_meta"]["reviewed"] is False
+            assert output["generation_meta"]["web_research_used"] is False
+            assert output["generation_meta"]["deterministic_checks_passed"] is False
+            assert output["workflow_state"]["workflow_status"] == "pass"
+            assert output["workflow_state"]["review_result"]["reviewed"] is False
+            assert output["final_script"]["storyboard"]
 
     try:
         asyncio.run(run())
