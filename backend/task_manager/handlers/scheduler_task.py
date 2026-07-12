@@ -142,8 +142,11 @@ def _build_task_message(task: TaskEntity, definition: TaskDefinition) -> str:
         user_message = payload.get("message") or payload.get("question") or ""
         return "\n".join(
             [
-                "Continue the conversation as a media script task assistant.",
-                "If the user asks for edits, selection, or risk checks, use the existing thread/session context.",
+                "Answer as a read-only media script conversation assistant.",
+                "Use the media-script-chat skill and the bounded current-script context below.",
+                "Do not rewrite or mutate the script, create artifacts, rerun a Pipeline, or claim that an edit was saved.",
+                "If the user requests an edit, explain the suggested change in natural language only.",
+                "Return a concise natural-language answer, not a complete script JSON object.",
                 "",
                 f"User message: {user_message}",
                 "Additional input:",

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from common.system_constants import DEFAULT_TENANT_ID
-from sqlalchemy import Column, DateTime, JSON, Text, text
+from sqlalchemy import Column, DateTime, JSON, Text, UniqueConstraint, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlmodel import Field, SQLModel
 
@@ -16,11 +16,15 @@ def utc_now() -> datetime:
 
 class TaskEntity(SQLModel, table=True):
     __tablename__ = "tuge_task"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "user_id", "idempotency_key", name="unique_tuge_task_idempotency"),
+    )
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True, max_length=80)
     parent_task_id: Optional[str] = Field(default=None, foreign_key="tuge_task.id", max_length=80)
     root_task_id: Optional[str] = Field(default=None, max_length=80)
     task_key: Optional[str] = Field(default=None, max_length=160)
+    idempotency_key: Optional[str] = Field(default=None, max_length=160)
     task_type: str = Field(nullable=False, max_length=120)
     status: str = Field(default="created", max_length=32)
     title: str = Field(default="", sa_column=Column(Text))
@@ -56,6 +60,7 @@ class TaskEventEntity(SQLModel, table=True):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True, max_length=80)
     task_id: str = Field(foreign_key="tuge_task.id", nullable=False, max_length=80)
     run_id: Optional[str] = Field(default=None, max_length=80)
+    schema_version: str = Field(default="1.0", max_length=16)
     parent_event_id: Optional[str] = Field(default=None, foreign_key="tuge_task_event.id", max_length=80)
     sequence: int = 0
     event_type: str = Field(nullable=False, max_length=80)
@@ -64,6 +69,11 @@ class TaskEventEntity(SQLModel, table=True):
     step_id: Optional[str] = Field(default=None, max_length=120)
     step_index: Optional[int] = None
     item_id: Optional[str] = Field(default=None, max_length=80)
+    stage_run_id: Optional[str] = Field(default=None, max_length=80)
+    agent_id: Optional[str] = Field(default=None, max_length=80)
+    tool_call_id: Optional[str] = Field(default=None, max_length=120)
+    stream_semantics: str = Field(default="status", max_length=24)
+    source_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     duration_ms: Optional[int] = None
     token_usage_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     error_code: Optional[str] = Field(default=None, max_length=80)
@@ -92,11 +102,86 @@ class TaskItemEntity(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime))
 
 
+class TaskRunEntity(SQLModel, table=True):
+    __tablename__ = "tuge_task_run"
+    __table_args__ = (
+        UniqueConstraint("task_id", "idempotency_key", name="unique_tuge_run_idempotency"),
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True, max_length=80)
+    task_id: str = Field(foreign_key="tuge_task.id", nullable=False, index=True, max_length=80)
+    idempotency_key: Optional[str] = Field(default=None, max_length=160)
+    pipeline_id: str = Field(default="", max_length=120)
+    pipeline_version: str = Field(default="", max_length=32)
+    status: str = Field(default="pending", max_length=32)
+    outcome: Optional[str] = Field(default=None, max_length=32)
+    current_stage_id: Optional[str] = Field(default=None, max_length=120)
+    cancel_requested: bool = False
+    pause_requested: bool = False
+    warning_count: int = 0
+    error_code: Optional[str] = Field(default=None, max_length=120)
+    error_message: str = Field(default="", sa_column=Column(Text))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    started_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    finished_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime))
+
+
+class TaskStageRunEntity(SQLModel, table=True):
+    __tablename__ = "tuge_task_stage_run"
+    __table_args__ = (
+        UniqueConstraint("run_id", "stage_id", "attempt", name="unique_tuge_stage_attempt"),
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True, max_length=80)
+    task_id: str = Field(foreign_key="tuge_task.id", nullable=False, index=True, max_length=80)
+    run_id: str = Field(foreign_key="tuge_task_run.id", nullable=False, index=True, max_length=80)
+    stage_id: str = Field(nullable=False, max_length=120)
+    stage_type: str = Field(nullable=False, max_length=32)
+    attempt: int = 1
+    status: str = Field(default="pending", max_length=32)
+    agent_id: Optional[str] = Field(default=None, max_length=80)
+    thread_id: Optional[str] = Field(default=None, max_length=80)
+    session_id: Optional[str] = Field(default=None, max_length=160)
+    input_artifact_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    output_artifact_id: Optional[str] = Field(default=None, max_length=80)
+    error_code: Optional[str] = Field(default=None, max_length=120)
+    error_message: str = Field(default="", sa_column=Column(Text))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    started_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    finished_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    duration_ms: Optional[int] = None
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime))
+
+
+class TaskArtifactEntity(SQLModel, table=True):
+    __tablename__ = "tuge_task_artifact"
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True, max_length=80)
+    task_id: str = Field(foreign_key="tuge_task.id", nullable=False, index=True, max_length=80)
+    run_id: str = Field(foreign_key="tuge_task_run.id", nullable=False, index=True, max_length=80)
+    stage_run_id: str = Field(foreign_key="tuge_task_stage_run.id", nullable=False, index=True, max_length=80)
+    artifact_type: str = Field(nullable=False, max_length=120)
+    artifact_version: int = 1
+    schema_name: str = Field(default="", max_length=120)
+    schema_version: str = Field(default="1.0", max_length=32)
+    content_json: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+    content_uri: Optional[str] = Field(default=None, sa_column=Column(Text))
+    summary: str = Field(default="", sa_column=Column(Text))
+    parent_artifact_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    checksum: str = Field(nullable=False, max_length=64)
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime))
+
+
 _SQLITE_COLUMN_MIGRATIONS = {
     "tuge_task": {
         "parent_task_id": "VARCHAR(80)",
         "root_task_id": "VARCHAR(80)",
         "task_key": "VARCHAR(160)",
+        "idempotency_key": "VARCHAR(160)",
         "handler_name": "VARCHAR(80) NOT NULL DEFAULT ''",
         "definition_snapshot_json": "JSON NOT NULL DEFAULT '{}'",
         "output_schema_json": "JSON NOT NULL DEFAULT '{}'",
@@ -107,10 +192,16 @@ _SQLITE_COLUMN_MIGRATIONS = {
         "expires_at": "DATETIME",
     },
     "tuge_task_event": {
+        "schema_version": "VARCHAR(16) NOT NULL DEFAULT '1.0'",
         "parent_event_id": "VARCHAR(80)",
         "step_id": "VARCHAR(120)",
         "step_index": "INTEGER",
         "item_id": "VARCHAR(80)",
+        "stage_run_id": "VARCHAR(80)",
+        "agent_id": "VARCHAR(80)",
+        "tool_call_id": "VARCHAR(120)",
+        "stream_semantics": "VARCHAR(24) NOT NULL DEFAULT 'status'",
+        "source_json": "JSON NOT NULL DEFAULT '{}'",
         "duration_ms": "INTEGER",
         "token_usage_json": "JSON NOT NULL DEFAULT '{}'",
         "error_code": "VARCHAR(80)",

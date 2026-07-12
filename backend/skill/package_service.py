@@ -14,6 +14,14 @@ from .package_models import SkillPackageEntity
 
 DEFAULT_SKILL_PACKAGES = [
     {
+        "package_name": "pipeline-demo-package",
+        "display_name": "Pipeline Demo Package",
+        "description": "Business-neutral structured output package for Pipeline runtime validation.",
+        "tags": ["pipeline", "task-manager", "test"],
+        "primary_skill": "pipeline-demo",
+        "auxiliary_skills": [],
+    },
+    {
         "package_name": "general-package",
         "display_name": "General Task Package",
         "description": "General task planning, review, debugging, and concise answer style.",
@@ -49,6 +57,46 @@ DEFAULT_SKILL_PACKAGES = [
         "tags": ["media", "script", "task-manager"],
         "primary_skill": "media-script-generator",
         "auxiliary_skills": ["media-script-selector"],
+    },
+    {
+        "package_name": "media-script-chat-package",
+        "display_name": "Media Script Chat Package",
+        "description": "Read-only, context-grounded conversation about one current media script.",
+        "tags": ["media", "script", "chat", "task-manager"],
+        "primary_skill": "media-script-chat",
+        "auxiliary_skills": [],
+    },
+    {
+        "package_name": "media-script-research-package",
+        "display_name": "Media Script Research Package",
+        "description": "Build a source-backed research bundle for one media script task.",
+        "tags": ["media", "script", "research", "pipeline"],
+        "primary_skill": "media-script-research",
+        "auxiliary_skills": [],
+    },
+    {
+        "package_name": "media-script-writer-package",
+        "display_name": "Media Script Writer Package",
+        "description": "Write a structured short-video script from verified Pipeline artifacts.",
+        "tags": ["media", "script", "writer", "pipeline"],
+        "primary_skill": "media-script-writer",
+        "auxiliary_skills": [],
+    },
+    {
+        "package_name": "media-storyboard-package",
+        "display_name": "Media Storyboard Package",
+        "description": "Generate executable shots from a structured script draft.",
+        "tags": ["media", "script", "storyboard", "pipeline"],
+        "primary_skill": "media-storyboard",
+        "auxiliary_skills": [],
+    },
+    {
+        "package_name": "media-script-review-package",
+        "display_name": "Media Script Review Package",
+        "description": "Review script and storyboard artifacts against evidence and deterministic checks.",
+        "tags": ["media", "script", "review", "pipeline"],
+        "primary_skill": "media-script-review",
+        "auxiliary_skills": [],
     },
     {
         "package_name": "media-script-select-package",

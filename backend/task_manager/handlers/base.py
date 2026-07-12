@@ -26,6 +26,14 @@ class TaskHandlerEvent:
     session_id: str | None = None
     final_content: str | None = None
     usage: dict[str, Any] | None = None
+    stage_run_id: str | None = None
+    agent_id: str | None = None
+    tool_call_id: str | None = None
+    stream_semantics: str = "status"
+    source: dict[str, Any] = field(default_factory=dict)
+    structured_output: dict[str, Any] | None = None
+    terminal_status: str | None = None
+    outcome: str | None = None
 
 
 class TaskHandler(Protocol):
