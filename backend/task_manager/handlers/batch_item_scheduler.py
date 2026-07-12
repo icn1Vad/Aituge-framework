@@ -13,7 +13,11 @@ from task_manager import item_store
 from task_manager.handlers.base import TaskHandlerEvent
 from task_manager.models import TaskEntity, TaskItemEntity
 from task_manager.output_parser import parse_json_output
-from task_manager.payload_schemas import validate_output_payload
+from task_manager.payload_schemas import (
+    TaskItemOutputValidationError,
+    is_fail_hard_item_output_schema,
+    validate_output_payload,
+)
 from task_manager.registry import TaskDefinition
 
 
@@ -185,6 +189,11 @@ async def _process_item(
                         },
                     )
                 )
+                if is_fail_hard_item_output_schema(definition.item_output_schema_name):
+                    raise TaskItemOutputValidationError(
+                        "Task item output was not valid JSON for strict item schema "
+                        f"'{definition.item_output_schema_name}': {parse_result.error}"
+                    )
             elif definition.item_output_schema_name:
                 is_valid, validation_error = validate_output_payload(
                     definition.item_output_schema_name,

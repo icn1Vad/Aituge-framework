@@ -101,7 +101,7 @@ def build_douyin_account_report_payload(
         "metrics_summary": {**metrics_summary, **(original.get("metrics_summary") or {})},
         "content_items": original.get("content_items") or content_items,
         "top_contents": original.get("top_contents") or content_items[:3],
-        "low_contents": original.get("low_contents") or list(reversed(content_items[-2:])),
+        "low_contents": original.get("low_contents") or list(reversed(content_items[-3:])),
         "warnings": warnings,
         "missing_fields": missing_fields,
     }

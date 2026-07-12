@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import asdict
+from collections.abc import Mapping
+import json
 from typing import Any, AsyncIterator, Optional
 
 from sqlalchemy import desc
@@ -21,6 +23,21 @@ from .output_parser import parse_json_output
 from .payload_schemas import validate_input_payload, validate_output_payload
 from .registry import TaskDefinition, get_task_definition
 from .schemas import TaskCreateRequest, TaskEventRead, TaskItemRead, TaskRead, TaskRunRequest
+
+
+def _json_safe_payload(value: Any) -> Any:
+    """Normalize exception-rich validation details before writing JSON columns."""
+    if isinstance(value, BaseException):
+        return {"type": value.__class__.__name__, "message": str(value)}
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe_payload(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_payload(item) for item in value]
+    try:
+        json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(value)
+    return value
 
 
 class TaskManagerService:
@@ -358,11 +375,11 @@ class TaskManagerService:
                 step_index=step_index,
                 item_id=item_id,
                 duration_ms=duration_ms,
-                token_usage_json=token_usage or {},
+                token_usage_json=_json_safe_payload(token_usage or {}),
                 error_code=error_code,
                 visible=visible,
                 message=message,
-                payload_json=payload or {},
+                payload_json=_json_safe_payload(payload or {}),
             )
             session.add(event)
             await session.commit()
