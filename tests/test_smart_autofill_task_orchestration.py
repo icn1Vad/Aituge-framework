@@ -13,6 +13,7 @@ from common.system_constants import DEFAULT_TENANT_ID
 from db.db_context import create_db_session, init_db, reset_engine_for_test
 from db.models.llm import LlmModelEntity
 import service.agent.single_agent_runner as runner_mod
+from task_manager.payload_schemas import SmartFillEvidence
 
 
 GROUP_PACKAGES = {
@@ -24,6 +25,15 @@ GROUP_PACKAGES = {
 }
 
 PACKAGE_GROUPS = {package: group for group, package in GROUP_PACKAGES.items()}
+
+
+def test_smart_fill_evidence_accepts_table_anchor() -> None:
+    evidence = SmartFillEvidence(
+        file_id="doc_fixture",
+        quote="supporting table row",
+        table_index=16,
+    )
+    assert evidence.table_index == 16
 
 
 class ParallelSmartFillAgent:

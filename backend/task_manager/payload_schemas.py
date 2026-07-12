@@ -439,6 +439,7 @@ class SmartFillEvidence(StrictPayload):
     section: Optional[str] = None
     page: Optional[int] = Field(default=None, ge=1)
     paragraph_index: Optional[int] = Field(default=None, ge=0)
+    table_index: Optional[int] = Field(default=None, ge=0)
     char_start: Optional[int] = Field(default=None, ge=0)
     char_end: Optional[int] = Field(default=None, ge=0)
     quote: str = Field(min_length=1)
