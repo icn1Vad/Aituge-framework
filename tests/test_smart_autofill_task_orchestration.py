@@ -30,10 +30,12 @@ class ParallelSmartFillAgent:
     active = 0
     peak_active = 0
     seen_packages: list[str] = []
+    seen_tool_names: set[str] = set()
 
     def __init__(self, llm, system_prompt, tools):
         self.system_prompt = system_prompt
         self.tools = tools
+        type(self).seen_tool_names.update(tool.metadata.name for tool in tools)
 
     async def run_async(self, state):
         async def gen():
@@ -108,6 +110,7 @@ def test_smart_fill_task_runs_five_packages_in_parallel(tmp_path, monkeypatch) -
         ParallelSmartFillAgent.active = 0
         ParallelSmartFillAgent.peak_active = 0
         ParallelSmartFillAgent.seen_packages = []
+        ParallelSmartFillAgent.seen_tool_names = set()
         monkeypatch.setattr(runner_mod, "ReactAgent", ParallelSmartFillAgent)
         monkeypatch.setattr(runner_mod, "create_llm", lambda config: object())
 
@@ -179,6 +182,8 @@ def test_smart_fill_task_runs_five_packages_in_parallel(tmp_path, monkeypatch) -
             assert started_packages == set(GROUP_PACKAGES.values())
 
         assert set(ParallelSmartFillAgent.seen_packages) == set(GROUP_PACKAGES.values())
+        assert "search-knowledgebase-smartfilld" in ParallelSmartFillAgent.seen_tool_names
+        assert "fetch-smartfil" in ParallelSmartFillAgent.seen_tool_names
         assert ParallelSmartFillAgent.peak_active >= 2
 
     try:

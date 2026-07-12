@@ -163,6 +163,7 @@ class SmartFillExtractItem(StrictPayload):
     group_id: SmartFillGroupId
     skill_package: SmartFillSkillPackage
     field_ids: list[str] = Field(min_length=1)
+    field_specs: list[dict[str, Any]] = Field(default_factory=list)
     extraction_instructions: str = ""
 
     @model_validator(mode="after")

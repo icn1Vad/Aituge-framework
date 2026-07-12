@@ -11,6 +11,7 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from pypdf import PdfReader
+from data.RAG.tool_retrieval.models import KnowledgeBase, KnowledgeBaseChunk, KnowledgeBaseFile
 
 
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -49,6 +50,39 @@ class SmartFillDocumentStore:
         if not path.exists():
             raise KeyError(document_id)
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def load_models(self):
+        """Expose parsed documents through the framework's existing RAG contract."""
+        kb_id = "smartfilldocs"
+        knowledgebases = [KnowledgeBase(
+            id=kb_id,
+            name="SmartAutoFill uploaded documents",
+            description="PDF and DOCX source materials with page, paragraph, table, and character anchors.",
+        )]
+        files: list[KnowledgeBaseFile] = []
+        chunks: list[KnowledgeBaseChunk] = []
+        if not self.parsed_dir.exists():
+            return knowledgebases, files, chunks
+        for parsed_path in sorted(self.parsed_dir.glob("doc_*.json")):
+            parsed = json.loads(parsed_path.read_text(encoding="utf-8"))
+            document_id = parsed["document_id"]
+            files.append(KnowledgeBaseFile(
+                id=document_id,
+                kb_id=kb_id,
+                file_name=parsed["file_name"],
+                title=Path(parsed["file_name"]).stem,
+                metadata={"document_id": document_id, "sha256": parsed["sha256"]},
+            ))
+            for item in parsed["chunks"]:
+                chunks.append(KnowledgeBaseChunk(
+                    id=item["chunk_id"],
+                    kb_id=kb_id,
+                    file_id=document_id,
+                    text=item["text"],
+                    index=item["index"],
+                    metadata={"document_id": document_id, **item["anchor"], "kind": item["kind"]},
+                ))
+        return knowledgebases, files, chunks
 
     def summary(self, parsed: dict[str, Any]) -> dict[str, Any]:
         return {key: parsed[key] for key in (

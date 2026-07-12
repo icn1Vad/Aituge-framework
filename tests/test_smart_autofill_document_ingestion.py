@@ -8,6 +8,8 @@ import pytest
 from fastapi import FastAPI
 
 from smart_autofill import SmartFillDocumentStore, create_smart_autofill_router
+from smart_autofill import build_extraction_input
+from data.RAG.tool_retrieval import ToolRetrievalRAG
 
 
 PDF_FIXTURE = Path(r"E:\MyProjects\proofreading\EPC合同  (Executed 31082023).pdf")
@@ -75,3 +77,45 @@ def test_document_ingestion_rejects_unsupported_type(tmp_path) -> None:
     store = SmartFillDocumentStore(tmp_path / "documents")
     with pytest.raises(ValueError, match="Unsupported document type"):
         store.ingest("notes.txt", b"not supported")
+
+
+def test_extraction_input_contains_all_field_specs_and_five_packages() -> None:
+    payload = build_extraction_input(["doc_fixture"])
+    assert len(payload["items"]) == 5
+    assert sum(len(item["field_specs"]) for item in payload["items"]) == 79
+    assert {
+        spec["field_id"]
+        for item in payload["items"]
+        for spec in item["field_specs"]
+    } == {
+        field_id
+        for item in payload["items"]
+        for field_id in item["field_ids"]
+    }
+    manual_specs = [
+        spec
+        for item in payload["items"]
+        for spec in item["field_specs"]
+        if spec["extraction_mode"] == "manual_only"
+    ]
+    assert {spec["field_id"] for spec in manual_specs} == {
+        "industry_market_analysis_table",
+        "target_company_asset_valuation_table",
+    }
+
+
+def test_docx_chunks_are_searchable_through_existing_rag_contract(tmp_path) -> None:
+    async def run() -> None:
+        store = SmartFillDocumentStore(tmp_path / "documents")
+        summary = store.ingest(DOCX_FIXTURE.name, DOCX_FIXTURE.read_bytes())
+        knowledgebases, files, chunks = store.load_models()
+        assert [kb.id for kb in knowledgebases] == ["smartfilldocs"]
+        assert [file.id for file in files] == [summary["document_id"]]
+        service = ToolRetrievalRAG(knowledgebases, files, chunks).create_service()
+        results = await service.search(kb_id="smartfilldocs", query="航天氢能")
+        assert results
+        assert results[0].file_id == summary["document_id"]
+        assert results[0].metadata["document_id"] == summary["document_id"]
+        assert "kind" in results[0].metadata
+
+    asyncio.run(run())
