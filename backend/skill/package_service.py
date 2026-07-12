@@ -138,6 +138,46 @@ DEFAULT_SKILL_PACKAGES = [
         "primary_skill": "douyin-account-report",
         "auxiliary_skills": [],
     },
+    {
+        "package_name": "smart-fill-project-package",
+        "display_name": "Smart Fill Project Fields",
+        "description": "Extract project basics and project classification fields from feasibility materials.",
+        "tags": ["smart-fill", "feasibility", "project"],
+        "primary_skill": "project-basic-extraction",
+        "auxiliary_skills": ["smart-fill-common", "source-citation", "structured-output"],
+    },
+    {
+        "package_name": "smart-fill-company-package",
+        "display_name": "Smart Fill Company Fields",
+        "description": "Extract investor, target company, equity, and valuation fields.",
+        "tags": ["smart-fill", "feasibility", "company"],
+        "primary_skill": "target-company-extraction",
+        "auxiliary_skills": ["smart-fill-common", "source-citation", "structured-output"],
+    },
+    {
+        "package_name": "smart-fill-financial-package",
+        "display_name": "Smart Fill Financial Fields",
+        "description": "Extract dynamic forecasts and financial feasibility indicators.",
+        "tags": ["smart-fill", "feasibility", "financial"],
+        "primary_skill": "financial-forecast-extraction",
+        "auxiliary_skills": ["smart-fill-common", "source-citation", "structured-output"],
+    },
+    {
+        "package_name": "smart-fill-risk-package",
+        "display_name": "Smart Fill Risk Fields",
+        "description": "Extract complete risk rows and non-financial indicator rows.",
+        "tags": ["smart-fill", "feasibility", "risk"],
+        "primary_skill": "risk-extraction",
+        "auxiliary_skills": ["smart-fill-common", "source-citation", "structured-output"],
+    },
+    {
+        "package_name": "smart-fill-analysis-package",
+        "display_name": "Smart Fill Analysis Fields",
+        "description": "Extract feasibility, necessity, and competitive analysis fields.",
+        "tags": ["smart-fill", "feasibility", "analysis"],
+        "primary_skill": "feasibility-analysis-extraction",
+        "auxiliary_skills": ["smart-fill-common", "source-citation", "structured-output"],
+    },
 ]
 
 

@@ -134,6 +134,24 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
         output_schema_name="batch_task_output",
         item_output_schema_name="table_audit_item_output",
     ),
+    "form.smart_fill.extract": TaskDefinition(
+        task_type="form.smart_fill.extract",
+        name="Feasibility Report Smart Fill Extraction",
+        description=(
+            "Extract the frozen SmartAutoFill 79-field business model through five "
+            "parallel, group-scoped Agent items."
+        ),
+        handler="batch_item_scheduler",
+        default_agent_id="default-single-agent",
+        default_skill_package="smart-fill-project-package",
+        default_primary_skill="project-basic-extraction",
+        default_candidate_skills=[],
+        default_tools=["code_interpreter", "enabled_db_tools", "rag_retrieval"],
+        default_datasets=["local_rag"],
+        input_schema_name="smart_fill_extract_input",
+        output_schema_name="batch_task_output",
+        item_output_schema_name="smart_fill_group_output",
+    ),
 }
 
 
