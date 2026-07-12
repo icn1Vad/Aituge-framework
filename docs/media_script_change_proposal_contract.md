@@ -83,9 +83,26 @@ change_proposal
 
 Optional lineage fields include `base_artifact_id` and `parent_task_id`. `preserve_fields` constrains the future Writer stage. The task-level parent relationship remains authoritative when both task metadata and payload contain a parent id.
 
+## Apply Action
+
+An approved proposal is applied through one TaskManager command:
+
+```text
+POST /task-manager/runs/{proposal_run_id}/apply
+```
+
+The command validates ownership, Proposal status, Artifact lineage, and latest content checksum. It completes the Proposal Run, then idempotently creates and starts a new child `media.script.pipeline.generate` Task with `revision_mode=true`. TaskManager derives a fixed idempotency key from the Proposal Run and Artifact; callers cannot select a second key to create a duplicate revision. Repeating the command returns the same revision Task and Run.
+
+The existing Lite Pipeline remains unchanged in shape:
+
+```text
+context -> writer -> storyboard -> deterministic_checks -> finalize
+```
+
+The Writer receives the old script and approved Proposal, Storyboard receives the complete revised script, and Finalizer rejects changes to protected fields before saving the new output Artifact.
+
 ## Phase-1 Non-goals
 
-- No revision Writer execution.
 - No 8010 bridge or frontend control.
 - No changes to the known long-answer rendering issue.
 

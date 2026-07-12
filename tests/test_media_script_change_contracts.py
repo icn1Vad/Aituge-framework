@@ -4,6 +4,8 @@ import pytest
 
 from task_manager.payload_schemas import validate_input_payload, validate_output_payload
 from task_manager.pipeline.media_script_change_proposal import await_change_proposal_confirmation
+from task_manager.pipeline.errors import StageExecutionError
+from task_manager.pipeline.media_script import _validate_revision_result
 from task_manager.registry import get_task_definition
 
 
@@ -122,3 +124,20 @@ def test_clarification_proposal_cannot_be_approved():
     result = asyncio.run(await_change_proposal_confirmation(Context()))
 
     assert result.pause_payload["allowed_actions"] == ["revise_input", "reject"]
+
+
+def test_revision_result_rejects_protected_field_changes_and_empty_target_edits():
+    task_input = {
+        "revision_mode": True,
+        "previous_script": {"persona_name": "Yan Jie", "hook_3s": "Old hook"},
+        "preserve_fields": ["persona_name"],
+        "change_proposal": {"target_fields": ["hook_3s"]},
+    }
+
+    with pytest.raises(StageExecutionError, match="protected fields"):
+        _validate_revision_result(task_input, {"persona_name": "Another persona", "hook_3s": "New hook"})
+
+    with pytest.raises(StageExecutionError, match="did not change"):
+        _validate_revision_result(task_input, {"persona_name": "Yan Jie", "hook_3s": "Old hook"})
+
+    _validate_revision_result(task_input, {"persona_name": "Yan Jie", "hook_3s": "New hook"})

@@ -19,6 +19,17 @@ Write one complete, speakable short-video script using only the provided Context
 - State weak evidence or a weak business bridge in `hermes_agent_result.risks`.
 - Do not promise guaranteed outcomes or imply unsupported official endorsement.
 
+## Revision mode
+
+When `task_input.revision_mode` is true:
+
+- Treat `previous_script` as the immutable baseline and `change_proposal` as the complete allowed change scope.
+- Apply every item in `change_proposal.changes` and do not introduce unrelated rewrites.
+- Preserve every field named in `preserve_fields` exactly.
+- Keep the original persona, evidence boundary, factual claims, and source references unless the proposal explicitly targets them.
+- Return a complete replacement script object, not a patch or diff.
+- Record any instruction that cannot be applied safely in `hermes_agent_result.risks`.
+
 ## Output
 Return one JSON object containing only:
 - `final_script`
