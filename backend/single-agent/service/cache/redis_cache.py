@@ -1,4 +1,5 @@
 import asyncio
+import os
 from typing import Optional
 
 from db.redis_conn import REDIS_URL
@@ -23,8 +24,10 @@ class RedisCache:
             self._client = Redis.from_url(
                 REDIS_URL,
                 decode_responses=True,
-                socket_timeout=15,
-                socket_connect_timeout=15,
+                # Session history is best-effort; an unavailable cache must not
+                # hold up an Agent/Pipeline stage for the full network timeout.
+                socket_timeout=float(os.getenv("REDIS_SOCKET_TIMEOUT", "0.5")),
+                socket_connect_timeout=float(os.getenv("REDIS_CONNECT_TIMEOUT", "0.25")),
             )
             self._loop = current_loop
         return self._client
