@@ -117,8 +117,16 @@ def create_smart_fill_business_router(options: SchedulingRuntimeOptions, store: 
         async for _ in manager.stream_task(tm_task.id, TaskRunRequest(stream=False, user_id="default_user")):
             pass
         items = await manager.list_items(tm_task.id)
-        await _persist_agent_results(row.id, items)
+        failed_items = [item for item in items if item.status != "succeeded"]
         row.task_manager_id = tm_task.id
+        if failed_items:
+            row.fill_status = "failed"
+            row.updated_at = now()
+            async with create_db_session() as session:
+                session.add(row)
+            failed_groups = ", ".join(item.item_key for item in failed_items)
+            raise HTTPException(502, f"自动填单失败：{failed_groups}")
+        await _persist_agent_results(row.id, items)
         row.fill_status = "success"
         row.updated_at = now()
         async with create_db_session() as session:
