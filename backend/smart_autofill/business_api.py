@@ -273,13 +273,12 @@ def create_smart_fill_business_router(options: SchedulingRuntimeOptions, store: 
                         .where(SmartFillEvidenceRecord.field_id == result.field_id)
                     )).first()
         anchor = evidence.evidence_json if evidence is not None else {}
-        target_id = None
+        target_chunk_index = _select_evidence_chunk_index(parsed["chunks"], anchor)
+        target_id = f"source-{target_chunk_index}" if target_chunk_index is not None else None
         parts = []
         for chunk in parsed["chunks"]:
-            is_target = _chunk_matches_evidence(chunk, anchor)
-            if is_target and target_id is None:
-                target_id = f"source-{chunk['index']}"
-            element_id = target_id if is_target and target_id == f"source-{chunk['index']}" else f"chunk-{chunk['index']}"
+            is_target = chunk["index"] == target_chunk_index
+            element_id = target_id if is_target else f"chunk-{chunk['index']}"
             content = _highlight_quote(chunk["text"], anchor.get("quote") if is_target else None)
             css_class = "source-target" if is_target else "source-chunk"
             label = _chunk_label(chunk)
@@ -398,6 +397,25 @@ def _chunk_matches_evidence(chunk: dict[str, Any], evidence: dict[str, Any]) -> 
             return True
     quote = str(evidence.get("quote") or "").strip()
     return bool(quote and quote in str(chunk.get("text") or ""))
+
+
+def _select_evidence_chunk_index(chunks: list[dict[str, Any]], evidence: dict[str, Any]) -> int | None:
+    """Select one preview target, preferring the first exact quote occurrence."""
+    if not evidence:
+        return None
+
+    quote = str(evidence.get("quote") or "").strip()
+    if quote:
+        for chunk in chunks:
+            if quote in str(chunk.get("text") or ""):
+                return chunk["index"]
+
+    for chunk in chunks:
+        anchor = chunk.get("anchor") or {}
+        for key in ("page", "paragraph_index", "table_index"):
+            if evidence.get(key) is not None and anchor.get(key) == evidence.get(key):
+                return chunk["index"]
+    return None
 
 
 def _highlight_quote(text: str, quote: str | None) -> str:

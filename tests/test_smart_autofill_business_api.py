@@ -6,7 +6,11 @@ from pathlib import Path
 import httpx
 
 import backend.local_code_chat_app as app_module
-from smart_autofill.business_api import _chunk_matches_evidence, _highlight_quote
+from smart_autofill.business_api import (
+    _chunk_matches_evidence,
+    _highlight_quote,
+    _select_evidence_chunk_index,
+)
 import smart_autofill.business_api as business_api_module
 from db.db_context import init_db, reset_engine_for_test
 
@@ -22,6 +26,26 @@ def test_source_preview_matches_anchor_and_highlights_exact_quote() -> None:
     evidence = {"paragraph_index": 88, "quote": "内部收益率9.72%"}
     assert _chunk_matches_evidence(chunk, evidence) is True
     assert "<mark>内部收益率9.72%</mark>" in _highlight_quote(chunk["text"], evidence["quote"])
+
+
+def test_source_preview_prefers_exact_quote_over_wrong_anchor() -> None:
+    chunks = [
+        {"index": 9, "text": "错误段落", "anchor": {"paragraph_index": 28}},
+        {"index": 12, "text": "交易总金额约为人民币53,375.90万元", "anchor": {"paragraph_index": 31}},
+    ]
+    evidence = {"paragraph_index": 28, "quote": "交易总金额约为人民币53,375.90万元"}
+
+    assert _select_evidence_chunk_index(chunks, evidence) == 12
+
+
+def test_source_preview_uses_first_exact_quote_occurrence() -> None:
+    chunks = [
+        {"index": 12, "text": "交易总金额约为人民币53,375.90万元", "anchor": {"paragraph_index": 31}},
+        {"index": 118, "text": "交易总金额约为人民币53,375.90万元", "anchor": {"paragraph_index": 134}},
+    ]
+    evidence = {"paragraph_index": 28, "quote": "交易总金额约为人民币53,375.90万元"}
+
+    assert _select_evidence_chunk_index(chunks, evidence) == 12
 
 
 def test_business_task_upload_parse_save_and_reload(tmp_path, monkeypatch) -> None:
