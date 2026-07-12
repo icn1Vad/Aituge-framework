@@ -1,6 +1,9 @@
+import asyncio
+
 import pytest
 
 from task_manager.payload_schemas import validate_input_payload, validate_output_payload
+from task_manager.pipeline.media_script_change_proposal import await_change_proposal_confirmation
 from task_manager.registry import get_task_definition
 
 
@@ -9,7 +12,7 @@ def test_change_proposal_task_contract_is_explicit_and_tool_free():
 
     assert definition.handler == "pipeline"
     assert definition.pipeline_id == "media-script-change-proposal-v1"
-    assert definition.default_agent_id == "default-single-agent"
+    assert definition.default_agent_id == "media-writer-agent"
     assert definition.default_skill_package == "media-script-change-proposal-package"
     assert definition.default_primary_skill == "media-script-change-proposal"
     assert definition.default_tools == []
@@ -106,3 +109,16 @@ def test_revision_mode_requires_immutable_source_context():
     assert revision["revision_mode"] is True
     assert revision["base_script_id"] == "script-1"
     assert revision["proposal_artifact_id"] == "artifact-proposal-1"
+
+
+def test_clarification_proposal_cannot_be_approved():
+    class Context:
+        stage_input = {
+            "status": "needs_clarification",
+            "summary": "The requested scope is ambiguous.",
+            "clarification_question": "Should the body remain unchanged?",
+        }
+
+    result = asyncio.run(await_change_proposal_confirmation(Context()))
+
+    assert result.pause_payload["allowed_actions"] == ["revise_input", "reject"]

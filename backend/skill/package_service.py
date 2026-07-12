@@ -67,6 +67,14 @@ DEFAULT_SKILL_PACKAGES = [
         "auxiliary_skills": [],
     },
     {
+        "package_name": "media-script-change-proposal-package",
+        "display_name": "Media Script Change Proposal Package",
+        "description": "Convert an explicit script edit request into a bounded proposal for human confirmation.",
+        "tags": ["media", "script", "proposal", "task-manager"],
+        "primary_skill": "media-script-change-proposal",
+        "auxiliary_skills": [],
+    },
+    {
         "package_name": "media-script-research-package",
         "display_name": "Media Script Research Package",
         "description": "Build a source-backed research bundle for one media script task.",

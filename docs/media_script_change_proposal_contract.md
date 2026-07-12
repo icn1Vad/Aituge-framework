@@ -2,7 +2,7 @@
 
 ## Status
 
-This document freezes the phase-1 contract. The task is registered for discovery, but its Pipeline and Skill are implemented in the next phase. Clients must not start this task until `media-script-change-proposal-v1` is registered.
+The phase-1 contract is implemented by the Proposal Pipeline and Skill. Script revision remains a separate later phase.
 
 ## Boundary
 
@@ -23,14 +23,14 @@ No Scheduler, Single Agent, ReAct, Conversation, ToolManager, or SkillManager in
 task_type: media.script.change.propose
 handler: pipeline
 pipeline_id: media-script-change-proposal-v1
-agent: default-single-agent
+agent: media-writer-agent
 skill_package: media-script-change-proposal-package
 primary_skill: media-script-change-proposal
 tools: []
 datasets: []
 ```
 
-The future Pipeline is:
+The Pipeline is:
 
 ```text
 context -> propose -> await_confirmation
@@ -85,9 +85,10 @@ Optional lineage fields include `base_artifact_id` and `parent_task_id`. `preser
 
 ## Phase-1 Non-goals
 
-- No Proposal Pipeline implementation.
-- No Proposal Skill content.
-- No human-review pause/resume wiring.
 - No revision Writer execution.
 - No 8010 bridge or frontend control.
 - No changes to the known long-answer rendering issue.
+
+## Agent Selection
+
+The Proposal stage reuses the existing `media-writer-agent` Profile and adds no Agent Profile. The originally proposed `default-single-agent` cannot satisfy the no-tool contract because that Profile has code, database, and RAG tools by default. `media-writer-agent` has an empty default tool set, so the Pipeline can enforce `tools=[]` without changing Scheduler behavior.
