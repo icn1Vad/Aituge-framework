@@ -21,6 +21,10 @@ localdata/external_skills/
 localdata/logs/
 localdata/redis/
 localdata/*.log
+localdata/*.db
+localdata/*.db-shm
+localdata/*.db-wal
+localdata/smart-autofill-documents/
 .local/
 *.private.json
 

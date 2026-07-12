@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 
 from backend.simple_chat_app import create_app as create_simple_chat_app
 from backend.data.RAG.tool_retrieval import LocalRagStore, ToolRetrievalRAG
@@ -18,7 +19,12 @@ from scheduling.agent_registry import ensure_default_agent_profiles
 from scheduling.api import create_scheduling_router
 from scheduling.scheduler import SchedulingRuntimeOptions
 from skill import ensure_default_skill_packages
-from smart_autofill import CombinedRagStore, SmartFillDocumentStore, create_smart_autofill_router
+from smart_autofill import (
+    CombinedRagStore,
+    SmartFillDocumentStore,
+    create_smart_autofill_router,
+    create_smart_fill_business_router,
+)
 from task_manager import create_task_manager_router
 from tool import ToolBundle
 from tool.registry import ToolManager
@@ -134,6 +140,13 @@ def create_app() -> FastAPI:
         yield
 
     app = create_simple_chat_app(tool_provider=tool_provider, lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     scheduling_options = SchedulingRuntimeOptions(
         local_python_artifact_dir=LOCAL_PYTHON_ARTIFACT_DIR,
         artifact_base_url="/tool-artifacts/local-python",
@@ -142,6 +155,7 @@ def create_app() -> FastAPI:
     app.include_router(create_scheduling_router(scheduling_options))
     app.include_router(create_task_manager_router(scheduling_options))
     app.include_router(create_smart_autofill_router(SMART_FILL_DOCUMENT_STORE))
+    app.include_router(create_smart_fill_business_router(scheduling_options, SMART_FILL_DOCUMENT_STORE))
 
     @app.get("/rag/status")
     async def rag_status():
