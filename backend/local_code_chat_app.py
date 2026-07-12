@@ -18,6 +18,7 @@ from scheduling.agent_registry import ensure_default_agent_profiles
 from scheduling.api import create_scheduling_router
 from scheduling.scheduler import SchedulingRuntimeOptions
 from skill import ensure_default_skill_packages
+from smart_autofill import create_smart_autofill_router
 from task_manager import create_task_manager_router
 from tool import ToolBundle
 from tool.registry import ToolManager
@@ -138,6 +139,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(create_scheduling_router(scheduling_options))
     app.include_router(create_task_manager_router(scheduling_options))
+    app.include_router(create_smart_autofill_router())
 
     @app.get("/rag/status")
     async def rag_status():
