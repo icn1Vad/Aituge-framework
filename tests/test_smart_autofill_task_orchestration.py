@@ -79,6 +79,35 @@ class ParallelSmartFillAgent:
         return gen()
 
 
+class RetryInvalidOutputAgent:
+    attempts: dict[str, int] = {}
+
+    def __init__(self, llm, system_prompt, tools):
+        self.system_prompt = system_prompt
+
+    async def run_async(self, state):
+        async def gen():
+            package = re.search(r"^Package: (.+)$", self.system_prompt, re.MULTILINE).group(1).strip()
+            group_id = PACKAGE_GROUPS[package]
+            attempt = type(self).attempts.get(group_id, 0) + 1
+            type(self).attempts[group_id] = attempt
+            if attempt == 1 and group_id == "project":
+                yield TextChunk(delta="truncated-json")
+                return
+            if attempt == 1 and group_id == "company":
+                yield TextChunk(delta=json.dumps({"wrong": "schema"}))
+                return
+            content = {
+                "group_id": group_id,
+                "fields": [],
+                "missing_field_ids": [],
+                "warnings": [],
+            }
+            yield TextChunk(delta=json.dumps(content))
+
+        return gen()
+
+
 async def seed_llm_config() -> None:
     async with create_db_session() as session:
         session.add(
@@ -229,6 +258,53 @@ def test_smart_fill_rejects_wrong_or_incomplete_package_mapping(tmp_path, monkey
 
         assert response.status_code == 400
         assert "must use skill package" in response.json()["detail"]
+
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
+
+
+def test_parse_and_schema_failures_retry_instead_of_succeeding(tmp_path, monkeypatch) -> None:
+    async def run() -> None:
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'smart-fill-retry.db'}")
+        reset_engine_for_test()
+        RetryInvalidOutputAgent.attempts = {}
+        monkeypatch.setattr(runner_mod, "ReactAgent", RetryInvalidOutputAgent)
+        monkeypatch.setattr(runner_mod, "create_llm", lambda config: object())
+        await init_db()
+        await seed_llm_config()
+        app = create_app()
+        transport = httpx.ASGITransport(app=app)
+        headers = {"X-User-Id": "default_user", "X-Tenant-Id": DEFAULT_TENANT_ID}
+        payload = smart_fill_input()
+        payload["retry_per_item"] = 1
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/task-manager/run",
+                headers=headers,
+                json={
+                    "task_type": "form.smart_fill.extract",
+                    "title": "Retry invalid structured output",
+                    "user_id": "default_user",
+                    "stream": False,
+                    "input_payload": payload,
+                },
+            )
+            assert response.status_code == 200, response.text
+            task = response.json()["task"]
+            assert task["status"] == "succeeded"
+            events_response = await client.get(
+                f"/task-manager/tasks/{task['id']}/events", headers=headers
+            )
+            event_types = [event["event_type"] for event in events_response.json()["events"]]
+            assert event_types.count("item_retry") == 2
+            assert "item_output_parse_failed" in event_types
+            assert "item_output_validation_failed" in event_types
+
+        assert RetryInvalidOutputAgent.attempts["project"] == 2
+        assert RetryInvalidOutputAgent.attempts["company"] == 2
 
     try:
         asyncio.run(run())

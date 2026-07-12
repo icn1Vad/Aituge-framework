@@ -18,6 +18,7 @@ from task_manager.service import TaskManagerService
 from .business_models import SmartFillAuditRecord, SmartFillEvidenceRecord, SmartFillFieldValue, SmartFillTask, now
 from .documents import SmartFillDocumentStore
 from .extraction import CONTRACT_DIR, build_extraction_input
+from .normalization import normalize_agent_fields
 
 
 class TaskCreate(BaseModel):
@@ -196,11 +197,18 @@ def _task(row: SmartFillTask):
 async def _persist_agent_results(task_id: str, items) -> None:
     schema = json.loads((CONTRACT_DIR / "smart_fill_field_schema.json").read_text(encoding="utf-8"))
     names = {f["field_id"]: f["field_name"] for g in schema["groups"] for f in g["fields"]}
+    raw_fields = [
+        field
+        for item in items
+        for field in (((item.result_payload_json or {}).get("result") or {}).get("fields") or [])
+    ]
+    fields_by_id = {field["field_id"]: field for field in normalize_agent_fields(raw_fields)}
     async with create_db_session() as session:
         for item in items:
             result = ((item.result_payload_json or {}).get("result") or {})
             for field in result.get("fields") or []:
                 field_id = field["field_id"]
+                field = fields_by_id[field_id]
                 current = (await session.exec(select(SmartFillFieldValue).where(
                     SmartFillFieldValue.task_id == task_id, SmartFillFieldValue.field_id == field_id))).first()
                 if current is not None and current.is_manual_modified:

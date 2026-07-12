@@ -170,6 +170,7 @@ async def _process_item(
                 profile=profile,
                 options=options,
                 queue=queue,
+                attempt=attempt,
             )
             parse_result = parse_json_output(content)
             parsed = parse_result.structured
@@ -189,6 +190,7 @@ async def _process_item(
                         },
                     )
                 )
+                raise ValueError("Task item output was not valid JSON.")
             elif definition.item_output_schema_name:
                 is_valid, validation_error = validate_output_payload(
                     definition.item_output_schema_name,
@@ -209,6 +211,9 @@ async def _process_item(
                                 **(validation_error or {}),
                             },
                         )
+                    )
+                    raise ValueError(
+                        "Task item structured output did not match the registered output schema."
                     )
             result = {
                 "item_key": running_item.item_key,
@@ -293,11 +298,12 @@ async def _run_scheduler_for_item(
     profile,
     options: SchedulingRuntimeOptions,
     queue: asyncio.Queue[TaskHandlerEvent | None],
+    attempt: int,
 ) -> tuple[str, dict[str, Any] | None]:
     request = SchedulingChatRequest(
         message=_build_item_message(task, definition, item),
         user_id=task.user_id,
-        session_id=f"{task.id}:{item.id}",
+        session_id=f"{task.id}:{item.id}:attempt:{attempt}",
         stream=True,
         skill_package=_item_skill_package(item, definition),
         extra_tools=definition.default_tools,

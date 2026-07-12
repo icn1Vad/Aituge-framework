@@ -14,5 +14,7 @@ tags: [smart-fill, feasibility, shared]
 - Preserve dynamic tables as arrays; never collapse multiple rows into one summary.
 - Leave a value empty when the supplied materials do not support it.
 - Distinguish an explicit negative value from a missing disclosure.
+- Fields marked `external_data_disabled` must always return `status=missing`, `value=null`, and no evidence. Do not query or infer external registry, policy-list, administrative-division, or group-master-data values.
+- Respect `max_length`; shorten grounded summaries before returning them.
 - Preserve numeric sign, unit, currency, percentage, and forecast year exactly.
 - Do not infer confidence scores in this phase.

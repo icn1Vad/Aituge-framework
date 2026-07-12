@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .normalization import EXTERNAL_DATA_FIELD_IDS
+
 
 CONTRACT_DIR = Path(__file__).parents[2] / "docs" / "smart_autofill"
 
@@ -24,7 +26,12 @@ def build_extraction_input(document_ids: list[str]) -> dict[str, Any]:
         field_specs = []
         for field_id in mapping["allowed_field_ids"]:
             spec = dict(fields_by_id[field_id])
-            spec["extraction_mode"] = "manual_only" if field_id in manual_ids else "automatic"
+            if field_id in manual_ids:
+                spec["extraction_mode"] = "manual_only"
+            elif field_id in EXTERNAL_DATA_FIELD_IDS:
+                spec["extraction_mode"] = "external_data_disabled"
+            else:
+                spec["extraction_mode"] = "automatic"
             field_specs.append(spec)
         items.append({
             "id": mapping["item_id"],
@@ -35,6 +42,9 @@ def build_extraction_input(document_ids: list[str]) -> dict[str, Any]:
             "extraction_instructions": (
                 "Retrieve evidence from the listed document_ids. Return every field_id exactly once; "
                 "use status=missing and value=null when unsupported. Manual-only fields must remain missing."
+                " Fields marked external_data_disabled must also remain missing with value=null."
+                " For financial forecasts, t0 is the investment occurrence year; keep t0 empty when the "
+                "first disclosed forecast year is later, and align later years to t0+N."
             ),
         })
     return {

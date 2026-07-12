@@ -70,7 +70,7 @@ function ConfidenceBadge({ score }) {
   return <span className={`confidence-score ${confidenceScoreClass(value)}`}>{value}分</span>;
 }
 
-const FINANCIAL_FORECAST_CATEGORIES = ['营业收入', '税后利润', '营业成本', '利润总额'];
+const FINANCIAL_FORECAST_CATEGORIES = ['营业收入', '合并净利润', '归母净利润', '税后利润', '营业成本', '利润总额'];
 const INLINE_EDITABLE_TABLE_IDS = new Set(['non_financial_indicator_table', 'risk_table']);
 const MANUAL_TABLE_SCHEMAS = {
   industry_market_analysis_table: {
