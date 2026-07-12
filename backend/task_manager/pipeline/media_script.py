@@ -56,28 +56,11 @@ async def run_media_script_checks(context: StageExecutionContext) -> StageServic
     return StageServiceResult(output=output, summary="Completed deterministic script and storyboard checks.")
 
 
-async def prepare_research_context(context: StageExecutionContext) -> StageServiceResult:
-    source = context.stage_input
-    output = {
-        "topic_card": source.get("topic_card") or {},
-        "source_brief": source.get("source_brief") or {},
-        "material_full": source.get("material_full") or {},
-        "material_comments": source.get("material_comments") or {},
-        "current_persona": source.get("current_persona") or {},
-        "persona_context": source.get("persona_context") or {},
-        "user_constraints": source.get("user_constraints") or {},
-        "warnings": source.get("warnings") or [],
-    }
-    return StageServiceResult(output=output, summary="Prepared the bounded research input.")
-
-
 async def finalize_media_script(context: StageExecutionContext) -> StageServiceResult:
     artifacts = dict(context.stage_input.get("artifacts") or {})
     writer = dict(artifacts.get("media_script_writer_draft") or {})
     storyboard = dict(artifacts.get("media_storyboard_draft") or {})
     checks = dict(artifacts.get("media_script_check_result") or {})
-    review = dict(artifacts.get("media_script_review_result") or {})
-    research = dict(artifacts.get("media_script_research_bundle") or {})
     context_bundle = dict(artifacts.get("media_script_context_bundle") or {})
 
     final_script = dict(writer.get("final_script") or {})
@@ -86,44 +69,41 @@ async def finalize_media_script(context: StageExecutionContext) -> StageServiceR
     if not final_script.get("visual_direction"):
         final_script["visual_direction"] = storyboard.get("visual_direction") or []
 
-    task_input = dict(context.task.input_payload_json or {})
-    human_review = dict(context.run.metadata_json or {}).get("human_review") or {}
-    approved = human_review.get("action") == "approve"
-    needs_review = bool(
-        task_input.get("require_human_review")
-        or checks.get("high_risk")
-        or not checks.get("passed", False)
-        or review.get("recommendation") != "pass"
-    )
-    workflow_status = "pass" if approved or not needs_review else "needs_human_review"
+    workflow_status = "pass"
+    check_findings = [_finding_text(item) for item in checks.get("findings") or []]
+    check_warnings = [str(item) for item in checks.get("warnings") or []]
     hermes_result = {
         **dict(writer.get("hermes_agent_result") or {}),
         "status": workflow_status,
-        "review_summary": review.get("summary") or "",
+        "review_summary": "Automated Agent review was skipped by the Lite Pipeline.",
         "deterministic_score": checks.get("score"),
         "risks": list(dict.fromkeys([
             *[str(item) for item in (writer.get("hermes_agent_result") or {}).get("risks") or []],
-            *[_finding_text(item) for item in checks.get("findings") or []],
-            *[_finding_text(item) for item in review.get("compliance_findings") or []],
+            *check_findings,
+            *check_warnings,
         ])),
-        "human_override": approved,
+        "human_override": False,
+        "reviewed": False,
     }
     workflow_state = {
         "workflow_status": workflow_status,
         "current_persona": context_bundle.get("current_persona") or {},
         "persona_context": context_bundle.get("persona_context") or {},
         "source_brief": context_bundle.get("source_brief") or {},
-        "research_bundle": research,
         "script_stack_recommendation": context_bundle.get("script_stack_recommendation") or {},
         "hermes_agent_result": hermes_result,
         "storyboard_plan": storyboard.get("storyboard_plan") or {},
         "deterministic_check_result": checks,
-        "review_result": review,
+        "review_result": {
+            "reviewed": False,
+            "recommendation": "not_reviewed",
+            "summary": "Research and Review Agent stages were skipped.",
+        },
         "final_script": final_script,
         "readable_script": writer.get("readable_script") or final_script.get("voiceover") or "",
         "workflow_trace": [
             {"node": stage_id, "status": "done"}
-            for stage_id in ("context", "research_context", "research", "writer", "storyboard", "deterministic_checks", "review", "finalize")
+            for stage_id in ("context", "writer", "storyboard", "deterministic_checks", "finalize")
         ],
     }
     output = {
@@ -133,39 +113,28 @@ async def finalize_media_script(context: StageExecutionContext) -> StageServiceR
         "workflow_state": workflow_state,
         "generation_meta": {
             "provider": "aituge_task_manager",
-            "workflow": "media-script-pipeline-v1",
+            "workflow": "media-script-lite-pipeline-v1",
             "workflow_status": workflow_status,
             "pipeline_version": "1.0",
-            "human_override": approved,
+            "human_override": False,
+            "reviewed": False,
+            "web_research_used": False,
+            "deterministic_checks_passed": bool(checks.get("passed", False)),
         },
     }
-    if needs_review and not approved:
-        return StageServiceResult(
-            output=output,
-            summary="Script requires human review.",
-            pause=True,
-            pause_reason=review.get("summary") or "Script checks require human review.",
-            pause_payload={
-                "reason_codes": [
-                    "deterministic_high_risk" if checks.get("high_risk") else "review_not_passed"
-                ],
-                "allowed_actions": ["approve", "reject", "revise_input", "rerun_stage"],
-            },
-        )
-    return StageServiceResult(output=output, summary="Finalized the media script package.")
+    return StageServiceResult(output=output, summary="Finalized the unreviewed media script package.")
 
 
 register_stage_handler("media_script_context_gateway", load_media_script_context)
-register_stage_handler("media_script_research_context", prepare_research_context)
 register_stage_handler("media_script_checks_gateway", run_media_script_checks)
 register_stage_handler("media_script_finalize", finalize_media_script)
 
 
 MEDIA_SCRIPT_PIPELINE = PipelineDefinition(
-    pipeline_id="media-script-pipeline-v1",
+    pipeline_id="media-script-lite-pipeline-v1",
     version="1.0",
     task_type="media.script.pipeline.generate",
-    description="Multi-agent script generation compatible with the media_military business workflow.",
+    description="Two-Agent script and storyboard generation using only provided media context.",
     final_artifact_type="media_script_output",
     timeout_seconds=900,
     resumable=True,
@@ -184,39 +153,10 @@ MEDIA_SCRIPT_PIPELINE = PipelineDefinition(
             service_handler="media_script_context_gateway",
         ),
         StageDefinition(
-            stage_id="research_context",
-            name="Prepare bounded research context",
-            stage_type="deterministic",
-            depends_on=("context",),
-            input_schema="media_script_context_bundle",
-            output_schema="media_script_research_context",
-            input_adapter="single_dependency",
-            artifact_type="media_script_research_context",
-            service_handler="media_script_research_context",
-        ),
-        StageDefinition(
-            stage_id="research",
-            name="Research evidence and angle",
-            stage_type="agent",
-            depends_on=("research_context",),
-            output_schema="media_script_research_bundle",
-            input_adapter="single_dependency",
-            artifact_type="media_script_research_bundle",
-            timeout_seconds=240,
-            retry_policy=RetryPolicy(max_attempts=2, backoff_seconds=1, retry_on=("invalid_output", "timeout")),
-            agent_config=AgentStageConfig(
-                agent_id="media-research-agent",
-                skill_package="media-script-research-package",
-                tools=("web_search",),
-                session_policy="isolated_stage",
-                output_policy="repair_once",
-            ),
-        ),
-        StageDefinition(
             stage_id="writer",
             name="Write structured script draft",
             stage_type="agent",
-            depends_on=("context", "research"),
+            depends_on=("context",),
             output_schema="media_script_writer_draft",
             input_adapter="pipeline_context",
             artifact_type="media_script_writer_draft",
@@ -261,28 +201,10 @@ MEDIA_SCRIPT_PIPELINE = PipelineDefinition(
             service_handler="media_script_checks_gateway",
         ),
         StageDefinition(
-            stage_id="review",
-            name="Review compliance and quality",
-            stage_type="agent",
-            depends_on=("context", "research", "writer", "storyboard", "deterministic_checks"),
-            output_schema="media_script_review_result",
-            input_adapter="pipeline_context",
-            artifact_type="media_script_review_result",
-            timeout_seconds=180,
-            retry_policy=RetryPolicy(max_attempts=2, backoff_seconds=1, retry_on=("invalid_output", "timeout")),
-            agent_config=AgentStageConfig(
-                agent_id="media-review-agent",
-                skill_package="media-script-review-package",
-                tools=(),
-                session_policy="isolated_stage",
-                output_policy="repair_once",
-            ),
-        ),
-        StageDefinition(
             stage_id="finalize",
             name="Finalize compatible script package",
             stage_type="finalizer",
-            depends_on=("context", "research", "writer", "storyboard", "deterministic_checks", "review"),
+            depends_on=("context", "writer", "storyboard", "deterministic_checks"),
             output_schema="media_script_output",
             input_adapter="pipeline_context",
             artifact_type="media_script_output",
