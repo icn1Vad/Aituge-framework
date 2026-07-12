@@ -47,29 +47,6 @@ function parseJsonRows(value) {
   }
 }
 
-function parseConfidenceReasons(value) {
-  try {
-    const parsed = JSON.parse(value || '[]');
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    return [];
-  }
-}
-
-function confidenceScoreClass(score) {
-  const value = Number(score ?? 0);
-  if (value >= 90) return 'excellent';
-  if (value >= 75) return 'good';
-  if (value >= 60) return 'fair';
-  if (value >= 40) return 'weak';
-  return 'poor';
-}
-
-function ConfidenceBadge({ score }) {
-  const value = Number(score ?? 0);
-  return <span className={`confidence-score ${confidenceScoreClass(value)}`}>{value}分</span>;
-}
-
 const FINANCIAL_FORECAST_CATEGORIES = ['营业收入', '合并净利润', '归母净利润', '税后利润', '营业成本', '利润总额'];
 const INLINE_EDITABLE_TABLE_IDS = new Set(['non_financial_indicator_table', 'risk_table']);
 const MANUAL_TABLE_SCHEMAS = {
@@ -1481,9 +1458,6 @@ function App() {
                               <Info size={14} />
                               {fieldResults[field.field_id]?.source_text || fieldResults[field.field_id]?.source_section ? '来源' : '详情'}
                             </button>
-                            {fieldResults[field.field_id] ? (
-                              <ConfidenceBadge score={fieldResults[field.field_id]?.confidence_score} />
-                            ) : null}
                           </div>
                         ) : null}
                         <small>
@@ -1725,22 +1699,6 @@ function App() {
               </dd>
               <dt>处理方式</dt>
               <dd>{activeSource.generate_type}</dd>
-              <dt>置信度</dt>
-              <dd>
-                <ConfidenceBadge score={activeSource.confidence_score} />
-              </dd>
-              <dt>评分依据</dt>
-              <dd>
-                {parseConfidenceReasons(activeSource.confidence_reasons).length > 0 ? (
-                  <ul className="score-reasons">
-                    {parseConfidenceReasons(activeSource.confidence_reasons).map((reason) => (
-                      <li key={reason}>{reason}</li>
-                    ))}
-                  </ul>
-                ) : (
-                  '无'
-                )}
-              </dd>
               <dt>异常提示</dt>
               <dd>{activeSource.exception_message || '无'}</dd>
               <dt>原文片段</dt>
@@ -1773,22 +1731,6 @@ function App() {
             <dl>
               <dt>来源章节</dt>
               <dd>{sourcePreview.result.source_section || '无明确来源'}</dd>
-              <dt>置信度评分</dt>
-              <dd>
-                <ConfidenceBadge score={sourcePreview.result.confidence_score} />
-              </dd>
-              <dt>评分依据</dt>
-              <dd>
-                {parseConfidenceReasons(sourcePreview.result.confidence_reasons).length > 0 ? (
-                  <ul className="score-reasons">
-                    {parseConfidenceReasons(sourcePreview.result.confidence_reasons).map((reason) => (
-                      <li key={reason}>{reason}</li>
-                    ))}
-                  </ul>
-                ) : (
-                  '无'
-                )}
-              </dd>
               <dt>系统引用文字</dt>
               <dd className="source-text">{sourcePreview.result.source_text || '无原文片段'}</dd>
               <dt>精确锚点</dt>

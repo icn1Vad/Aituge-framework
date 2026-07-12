@@ -14,6 +14,7 @@ __pycache__/
 venv/
 .poetry-cache/
 node_modules/
+dist/
 
 # Runtime data
 backend/single-agent/tmp/

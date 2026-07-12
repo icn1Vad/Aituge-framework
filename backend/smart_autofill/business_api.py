@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,9 @@ from pydantic import BaseModel
 from sqlmodel import delete, select
 
 from db.db_context import create_db_session
-from scheduling.scheduler import SchedulingRuntimeOptions
+from data.RAG.tool_retrieval import ToolRetrievalRAG
+from scheduling.agent_registry import get_agent_profile
+from scheduling.scheduler import SchedulingChatRequest, SchedulingRuntimeOptions, SchedulingService
 from task_manager.schemas import TaskCreateRequest, TaskRunRequest
 from task_manager.service import TaskManagerService
 
@@ -29,6 +32,11 @@ class ResultsUpdate(BaseModel):
     items: list[dict[str, Any]]
 
 
+class KnowledgeChatRequest(BaseModel):
+    question: str
+    session_id: str | None = None
+
+
 def create_smart_fill_business_router(options: SchedulingRuntimeOptions, store: SmartFillDocumentStore) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["smart-autofill-business"])
 
@@ -43,6 +51,89 @@ def create_smart_fill_business_router(options: SchedulingRuntimeOptions, store: 
     @router.get("/field-rules")
     async def field_rules():
         return {"rules": []}
+
+    @router.get("/knowledge/documents")
+    async def knowledge_documents():
+        _, files, chunks = store.load_models()
+        chunk_counts: dict[str, int] = {}
+        for chunk in chunks:
+            chunk_counts[chunk.file_id] = chunk_counts.get(chunk.file_id, 0) + 1
+        items = []
+        for file in files:
+            try:
+                parsed = store.get(file.id)
+            except KeyError:
+                continue
+            parsed_path = store.parsed_dir / f"{file.id}.json"
+            items.append({
+                "document_id": file.id,
+                "file_name": file.file_name,
+                "file_size": parsed.get("size_bytes", 0),
+                "chunk_count": chunk_counts.get(file.id, 0),
+                "uploaded_at": datetime.fromtimestamp(parsed_path.stat().st_mtime).isoformat(),
+                "status": "completed",
+            })
+        return {"items": items}
+
+    @router.post("/knowledge/documents")
+    async def upload_knowledge_document(file: UploadFile = File(...)):
+        content = await file.read()
+        try:
+            document = store.ingest(file.filename or "upload", content)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        parsed = store.get(document["document_id"])
+        return {
+            "document_id": document["document_id"],
+            "file_name": document["file_name"],
+            "file_size": document["size_bytes"],
+            "chunk_count": len(parsed["chunks"]),
+            "uploaded_at": datetime.now().isoformat(),
+            "status": "completed",
+        }
+
+    @router.post("/knowledge/chat")
+    async def knowledge_chat(payload: KnowledgeChatRequest):
+        question = payload.question.strip()
+        if not question:
+            raise HTTPException(400, "Question is required.")
+        knowledgebases, files, chunks = options.rag_store.load_models()
+        smart_kb = next((kb for kb in knowledgebases if kb.id == "smartfilldocs"), None)
+        if smart_kb is None or not files:
+            raise HTTPException(400, "Knowledgebase has no documents.")
+        rag = ToolRetrievalRAG(knowledgebases, files, chunks)
+        retrieval = await rag.create_service().search(kb_id="smartfilldocs", query=question)
+        async with create_db_session() as session:
+            profile = await get_agent_profile(session, "default-single-agent")
+        if profile is None:
+            raise HTTPException(500, "Default single agent is unavailable.")
+        session_id = payload.session_id or f"smart-fill-kb-{uuid.uuid4().hex}"
+        result = await SchedulingService(options).chat(
+            profile,
+            SchedulingChatRequest(
+                message=(
+                    "Answer the user's question using the SmartAutoFill uploaded-document knowledgebase. "
+                    "Use retrieval tools and do not invent facts. Include a concise answer only.\n\n"
+                    f"Question: {question}"
+                ),
+                user_id="default_user",
+                session_id=session_id,
+                extra_tools=["rag_retrieval"],
+                extra_datasets=["local_rag"],
+            ),
+        )
+        return {
+            "session_id": session_id,
+            "answer": _chat_content(result.get("response") or {}),
+            "sources": [{
+                "chunk_id": item.chunk_id,
+                "file_name": item.file_name,
+                "title": item.title,
+                "content": item.content,
+                "score": item.score,
+                "metadata": dict(item.metadata),
+            } for item in retrieval],
+        }
 
     @router.get("/tasks")
     async def list_tasks():
@@ -171,8 +262,44 @@ def create_smart_fill_business_router(options: SchedulingRuntimeOptions, store: 
     async def preview(task_id: str, result_id: str = ""):
         row = await _get_task(task_id)
         parsed = store.get(row.document_id or "")
-        body = "".join(f"<p id='{c['chunk_id']}'>{_escape(c['text'])}</p>" for c in parsed["chunks"])
-        return HTMLResponse(f"<html><meta charset='utf-8'><body>{body}</body></html>")
+        evidence = None
+        if result_id:
+            async with create_db_session() as session:
+                result = await session.get(SmartFillFieldValue, result_id)
+                if result is not None and result.task_id == task_id:
+                    evidence = (await session.exec(
+                        select(SmartFillEvidenceRecord)
+                        .where(SmartFillEvidenceRecord.task_id == task_id)
+                        .where(SmartFillEvidenceRecord.field_id == result.field_id)
+                    )).first()
+        anchor = evidence.evidence_json if evidence is not None else {}
+        target_id = None
+        parts = []
+        for chunk in parsed["chunks"]:
+            is_target = _chunk_matches_evidence(chunk, anchor)
+            if is_target and target_id is None:
+                target_id = f"source-{chunk['index']}"
+            element_id = target_id if is_target and target_id == f"source-{chunk['index']}" else f"chunk-{chunk['index']}"
+            content = _highlight_quote(chunk["text"], anchor.get("quote") if is_target else None)
+            css_class = "source-target" if is_target else "source-chunk"
+            label = _chunk_label(chunk)
+            parts.append(
+                f"<section id='{element_id}' class='{css_class}'>"
+                f"<small>{_escape(label)}</small><p>{content}</p></section>"
+            )
+        body = "".join(parts)
+        scroll_script = (
+            f"<script>document.getElementById({json.dumps(target_id)})?.scrollIntoView({{block:'center'}});</script>"
+            if target_id else ""
+        )
+        return HTMLResponse(
+            "<html><head><meta charset='utf-8'><style>"
+            "body{font-family:system-ui,sans-serif;line-height:1.7;padding:20px;color:#1f2937}"
+            ".source-chunk,.source-target{padding:10px 14px;margin:8px 0;border-left:3px solid #dbe3ef}"
+            ".source-target{background:#fff8d8;border:2px solid #f0b429;border-radius:6px}"
+            "small{color:#64748b}mark{background:#ffd666;padding:1px 2px}p{white-space:pre-wrap}"
+            f"</style></head><body>{body}{scroll_script}</body></html>"
+        )
 
     return router
 
@@ -260,3 +387,35 @@ def _decode_value(value):
 
 def _escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _chunk_matches_evidence(chunk: dict[str, Any], evidence: dict[str, Any]) -> bool:
+    if not evidence:
+        return False
+    anchor = chunk.get("anchor") or {}
+    for key in ("page", "paragraph_index", "table_index"):
+        if evidence.get(key) is not None and anchor.get(key) == evidence.get(key):
+            return True
+    quote = str(evidence.get("quote") or "").strip()
+    return bool(quote and quote in str(chunk.get("text") or ""))
+
+
+def _highlight_quote(text: str, quote: str | None) -> str:
+    escaped = _escape(str(text or ""))
+    if not quote or quote not in text:
+        return escaped
+    escaped_quote = _escape(quote)
+    return escaped.replace(escaped_quote, f"<mark>{escaped_quote}</mark>", 1)
+
+
+def _chunk_label(chunk: dict[str, Any]) -> str:
+    anchor = chunk.get("anchor") or {}
+    locations = [f"{key}={anchor[key]}" for key in ("page", "paragraph_index", "table_index") if anchor.get(key) is not None]
+    return " · ".join([chunk.get("file_name") or "", chunk.get("kind") or "", *locations])
+
+
+def _chat_content(response: dict[str, Any]) -> str:
+    choices = response.get("choices") or []
+    if choices:
+        return str((choices[0].get("message") or {}).get("content") or "")
+    return str(response.get("content") or response.get("text") or "")
