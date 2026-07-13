@@ -1,20 +1,21 @@
 from __future__ import annotations
 
-import json
-
 from sqlalchemy import desc
 from sqlmodel import select
 
 from db.db_context import create_db_session
-from scheduling.agent_registry import ensure_default_agent_profiles, get_agent_profile
-from scheduling.scheduler import SchedulingChatRequest, SchedulingRuntimeOptions, SchedulingService
+from scheduling.scheduler import SchedulingRuntimeOptions
+from service.conversation import LlmRuntime
+from skill import SkillManager
 
 from .models import TaskMemoryEntity
 from .output_parser import parse_json_output
 
 
-MEMORY_AGENT_ID = "media-writer-agent"
+MEMORY_MODEL_ID = "deepseek-v4-pro"
 MEMORY_SKILL_PACKAGE = "media-script-memory-compression-package"
+MEMORY_MAX_TOKENS = 2000
+MEMORY_TEMPERATURE = 0.1
 
 
 class TaskMemoryService:
@@ -67,25 +68,16 @@ class TaskMemoryService:
             new_information=information,
         )
 
-        async with create_db_session() as session:
-            await ensure_default_agent_profiles(session)
-            profile = await get_agent_profile(session, MEMORY_AGENT_ID)
-        if profile is None or not profile.enabled:
-            raise ValueError(f"Agent profile '{MEMORY_AGENT_ID}' is not available.")
-
-        response = await SchedulingService(self.options, tenant_id=tenant_id).chat(
-            profile,
-            SchedulingChatRequest(
-                message=message,
-                user_id=user_id,
-                session_id=f"task-memory:{normalized_key}:v{next_version}",
-                stream=False,
-                skill_package=MEMORY_SKILL_PACKAGE,
-                extra_tools=[],
-                extra_datasets=[],
-            ),
+        skill_context = await SkillManager(tenant_id=tenant_id).create_context(
+            MEMORY_SKILL_PACKAGE
         )
-        content = _assistant_content(response)
+        content = await LlmRuntime(tenant_id=tenant_id).complete(
+            model_id=MEMORY_MODEL_ID,
+            messages=[{"role": "user", "content": message}],
+            system_prompt=skill_context.task_prompt,
+            max_tokens=MEMORY_MAX_TOKENS,
+            temperature=MEMORY_TEMPERATURE,
+        )
         parsed = parse_json_output(content)
         if not parsed.ok or not isinstance(parsed.structured, dict):
             raise ValueError("Memory compression did not return a valid JSON object.")
@@ -143,14 +135,3 @@ def _compression_message(*, task_key: str, previous_memory: str, new_information
             new_information,
         ]
     )
-
-
-def _assistant_content(response: dict) -> str:
-    choices = ((response.get("response") or {}).get("choices") or [])
-    if not choices:
-        return ""
-    message = choices[0].get("message") or {}
-    value = message.get("content")
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False) if value is not None else ""

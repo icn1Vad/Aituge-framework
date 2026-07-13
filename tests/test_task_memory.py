@@ -18,29 +18,40 @@ def test_task_memory_versions_are_scoped_by_user_and_injected_as_prompt(tmp_path
         await init_db()
 
         captured_messages: list[str] = []
+        captured_system_prompts: list[str] = []
 
-        async def fake_chat(self, profile, request):
-            captured_messages.append(request.message or "")
-            if "Previous memory:\n(empty)" in (request.message or ""):
-                memory = "脚本开头优先直接给出核心结论。"
-            elif "不要使用公文表达" in (request.message or ""):
-                memory = "脚本开头优先直接给出核心结论；使用自然口语，避免公文化表达。"
-            else:
-                memory = "另一个用户的独立记忆。"
-            return {
-                "response": {
-                    "choices": [
-                        {"message": {"content": '{"memory":"' + memory + '"}'}}
-                    ]
-                }
-            }
+        class FakeLlmRuntime:
+            def __init__(self, tenant_id):
+                assert tenant_id == DEFAULT_TENANT_ID
 
-        monkeypatch.setattr(memory_module.SchedulingService, "chat", fake_chat)
+            async def complete(
+                self,
+                model_id,
+                messages,
+                system_prompt="",
+                max_tokens=None,
+                temperature=None,
+            ):
+                message = messages[-1]["content"]
+                captured_messages.append(message)
+                captured_system_prompts.append(system_prompt)
+                assert model_id == "deepseek-v4-pro"
+                assert max_tokens == 2000
+                assert temperature == 0.1
+                if "Previous memory:\n(empty)" in message:
+                    memory = "脚本开头优先直接给出核心结论。"
+                elif "不要使用公文表达" in message:
+                    memory = "脚本开头优先直接给出核心结论；使用自然口语，避免公文化表达。"
+                else:
+                    memory = "另一个用户的独立记忆。"
+                return '{"memory":"' + memory + '"}'
+
+        monkeypatch.setattr(memory_module, "LlmRuntime", FakeLlmRuntime)
 
         app = create_app()
         user_headers = {"X-User-Id": "lzt", "X-Tenant-Id": DEFAULT_TENANT_ID}
         other_headers = {"X-User-Id": "nrx", "X-Tenant-Id": DEFAULT_TENANT_ID}
-        task_key = "lzt_jiaoben_123"
+        task_key = "media_script"
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",
@@ -66,6 +77,7 @@ def test_task_memory_versions_are_scoped_by_user_and_injected_as_prompt(tmp_path
             assert second.json()["memory"]["version"] == 2
             assert "自然口语" in second.json()["memory"]["content"]
             assert "脚本开头优先直接给出核心结论" in captured_messages[1]
+            assert "# Media Script Task Memory Compression" in captured_system_prompts[0]
 
             latest = await client.get(
                 f"/task-manager/memories/{task_key}",
