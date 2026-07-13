@@ -80,6 +80,14 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
         default_datasets=[],
         input_schema_name="media_chat_input",
     ),
+    "media.script.text.modify": TaskDefinition(
+        task_type="media.script.text.modify",
+        name="Media Script Text Modify",
+        description="Track one MainAgent turn that reads or updates a shared script workspace.",
+        handler="external",
+        default_agent_id="default-single-agent",
+        input_schema_name="media_script_text_modify_input",
+    ),
     "media.script.change.propose": TaskDefinition(
         task_type="media.script.change.propose",
         name="Media Script Change Proposal",

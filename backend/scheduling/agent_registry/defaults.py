@@ -126,6 +126,12 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
         description="Structured short-video script writer.",
         default_tools=[],
         system_prompt=MEDIA_WRITER_AGENT_PROMPT,
+        runtime_config={
+            "delegation": {
+                "enabled": True,
+                "use_when": "A complete or revised speakable media script must be saved to the Workspace.",
+            }
+        },
     ),
     _profile_definition(
         agent_id="media-storyboard-agent",
@@ -133,6 +139,12 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
         description="Executable storyboard generator for media scripts.",
         default_tools=[],
         system_prompt=MEDIA_STORYBOARD_AGENT_PROMPT,
+        runtime_config={
+            "delegation": {
+                "enabled": True,
+                "use_when": "The latest Workspace script must be converted into an executable shot list.",
+            }
+        },
     ),
     _profile_definition(
         agent_id="media-review-agent",

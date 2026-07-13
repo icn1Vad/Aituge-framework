@@ -19,6 +19,7 @@ if str(SINGLE_AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(SINGLE_AGENT_DIR))
 
 from api.single_agent_api import ToolProvider, create_router  # noqa: E402
+from capability_registry import create_capability_router  # noqa: E402
 
 
 def create_app(
@@ -27,6 +28,7 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="TUGE Simple Chat", lifespan=lifespan)
     app.include_router(create_router(tool_provider))
+    app.include_router(create_capability_router())
     app.mount("/ui", StaticFiles(directory=FRONTEND_DIR, html=True), name="ui")
     app.mount(
         "/tool-artifacts/local-python",
