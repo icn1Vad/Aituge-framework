@@ -8,6 +8,7 @@ from scheduling.agent_registry import ensure_default_agent_profiles, get_agent_p
 from scheduling.scheduler import SchedulingChatRequest, SchedulingRuntimeOptions, SchedulingService
 
 from task_manager.handlers.base import TaskHandlerEvent
+from task_manager.memory import TaskMemoryService, render_task_memory
 from task_manager.models import TaskEntity
 from task_manager.registry import TaskDefinition
 
@@ -31,8 +32,20 @@ class SchedulerTaskHandler:
         if profile.agent_type != "single":
             raise ValueError(f"Agent profile '{profile.agent_id}' has unsupported type '{profile.agent_type}'.")
 
+        memory = None
+        if task.task_key:
+            memory = await TaskMemoryService(self.options).get_latest(
+                tenant_id=task.tenant_id,
+                user_id=task.user_id,
+                task_key=task.task_key,
+            )
+        task_message = _build_task_message(task, definition)
+        memory_prompt = render_task_memory(memory)
+        if memory_prompt:
+            task_message = f"{memory_prompt}\n\n{task_message}"
+
         request = SchedulingChatRequest(
-            message=_build_task_message(task, definition),
+            message=task_message,
             user_id=task.user_id,
             thread_id=task.thread_id,
             session_id=task.session_id,
@@ -55,6 +68,7 @@ class SchedulerTaskHandler:
                 "candidate_skills": definition.default_candidate_skills,
                 "extra_tools": request.extra_tools,
                 "extra_datasets": request.extra_datasets,
+                "task_memory_version": memory.version if memory else None,
             },
         )
 

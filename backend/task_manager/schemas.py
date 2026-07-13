@@ -51,6 +51,20 @@ class TaskRunRequest(BaseModel):
     idempotency_key: Optional[str] = None
 
 
+class TaskMemoryCompressRequest(BaseModel):
+    new_information: str = Field(min_length=1, max_length=8000)
+
+
+class TaskMemoryRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    task_key: str
+    version: int
+    content: str
+    created_at: datetime
+
+
 class TaskRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

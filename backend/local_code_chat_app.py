@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.staticfiles import StaticFiles
 
 from backend.simple_chat_app import create_app as create_simple_chat_app
 from backend.data.RAG.tool_retrieval import LocalRagStore, ToolRetrievalRAG
@@ -26,6 +27,7 @@ from tool.registry import ToolManager
 LOCAL_PYTHON_ARTIFACT_DIR = (
     Path(__file__).resolve().parent / "tool" / "local_runtime" / "artifacts"
 )
+TASK_MEMORY_TEST_DIR = Path(__file__).resolve().parents[1] / "frontend" / "task-memory-test"
 DEFAULT_RAG_PDF_PATH = (
     Path(__file__).resolve().parents[2]
     / "兼用_原02_致远互联：北京致远互联软件股份有限公司内部审计制度.pdf"
@@ -138,6 +140,11 @@ def create_app() -> FastAPI:
     )
     app.include_router(create_scheduling_router(scheduling_options))
     app.include_router(create_task_manager_router(scheduling_options))
+    app.mount(
+        "/task-memory-test",
+        StaticFiles(directory=TASK_MEMORY_TEST_DIR, html=True),
+        name="task-memory-test",
+    )
 
     @app.get("/rag/status")
     async def rag_status():

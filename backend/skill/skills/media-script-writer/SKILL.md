@@ -10,6 +10,8 @@ tags: [media, script, writer, pipeline]
 Write one complete, speakable short-video script using only the provided Context Gateway artifact. Do not invent missing facts and do not perform research or call external data sources.
 
 ## Required behavior
+- Apply the injected `Task Memory` as shared background for this business Task.
+- If the current user instruction conflicts with Task Memory, follow the current instruction.
 - Follow the selected persona, strategy, template, script type, and risk rules when present.
 - Treat topic cards, material text, comments, persona data, and master-library settings as the complete available evidence.
 - If required facts are absent, use cautious wording and record the limitation in `hermes_agent_result.risks`.

@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from scheduling.scheduler import SchedulingRuntimeOptions
 
 from .access import TaskAccessContext, assert_can_access_task, task_access_context
+from .memory import TaskMemoryService
 from .registry import list_task_definitions
 from .pipeline.registry import list_pipeline_definitions
 from .runtime import get_event_broker
@@ -22,6 +23,8 @@ from .schemas import (
     TaskCreateResponse,
     TaskDefinitionRead,
     TaskEventRead,
+    TaskMemoryCompressRequest,
+    TaskMemoryRead,
     TaskRunRead,
     TaskRunRequest,
     TaskRunResponse,
@@ -95,6 +98,38 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
                 for item in list_pipeline_definitions()
             ]
         }
+
+    @router.get("/memories/{task_key}")
+    async def get_task_memory(
+        task_key: str,
+        context: TaskAccessContext = Depends(task_access_context),
+    ):
+        try:
+            row = await TaskMemoryService(options).get_latest(
+                tenant_id=context.tenant_id,
+                user_id=context.user_id,
+                task_key=task_key,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"memory": TaskMemoryRead.model_validate(row) if row else None}
+
+    @router.post("/memories/{task_key}/compress")
+    async def compress_task_memory(
+        task_key: str,
+        request: TaskMemoryCompressRequest,
+        context: TaskAccessContext = Depends(task_access_context),
+    ):
+        try:
+            row = await TaskMemoryService(options).compress(
+                tenant_id=context.tenant_id,
+                user_id=context.user_id,
+                task_key=task_key,
+                new_information=request.new_information,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"memory": TaskMemoryRead.model_validate(row)}
 
     @router.post("/tasks", response_model=TaskCreateResponse)
     async def create_task(

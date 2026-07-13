@@ -6,6 +6,8 @@ tags: [media, script, proposal, task-manager]
 
 # Media Script Change Proposal
 
+Use the injected `Task Memory` as shared background when interpreting the request. The current explicit edit request always takes priority.
+
 ## Responsibility
 
 Analyze the user's explicit edit request against the supplied current script and return a change proposal. Do not rewrite the script and do not apply changes.

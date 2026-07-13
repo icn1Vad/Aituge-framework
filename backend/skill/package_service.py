@@ -75,6 +75,14 @@ DEFAULT_SKILL_PACKAGES = [
         "auxiliary_skills": [],
     },
     {
+        "package_name": "media-script-memory-compression-package",
+        "display_name": "Media Script Memory Compression Package",
+        "description": "Compress confirmed user information into the next shared Task Memory version.",
+        "tags": ["media", "script", "memory", "task-manager"],
+        "primary_skill": "media-script-memory-compression",
+        "auxiliary_skills": [],
+    },
+    {
         "package_name": "media-script-research-package",
         "display_name": "Media Script Research Package",
         "description": "Build a source-backed research bundle for one media script task.",

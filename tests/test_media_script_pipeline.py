@@ -10,11 +10,15 @@ from common.system_constants import DEFAULT_TENANT_ID
 from db.db_context import create_db_session, init_db, reset_engine_for_test
 from db.models.llm import LlmModelEntity
 import service.agent.single_agent_runner as runner_mod
+from service.cache.session_history_manager import session_history_manager
+from task_manager.models import TaskMemoryEntity
 from task_manager.pipeline import media_script as media_pipeline
 from task_manager.runtime.broker import reset_event_broker_for_test
 
 
 class MediaPipelineAgent:
+    seen_messages: dict[str, str] = {}
+
     def __init__(self, llm, system_prompt, tools):
         if "Media Script Writer" in system_prompt:
             self.stage = "writer"
@@ -24,6 +28,7 @@ class MediaPipelineAgent:
             raise AssertionError(system_prompt[:500])
 
     async def run_async(self, state):
+        self.seen_messages[self.stage] = str(state.messages[-1].get("content") or "")
         payloads = {
             "writer": {
                 "final_script": {
@@ -86,7 +91,27 @@ def test_media_script_lite_pipeline_runs_writer_and_storyboard_agents(tmp_path, 
         reset_event_broker_for_test()
         await init_db()
         await _seed_llm_config()
+        MediaPipelineAgent.seen_messages = {}
+        async with create_db_session() as session:
+            session.add(
+                TaskMemoryEntity(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    user_id="media-user",
+                    task_key="media-user_jiaoben_123",
+                    version=1,
+                    content="开头直接给出结论，并保持自然口语。",
+                    source_text="用户确认的测试记忆。",
+                )
+            )
         monkeypatch.setattr(runner_mod, "ReactAgent", MediaPipelineAgent)
+        async def no_history(*args, **kwargs):
+            return []
+
+        async def ignore_history(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(session_history_manager, "get_history_messages", no_history)
+        monkeypatch.setattr(session_history_manager, "save_messages", ignore_history)
 
         async def fake_gateway(path, payload, context):
             if path.endswith("/context"):
@@ -122,6 +147,7 @@ def test_media_script_lite_pipeline_runs_writer_and_storyboard_agents(tmp_path, 
                 headers=headers,
                 json={
                     "task_type": "media.script.pipeline.generate",
+                    "task_key": "media-user_jiaoben_123",
                     "input_payload": {
                         "topic": "Policy boundary",
                         "topic_card_id": "topic-1",
@@ -156,6 +182,9 @@ def test_media_script_lite_pipeline_runs_writer_and_storyboard_agents(tmp_path, 
             assert output["workflow_state"]["workflow_status"] == "pass"
             assert output["workflow_state"]["review_result"]["reviewed"] is False
             assert output["final_script"]["storyboard"]
+            assert "# Task Memory" in MediaPipelineAgent.seen_messages["writer"]
+            assert "开头直接给出结论" in MediaPipelineAgent.seen_messages["writer"]
+            assert "开头直接给出结论" in MediaPipelineAgent.seen_messages["storyboard"]
 
     try:
         asyncio.run(run())

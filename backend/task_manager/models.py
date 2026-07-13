@@ -176,6 +176,30 @@ class TaskArtifactEntity(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime))
 
 
+class TaskMemoryEntity(SQLModel, table=True):
+    """Immutable Task-scoped memory version for one tenant and user."""
+
+    __tablename__ = "tuge_task_memory"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "user_id",
+            "task_key",
+            "version",
+            name="unique_tuge_task_memory_version",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True, max_length=80)
+    tenant_id: str = Field(default=DEFAULT_TENANT_ID, index=True, max_length=64)
+    user_id: str = Field(default="default_user", index=True, max_length=120)
+    task_key: str = Field(nullable=False, index=True, max_length=160)
+    version: int = Field(default=1, ge=1)
+    content: str = Field(default="", sa_column=Column(Text))
+    source_text: str = Field(default="", sa_column=Column(Text))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime))
+
+
 _SQLITE_COLUMN_MIGRATIONS = {
     "tuge_task": {
         "parent_task_id": "VARCHAR(80)",

@@ -11,6 +11,7 @@ from scheduling.agent_registry import ensure_default_agent_profiles, get_agent_p
 from scheduling.scheduler import SchedulingChatRequest, SchedulingRuntimeOptions, SchedulingService
 
 from task_manager.handlers.base import TaskHandlerEvent
+from task_manager.memory import TaskMemoryService, render_task_memory
 from task_manager.models import TaskArtifactEntity, TaskEntity, TaskRunEntity, utc_now
 from task_manager.output_parser import parse_json_output
 from task_manager.payload_schemas import validate_stage_payload
@@ -318,8 +319,20 @@ class PipelineExecutor:
             )
 
         session_id = _stage_session_id(run, stage, attempt)
+        memory = None
+        if task.task_key:
+            memory = await TaskMemoryService(self.options).get_latest(
+                tenant_id=task.tenant_id,
+                user_id=task.user_id,
+                task_key=task.task_key,
+            )
+        stage_message = _stage_message(task, stage, stage_input)
+        memory_prompt = render_task_memory(memory)
+        if memory_prompt:
+            stage_message = f"{memory_prompt}\n\n{stage_message}"
+
         request = SchedulingChatRequest(
-            message=_stage_message(task, stage, stage_input),
+            message=stage_message,
             user_id=task.user_id,
             session_id=session_id,
             stream=True,
@@ -343,7 +356,11 @@ class PipelineExecutor:
                     f"Agent '{profile.agent_id}' started.",
                     stage_run_id=stage_run_id,
                     agent_id=profile.agent_id,
-                    payload={"thread_id": event.thread_id, "session_id": event.session_id},
+                    payload={
+                        "thread_id": event.thread_id,
+                        "session_id": event.session_id,
+                        "task_memory_version": memory.version if memory else None,
+                    },
                 )
                 continue
             if event.event == "final":

@@ -6,6 +6,8 @@ tags: [media, script, storyboard, pipeline]
 
 # Media Storyboard
 
+Use the injected `Task Memory` as shared background when it contains relevant visual or production preferences. The current user instruction always takes priority.
+
 ## Responsibility
 Convert the supplied voiceover into executable shots. Do not rewrite factual claims or change the script's main angle.
 
