@@ -108,6 +108,7 @@ def test_task_memory_versions_are_scoped_by_user_and_injected_as_prompt(tmp_path
             "media-script-memory-compression-package"
         )
         assert "# Media Script Task Memory Compression" in skill_context.task_prompt
+        assert "Preserve the force and scope" in skill_context.task_prompt
 
     try:
         asyncio.run(run())
