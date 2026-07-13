@@ -176,6 +176,80 @@ class TaskManagerService:
     async def get_run(self, run_id: str) -> TaskRunEntity | None:
         return await get_run(run_id)
 
+    async def begin_external_task(self, task_id: str, *, user_id: str) -> TaskEntity:
+        """Open a TaskManager run whose executor lives in another scheduling mode."""
+
+        task = await self._prepare_run(task_id, TaskRunRequest(stream=False, user_id=user_id))
+        await self.record_event(
+            task_id=task.id,
+            run_id=task.current_run_id,
+            event_type="task_started",
+            stage="main_agent",
+            message="MainAgent started the task.",
+            source={"type": "main_agent", "id": task.agent_id},
+        )
+        return task
+
+    async def complete_external_task(
+        self,
+        task_id: str,
+        *,
+        result: dict[str, Any],
+        thread_id: str | None = None,
+        session_id: str | None = None,
+    ) -> TaskEntity:
+        task = await self.get_task(task_id)
+        if task is None:
+            raise ValueError(f"Task '{task_id}' not found.")
+        if thread_id or session_id:
+            task = await self._update_task_session(
+                task_id,
+                thread_id=thread_id,
+                session_id=session_id,
+            )
+        await self.record_event(
+            task_id=task.id,
+            run_id=task.current_run_id,
+            event_type="task_succeeded",
+            stage="main_agent",
+            message="MainAgent completed the task.",
+            payload={"result": result},
+            source={"type": "main_agent", "id": task.agent_id},
+        )
+        return await self._finish_task(
+            task_id,
+            status="succeeded",
+            result=result,
+            outcome="success",
+        )
+
+    async def fail_external_task(self, task_id: str, error: Exception) -> TaskEntity:
+        task = await self.get_task(task_id)
+        if task is None:
+            raise ValueError(f"Task '{task_id}' not found.")
+        payload = {
+            "type": error.__class__.__name__,
+            "message": str(error),
+            "retryable": True,
+        }
+        await self.record_event(
+            task_id=task.id,
+            run_id=task.current_run_id,
+            event_type="task_failed",
+            stage="main_agent",
+            level="error",
+            message=str(error),
+            payload=payload,
+            error_code=error.__class__.__name__,
+            source={"type": "main_agent", "id": task.agent_id},
+        )
+        return await self._finish_task(
+            task_id,
+            status="failed",
+            error=payload,
+            outcome="failure",
+        )
+
     async def list_run_events(
         self,
         run_id: str,

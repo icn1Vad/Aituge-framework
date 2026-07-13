@@ -33,7 +33,7 @@
       .app {
         height: 100vh;
         display: grid;
-        grid-template-columns: 280px 1fr;
+        grid-template-columns: 280px minmax(0, 1fr) 360px;
       }
 
       aside {
@@ -388,6 +388,49 @@
         overflow-wrap: anywhere;
       }
 
+      .capability-group {
+        display: grid;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+
+      .capability-group-title {
+        color: #475467;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .capability-item {
+        display: grid;
+        gap: 4px;
+        padding: 8px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        font-size: 12px;
+      }
+
+      .capability-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .capability-title {
+        min-width: 0;
+        color: #20242c;
+        font-weight: 700;
+        overflow-wrap: anywhere;
+      }
+
+      .capability-badges {
+        display: inline-flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 4px;
+      }
+
       .rag-file-row {
         display: grid;
         gap: 4px;
@@ -455,6 +498,69 @@
         display: grid;
         grid-template-rows: 58px 1fr auto;
         background: #fff;
+      }
+
+      .workspace-inspector {
+        border-right: 0;
+        border-left: 1px solid var(--line);
+        background: #f8fafc;
+      }
+
+      .inspector-head {
+        height: 58px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 18px;
+        border-bottom: 1px solid var(--line);
+        font-weight: 700;
+      }
+
+      .inspector-body {
+        min-height: 0;
+        display: grid;
+        grid-template-rows: minmax(180px, 1fr) minmax(180px, 1fr) auto;
+        gap: 12px;
+        padding: 14px;
+        overflow: auto;
+      }
+
+      .inspector-card {
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto 1fr;
+        gap: 7px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+      }
+
+      .inspector-card label {
+        color: #374151;
+        font-weight: 700;
+      }
+
+      .inspector-textarea {
+        width: 100%;
+        min-height: 150px;
+        max-height: none;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fbfcfe;
+        font-size: 13px;
+      }
+
+      .inspector-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .agent-speaker {
+        color: var(--purple-dark);
+        font-weight: 750;
       }
 
       header {
@@ -781,6 +887,18 @@
         <div id="chatSidebar" class="sidebar-view active" data-sidebar-panel="chat">
           <div class="sidebar-scroll">
             <div class="section-title">
+              <span>调度模式</span>
+              <span>runtime</span>
+            </div>
+            <div class="task-panel">
+              <select id="chatMode" class="task-select">
+                <option value="chat">Single</option>
+                <option value="main_agent">MainAgent</option>
+              </select>
+              <button id="createMainWorkspace" class="rag-btn" type="button">创建脚本 Workspace</button>
+              <div id="mainAgentStatus" class="rag-status">MainAgent: idle</div>
+            </div>
+            <div class="section-title">
               <span>多 Agent 讨论</span>
               <span>beta</span>
             </div>
@@ -863,6 +981,14 @@
               <div id="ragStatus" class="rag-status">RAG: 未加载</div>
               <div id="ragList" class="rag-list"></div>
             </div>
+            <div class="section-title">
+              <span>能力</span>
+              <span>catalog</span>
+            </div>
+            <div class="rag-panel">
+              <div id="capabilityStatus" class="rag-status">Capability: 未加载</div>
+              <div id="capabilityList" class="rag-list"></div>
+            </div>
           </div>
         </div>
       </aside>
@@ -891,6 +1017,27 @@
           </form>
         </footer>
       </section>
+
+      <aside class="workspace-inspector">
+        <div class="inspector-head">
+          <span>共享 Workspace</span>
+          <span id="workspaceInspectorStatus" class="top-status">未创建</span>
+        </div>
+        <div class="inspector-body">
+          <div class="inspector-card">
+            <label for="mainWorkspaceText">脚本</label>
+            <textarea id="mainWorkspaceText" class="inspector-textarea" placeholder="输入初始脚本，或让脚本 Agent 在这里写入"></textarea>
+          </div>
+          <div class="inspector-card">
+            <label for="mainStoryboardText">分镜</label>
+            <textarea id="mainStoryboardText" class="inspector-textarea" placeholder="分镜 Agent 会参考最新脚本并写入这里"></textarea>
+          </div>
+          <div class="inspector-actions">
+            <button id="refreshMainWorkspace" class="rag-btn" type="button">刷新 Workspace</button>
+            <button id="saveMainWorkspace" class="rag-btn" type="button">保存 Workspace</button>
+          </div>
+        </div>
+      </aside>
     </div>
 
     <script>
@@ -910,6 +1057,8 @@
       const pdfFileEl = document.getElementById("pdfFile");
       const ragStatusEl = document.getElementById("ragStatus");
       const ragListEl = document.getElementById("ragList");
+      const capabilityStatusEl = document.getElementById("capabilityStatus");
+      const capabilityListEl = document.getElementById("capabilityList");
       const discussionTopicEl = document.getElementById("discussionTopic");
       const discussionAgentsEl = document.getElementById("discussionAgents");
       const discussionRoundsEl = document.getElementById("discussionRounds");
@@ -929,6 +1078,14 @@
       const approvePipelineRunEl = document.getElementById("approvePipelineRun");
       const taskStatusEl = document.getElementById("taskStatus");
       const taskDebugEl = document.getElementById("taskDebug");
+      const chatModeEl = document.getElementById("chatMode");
+      const mainWorkspaceTextEl = document.getElementById("mainWorkspaceText");
+      const mainStoryboardTextEl = document.getElementById("mainStoryboardText");
+      const createMainWorkspaceEl = document.getElementById("createMainWorkspace");
+      const mainAgentStatusEl = document.getElementById("mainAgentStatus");
+      const workspaceInspectorStatusEl = document.getElementById("workspaceInspectorStatus");
+      const refreshMainWorkspaceEl = document.getElementById("refreshMainWorkspace");
+      const saveMainWorkspaceEl = document.getElementById("saveMainWorkspace");
       const sidebarNavItems = [...document.querySelectorAll("[data-sidebar-view]")];
       const sidebarPanels = [...document.querySelectorAll("[data-sidebar-panel]")];
       const USER_ID_KEY = "tuge-simple-chat-user-id";
@@ -945,6 +1102,50 @@
       let currentThreadTitle = "初始问候";
       let threads = [];
       let agents = [];
+      let mainWorkspaceId = null;
+      let mainAgentSessionId = null;
+
+      function resetConversationState({ resetWorkspace = false } = {}) {
+        threadId = null;
+        currentDiscussionRunId = null;
+        activePipelineTaskId = null;
+        activePipelineRunId = null;
+        activePipelineNodes = null;
+        activePipelineSequence = 0;
+        mainAgentSessionId = null;
+        cancelPipelineRunEl.disabled = true;
+        approvePipelineRunEl.disabled = true;
+        currentThreadTitle = "新会话";
+        messagesEl.innerHTML = '<div id="empty" class="empty">开始一轮新对话</div>';
+        if (resetWorkspace) {
+          mainWorkspaceId = null;
+          mainWorkspaceTextEl.value = "";
+          mainStoryboardTextEl.value = "";
+          workspaceInspectorStatusEl.textContent = "未创建";
+        }
+        renderThreads("");
+      }
+
+      function activateChatMode(mode, { resetConversation = false, resetWorkspace = false } = {}) {
+        const nextMode = mode === "main_agent" ? "main_agent" : "chat";
+        const modeChanged = activeMode !== nextMode;
+        activeMode = nextMode;
+        chatModeEl.value = nextMode;
+        streamEl.disabled = nextMode === "main_agent";
+        agentSelectEl.disabled = nextMode === "main_agent";
+
+        if (nextMode === "main_agent") {
+          mainAgentStatusEl.textContent = "MainAgent: ready";
+        } else {
+          mainAgentStatusEl.textContent = "MainAgent: idle";
+        }
+
+        localStorage.setItem(AGENT_ID_KEY, selectedAgentId());
+        updateSelectedAgentMeta();
+        if (resetConversation || modeChanged) {
+          resetConversationState({ resetWorkspace });
+        }
+      }
 
       function createBrowserUserId() {
         if (globalThis.crypto?.randomUUID) {
@@ -1012,6 +1213,11 @@
       }
 
       function updateSelectedAgentMeta() {
+        if (activeMode === "main_agent") {
+          modelNameEl.textContent = "deepseek-v4-pro";
+          agentSelectEl.title = "MainAgent 调度模式使用内部主运行时";
+          return;
+        }
         const agent = agents.find((item) => item.agent_id === selectedAgentId());
         modelNameEl.textContent = agent?.model_id || "deepseek-v4-pro";
         agentSelectEl.title = agent?.description || "选择 agent";
@@ -1050,7 +1256,7 @@
         agentSelectEl.value = agents.some((agent) => agent.agent_id === saved)
           ? saved
           : DEFAULT_AGENT_ID;
-        updateSelectedAgentMeta();
+        activateChatMode("chat", { resetConversation: false });
         renderDiscussionAgents();
       }
 
@@ -1089,7 +1295,19 @@
         turn.appendChild(wrap);
         messagesEl.appendChild(turn);
         turn.scrollIntoView({ behavior: "smooth", block: "end" });
-        return { bubble, token: actions.querySelector(".token-badge"), tools, toolMap: new Map() };
+        return { turn, actions, bubble, token: actions.querySelector(".token-badge"), tools, toolMap: new Map() };
+      }
+
+      function insertSubagentOutputs(outputs, beforeTurn) {
+        for (const output of outputs || []) {
+          const nodes = addAssistantMessage();
+          const speaker = document.createElement("span");
+          speaker.className = "agent-speaker";
+          speaker.textContent = `${output.name || output.agent_id} · ${output.mode}`;
+          nodes.actions.prepend(speaker);
+          nodes.bubble.textContent = output.response || "已完成 Workspace 操作";
+          messagesEl.insertBefore(nodes.turn, beforeTurn);
+        }
       }
 
       function parseMaybeJson(value) {
@@ -1553,6 +1771,68 @@
         const data = await res.json();
         ragStatusEl.textContent = `RAG: ${data.knowledgebase_count} KB / ${data.file_count} 文件 / ${data.chunk_count} chunks`;
         renderRagInventory(data);
+      }
+
+      function renderCapabilityGroup(title, items) {
+        const group = document.createElement("div");
+        group.className = "capability-group";
+        const heading = document.createElement("div");
+        heading.className = "capability-group-title";
+        heading.textContent = `${title} · ${items.length}`;
+        group.appendChild(heading);
+
+        for (const item of items) {
+          const card = document.createElement("div");
+          card.className = "capability-item";
+          const head = document.createElement("div");
+          head.className = "capability-head";
+          const name = document.createElement("div");
+          name.className = "capability-title";
+          name.textContent = item.display_name || item.name;
+          const badges = document.createElement("div");
+          badges.className = "capability-badges";
+          for (const label of [
+            item.enabled ? "enabled" : "disabled",
+            item.configured ? "configured" : "builtin",
+          ]) {
+            const chip = document.createElement("span");
+            chip.className = "rag-chip";
+            chip.textContent = label;
+            badges.appendChild(chip);
+          }
+          head.append(name, badges);
+
+          const meta = document.createElement("div");
+          meta.className = "rag-meta";
+          meta.textContent = item.provider ? `${item.name} / ${item.provider}` : item.name;
+          const desc = document.createElement("div");
+          desc.className = "rag-meta";
+          desc.textContent = item.description || "No description";
+          card.append(head, meta, desc);
+          group.appendChild(card);
+        }
+        return group;
+      }
+
+      function renderCapabilities(items) {
+        capabilityListEl.innerHTML = "";
+        const tools = items.filter((item) => item.capability_type === "tool");
+        const skills = items.filter((item) => item.capability_type === "skill_package");
+        capabilityListEl.append(
+          renderCapabilityGroup("Tools", tools),
+          renderCapabilityGroup("Skill Packages", skills),
+        );
+      }
+
+      async function loadCapabilities() {
+        const res = await fetch("/registry/capabilities");
+        if (!res.ok) throw new Error(await responseErrorText(res));
+        const data = await res.json();
+        const items = data.capabilities || [];
+        const toolCount = items.filter((item) => item.capability_type === "tool").length;
+        const skillCount = items.filter((item) => item.capability_type === "skill_package").length;
+        capabilityStatusEl.textContent = `Capability: ${toolCount} tools / ${skillCount} skill packages`;
+        renderCapabilities(items);
       }
 
       async function responseErrorText(res) {
@@ -2197,6 +2477,82 @@
         return data;
       }
 
+      async function createMainWorkspace() {
+        const res = await fetch("/scheduling/script-workspaces", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            script_text: mainWorkspaceTextEl.value,
+            storyboard_text: mainStoryboardTextEl.value,
+            user_id: userId,
+          }),
+        });
+        if (!res.ok) throw new Error(await responseErrorText(res));
+        const data = await res.json();
+        mainWorkspaceId = data.workspace.id;
+        mainAgentStatusEl.textContent = `Workspace: ${mainWorkspaceId.slice(0, 8)}`;
+        workspaceInspectorStatusEl.textContent = mainWorkspaceId.slice(0, 8);
+        return data.workspace;
+      }
+
+      async function refreshMainWorkspace() {
+        if (!mainWorkspaceId) return createMainWorkspace();
+        const res = await fetch(
+          `/scheduling/script-workspaces/${encodeURIComponent(mainWorkspaceId)}?user_id=${encodeURIComponent(userId)}`
+        );
+        if (!res.ok) throw new Error(await responseErrorText(res));
+        const workspace = (await res.json()).workspace;
+        mainWorkspaceTextEl.value = workspace.script_text || "";
+        mainStoryboardTextEl.value = workspace.storyboard_text || "";
+        workspaceInspectorStatusEl.textContent = `${mainWorkspaceId.slice(0, 8)} · 已刷新`;
+        return workspace;
+      }
+
+      async function saveMainWorkspace() {
+        if (!mainWorkspaceId) return createMainWorkspace();
+        const res = await fetch(`/scheduling/script-workspaces/${encodeURIComponent(mainWorkspaceId)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            script_text: mainWorkspaceTextEl.value,
+            storyboard_text: mainStoryboardTextEl.value,
+            user_id: userId,
+          }),
+        });
+        if (!res.ok) throw new Error(await responseErrorText(res));
+        workspaceInspectorStatusEl.textContent = `${mainWorkspaceId.slice(0, 8)} · 已保存`;
+        return (await res.json()).workspace;
+      }
+
+      async function sendMainAgent(text) {
+        if (!mainWorkspaceId) await createMainWorkspace();
+        await saveMainWorkspace();
+
+        const res = await fetch("/scheduling/main/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: text,
+            user_id: userId,
+            thread_id: threadId,
+            session_id: mainAgentSessionId,
+            workspace_id: mainWorkspaceId,
+            stream: false,
+          }),
+        });
+        if (!res.ok) throw new Error(await responseErrorText(res));
+        const data = await res.json();
+        threadId = data.thread_id;
+        mainAgentSessionId = data.session_id;
+        mainWorkspaceTextEl.value = data.workspace?.script_text || mainWorkspaceTextEl.value;
+        mainStoryboardTextEl.value = data.workspace?.storyboard_text || mainStoryboardTextEl.value;
+        const managed = data.managed_agents || [];
+        const taskId = data.task?.id ? ` · task ${data.task.id.slice(0, 8)}` : "";
+        mainAgentStatusEl.textContent = `MainAgent: ${managed.length} managed agent(s)${taskId}`;
+        workspaceInspectorStatusEl.textContent = `${mainWorkspaceId.slice(0, 8)} · 已更新`;
+        return data;
+      }
+
       async function sendStream(text, nodes) {
         const res = await fetch(schedulingChatUrl(), {
           method: "POST",
@@ -2248,18 +2604,11 @@
       }
 
       newChatEl.addEventListener("click", () => {
-        threadId = null;
-        activeMode = "chat";
-        currentDiscussionRunId = null;
-        activePipelineTaskId = null;
-        activePipelineRunId = null;
-        activePipelineNodes = null;
-        activePipelineSequence = 0;
-        cancelPipelineRunEl.disabled = true;
-        approvePipelineRunEl.disabled = true;
-        currentThreadTitle = "新会话";
-        messagesEl.innerHTML = '<div id="empty" class="empty">开始一轮最小 single-agent 对话</div>';
-        renderThreads("");
+        const nextMode = chatModeEl.value === "main_agent" ? "main_agent" : "chat";
+        activateChatMode(nextMode, {
+          resetConversation: true,
+          resetWorkspace: nextMode === "main_agent",
+        });
         inputEl.focus();
       });
 
@@ -2328,11 +2677,32 @@
         }
       });
       taskTypeEl.addEventListener("change", applyTaskDefaults);
+      chatModeEl.addEventListener("change", () => {
+        activateChatMode(chatModeEl.value, { resetConversation: true });
+      });
+      createMainWorkspaceEl.addEventListener("click", async () => {
+        try {
+          await createMainWorkspace();
+        } catch (error) {
+          mainAgentStatusEl.textContent = `Workspace: ${error.message}`;
+        }
+      });
+      refreshMainWorkspaceEl.addEventListener("click", () => {
+        refreshMainWorkspace().catch((error) => {
+          workspaceInspectorStatusEl.textContent = error.message;
+        });
+      });
+      saveMainWorkspaceEl.addEventListener("click", () => {
+        saveMainWorkspace().catch((error) => {
+          workspaceInspectorStatusEl.textContent = error.message;
+        });
+      });
       for (const item of sidebarNavItems) {
         item.addEventListener("click", () => switchSidebarView(item.dataset.sidebarView));
       }
       agentSelectEl.addEventListener("change", () => {
-        localStorage.setItem(AGENT_ID_KEY, selectedAgentId());
+        const selected = selectedAgentId();
+        localStorage.setItem(AGENT_ID_KEY, selected);
         updateSelectedAgentMeta();
       });
 
@@ -2358,7 +2728,17 @@
         setBusy(true, "thinking");
 
         try {
-          if (streamEl.checked) {
+          if (activeMode === "main_agent") {
+            const data = await sendMainAgent(text);
+            const response = data.response;
+            insertSubagentOutputs(data.subagent_outputs, assistant.turn);
+            renderSkills(assistant, data.skills);
+            assistant.bubble.textContent = response?.choices?.[0]?.message?.content || "";
+            renderSteps(assistant, response?.steps || []);
+            const usage = response?.usage;
+            if (usage) assistant.token.textContent = `${usage.total_tokens || 0} tokens`;
+            renderThreads(assistant.bubble.textContent.slice(0, 36));
+          } else if (streamEl.checked) {
             await sendStream(text, assistant);
           } else {
             const data = await sendNonStream(text);
@@ -2390,6 +2770,10 @@
       refreshRagStatus().catch(() => {
         ragStatusEl.textContent = "RAG: 状态不可用";
         ragListEl.innerHTML = "";
+      });
+      loadCapabilities().catch(() => {
+        capabilityStatusEl.textContent = "Capability: 状态不可用";
+        capabilityListEl.innerHTML = "";
       });
     </script>
   </body>

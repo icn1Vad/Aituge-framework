@@ -126,6 +126,11 @@ class MediaChatInput(TaskPayloadBase):
         return self
 
 
+class MediaScriptTextModifyInput(TaskPayloadBase):
+    workspace_id: str = Field(min_length=1)
+    instruction: str = Field(min_length=1)
+
+
 class AiSearchChatInput(TaskPayloadBase):
     message: str = Field(min_length=1)
     search_goal: str = ""
@@ -448,6 +453,7 @@ _INPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "media_script_change_proposal_input": MediaScriptChangeProposalInput,
     "media_script_select_input": MediaScriptSelectInput,
     "media_chat_input": MediaChatInput,
+    "media_script_text_modify_input": MediaScriptTextModifyInput,
     "ai_search_chat_input": AiSearchChatInput,
     "media_topic_search_input": MediaTopicSearchInput,
     "douyin_account_report_input": DouyinAccountReportInput,
