@@ -9,6 +9,7 @@ class MainAgentChatRequest(SchedulingChatRequest):
     model_config = ConfigDict(extra="forbid")
 
     workspace_id: str | None = None
+    task_id: str | None = None
 
 
 class ScriptWorkspaceCreateRequest(BaseModel):

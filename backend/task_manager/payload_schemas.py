@@ -126,9 +126,18 @@ class MediaChatInput(TaskPayloadBase):
         return self
 
 
-class MediaScriptTextModifyInput(TaskPayloadBase):
+class MediaScriptMainAgentInput(TaskPayloadBase):
     workspace_id: str = Field(min_length=1)
     instruction: str = Field(min_length=1)
+    operation: Literal["generate", "interact"] = "interact"
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class MediaScriptWorkspaceOutput(StrictPayload):
+    workspace_id: str = Field(min_length=1)
+    script_text: str = ""
+    storyboard_text: str = ""
+    response: str = ""
 
 
 class AiSearchChatInput(TaskPayloadBase):
@@ -544,7 +553,7 @@ _INPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "media_script_change_proposal_input": MediaScriptChangeProposalInput,
     "media_script_select_input": MediaScriptSelectInput,
     "media_chat_input": MediaChatInput,
-    "media_script_text_modify_input": MediaScriptTextModifyInput,
+    "media_script_main_agent_input": MediaScriptMainAgentInput,
     "ai_search_chat_input": AiSearchChatInput,
     "media_topic_search_input": MediaTopicSearchInput,
     "douyin_account_report_input": DouyinAccountReportInput,
@@ -555,6 +564,7 @@ _INPUT_SCHEMAS: dict[str, type[BaseModel]] = {
 
 _OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "media_script_output": MediaScriptOutput,
+    "media_script_workspace_output": MediaScriptWorkspaceOutput,
     "media_script_change_proposal_output": MediaScriptChangeProposalOutput,
     "ai_search_output": AiSearchOutput,
     "media_topic_search_output": AiSearchOutput,

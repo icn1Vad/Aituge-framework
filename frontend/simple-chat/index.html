@@ -913,6 +913,10 @@
                 <option value="chat">Single</option>
                 <option value="main_agent">MainAgent</option>
               </select>
+              <select id="mainTaskOperation" class="task-select">
+                <option value="generate">Initial script + storyboard</option>
+                <option value="interact">Continue / edit / ask</option>
+              </select>
               <button id="createMainWorkspace" class="rag-btn" type="button">创建脚本 Workspace</button>
               <div id="mainAgentStatus" class="rag-status">MainAgent: idle</div>
             </div>
@@ -943,7 +947,6 @@
                   <option value="media.topic.search">media.topic.search</option>
                   <option value="analytics.douyin.account_report.generate">analytics.douyin.account_report.generate</option>
                   <option value="ai.search.chat">ai.search.chat</option>
-                  <option value="media.script.generate">media.script.generate</option>
                   <option value="media.script.pipeline.generate">media.script.pipeline.generate</option>
                   <option value="media.script.select">media.script.select</option>
                   <option value="media.chat">media.chat</option>
@@ -1097,6 +1100,7 @@
       const taskStatusEl = document.getElementById("taskStatus");
       const taskDebugEl = document.getElementById("taskDebug");
       const chatModeEl = document.getElementById("chatMode");
+      const mainTaskOperationEl = document.getElementById("mainTaskOperation");
       const mainWorkspaceTextEl = document.getElementById("mainWorkspaceText");
       const mainStoryboardTextEl = document.getElementById("mainStoryboardText");
       const createMainWorkspaceEl = document.getElementById("createMainWorkspace");
@@ -1122,6 +1126,7 @@
       let agents = [];
       let mainWorkspaceId = null;
       let mainAgentSessionId = null;
+      let mainFormalTaskId = null;
 
       function resetConversationState({ resetWorkspace = false } = {}) {
         threadId = null;
@@ -1131,6 +1136,7 @@
         activePipelineNodes = null;
         activePipelineSequence = 0;
         mainAgentSessionId = null;
+        mainFormalTaskId = null;
         cancelPipelineRunEl.disabled = true;
         approvePipelineRunEl.disabled = true;
         currentThreadTitle = "新会话";
@@ -1151,6 +1157,7 @@
         chatModeEl.value = nextMode;
         streamEl.disabled = nextMode === "main_agent";
         agentSelectEl.disabled = nextMode === "main_agent";
+        mainTaskOperationEl.disabled = nextMode !== "main_agent";
 
         if (nextMode === "main_agent") {
           mainAgentStatusEl.textContent = "MainAgent: ready";
@@ -2559,9 +2566,40 @@
         return (await res.json()).workspace;
       }
 
+      async function createMainAgentTask(text) {
+        const operation = mainTaskOperationEl.value === "generate" ? "generate" : "interact";
+        const res = await fetch("/task-manager/tasks", {
+          method: "POST",
+          headers: taskRequestHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({
+            task_type: "media.script.generate",
+            task_key: "media_script",
+            title: operation === "generate" ? "MainAgent initial script generation" : "MainAgent script interaction",
+            stream: true,
+            input_payload: {
+              workspace_id: mainWorkspaceId,
+              instruction: text,
+              operation,
+              context: {
+                source: "simple-chat-main-agent",
+              },
+            },
+            metadata: {
+              source: "simple-chat-main-agent",
+            },
+          }),
+        });
+        if (!res.ok) throw new Error(await responseErrorText(res));
+        const task = (await res.json()).task;
+        mainFormalTaskId = task.id;
+        mainAgentStatusEl.textContent = `MainAgent: task ${task.id.slice(0, 8)} created`;
+        return task;
+      }
+
       async function sendMainAgent(text) {
         if (!mainWorkspaceId) await createMainWorkspace();
         await saveMainWorkspace();
+        const formalTask = await createMainAgentTask(text);
 
         const res = await fetch("/scheduling/main/chat", {
           method: "POST",
@@ -2572,6 +2610,7 @@
             thread_id: threadId,
             session_id: mainAgentSessionId,
             workspace_id: mainWorkspaceId,
+            task_id: formalTask.id,
             stream: false,
           }),
         });
@@ -2584,6 +2623,7 @@
         const managed = data.managed_agents || [];
         const taskId = data.task?.id ? ` · task ${data.task.id.slice(0, 8)}` : "";
         mainAgentStatusEl.textContent = `MainAgent: ${managed.length} managed agent(s)${taskId}`;
+        if (mainTaskOperationEl.value === "generate") mainTaskOperationEl.value = "interact";
         workspaceInspectorStatusEl.textContent = `${mainWorkspaceId.slice(0, 8)} · 已更新`;
         return data;
       }
@@ -2591,6 +2631,7 @@
       async function sendMainAgentStream(text, nodes) {
         if (!mainWorkspaceId) await createMainWorkspace();
         await saveMainWorkspace();
+        const formalTask = await createMainAgentTask(text);
 
         const mainSpeaker = document.createElement("span");
         mainSpeaker.className = "agent-speaker";
@@ -2606,6 +2647,7 @@
             thread_id: threadId,
             session_id: mainAgentSessionId,
             workspace_id: mainWorkspaceId,
+            task_id: formalTask.id,
             stream: true,
           }),
         });
@@ -2669,6 +2711,7 @@
                 const managed = finalData.managed_agents || [];
                 const taskId = finalData.task?.id ? ` · task ${finalData.task.id.slice(0, 8)}` : "";
                 mainAgentStatusEl.textContent = `MainAgent: ${managed.length} managed agent(s)${taskId}`;
+                if (mainTaskOperationEl.value === "generate") mainTaskOperationEl.value = "interact";
               }
             }
           });

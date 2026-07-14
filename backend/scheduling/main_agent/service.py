@@ -18,7 +18,7 @@ from scheduling.agent_registry import (
 from scheduling.agent_registry.models import AgentProfileEntity
 from scheduling.scheduler import SchedulingChatRequest, SchedulingRuntimeOptions, SchedulingService
 from scheduling.scheduler.service import SchedulingToolContext
-from task_manager.schemas import TaskCreateRequest
+from task_manager.memory import TaskMemoryService, render_task_memory
 from task_manager.service import TaskManagerService, task_to_read
 
 from .models import ManagedSingleAgentEntity
@@ -62,10 +62,12 @@ class _ScopedSingleAgentService(SchedulingService):
         options: SchedulingRuntimeOptions,
         *,
         runtime_tools: list[FunctionTool] | None = None,
+        runtime_task_prompt: str = "",
         tenant_id: str = DEFAULT_TENANT_ID,
     ) -> None:
         super().__init__(options, tenant_id=tenant_id)
         self.runtime_tools = list(runtime_tools or [])
+        self.runtime_task_prompt = runtime_task_prompt.strip()
 
     async def _build_context(
         self,
@@ -74,6 +76,10 @@ class _ScopedSingleAgentService(SchedulingService):
     ) -> SchedulingToolContext:
         context = await super()._build_context(profile, request)
         context.tools.extend(self.runtime_tools)
+        if self.runtime_task_prompt:
+            context.task_prompt = "\n\n".join(
+                item for item in [context.task_prompt, self.runtime_task_prompt] if item
+            )
         return context
 
 
@@ -197,13 +203,6 @@ class MainAgentService(_ScopedSingleAgentService):
     ) -> dict[str, Any]:
         self.subagent_outputs = []
         primary_session_id = request.session_id or request.thread_id or f"main-agent:{uuid.uuid4().hex}"
-        scoped_request = request.model_copy(
-            update={
-                "session_id": primary_session_id,
-                "stream": stream,
-                "skill_package": MAIN_SKILL_PACKAGE,
-            }
-        )
         main_session = await self.session_store.get_or_create(
             primary_session_id,
             user_id=request.user_id,
@@ -212,7 +211,11 @@ class MainAgentService(_ScopedSingleAgentService):
         profile = _main_runtime_profile(request.model)
         workspace = None
         task = None
+        runtime_task_prompt = ""
+        skill_package = MAIN_SKILL_PACKAGE
         if request.workspace_id:
+            if not request.task_id:
+                raise ValueError("task_id is required for a MainAgent Workspace request.")
             workspace = await self.workspace_store.get(
                 request.workspace_id,
                 user_id=request.user_id,
@@ -221,20 +224,35 @@ class MainAgentService(_ScopedSingleAgentService):
             if workspace is None:
                 raise ValueError(f"Script workspace '{request.workspace_id}' not found.")
             instruction = request.message or _last_user_message(request.messages)
-            task = await self.task_service.create_task(
-                TaskCreateRequest(
-                    task_type="media.script.text.modify",
-                    title="MainAgent script workspace turn",
-                    input_payload={"workspace_id": workspace.id, "instruction": instruction},
-                    user_id=request.user_id,
-                    tenant_id=self.tenant_id,
-                    stream=stream,
-                    agent_id=MAIN_RUNTIME_AGENT_ID,
-                    thread_id=request.thread_id,
-                    session_id=primary_session_id,
-                )
+            task = await self.task_service.get_task(request.task_id)
+            _validate_formal_script_task(
+                task,
+                user_id=request.user_id,
+                tenant_id=self.tenant_id,
+                workspace_id=workspace.id,
+                instruction=instruction,
             )
-            task = await self.task_service.begin_external_task(task.id, user_id=request.user_id)
+            skill_package = str(
+                (task.definition_snapshot_json or {}).get("default_skill_package") or ""
+            ).strip()
+            if not skill_package:
+                raise ValueError(f"Task '{task.id}' has no MainAgent Skill Package.")
+            runtime_task_prompt = await self._build_task_runtime_prompt(task)
+            task = await self.task_service.begin_external_task(
+                task.id,
+                user_id=request.user_id,
+                stream=stream,
+            )
+        elif request.task_id:
+            raise ValueError("workspace_id is required when task_id is provided.")
+
+        scoped_request = request.model_copy(
+            update={
+                "session_id": primary_session_id,
+                "stream": stream,
+                "skill_package": skill_package,
+            }
+        )
 
         prepared = {
             "request": request,
@@ -244,6 +262,7 @@ class MainAgentService(_ScopedSingleAgentService):
             "profile": profile,
             "workspace": workspace,
             "task": task,
+            "runtime_task_prompt": runtime_task_prompt,
         }
         try:
             workspace_tools = self._workspace_tools(workspace.id, task) if workspace else []
@@ -254,9 +273,11 @@ class MainAgentService(_ScopedSingleAgentService):
                 model=request.model,
                 task=task,
                 workspace_tools=workspace_tools,
+                runtime_task_prompt=runtime_task_prompt,
                 event_sink=event_sink,
             )
             self.runtime_tools = delegation_tools + workspace_tools
+            self.runtime_task_prompt = runtime_task_prompt
             return prepared
         except Exception as exc:
             await self._fail_prepared_task(prepared, exc)
@@ -304,6 +325,37 @@ class MainAgentService(_ScopedSingleAgentService):
             )
             extras["workspace"] = workspace.to_read_model() if workspace else None
         if task:
+            operation = str((task.input_payload_json or {}).get("operation") or "interact")
+            if operation == "generate":
+                delegated_agents = [
+                    item.get("agent_id")
+                    for item in self.subagent_outputs
+                    if item.get("mode") == "delegate"
+                ]
+                missing_agents = [
+                    agent_id
+                    for agent_id in ["media-writer-agent", "media-storyboard-agent"]
+                    if agent_id not in delegated_agents
+                ]
+                if missing_agents:
+                    raise ValueError(
+                        "A generate task must delegate both Writer and Storyboard; missing: "
+                        + ", ".join(missing_agents)
+                    )
+                if delegated_agents.index("media-writer-agent") > delegated_agents.index(
+                    "media-storyboard-agent"
+                ):
+                    raise ValueError(
+                        "A generate task must delegate Writer before Storyboard."
+                    )
+                if (
+                    workspace is None
+                    or not workspace.script_text.strip()
+                    or not workspace.storyboard_text.strip()
+                ):
+                    raise ValueError(
+                        "A generate task must save both script_text and storyboard_text before completion."
+                    )
             result = {
                 "workspace_id": workspace.id if workspace else request.workspace_id,
                 "script_text": workspace.script_text if workspace else "",
@@ -318,6 +370,28 @@ class MainAgentService(_ScopedSingleAgentService):
             )
             extras["task"] = task_to_read(task).model_dump(mode="json")
         return extras
+
+    async def _build_task_runtime_prompt(self, task) -> str:
+        memory = None
+        if task.task_key:
+            memory = await TaskMemoryService(self.options).get_latest(
+                tenant_id=task.tenant_id,
+                user_id=task.user_id,
+                task_key=task.task_key,
+            )
+        memory_prompt = render_task_memory(memory)
+        task_prompt = "\n".join(
+            [
+                "# Formal Task Context",
+                "This MainAgent turn executes the existing TaskManager task below.",
+                f"Task ID: {task.id}",
+                f"Task type: {task.task_type}",
+                f"Stable task key: {task.task_key or '(none)'}",
+                "Validated task input:",
+                json.dumps(task.input_payload_json or {}, ensure_ascii=False, indent=2),
+            ]
+        )
+        return "\n\n".join(item for item in [task_prompt, memory_prompt] if item)
 
     async def _fail_prepared_task(
         self,
@@ -463,6 +537,7 @@ class MainAgentService(_ScopedSingleAgentService):
         model: str | None,
         task,
         workspace_tools: list[FunctionTool],
+        runtime_task_prompt: str = "",
         event_sink: SubagentEventSink | None = None,
     ) -> list[FunctionTool]:
         async def consult_agent(
@@ -483,6 +558,7 @@ class MainAgentService(_ScopedSingleAgentService):
                 model=model,
                 task=task,
                 available_workspace_tools=workspace_tools,
+                runtime_task_prompt=runtime_task_prompt,
                 event_sink=event_sink,
             )
 
@@ -504,6 +580,7 @@ class MainAgentService(_ScopedSingleAgentService):
                 model=model,
                 task=task,
                 available_workspace_tools=workspace_tools,
+                runtime_task_prompt=runtime_task_prompt,
                 event_sink=event_sink,
             )
 
@@ -564,6 +641,7 @@ class MainAgentService(_ScopedSingleAgentService):
         model: str | None,
         task,
         available_workspace_tools: list[FunctionTool],
+        runtime_task_prompt: str = "",
         event_sink: SubagentEventSink | None = None,
     ) -> str:
         managed = await self._resolve_managed_agent(
@@ -609,6 +687,7 @@ class MainAgentService(_ScopedSingleAgentService):
         child_service = _ScopedSingleAgentService(
             self.options,
             runtime_tools=runtime_tools,
+            runtime_task_prompt=runtime_task_prompt,
             tenant_id=self.tenant_id,
         )
         child_request = SchedulingChatRequest(
@@ -768,6 +847,32 @@ def _last_user_message(messages: list[dict] | None) -> str:
         if message.get("role") == "user":
             return str(message.get("content") or "")
     return ""
+
+
+def _validate_formal_script_task(
+    task,
+    *,
+    user_id: str,
+    tenant_id: str,
+    workspace_id: str,
+    instruction: str,
+) -> None:
+    if task is None:
+        raise ValueError("Formal script task not found.")
+    if task.user_id != user_id or task.tenant_id != tenant_id:
+        raise ValueError(f"Task '{task.id}' is not available to this user.")
+    if task.task_type != "media.script.generate" or task.handler_name != "external":
+        raise ValueError(f"Task '{task.id}' is not a MainAgent script task.")
+    if task.agent_id != MAIN_RUNTIME_AGENT_ID:
+        raise ValueError(f"Task '{task.id}' is not assigned to MainAgent.")
+    if task.task_key != "media_script":
+        raise ValueError(f"Task '{task.id}' must use stable task_key 'media_script'.")
+    task_input = task.input_payload_json or {}
+    if str(task_input.get("workspace_id") or "") != workspace_id:
+        raise ValueError(f"Task '{task.id}' does not belong to this Workspace.")
+    expected_instruction = str(task_input.get("instruction") or "").strip()
+    if expected_instruction != instruction.strip():
+        raise ValueError(f"Task '{task.id}' instruction does not match this request.")
 
 
 def _delegation_mode_config(profile: AgentProfileEntity, mode: str) -> dict[str, Any]:

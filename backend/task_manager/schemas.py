@@ -163,6 +163,7 @@ class TaskDefinitionRead(BaseModel):
     task_type: str
     name: str
     description: str = ""
+    required_task_key: Optional[str] = None
     handler: str
     default_agent_id: str
     default_skill_package: Optional[str] = None

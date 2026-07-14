@@ -52,6 +52,7 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
                     task_type=item.task_type,
                     name=item.name,
                     description=item.description,
+                    required_task_key=item.required_task_key,
                     handler=item.handler,
                     default_agent_id=item.default_agent_id,
                     default_skill_package=item.default_skill_package,

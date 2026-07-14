@@ -8,6 +8,7 @@ class TaskDefinition:
     task_type: str
     name: str
     description: str = ""
+    required_task_key: str | None = None
     handler: str = "scheduler"
     default_agent_id: str = "default-single-agent"
     default_skill_package: str | None = None
@@ -37,14 +38,17 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
     "media.script.generate": TaskDefinition(
         task_type="media.script.generate",
         name="Media Script Generation",
-        description="Generate a short-video script from topic, material, persona, platform, and duration constraints.",
-        default_skill_package="media-script-generate-package",
-        default_primary_skill="media-script-generator",
-        default_candidate_skills=["media-script-selector"],
-        default_tools=["rag_retrieval"],
-        default_datasets=["local_rag"],
-        input_schema_name="media_script_generate_input",
-        output_schema_name="media_script_output",
+        description="Run one formal script Workspace task through MainAgent and its managed specialists.",
+        required_task_key="media_script",
+        handler="external",
+        default_agent_id="main-agent-runtime",
+        default_skill_package="media-script-main-agent-package",
+        default_primary_skill="media-script-task-orchestration",
+        default_candidate_skills=[],
+        default_tools=[],
+        default_datasets=[],
+        input_schema_name="media_script_main_agent_input",
+        output_schema_name="media_script_workspace_output",
     ),
     "media.script.pipeline.generate": TaskDefinition(
         task_type="media.script.pipeline.generate",
@@ -79,14 +83,6 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
         default_tools=[],
         default_datasets=[],
         input_schema_name="media_chat_input",
-    ),
-    "media.script.text.modify": TaskDefinition(
-        task_type="media.script.text.modify",
-        name="Media Script Text Modify",
-        description="Track one MainAgent turn that reads or updates a shared script workspace.",
-        handler="external",
-        default_agent_id="default-single-agent",
-        input_schema_name="media_script_text_modify_input",
     ),
     "media.script.change.propose": TaskDefinition(
         task_type="media.script.change.propose",
