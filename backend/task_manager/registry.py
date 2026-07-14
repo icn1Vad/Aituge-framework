@@ -127,6 +127,69 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
         input_schema_name="media_topic_search_input",
         output_schema_name="media_topic_search_output",
     ),
+    "media.calendar.official_date.lookup": TaskDefinition(
+        task_type="media.calendar.official_date.lookup",
+        name="Industry Calendar Official Date Lookup",
+        description=(
+            "Search allow-listed official sources once for one annual industry-calendar event "
+            "and return strict evidence-bound dates for all requested phases."
+        ),
+        default_skill_package="media-calendar-official-date-lookup-package",
+        default_primary_skill="media-calendar-official-date-lookup",
+        default_candidate_skills=[],
+        default_tools=["web_search"],
+        default_datasets=[],
+        input_schema_name="industry_calendar_official_date_lookup_input",
+        output_schema_name="industry_calendar_official_date_lookup_output",
+    ),
+    "media.topic.history_viral.variants.generate": TaskDefinition(
+        task_type="media.topic.history_viral.variants.generate",
+        name="History Viral Topic Variant Generation",
+        description=(
+            "Generate up to three distinct topic angles for each upstream-qualified "
+            "history viral source without changing source facts or ranking eligibility."
+        ),
+        handler="batch_item_scheduler",
+        default_skill_package="media-history-viral-topic-variants-package",
+        default_primary_skill="media-history-viral-topic-variants",
+        default_candidate_skills=[],
+        default_tools=[],
+        default_datasets=[],
+        input_schema_name="history_viral_topic_variants_input",
+        output_schema_name="batch_task_output",
+        item_output_schema_name="history_viral_topic_variant_item_output",
+    ),
+    "media.topic.industry_calendar.copy.generate": TaskDefinition(
+        task_type="media.topic.industry_calendar.copy.generate",
+        name="Industry Calendar Topic Copy Generation",
+        description=(
+            "Generate one bounded topic card copy for each upstream-approved fixed or "
+            "confirmed industry calendar event."
+        ),
+        handler="batch_item_scheduler",
+        default_skill_package="media-industry-calendar-topic-copy-package",
+        default_primary_skill="media-industry-calendar-topic-copy",
+        default_candidate_skills=[],
+        default_tools=[],
+        default_datasets=[],
+        input_schema_name="industry_calendar_topic_copy_input",
+        output_schema_name="batch_task_output",
+        item_output_schema_name="industry_calendar_topic_copy_item_output",
+    ),
+    "analytics.douyin.content_analysis.batch": TaskDefinition(
+        task_type="analytics.douyin.content_analysis.batch",
+        name="Douyin Content Analysis Batch",
+        description="Analyze deterministic Top3/Bottom3 content evidence item by item.",
+        handler="batch_item_scheduler",
+        default_skill_package="douyin-content-analysis-package",
+        default_primary_skill="douyin-content-analysis",
+        default_candidate_skills=[],
+        default_tools=[],
+        default_datasets=[],
+        input_schema_name="douyin_content_analysis_batch_input",
+        output_schema_name="batch_task_output",
+        item_output_schema_name="douyin_content_analysis_item_output",
+    ),
     "analytics.douyin.account_report.generate": TaskDefinition(
         task_type="analytics.douyin.account_report.generate",
         name="Douyin Account Data Report",
