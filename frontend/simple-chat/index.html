@@ -663,6 +663,24 @@
         gap: 8px;
       }
 
+      .turn.subagent {
+        margin: 0;
+      }
+
+      .assistant-wrap.subagent {
+        width: min(620px, 72vw);
+        padding: 10px 12px;
+        border: 1px solid #ddd8f7;
+        border-left: 3px solid var(--purple);
+        border-radius: 10px;
+        background: #faf9ff;
+      }
+
+      .assistant-wrap.subagent .bubble {
+        max-width: 100%;
+        font-size: 14px;
+      }
+
       .assistant-actions {
         display: flex;
         align-items: center;
@@ -1278,12 +1296,12 @@
         return assistant;
       }
 
-      function addAssistantMessage() {
+      function addAssistantMessage({ parent = messagesEl, compact = false } = {}) {
         ensureStarted();
         const turn = document.createElement("div");
-        turn.className = "turn assistant";
+        turn.className = `turn assistant${compact ? " subagent" : ""}`;
         const wrap = document.createElement("div");
-        wrap.className = "assistant-wrap";
+        wrap.className = `assistant-wrap${compact ? " subagent" : ""}`;
         const actions = document.createElement("div");
         actions.className = "assistant-actions";
         actions.innerHTML = '<button class="icon-btn" type="button">⧉</button><button class="icon-btn" type="button">↻</button><span class="token-badge">0 tokens</span>';
@@ -1293,7 +1311,7 @@
         tools.className = "tool-list";
         wrap.append(actions, tools, bubble);
         turn.appendChild(wrap);
-        messagesEl.appendChild(turn);
+        parent.appendChild(turn);
         turn.scrollIntoView({ behavior: "smooth", block: "end" });
         return { turn, actions, bubble, token: actions.querySelector(".token-badge"), tools, toolMap: new Map() };
       }
@@ -1542,12 +1560,10 @@
         discussionStatusEl.textContent = `Discussion: ${payload.run?.status || "loaded"} · ${payload.turns?.length || 0} turns`;
       }
 
-      function consumeDiscussionSingleEvent(nodes, event, payload) {
-        const single = payload.single_event || {};
-        const data = single.data || {};
+      function consumeSingleAgentEvent(nodes, event, single, { refreshWorkspace = false } = {}) {
+        const data = single?.data || {};
         if (event === "metadata") {
           renderSkills(nodes, data.skills);
-          statusEl.textContent = `discussion: ${payload.agent_id}`;
         }
         if (event === "chunk") {
           if (data.actions) {
@@ -1560,14 +1576,33 @@
               result: observation.result,
               error: observation.error,
             });
+            const toolName = toolFunction(observation.tool).name || "";
+            if (
+              refreshWorkspace
+              && !observation.error
+              && ["write_script_workspace", "write_storyboard_workspace"].includes(toolName)
+            ) {
+              refreshMainWorkspace().catch(() => {});
+            }
+          }
+          const delta = data.choices?.[0]?.delta?.content || "";
+          if (delta) {
+            nodes.bubble.textContent += delta;
+            nodes.bubble.scrollIntoView({ behavior: "smooth", block: "end" });
           }
           const usage = data.usage;
           if (usage) nodes.token.textContent = `${usage.total_tokens || 0} tokens`;
         }
         if (event === "final") {
+          if (!nodes.bubble.textContent && data.content) nodes.bubble.textContent = data.content;
           const usage = data.usage;
           if (usage) nodes.token.textContent = `${usage.total_tokens || 0} tokens`;
         }
+      }
+
+      function consumeDiscussionSingleEvent(nodes, event, payload) {
+        consumeSingleAgentEvent(nodes, event, payload.single_event || {});
+        if (event === "metadata") statusEl.textContent = `discussion: ${payload.agent_id}`;
       }
 
       async function addDiscussionUserMessage(text) {
@@ -2553,6 +2588,94 @@
         return data;
       }
 
+      async function sendMainAgentStream(text, nodes) {
+        if (!mainWorkspaceId) await createMainWorkspace();
+        await saveMainWorkspace();
+
+        const mainSpeaker = document.createElement("span");
+        mainSpeaker.className = "agent-speaker";
+        mainSpeaker.textContent = "Media Main Agent · 主";
+        nodes.actions.prepend(mainSpeaker);
+
+        const res = await fetch("/scheduling/main/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: text,
+            user_id: userId,
+            thread_id: threadId,
+            session_id: mainAgentSessionId,
+            workspace_id: mainWorkspaceId,
+            stream: true,
+          }),
+        });
+        if (!res.ok || !res.body) throw new Error(await responseErrorText(res));
+
+        const childTurns = new Map();
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let streamError = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          buffer = parseSse(buffer, (event, payload) => {
+            if (event === "turn_started" && payload.role === "subagent") {
+              const child = addAssistantMessage({ parent: nodes.tools, compact: true });
+              child.bubble.textContent = "";
+              const speaker = document.createElement("span");
+              speaker.className = "agent-speaker";
+              speaker.textContent = `${payload.name || payload.agent_id} · 子 · ${payload.mode}`;
+              child.actions.prepend(speaker);
+              childTurns.set(payload.turn_id, child);
+              return;
+            }
+
+            if (["metadata", "chunk", "final"].includes(event) && payload.single_event) {
+              const child = childTurns.get(payload.turn_id);
+              if (child) consumeSingleAgentEvent(child, event, payload.single_event, { refreshWorkspace: true });
+              return;
+            }
+
+            if (event === "turn_finished" && payload.role === "subagent") {
+              const child = childTurns.get(payload.turn_id);
+              if (!child) return;
+              if (payload.status === "error") {
+                child.bubble.textContent += `${child.bubble.textContent ? "\n\n" : ""}执行失败：${payload.error || "unknown error"}`;
+              } else if (!child.bubble.textContent && payload.content) {
+                child.bubble.textContent = payload.content;
+              }
+              return;
+            }
+
+            if (event === "error") {
+              streamError = payload.message || "MainAgent stream failed";
+              return;
+            }
+
+            if (["metadata", "chunk", "final"].includes(event)) {
+              consumeSingleAgentEvent(nodes, event, payload, { refreshWorkspace: true });
+              threadId = payload.thread_id || threadId;
+              mainAgentSessionId = payload.session_id || mainAgentSessionId;
+              if (event === "final") {
+                const finalData = payload.data || {};
+                const workspace = finalData.workspace;
+                if (workspace) {
+                  mainWorkspaceTextEl.value = workspace.script_text || "";
+                  mainStoryboardTextEl.value = workspace.storyboard_text || "";
+                  workspaceInspectorStatusEl.textContent = `${mainWorkspaceId.slice(0, 8)} · 已更新`;
+                }
+                const managed = finalData.managed_agents || [];
+                const taskId = finalData.task?.id ? ` · task ${finalData.task.id.slice(0, 8)}` : "";
+                mainAgentStatusEl.textContent = `MainAgent: ${managed.length} managed agent(s)${taskId}`;
+              }
+            }
+          });
+        }
+        if (streamError) throw new Error(streamError);
+      }
+
       async function sendStream(text, nodes) {
         const res = await fetch(schedulingChatUrl(), {
           method: "POST",
@@ -2571,33 +2694,11 @@
           buffer = parseSse(buffer, (event, payload) => {
             if (event === "metadata") {
               threadId = payload.thread_id;
-              renderSkills(nodes, payload.data?.skills);
               statusEl.textContent = "streaming";
             }
-            if (event === "chunk") {
-              if (payload.data?.actions) {
-                for (const action of payload.data.actions) upsertToolTrace(nodes, action);
-              }
-              if (payload.data?.observation) {
-                const observation = payload.data.observation;
-                upsertToolTrace(nodes, observation.tool, {
-                  id: observation.tool?.id,
-                  result: observation.result,
-                  error: observation.error,
-                });
-              }
-              const delta = payload.data?.choices?.[0]?.delta?.content || "";
-              const usage = payload.data?.usage;
-              if (delta) {
-                nodes.bubble.textContent += delta;
-                renderThreads(nodes.bubble.textContent.slice(0, 36));
-                nodes.bubble.scrollIntoView({ behavior: "smooth", block: "end" });
-              }
-              if (usage) nodes.token.textContent = `${usage.total_tokens || 0} tokens`;
-            }
-            if (event === "final") {
-              const usage = payload.data?.usage;
-              if (usage) nodes.token.textContent = `${usage.total_tokens || 0} tokens`;
+            consumeSingleAgentEvent(nodes, event, payload);
+            if (event === "chunk" && nodes.bubble.textContent) {
+              renderThreads(nodes.bubble.textContent.slice(0, 36));
             }
           });
         }
@@ -2729,15 +2830,24 @@
 
         try {
           if (activeMode === "main_agent") {
-            const data = await sendMainAgent(text);
-            const response = data.response;
-            insertSubagentOutputs(data.subagent_outputs, assistant.turn);
-            renderSkills(assistant, data.skills);
-            assistant.bubble.textContent = response?.choices?.[0]?.message?.content || "";
-            renderSteps(assistant, response?.steps || []);
-            const usage = response?.usage;
-            if (usage) assistant.token.textContent = `${usage.total_tokens || 0} tokens`;
-            renderThreads(assistant.bubble.textContent.slice(0, 36));
+            if (streamEl.checked) {
+              await sendMainAgentStream(text, assistant);
+              renderThreads(assistant.bubble.textContent.slice(0, 36));
+            } else {
+              const data = await sendMainAgent(text);
+              const response = data.response;
+              const mainSpeaker = document.createElement("span");
+              mainSpeaker.className = "agent-speaker";
+              mainSpeaker.textContent = "Media Main Agent · 主";
+              assistant.actions.prepend(mainSpeaker);
+              insertSubagentOutputs(data.subagent_outputs, assistant.turn);
+              renderSkills(assistant, data.skills);
+              assistant.bubble.textContent = response?.choices?.[0]?.message?.content || "";
+              renderSteps(assistant, response?.steps || []);
+              const usage = response?.usage;
+              if (usage) assistant.token.textContent = `${usage.total_tokens || 0} tokens`;
+              renderThreads(assistant.bubble.textContent.slice(0, 36));
+            }
           } else if (streamEl.checked) {
             await sendStream(text, assistant);
           } else {

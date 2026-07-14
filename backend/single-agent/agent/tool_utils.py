@@ -33,10 +33,13 @@ def check_and_handle_return_direct(
     if not return_direct:
         return None
 
-    logger.info(f"Tool {tool_name} has return_direct=True, returning tool result directly.")
-
     if tool_error:
-        return TextChunk(delta="Tool call failed: {tool_error}")
+        logger.info(
+            f"Tool {tool_name} has return_direct=True but failed; continuing the ReAct loop."
+        )
+        return None
+
+    logger.info(f"Tool {tool_name} succeeded with return_direct=True, returning directly.")
 
     if not tool_content:
         return TextChunk(delta="Tool call successful, but no content returned.")

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 from common.system_constants import DEFAULT_TENANT_ID
 from scheduling.scheduler import SchedulingRuntimeOptions
@@ -66,8 +69,18 @@ def create_main_agent_router(options: SchedulingRuntimeOptions) -> APIRouter:
 
     @router.post("/main/chat")
     async def main_agent_chat(request: MainAgentChatRequest):
+        service = MainAgentService(options)
+        if request.stream:
+            async def event_stream():
+                async for item in service.stream_chat(request):
+                    yield (
+                        f"event: {item['event']}\n"
+                        f"data: {json.dumps(item['data'], ensure_ascii=False, default=str)}\n\n"
+                    )
+
+            return StreamingResponse(event_stream(), media_type="text/event-stream")
         try:
-            return await MainAgentService(options).chat(request)
+            return await service.chat(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

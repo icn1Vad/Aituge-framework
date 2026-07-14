@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import suppress
 from typing import Any
 
 from common.system_constants import DEFAULT_TENANT_ID
@@ -29,6 +32,8 @@ MAIN_RUNTIME_PROMPT = (
     "Keep the shared Workspace as the source of truth, never pretend that chat text was saved, and never "
     "write production content directly when a specialist workflow is required."
 )
+
+SubagentEventSink = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 def _main_runtime_profile(model_id: str | None = None) -> AgentProfileEntity:
@@ -103,10 +108,108 @@ class MainAgentService(_ScopedSingleAgentService):
         request: MainAgentChatRequest,
     ) -> dict[str, Any]:
         if request.stream:
-            raise ValueError("The compact MainAgent version supports non-streaming chat only.")
+            raise ValueError("Use stream_chat for a streaming MainAgent request.")
 
+        prepared = await self._prepare_turn(request, stream=False)
+        try:
+            body = await super().chat(prepared["profile"], prepared["scoped_request"])
+            body.update(
+                await self._finalize_turn(
+                    prepared,
+                    thread_id=body["thread_id"],
+                    session_id=body["session_id"],
+                    response_content=_assistant_content(body.get("response") or {}),
+                )
+            )
+            return body
+        except Exception as exc:
+            await self._fail_prepared_task(prepared, exc)
+            raise
+
+    async def stream_chat(
+        self,
+        request: MainAgentChatRequest,
+    ) -> AsyncIterator[dict[str, Any]]:
+        queue: asyncio.Queue[dict[str, Any] | object] = asyncio.Queue()
+        sentinel = object()
+        prepared: dict[str, Any] | None = None
+
+        async def emit(item: dict[str, Any]) -> None:
+            await queue.put(item)
+
+        async def produce() -> None:
+            nonlocal prepared
+            try:
+                prepared = await self._prepare_turn(request, stream=True, event_sink=emit)
+                final_event = None
+                async for event in super(MainAgentService, self).stream_chat(
+                    prepared["profile"], prepared["scoped_request"]
+                ):
+                    if event.event == "final":
+                        final_event = event
+                        continue
+                    await emit(
+                        {
+                            "event": event.event,
+                            "data": event.model_dump(mode="json", exclude_none=True),
+                        }
+                    )
+
+                if final_event is None:
+                    raise RuntimeError("MainAgent stream ended without a final event.")
+                final_data = final_event.data or {}
+                extras = await self._finalize_turn(
+                    prepared,
+                    thread_id=final_event.thread_id,
+                    session_id=final_event.session_id,
+                    response_content=str(final_data.get("content") or ""),
+                )
+                final_event.data = {**final_data, **extras}
+                await emit(
+                    {
+                        "event": "final",
+                        "data": final_event.model_dump(mode="json", exclude_none=True),
+                    }
+                )
+            except asyncio.CancelledError:
+                if prepared is not None:
+                    await self._fail_prepared_task(
+                        prepared, RuntimeError("MainAgent stream was cancelled.")
+                    )
+                raise
+            except Exception as exc:
+                if prepared is not None:
+                    await self._fail_prepared_task(prepared, exc)
+                await emit({"event": "error", "data": {"message": str(exc)}})
+            finally:
+                await queue.put(sentinel)
+
+        producer = asyncio.create_task(produce())
+        try:
+            while True:
+                item = await queue.get()
+                if item is sentinel:
+                    break
+                yield item  # type: ignore[misc]
+            await producer
+        finally:
+            if not producer.done():
+                producer.cancel()
+                with suppress(asyncio.CancelledError):
+                    await producer
+
+    async def _prepare_turn(
+        self,
+        request: MainAgentChatRequest,
+        *,
+        stream: bool,
+        event_sink: SubagentEventSink | None = None,
+    ) -> dict[str, Any]:
+        self.subagent_outputs = []
         primary_session_id = request.session_id or request.thread_id or f"main-agent:{uuid.uuid4().hex}"
-        scoped_request = request.model_copy(update={"session_id": primary_session_id, "stream": False})
+        scoped_request = request.model_copy(
+            update={"session_id": primary_session_id, "stream": stream}
+        )
         main_session = await self.session_store.get_or_create(
             primary_session_id,
             user_id=request.user_id,
@@ -128,13 +231,10 @@ class MainAgentService(_ScopedSingleAgentService):
                 TaskCreateRequest(
                     task_type="media.script.text.modify",
                     title="MainAgent script workspace turn",
-                    input_payload={
-                        "workspace_id": workspace.id,
-                        "instruction": instruction,
-                    },
+                    input_payload={"workspace_id": workspace.id, "instruction": instruction},
                     user_id=request.user_id,
                     tenant_id=self.tenant_id,
-                    stream=False,
+                    stream=stream,
                     agent_id=MAIN_RUNTIME_AGENT_ID,
                     thread_id=request.thread_id,
                     session_id=primary_session_id,
@@ -142,6 +242,15 @@ class MainAgentService(_ScopedSingleAgentService):
             )
             task = await self.task_service.begin_external_task(task.id, user_id=request.user_id)
 
+        prepared = {
+            "request": request,
+            "primary_session_id": primary_session_id,
+            "scoped_request": scoped_request,
+            "main_session": main_session,
+            "profile": profile,
+            "workspace": workspace,
+            "task": task,
+        }
         try:
             catalog = await self.list_delegatable_agents()
             managed = await self.managed_store.list(
@@ -158,66 +267,85 @@ class MainAgentService(_ScopedSingleAgentService):
                 task=task,
                 workspace_tools=workspace_tools,
                 main_session=main_session,
+                event_sink=event_sink,
             )
             main_workspace_tools = [
                 tool for tool in workspace_tools if tool.metadata.name == "read_script_workspace"
             ]
             self.runtime_tools = delegation_tools + main_workspace_tools
             self.runtime_prompt = _main_agent_prompt(
-                catalog,
-                managed,
-                workspace,
-                phase=main_session.phase,
+                catalog, managed, workspace, phase=main_session.phase
             )
-
-            body = await super().chat(profile, scoped_request)
-            await self.managed_store.bind_primary_thread(
-                primary_session_id,
-                body["thread_id"],
-                user_id=request.user_id,
-                tenant_id=self.tenant_id,
-            )
-            main_session = await self.session_store.update(
-                primary_session_id,
-                user_id=request.user_id,
-                tenant_id=self.tenant_id,
-                thread_id=body["thread_id"],
-            )
-            managed = await self.managed_store.list(
-                primary_session_id=primary_session_id,
-                user_id=request.user_id,
-                tenant_id=self.tenant_id,
-            )
-            body["managed_agents"] = [row.to_read_model() for row in managed]
-            body["subagent_outputs"] = list(self.subagent_outputs)
-            body["main_session"] = main_session.to_read_model()
-
-            if workspace:
-                workspace = await self.workspace_store.get(
-                    workspace.id,
-                    user_id=request.user_id,
-                    tenant_id=self.tenant_id,
-                )
-                body["workspace"] = workspace.to_read_model() if workspace else None
-            if task:
-                result = {
-                    "workspace_id": workspace.id if workspace else request.workspace_id,
-                    "script_text": workspace.script_text if workspace else "",
-                    "storyboard_text": workspace.storyboard_text if workspace else "",
-                    "response": _assistant_content(body.get("response") or {}),
-                }
-                task = await self.task_service.complete_external_task(
-                    task.id,
-                    result=result,
-                    thread_id=body["thread_id"],
-                    session_id=body["session_id"],
-                )
-                body["task"] = task_to_read(task).model_dump(mode="json")
-            return body
+            return prepared
         except Exception as exc:
-            if task is not None:
-                await self.task_service.fail_external_task(task.id, exc)
+            await self._fail_prepared_task(prepared, exc)
             raise
+
+    async def _finalize_turn(
+        self,
+        prepared: dict[str, Any],
+        *,
+        thread_id: str,
+        session_id: str,
+        response_content: str,
+    ) -> dict[str, Any]:
+        request = prepared["request"]
+        primary_session_id = prepared["primary_session_id"]
+        workspace = prepared["workspace"]
+        task = prepared["task"]
+        await self.managed_store.bind_primary_thread(
+            primary_session_id,
+            thread_id,
+            user_id=request.user_id,
+            tenant_id=self.tenant_id,
+        )
+        main_session = await self.session_store.update(
+            primary_session_id,
+            user_id=request.user_id,
+            tenant_id=self.tenant_id,
+            thread_id=thread_id,
+        )
+        managed = await self.managed_store.list(
+            primary_session_id=primary_session_id,
+            user_id=request.user_id,
+            tenant_id=self.tenant_id,
+        )
+        extras: dict[str, Any] = {
+            "managed_agents": [row.to_read_model() for row in managed],
+            "subagent_outputs": list(self.subagent_outputs),
+            "main_session": main_session.to_read_model(),
+        }
+        if workspace:
+            workspace = await self.workspace_store.get(
+                workspace.id,
+                user_id=request.user_id,
+                tenant_id=self.tenant_id,
+            )
+            extras["workspace"] = workspace.to_read_model() if workspace else None
+        if task:
+            result = {
+                "workspace_id": workspace.id if workspace else request.workspace_id,
+                "script_text": workspace.script_text if workspace else "",
+                "storyboard_text": workspace.storyboard_text if workspace else "",
+                "response": response_content,
+            }
+            task = await self.task_service.complete_external_task(
+                task.id,
+                result=result,
+                thread_id=thread_id,
+                session_id=session_id,
+            )
+            extras["task"] = task_to_read(task).model_dump(mode="json")
+        return extras
+
+    async def _fail_prepared_task(
+        self,
+        prepared: dict[str, Any],
+        exc: Exception,
+    ) -> None:
+        task = prepared.get("task")
+        if task is not None:
+            await self.task_service.fail_external_task(task.id, exc)
 
     async def list_delegatable_agents(self, *, exclude_agent_id: str | None = None) -> list[dict[str, str]]:
         async with create_db_session() as session:
@@ -273,7 +401,12 @@ class MainAgentService(_ScopedSingleAgentService):
                 source={"type": "workspace", "id": workspace_id},
             )
             return json.dumps(
-                {"workspace_id": row.id, "script_text": row.script_text},
+                {
+                    "status": "saved",
+                    "workspace_id": row.id,
+                    "field": "script_text",
+                    "character_count": len(row.script_text),
+                },
                 ensure_ascii=False,
             )
 
@@ -294,7 +427,12 @@ class MainAgentService(_ScopedSingleAgentService):
                 source={"type": "workspace", "id": workspace_id},
             )
             return json.dumps(
-                {"workspace_id": row.id, "storyboard_text": row.storyboard_text},
+                {
+                    "status": "saved",
+                    "workspace_id": row.id,
+                    "field": "storyboard_text",
+                    "character_count": len(row.storyboard_text),
+                },
                 ensure_ascii=False,
             )
 
@@ -307,12 +445,14 @@ class MainAgentService(_ScopedSingleAgentService):
             FunctionTool.from_defaults(
                 async_fn=write_script_workspace,
                 name="write_script_workspace",
-                description="Replace the shared script text for the current task.",
+                description="Save the complete shared script. A successful save completes this agent turn.",
+                return_direct=True,
             ),
             FunctionTool.from_defaults(
                 async_fn=write_storyboard_workspace,
                 name="write_storyboard_workspace",
-                description="Replace the shared storyboard text for the current task.",
+                description="Save the complete shared storyboard. A successful save completes this agent turn.",
+                return_direct=True,
             ),
         ]
 
@@ -326,6 +466,7 @@ class MainAgentService(_ScopedSingleAgentService):
         task,
         workspace_tools: list[FunctionTool],
         main_session: MainAgentSessionEntity,
+        event_sink: SubagentEventSink | None = None,
     ) -> list[FunctionTool]:
         async def consult_agent(
             message: str,
@@ -345,6 +486,7 @@ class MainAgentService(_ScopedSingleAgentService):
                 model=model,
                 task=task,
                 runtime_tools=[],
+                event_sink=event_sink,
             )
 
         async def delegate_agent(
@@ -365,6 +507,7 @@ class MainAgentService(_ScopedSingleAgentService):
                 model=model,
                 task=task,
                 runtime_tools=workspace_tools,
+                event_sink=event_sink,
             )
 
         async def list_active_agents() -> str:
@@ -416,6 +559,7 @@ class MainAgentService(_ScopedSingleAgentService):
                     model=model,
                     task=task,
                     runtime_tools=workspace_tools,
+                    event_sink=event_sink,
                 )
             await self.session_store.update(
                 primary_session_id,
@@ -484,6 +628,7 @@ class MainAgentService(_ScopedSingleAgentService):
         model: str | None,
         task,
         runtime_tools: list[FunctionTool],
+        event_sink: SubagentEventSink | None = None,
     ) -> str:
         managed = await self._resolve_managed_agent(
             agent_id=agent_id,
@@ -519,19 +664,69 @@ class MainAgentService(_ScopedSingleAgentService):
             runtime_prompt=mode_prompt,
             tenant_id=self.tenant_id,
         )
-        child_result = await child_service.chat(
-            child_profile,
-            SchedulingChatRequest(
-                message=message,
-                model=model,
-                thread_id=managed.child_thread_id,
-                session_id=managed.child_session_id,
-                user_id=user_id,
-                stream=False,
-            ),
+        child_request = SchedulingChatRequest(
+            message=message,
+            model=model,
+            thread_id=managed.child_thread_id,
+            session_id=managed.child_session_id,
+            user_id=user_id,
+            stream=event_sink is not None,
         )
-        await self.managed_store.update_child_thread(managed.instance_id, child_result["thread_id"])
-        content = _assistant_content(child_result.get("response") or {})
+        successful_tools: set[str] = set()
+        if event_sink is None:
+            child_result = await child_service.chat(child_profile, child_request)
+            child_thread_id = child_result["thread_id"]
+            content = _assistant_content(child_result.get("response") or {})
+            successful_tools = _successful_tool_names(
+                (child_result.get("response") or {}).get("steps") or []
+            )
+        else:
+            turn_id = uuid.uuid4().hex
+            event_base = {
+                "turn_id": turn_id,
+                "role": "subagent",
+                "instance_id": managed.instance_id,
+                "agent_id": managed.agent_id,
+                "name": child_profile.name,
+                "mode": mode,
+            }
+            await event_sink({"event": "turn_started", "data": event_base})
+            content_parts: list[str] = []
+            content = ""
+            child_thread_id = managed.child_thread_id or ""
+            try:
+                async for event in child_service.stream_chat(child_profile, child_request):
+                    child_thread_id = event.thread_id or child_thread_id
+                    data = event.data or {}
+                    if event.event == "chunk":
+                        choices = data.get("choices") or []
+                        if choices:
+                            delta = choices[0].get("delta") or {}
+                            if delta.get("content"):
+                                content_parts.append(str(delta["content"]))
+                        observation = data.get("observation")
+                        successful_tools.update(_successful_tool_names([observation] if observation else []))
+                    elif event.event == "final":
+                        content = str(data.get("content") or "".join(content_parts))
+                    await event_sink(
+                        {
+                            "event": event.event,
+                            "data": {**event_base, "single_event": event.model_dump(mode="json", exclude_none=True)},
+                        }
+                    )
+                if not content:
+                    content = "".join(content_parts)
+            except Exception as exc:
+                await event_sink(
+                    {
+                        "event": "turn_finished",
+                        "data": {**event_base, "status": "error", "error": str(exc)},
+                    }
+                )
+                raise
+
+        _require_managed_write(managed.agent_id, mode, runtime_tools, successful_tools)
+        await self.managed_store.update_child_thread(managed.instance_id, child_thread_id)
         self.subagent_outputs.append(
             {
                 "mode": mode,
@@ -541,6 +736,18 @@ class MainAgentService(_ScopedSingleAgentService):
                 "response": content,
             }
         )
+
+        if event_sink is not None:
+            await event_sink(
+                {
+                    "event": "turn_finished",
+                    "data": {
+                        **event_base,
+                        "status": "completed",
+                        "content": content,
+                    },
+                }
+            )
 
         if task is not None:
             await self.task_service.record_event(
@@ -625,6 +832,37 @@ def _tools_allowed_for_managed_agent(
     ]
 
 
+def _successful_tool_names(steps: list[dict] | None) -> set[str]:
+    names: set[str] = set()
+    for step in steps or []:
+        if not isinstance(step, dict) or step.get("error"):
+            continue
+        tool = step.get("tool") or {}
+        function = tool.get("function") or {}
+        name = function.get("name")
+        if name:
+            names.add(str(name))
+    return names
+
+
+def _require_managed_write(
+    agent_id: str,
+    mode: str,
+    runtime_tools: list[FunctionTool],
+    successful_tools: set[str],
+) -> None:
+    if mode != "delegate":
+        return
+    expected_by_agent = {
+        "media-writer-agent": "write_script_workspace",
+        "media-storyboard-agent": "write_storyboard_workspace",
+    }
+    expected = expected_by_agent.get(agent_id)
+    available = {tool.metadata.name for tool in runtime_tools}
+    if expected and expected in available and expected not in successful_tools:
+        raise ValueError(f"Agent '{agent_id}' completed without a successful {expected} call.")
+
+
 def _main_agent_prompt(
     catalog: list[dict[str, str]],
     managed: list[ManagedSingleAgentEntity],
@@ -679,7 +917,8 @@ def _managed_agent_prompt(agent_id: str, mode: str) -> str:
             "hook; keep one clear audience and one central claim; use short speakable sentences; structure the body "
             "as hook, context, 2-4 evidence-backed points, transition, and closing action; preserve facts from the "
             "workspace; avoid unsupported numbers and generic slogans; include natural pauses and visual cues only "
-            "when they help production. Return a short summary after saving."
+            "when they help production. A successful Workspace write is the final result: do not review, revise, "
+            "call another tool, or return a separate summary afterward."
         )
     if agent_id == "media-storyboard-agent":
         return (
@@ -688,7 +927,8 @@ def _managed_agent_prompt(agent_id: str, mode: str) -> str:
             "Know-how: cover every narration segment; number shots; include time range, framing, subject/action, "
             "camera movement, matching voice-over, on-screen text, asset or location need, transition, and production "
             "notes; keep continuity of screen direction, wardrobe, props, light, and tempo; prefer shootable visuals "
-            "over abstract descriptions. Return a short summary after saving."
+            "over abstract descriptions. A successful Workspace write is the final result: do not review, revise, "
+            "call another tool, or return a separate summary afterward."
         )
     return (
         "Execute the instruction. Read the current workspace before acting and use the available task write tool "

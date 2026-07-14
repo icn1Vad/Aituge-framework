@@ -1,5 +1,6 @@
 import asyncio
 
+import agent.react_agent as react_agent_module
 from agent.react_agent import ReactAgent
 from agent.state import AgentState
 from common.llm.models import ReasoningChunk, TextChunk
@@ -69,3 +70,109 @@ def test_react_agent_keeps_reasoning_content_on_tool_call_message():
 
     asyncio.run(run())
 
+
+def test_return_direct_success_stops_without_another_llm_step():
+    async def run():
+        llm_calls = 0
+
+        class FakeLlm:
+            context_window = 4096
+            max_tokens = 512
+
+            async def astream(self, messages, tools=None):
+                nonlocal llm_calls
+                llm_calls += 1
+
+                async def gen():
+                    yield TextChunk(
+                        tool_calls=[
+                            ChoiceDeltaToolCall(
+                                index=0,
+                                id="call_save",
+                                type="function",
+                                function={
+                                    "name": "SaveTool",
+                                    "arguments": '{"value": "final"}',
+                                },
+                            )
+                        ]
+                    )
+
+                return gen()
+
+        async def save(value: str) -> str:
+            return value
+
+        tool = FunctionTool.from_defaults(
+            async_fn=save,
+            name="SaveTool",
+            description="Save a final value.",
+            return_direct=True,
+        )
+        agent = ReactAgent(llm=FakeLlm(), system_prompt="system", tools=[tool], max_steps=3)
+        response_gen = await agent.run_async(
+            AgentState.from_messages([{"role": "user", "content": "save"}])
+        )
+        chunks = [chunk async for chunk in response_gen]
+
+        assert llm_calls == 1
+        assert chunks[-1].delta == "final"
+
+    asyncio.run(run())
+
+
+def test_return_direct_failure_continues_to_next_llm_step(monkeypatch):
+    async def run():
+        llm_calls = 0
+
+        class FakeLlm:
+            context_window = 4096
+            max_tokens = 512
+
+            async def astream(self, messages, tools=None):
+                nonlocal llm_calls
+                llm_calls += 1
+
+                async def gen():
+                    if llm_calls == 1:
+                        yield TextChunk(
+                            tool_calls=[
+                                ChoiceDeltaToolCall(
+                                    index=0,
+                                    id="call_save",
+                                    type="function",
+                                    function={
+                                        "name": "SaveTool",
+                                        "arguments": '{"value": "final"}',
+                                    },
+                                )
+                            ]
+                        )
+                    else:
+                        yield TextChunk(delta="handled failure")
+
+                return gen()
+
+        async def save(value: str) -> str:
+            return value
+
+        async def failed_tool_call(tool_call, tool_fn_map):
+            return tool_call, None, "write failed", "write failed"
+
+        monkeypatch.setattr(react_agent_module, "execute_single_tool_call", failed_tool_call)
+        tool = FunctionTool.from_defaults(
+            async_fn=save,
+            name="SaveTool",
+            description="Save a final value.",
+            return_direct=True,
+        )
+        agent = ReactAgent(llm=FakeLlm(), system_prompt="system", tools=[tool], max_steps=3)
+        response_gen = await agent.run_async(
+            AgentState.from_messages([{"role": "user", "content": "save"}])
+        )
+        chunks = [chunk async for chunk in response_gen]
+
+        assert llm_calls == 2
+        assert chunks[-1].delta == "handled failure"
+
+    asyncio.run(run())
