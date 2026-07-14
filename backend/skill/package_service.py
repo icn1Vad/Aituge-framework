@@ -67,6 +67,74 @@ DEFAULT_SKILL_PACKAGES = [
         "auxiliary_skills": [],
     },
     {
+        "package_name": "main-agent-orchestration-package",
+        "display_name": "MainAgent Orchestration Package",
+        "description": "Choose direct Workspace work, specialist consultation, or delegated execution.",
+        "tags": ["main-agent", "orchestration", "workspace"],
+        "primary_skill": "main-agent-orchestration",
+        "auxiliary_skills": ["media-script-writer", "workspace-storyboard-editor"],
+    },
+    {
+        "package_name": "media-script-main-agent-package",
+        "display_name": "Media Script MainAgent Package",
+        "description": "Run a formal script Task through MainAgent, Writer, and Storyboard Workspace stages.",
+        "tags": ["main-agent", "media", "script", "task-manager"],
+        "primary_skill": "media-script-task-orchestration",
+        "auxiliary_skills": [
+            "main-agent-orchestration",
+            "media-script-writer",
+            "workspace-storyboard-editor",
+        ],
+    },
+    {
+        "package_name": "media-writer-consult-package",
+        "display_name": "Media Writer Consult Package",
+        "description": "Read-only script consultation grounded in the shared Workspace.",
+        "tags": ["main-agent", "consult", "media", "script"],
+        "primary_skill": "managed-agent-consult",
+        "auxiliary_skills": ["media-script-writer"],
+    },
+    {
+        "package_name": "media-writer-delegate-package",
+        "display_name": "Media Writer Delegate Package",
+        "description": "Delegated script execution with a required Workspace save.",
+        "tags": ["main-agent", "delegate", "media", "script"],
+        "primary_skill": "managed-agent-delegate",
+        "auxiliary_skills": ["media-script-writer"],
+    },
+    {
+        "package_name": "media-storyboard-consult-package",
+        "display_name": "Media Storyboard Consult Package",
+        "description": "Read-only storyboard consultation grounded in the shared Workspace.",
+        "tags": ["main-agent", "consult", "media", "storyboard"],
+        "primary_skill": "managed-agent-consult",
+        "auxiliary_skills": ["workspace-storyboard-editor"],
+    },
+    {
+        "package_name": "media-storyboard-delegate-package",
+        "display_name": "Media Storyboard Delegate Package",
+        "description": "Delegated storyboard execution with a required Workspace save.",
+        "tags": ["main-agent", "delegate", "media", "storyboard"],
+        "primary_skill": "managed-agent-delegate",
+        "auxiliary_skills": ["workspace-storyboard-editor"],
+    },
+    {
+        "package_name": "media-script-change-proposal-package",
+        "display_name": "Media Script Change Proposal Package",
+        "description": "Convert an explicit script edit request into a bounded proposal for human confirmation.",
+        "tags": ["media", "script", "proposal", "task-manager"],
+        "primary_skill": "media-script-change-proposal",
+        "auxiliary_skills": [],
+    },
+    {
+        "package_name": "media-script-memory-compression-package",
+        "display_name": "Media Script Memory Compression Package",
+        "description": "Compress confirmed user information into the next shared Task Memory version.",
+        "tags": ["media", "script", "memory", "task-manager"],
+        "primary_skill": "media-script-memory-compression",
+        "auxiliary_skills": [],
+    },
+    {
         "package_name": "media-script-research-package",
         "display_name": "Media Script Research Package",
         "description": "Build a source-backed research bundle for one media script task.",
@@ -170,6 +238,46 @@ DEFAULT_SKILL_PACKAGES = [
         "primary_skill": "douyin-content-analysis",
         "auxiliary_skills": [],
     },
+    {
+        "package_name": "smart-fill-project-package",
+        "display_name": "Smart Fill Project Fields",
+        "description": "Extract project basics and project classification fields from feasibility materials.",
+        "tags": ["smart-fill", "feasibility", "project"],
+        "primary_skill": "project-basic-extraction",
+        "auxiliary_skills": ["smart-fill-common", "source-citation", "structured-output"],
+    },
+    {
+        "package_name": "smart-fill-company-package",
+        "display_name": "Smart Fill Company Fields",
+        "description": "Extract investor, target company, equity, and valuation fields.",
+        "tags": ["smart-fill", "feasibility", "company"],
+        "primary_skill": "target-company-extraction",
+        "auxiliary_skills": ["smart-fill-common", "source-citation", "structured-output"],
+    },
+    {
+        "package_name": "smart-fill-financial-package",
+        "display_name": "Smart Fill Financial Fields",
+        "description": "Extract dynamic forecasts and financial feasibility indicators.",
+        "tags": ["smart-fill", "feasibility", "financial"],
+        "primary_skill": "financial-forecast-extraction",
+        "auxiliary_skills": ["smart-fill-common", "source-citation", "structured-output"],
+    },
+    {
+        "package_name": "smart-fill-risk-package",
+        "display_name": "Smart Fill Risk Fields",
+        "description": "Extract complete risk rows and non-financial indicator rows.",
+        "tags": ["smart-fill", "feasibility", "risk"],
+        "primary_skill": "risk-extraction",
+        "auxiliary_skills": ["smart-fill-common", "source-citation", "structured-output"],
+    },
+    {
+        "package_name": "smart-fill-analysis-package",
+        "display_name": "Smart Fill Analysis Fields",
+        "description": "Extract feasibility, necessity, and competitive analysis fields.",
+        "tags": ["smart-fill", "feasibility", "analysis"],
+        "primary_skill": "feasibility-analysis-extraction",
+        "auxiliary_skills": ["smart-fill-common", "source-citation", "structured-output"],
+    },
 ]
 
 
@@ -183,7 +291,27 @@ async def ensure_default_skill_packages(
             SkillPackageEntity.package_name == definition["package_name"],
         )
         result = await session.exec(statement)
-        if result.first() is not None:
+        existing = result.first()
+        if existing is not None:
+            legacy_auxiliary = {
+                "main-agent-orchestration-package": [
+                    "workspace-script-editor",
+                    "workspace-storyboard-editor",
+                ],
+                "media-writer-consult-package": ["workspace-script-editor"],
+                "media-writer-delegate-package": ["workspace-script-editor"],
+            }.get(definition["package_name"])
+            if (
+                legacy_auxiliary is not None
+                and existing.primary_skill == definition["primary_skill"]
+                and existing.auxiliary_skills == legacy_auxiliary
+            ):
+                existing.auxiliary_skills_json = json.dumps(
+                    definition["auxiliary_skills"],
+                    ensure_ascii=True,
+                )
+                existing.updated_at = datetime.utcnow()
+                session.add(existing)
             continue
         session.add(
             SkillPackageEntity(

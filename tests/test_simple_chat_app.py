@@ -48,6 +48,12 @@ def test_outer_backend_serves_frontend_and_chat(monkeypatch):
             assert "PAI-RAG" in page.text
             assert "新建对话" in page.text
             assert "agentSelect" in page.text
+            assert 'fetch("/scheduling/main/chat"' in page.text
+            assert "sendMainAgentStream" in page.text
+            assert "turn_started" in page.text
+            assert "Media Main Agent · 主" in page.text
+            assert "/scheduling/main-agents/" not in page.text
+            assert "media-main-agent" not in page.text
 
             non_stream = await client.post(
                 "/single-agent/chat",

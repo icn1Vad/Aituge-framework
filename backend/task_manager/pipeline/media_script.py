@@ -22,6 +22,53 @@ def _finding_text(item: Any) -> str:
     return str(item)
 
 
+_MISSING = object()
+
+
+def _script_body(value: dict[str, Any]) -> dict[str, Any]:
+    nested = value.get("final_script")
+    return dict(nested) if isinstance(nested, dict) else dict(value)
+
+
+def _read_script_field(value: dict[str, Any], path: str) -> Any:
+    current: Any = value
+    for segment in path.split("."):
+        if not isinstance(current, dict) or segment not in current:
+            return _MISSING
+        current = current[segment]
+    return current
+
+
+def _validate_revision_result(task_input: dict[str, Any], final_script: dict[str, Any]) -> None:
+    if not task_input.get("revision_mode"):
+        return
+    previous = _script_body(dict(task_input.get("previous_script") or {}))
+    proposal = dict(task_input.get("change_proposal") or {})
+    changed_targets = []
+    preserve_violations = []
+    for field_name in task_input.get("preserve_fields") or []:
+        old_value = _read_script_field(previous, str(field_name))
+        if old_value is _MISSING:
+            continue
+        if _read_script_field(final_script, str(field_name)) != old_value:
+            preserve_violations.append(str(field_name))
+    for field_name in proposal.get("target_fields") or []:
+        old_value = _read_script_field(previous, str(field_name))
+        new_value = _read_script_field(final_script, str(field_name))
+        if old_value != new_value and new_value is not _MISSING:
+            changed_targets.append(str(field_name))
+    if preserve_violations:
+        raise StageExecutionError(
+            f"Revision modified protected fields: {preserve_violations}.",
+            code="revision_preserve_violation",
+        )
+    if proposal.get("target_fields") and not changed_targets:
+        raise StageExecutionError(
+            "Revision did not change any requested target field.",
+            code="revision_no_requested_change",
+        )
+
+
 async def _post_gateway(path: str, payload: dict[str, Any], context: StageExecutionContext) -> dict[str, Any]:
     headers = {
         "x-user-id": context.task.user_id,
@@ -62,8 +109,10 @@ async def finalize_media_script(context: StageExecutionContext) -> StageServiceR
     storyboard = dict(artifacts.get("media_storyboard_draft") or {})
     checks = dict(artifacts.get("media_script_check_result") or {})
     context_bundle = dict(artifacts.get("media_script_context_bundle") or {})
+    task_input = dict(context.stage_input.get("task_input") or {})
 
     final_script = dict(writer.get("final_script") or {})
+    _validate_revision_result(task_input, final_script)
     final_script["storyboard"] = storyboard.get("storyboard") or []
     final_script["storyboard_plan"] = storyboard.get("storyboard_plan") or {}
     if not final_script.get("visual_direction"):
@@ -120,6 +169,11 @@ async def finalize_media_script(context: StageExecutionContext) -> StageServiceR
             "reviewed": False,
             "web_research_used": False,
             "deterministic_checks_passed": bool(checks.get("passed", False)),
+            "revision_mode": bool(task_input.get("revision_mode")),
+            "base_script_id": task_input.get("base_script_id"),
+            "base_artifact_id": task_input.get("base_artifact_id"),
+            "proposal_artifact_id": task_input.get("proposal_artifact_id"),
+            "parent_task_id": task_input.get("parent_task_id"),
         },
     }
     return StageServiceResult(output=output, summary="Finalized the unreviewed media script package.")

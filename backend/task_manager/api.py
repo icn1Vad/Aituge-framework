@@ -9,17 +9,22 @@ from fastapi.responses import StreamingResponse
 from scheduling.scheduler import SchedulingRuntimeOptions
 
 from .access import TaskAccessContext, assert_can_access_task, task_access_context
+from .memory import TaskMemoryService
 from .registry import list_task_definitions
 from .pipeline.registry import list_pipeline_definitions
 from .runtime import get_event_broker
 from .schemas import (
     HumanReviewRequest,
+    ScriptChangeApplyRequest,
+    ScriptChangeApplyResponse,
     StageRetryRequest,
     TaskArtifactRead,
     TaskCreateRequest,
     TaskCreateResponse,
     TaskDefinitionRead,
     TaskEventRead,
+    TaskMemoryCompressRequest,
+    TaskMemoryRead,
     TaskRunRead,
     TaskRunRequest,
     TaskRunResponse,
@@ -88,6 +93,7 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
                     task_type=item.task_type,
                     name=item.name,
                     description=item.description,
+                    required_task_key=item.required_task_key,
                     handler=item.handler,
                     default_agent_id=item.default_agent_id,
                     default_skill_package=item.default_skill_package,
@@ -134,6 +140,38 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
                 for item in list_pipeline_definitions()
             ]
         }
+
+    @router.get("/memories/{task_key}")
+    async def get_task_memory(
+        task_key: str,
+        context: TaskAccessContext = Depends(task_access_context),
+    ):
+        try:
+            row = await TaskMemoryService(options).get_latest(
+                tenant_id=context.tenant_id,
+                user_id=context.user_id,
+                task_key=task_key,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"memory": TaskMemoryRead.model_validate(row) if row else None}
+
+    @router.post("/memories/{task_key}/compress")
+    async def compress_task_memory(
+        task_key: str,
+        request: TaskMemoryCompressRequest,
+        context: TaskAccessContext = Depends(task_access_context),
+    ):
+        try:
+            row = await TaskMemoryService(options).compress(
+                tenant_id=context.tenant_id,
+                user_id=context.user_id,
+                task_key=task_key,
+                new_information=request.new_information,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"memory": TaskMemoryRead.model_validate(row)}
 
     @router.post("/tasks", response_model=TaskCreateResponse)
     async def create_task(
@@ -384,6 +422,34 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"run": TaskRunRead.model_validate(run)}
+
+    @router.post("/runs/{run_id}/apply", response_model=ScriptChangeApplyResponse)
+    async def apply_script_change(
+        run_id: str,
+        request: ScriptChangeApplyRequest,
+        context: TaskAccessContext = Depends(task_access_context),
+    ):
+        service, _ = await _authorized_run(options, run_id, context)
+        try:
+            proposal_task, revision_task, revision_run = await service.apply_script_change_proposal(
+                run_id,
+                proposal_artifact_id=request.proposal_artifact_id,
+                comment=request.comment,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return ScriptChangeApplyResponse(
+            proposal_task_id=proposal_task.id,
+            proposal_run_id=run_id,
+            proposal_artifact_id=str(
+                (revision_task.metadata_json or {}).get("proposal_artifact_id")
+                or request.proposal_artifact_id
+            ),
+            revision_task_id=revision_task.id,
+            revision_run_id=revision_run.id,
+            status=revision_run.status,
+            stream_url=f"/task-manager/runs/{revision_run.id}/events/stream",
+        )
 
     @router.post("/runs/{run_id}/stages/{stage_id}/retry")
     async def retry_stage(

@@ -51,6 +51,20 @@ class TaskRunRequest(BaseModel):
     idempotency_key: Optional[str] = None
 
 
+class TaskMemoryCompressRequest(BaseModel):
+    new_information: str = Field(min_length=1, max_length=8000)
+
+
+class TaskMemoryRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    task_key: str
+    version: int
+    content: str
+    created_at: datetime
+
+
 class TaskRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -149,6 +163,7 @@ class TaskDefinitionRead(BaseModel):
     task_type: str
     name: str
     description: str = ""
+    required_task_key: Optional[str] = None
     handler: str
     default_agent_id: str
     default_skill_package: Optional[str] = None
@@ -242,6 +257,21 @@ class HumanReviewRequest(BaseModel):
     comment: str = ""
     patch: dict[str, Any] = Field(default_factory=dict)
     resume_from_stage: Optional[str] = None
+
+
+class ScriptChangeApplyRequest(BaseModel):
+    proposal_artifact_id: str = Field(min_length=1)
+    comment: str = ""
+
+
+class ScriptChangeApplyResponse(BaseModel):
+    proposal_task_id: str
+    proposal_run_id: str
+    proposal_artifact_id: str
+    revision_task_id: str
+    revision_run_id: str
+    status: str
+    stream_url: str
 
 
 class StageRetryRequest(BaseModel):

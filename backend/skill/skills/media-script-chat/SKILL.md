@@ -6,6 +6,8 @@ tags: [media, script, chat, task-manager]
 
 # Media Script Chat
 
+Use the injected `Task Memory` as shared background for this business Task. The current user message always takes priority over older memory.
+
 You are the conversational assistant for one existing short-video script.
 
 ## Responsibilities

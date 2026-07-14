@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from dataclasses import asdict
@@ -49,6 +50,11 @@ class TaskManagerService:
 
     async def create_task(self, request: TaskCreateRequest) -> TaskEntity:
         definition = get_task_definition(request.task_type)
+        if definition.required_task_key and request.task_key != definition.required_task_key:
+            raise ValueError(
+                f"Task type '{request.task_type}' requires task_key "
+                f"'{definition.required_task_key}'."
+            )
         if request.idempotency_key:
             async with create_db_session() as session:
                 result = await session.exec(
@@ -179,6 +185,106 @@ class TaskManagerService:
 
     async def get_run(self, run_id: str) -> TaskRunEntity | None:
         return await get_run(run_id)
+
+    async def begin_external_task(
+        self,
+        task_id: str,
+        *,
+        user_id: str,
+        stream: bool = False,
+    ) -> TaskEntity:
+        """Open a TaskManager run whose executor lives in another scheduling mode."""
+
+        task = await self.get_task(task_id)
+        if task is None:
+            raise ValueError(f"Task '{task_id}' not found.")
+        if task.user_id != user_id:
+            raise ValueError(f"Task '{task_id}' is not available to this user.")
+        if task.handler_name != "external":
+            raise ValueError(f"Task '{task_id}' is not an external task.")
+        task = await self._prepare_run(
+            task_id,
+            TaskRunRequest(stream=stream, user_id=user_id),
+        )
+        await self.record_event(
+            task_id=task.id,
+            run_id=task.current_run_id,
+            event_type="task_started",
+            stage="main_agent",
+            message="MainAgent started the task.",
+            source={"type": "main_agent", "id": task.agent_id},
+        )
+        return task
+
+    async def complete_external_task(
+        self,
+        task_id: str,
+        *,
+        result: dict[str, Any],
+        thread_id: str | None = None,
+        session_id: str | None = None,
+    ) -> TaskEntity:
+        task = await self.get_task(task_id)
+        if task is None:
+            raise ValueError(f"Task '{task_id}' not found.")
+        definition = get_task_definition(task.task_type)
+        is_valid, validation_error = validate_output_payload(
+            definition.output_schema_name,
+            result,
+        )
+        if not is_valid:
+            raise ValueError(
+                f"External task output does not match schema "
+                f"'{definition.output_schema_name}': {validation_error}"
+            )
+        if thread_id or session_id:
+            task = await self._update_task_session(
+                task_id,
+                thread_id=thread_id,
+                session_id=session_id,
+            )
+        await self.record_event(
+            task_id=task.id,
+            run_id=task.current_run_id,
+            event_type="task_succeeded",
+            stage="main_agent",
+            message="MainAgent completed the task.",
+            payload={"result": result},
+            source={"type": "main_agent", "id": task.agent_id},
+        )
+        return await self._finish_task(
+            task_id,
+            status="succeeded",
+            result=result,
+            outcome="success",
+        )
+
+    async def fail_external_task(self, task_id: str, error: Exception) -> TaskEntity:
+        task = await self.get_task(task_id)
+        if task is None:
+            raise ValueError(f"Task '{task_id}' not found.")
+        payload = {
+            "type": error.__class__.__name__,
+            "message": str(error),
+            "retryable": True,
+        }
+        await self.record_event(
+            task_id=task.id,
+            run_id=task.current_run_id,
+            event_type="task_failed",
+            stage="main_agent",
+            level="error",
+            message=str(error),
+            payload=payload,
+            error_code=error.__class__.__name__,
+            source={"type": "main_agent", "id": task.agent_id},
+        )
+        return await self._finish_task(
+            task_id,
+            status="failed",
+            error=payload,
+            outcome="failure",
+        )
 
     async def list_run_events(
         self,
@@ -418,6 +524,133 @@ class TaskManagerService:
         )
         start_background_run(run.id, self._drain_prepared_task(task.id))
         return run
+
+    async def apply_script_change_proposal(
+        self,
+        run_id: str,
+        *,
+        proposal_artifact_id: str,
+        comment: str = "",
+    ) -> tuple[TaskEntity, TaskEntity, TaskRunEntity]:
+        run = await get_run(run_id)
+        if run is None:
+            raise ValueError(f"Run '{run_id}' not found.")
+        proposal_task = await self.get_task(run.task_id)
+        if proposal_task is None:
+            raise ValueError(f"Task '{run.task_id}' not found.")
+        if proposal_task.task_type != "media.script.change.propose":
+            raise ValueError("Only media.script.change.propose runs can be applied.")
+
+        artifact = await get_artifact(proposal_artifact_id)
+        if artifact is None:
+            raise ValueError(f"Proposal Artifact '{proposal_artifact_id}' not found.")
+        if artifact.task_id != proposal_task.id or artifact.run_id != run.id:
+            raise ValueError("Proposal Artifact does not belong to the requested run.")
+        if artifact.artifact_type != "media_script_change_proposal" or artifact.content_json is None:
+            raise ValueError("Artifact is not an applicable media script change proposal.")
+        proposal = dict(artifact.content_json)
+        if proposal.get("status") != "pending_confirmation":
+            raise ValueError("Only pending_confirmation proposals can be applied.")
+        if not proposal.get("changes"):
+            raise ValueError("Proposal contains no actionable changes.")
+        proposal_artifacts = [
+            item
+            for item in await list_artifacts(run_id=run.id)
+            if item.artifact_type == "media_script_change_proposal"
+        ]
+        latest_proposal = proposal_artifacts[-1] if proposal_artifacts else None
+        if latest_proposal is None or (
+            latest_proposal.id != artifact.id and latest_proposal.checksum != artifact.checksum
+        ):
+            raise ValueError("Proposal Artifact is stale and no longer matches the latest confirmed content.")
+
+        if run.status == "waiting_human":
+            await self.submit_human_review(
+                run.id,
+                action="approve",
+                comment=comment or "Approved for a new revision script task.",
+                resume_from_stage="await_confirmation",
+            )
+        elif run.status not in {"running", "succeeded"}:
+            raise ValueError(f"Proposal Run '{run.id}' cannot be applied from status '{run.status}'.")
+
+        run = await _wait_for_run_status(run.id, {"succeeded", "failed", "cancelled"})
+        review = dict(run.metadata_json or {}).get("human_review") or {}
+        if run.status != "succeeded" or review.get("action") != "approve":
+            raise ValueError("Proposal Run did not complete with human approval.")
+
+        apply_key = f"script-revision:{run.id}:{artifact.checksum}"
+        proposal_input = dict(proposal_task.input_payload_json or {})
+        revision_payload = _build_script_revision_payload(
+            proposal_task=proposal_task,
+            proposal_run=run,
+            proposal_artifact_id=artifact.id,
+            proposal=proposal,
+        )
+        existing_revision = await _find_task_by_idempotency(
+            user_id=proposal_task.user_id,
+            tenant_id=proposal_task.tenant_id,
+            idempotency_key=apply_key,
+        )
+        if existing_revision is not None:
+            metadata = dict(existing_revision.metadata_json or {})
+            if (
+                metadata.get("proposal_run_id") != run.id
+                or metadata.get("proposal_checksum") != artifact.checksum
+            ):
+                raise ValueError("Idempotency key already belongs to a different script proposal application.")
+        revision_task = await self.create_task(
+            TaskCreateRequest(
+                task_type="media.script.pipeline.generate",
+                parent_task_id=proposal_task.id,
+                root_task_id=proposal_task.root_task_id or proposal_task.id,
+                task_key=f"script-revision:{proposal_input.get('base_script_id')}",
+                idempotency_key=apply_key,
+                title=f"Revision of {proposal_input.get('base_script_id')}",
+                input_payload=revision_payload,
+                user_id=proposal_task.user_id,
+                tenant_id=proposal_task.tenant_id,
+                stream=True,
+                metadata={
+                    "revision_mode": True,
+                    "proposal_task_id": proposal_task.id,
+                    "proposal_run_id": run.id,
+                    "proposal_artifact_id": artifact.id,
+                    "proposal_checksum": artifact.checksum,
+                    "base_script_id": proposal_input.get("base_script_id"),
+                    "base_artifact_id": proposal_input.get("base_artifact_id"),
+                },
+            )
+        )
+        revision_run = await self.start_task_run(
+            revision_task.id,
+            TaskRunRequest(
+                stream=True,
+                user_id=proposal_task.user_id,
+                idempotency_key=f"{apply_key}:run",
+                metadata_patch={
+                    "proposal_task_id": proposal_task.id,
+                    "proposal_run_id": run.id,
+                    "proposal_artifact_id": artifact.id,
+                },
+            ),
+        )
+        if existing_revision is None:
+            await self.record_event(
+                task_id=proposal_task.id,
+                run_id=run.id,
+                event_type="revision_dispatched",
+                stage="apply",
+                message="Approved proposal dispatched to a new revision task.",
+                payload={
+                    "proposal_artifact_id": artifact.id,
+                    "revision_task_id": revision_task.id,
+                    "revision_run_id": revision_run.id,
+                },
+                stream_semantics="reference",
+                source={"type": "task_manager", "id": proposal_task.id},
+            )
+        return proposal_task, revision_task, revision_run
 
     async def _stream_prepared_task(self, task: TaskEntity) -> AsyncIterator[TaskEventRead]:
         definition = get_task_definition(task.task_type)
@@ -939,6 +1172,83 @@ async def _prepare_input_payload(task_type: str, input_payload: dict[str, Any]) 
     if task_type == "analytics.douyin.account_report.generate":
         return await enrich_douyin_account_report_payload(dict(input_payload or {}))
     return input_payload
+
+
+async def _wait_for_run_status(
+    run_id: str,
+    terminal_statuses: set[str],
+    timeout_seconds: float = 10,
+) -> TaskRunEntity:
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while asyncio.get_running_loop().time() < deadline:
+        run = await get_run(run_id)
+        if run is None:
+            raise ValueError(f"Run '{run_id}' not found.")
+        if run.status in terminal_statuses:
+            return run
+        await asyncio.sleep(0.03)
+    raise ValueError(f"Run '{run_id}' did not finish approval within {timeout_seconds:g} seconds.")
+
+
+async def _find_task_by_idempotency(
+    *,
+    user_id: str,
+    tenant_id: str,
+    idempotency_key: str,
+) -> TaskEntity | None:
+    async with create_db_session() as session:
+        result = await session.exec(
+            select(TaskEntity)
+            .where(TaskEntity.user_id == user_id)
+            .where(TaskEntity.tenant_id == tenant_id)
+            .where(TaskEntity.idempotency_key == idempotency_key)
+        )
+        return result.first()
+
+
+def _build_script_revision_payload(
+    *,
+    proposal_task: TaskEntity,
+    proposal_run: TaskRunEntity,
+    proposal_artifact_id: str,
+    proposal: dict[str, Any],
+) -> dict[str, Any]:
+    source = dict(proposal_task.input_payload_json or {})
+    current_script = dict(source.get("current_script") or {})
+    topic_card = dict(source.get("topic_card") or {})
+    constraints = dict(source.get("user_constraints") or {})
+    persona = dict(source.get("persona") or {})
+    topic = str(
+        topic_card.get("topic_name")
+        or topic_card.get("title")
+        or current_script.get("topic_name")
+        or "Script revision"
+    )
+    persona_name = str(persona.get("display_name") or persona.get("name") or "") or None
+    return {
+        "topic": topic,
+        "topic_card": topic_card,
+        "platform": constraints.get("platform") or "douyin",
+        "duration_seconds": constraints.get("duration_seconds") or current_script.get("duration_seconds") or 60,
+        "persona": persona_name,
+        "account_persona": persona_name,
+        "manual_direction": proposal.get("summary") or "Apply the approved script change proposal.",
+        "parent_script_id": source.get("base_script_id"),
+        "conversation_thread_id": source.get("conversation_thread_id"),
+        "revision_mode": True,
+        "base_script_id": source.get("base_script_id"),
+        "base_artifact_id": source.get("base_artifact_id"),
+        "proposal_artifact_id": proposal_artifact_id,
+        "previous_script": current_script,
+        "change_proposal": proposal,
+        "preserve_fields": proposal.get("preserve_fields") or [],
+        "parent_task_id": proposal_task.id,
+        "context": {
+            "proposal_task_id": proposal_task.id,
+            "proposal_run_id": proposal_run.id,
+            "proposal_artifact_id": proposal_artifact_id,
+        },
+    }
 
 
 def _extract_task_items(input_payload: dict[str, Any]) -> list[dict[str, Any]]:

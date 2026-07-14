@@ -36,14 +36,16 @@ MEDIA_RESEARCH_AGENT_PROMPT = (
     "You are Media Research Agent. Build a factual evidence package for one short-video script task. "
     "Use only the supplied business context and allowed search tool; do not write the final script."
 )
-MEDIA_WRITER_AGENT_PROMPT = (
+LEGACY_MEDIA_WRITER_AGENT_PROMPT = (
     "You are Media Writer Agent. Write one complete speakable short-video script from verified research, "
     "persona, and master-library context. Do not perform unrelated research."
 )
-MEDIA_STORYBOARD_AGENT_PROMPT = (
+LEGACY_MEDIA_STORYBOARD_AGENT_PROMPT = (
     "You are Media Storyboard Agent. Convert the approved script draft into executable shots while "
     "preserving narration, persona, timing, and visual continuity."
 )
+MEDIA_WRITER_AGENT_PROMPT = "You are Media Writer Agent."
+MEDIA_STORYBOARD_AGENT_PROMPT = "You are Media Storyboard Agent."
 MEDIA_REVIEW_AGENT_PROMPT = (
     "You are Media Review Agent. Review script, storyboard, evidence, and deterministic findings for "
     "compliance, factual risk, quality, and production feasibility."
@@ -126,6 +128,26 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
         description="Structured short-video script writer.",
         default_tools=[],
         system_prompt=MEDIA_WRITER_AGENT_PROMPT,
+        runtime_config={
+            "delegation": {
+                "enabled": True,
+                "use_when": "A complete or revised speakable media script must be saved to the Workspace.",
+                "modes": {
+                    "consult": {
+                        "skill_package": "media-writer-consult-package",
+                        "workspace_tools": ["read_script_workspace"],
+                    },
+                    "delegate": {
+                        "skill_package": "media-writer-delegate-package",
+                        "workspace_tools": [
+                            "read_script_workspace",
+                            "write_script_workspace",
+                        ],
+                        "required_success_tool": "write_script_workspace",
+                    },
+                },
+            }
+        },
     ),
     _profile_definition(
         agent_id="media-storyboard-agent",
@@ -133,6 +155,26 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
         description="Executable storyboard generator for media scripts.",
         default_tools=[],
         system_prompt=MEDIA_STORYBOARD_AGENT_PROMPT,
+        runtime_config={
+            "delegation": {
+                "enabled": True,
+                "use_when": "The latest Workspace script must be converted into an executable shot list.",
+                "modes": {
+                    "consult": {
+                        "skill_package": "media-storyboard-consult-package",
+                        "workspace_tools": ["read_script_workspace"],
+                    },
+                    "delegate": {
+                        "skill_package": "media-storyboard-delegate-package",
+                        "workspace_tools": [
+                            "read_script_workspace",
+                            "write_storyboard_workspace",
+                        ],
+                        "required_success_tool": "write_storyboard_workspace",
+                    },
+                },
+            }
+        },
     ),
     _profile_definition(
         agent_id="media-review-agent",
@@ -142,6 +184,12 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
         system_prompt=MEDIA_REVIEW_AGENT_PROMPT,
     ),
 ]
+
+
+LEGACY_DEFAULT_SYSTEM_PROMPTS = {
+    "media-writer-agent": {LEGACY_MEDIA_WRITER_AGENT_PROMPT},
+    "media-storyboard-agent": {LEGACY_MEDIA_STORYBOARD_AGENT_PROMPT},
+}
 
 
 def build_default_agent_profiles() -> list[AgentProfileEntity]:

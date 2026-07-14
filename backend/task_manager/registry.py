@@ -8,6 +8,7 @@ class TaskDefinition:
     task_type: str
     name: str
     description: str = ""
+    required_task_key: str | None = None
     handler: str = "scheduler"
     default_agent_id: str = "default-single-agent"
     default_skill_package: str | None = None
@@ -37,14 +38,17 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
     "media.script.generate": TaskDefinition(
         task_type="media.script.generate",
         name="Media Script Generation",
-        description="Generate a short-video script from topic, material, persona, platform, and duration constraints.",
-        default_skill_package="media-script-generate-package",
-        default_primary_skill="media-script-generator",
-        default_candidate_skills=["media-script-selector"],
-        default_tools=["rag_retrieval"],
-        default_datasets=["local_rag"],
-        input_schema_name="media_script_generate_input",
-        output_schema_name="media_script_output",
+        description="Run one formal script Workspace task through MainAgent and its managed specialists.",
+        required_task_key="media_script",
+        handler="external",
+        default_agent_id="main-agent-runtime",
+        default_skill_package="media-script-main-agent-package",
+        default_primary_skill="media-script-task-orchestration",
+        default_candidate_skills=[],
+        default_tools=[],
+        default_datasets=[],
+        input_schema_name="media_script_main_agent_input",
+        output_schema_name="media_script_workspace_output",
     ),
     "media.script.pipeline.generate": TaskDefinition(
         task_type="media.script.pipeline.generate",
@@ -79,6 +83,21 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
         default_tools=[],
         default_datasets=[],
         input_schema_name="media_chat_input",
+    ),
+    "media.script.change.propose": TaskDefinition(
+        task_type="media.script.change.propose",
+        name="Media Script Change Proposal",
+        description="Create a structured script change proposal for explicit human confirmation.",
+        handler="pipeline",
+        default_agent_id="media-writer-agent",
+        default_skill_package="media-script-change-proposal-package",
+        default_primary_skill="media-script-change-proposal",
+        default_candidate_skills=[],
+        default_tools=[],
+        default_datasets=[],
+        input_schema_name="media_script_change_proposal_input",
+        output_schema_name="media_script_change_proposal_output",
+        pipeline_id="media-script-change-proposal-v1",
     ),
     "ai.search.chat": TaskDefinition(
         task_type="ai.search.chat",
@@ -196,6 +215,24 @@ _TASK_DEFINITIONS: dict[str, TaskDefinition] = {
         input_schema_name="table_audit_input",
         output_schema_name="batch_task_output",
         item_output_schema_name="table_audit_item_output",
+    ),
+    "form.smart_fill.extract": TaskDefinition(
+        task_type="form.smart_fill.extract",
+        name="Feasibility Report Smart Fill Extraction",
+        description=(
+            "Extract the frozen SmartAutoFill 79-field business model through five "
+            "parallel, group-scoped Agent items."
+        ),
+        handler="batch_item_scheduler",
+        default_agent_id="default-single-agent",
+        default_skill_package="smart-fill-project-package",
+        default_primary_skill="project-basic-extraction",
+        default_candidate_skills=[],
+        default_tools=["code_interpreter", "enabled_db_tools", "rag_retrieval"],
+        default_datasets=["local_rag"],
+        input_schema_name="smart_fill_extract_input",
+        output_schema_name="batch_task_output",
+        item_output_schema_name="smart_fill_group_output",
     ),
 }
 

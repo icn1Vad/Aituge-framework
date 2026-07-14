@@ -1,0 +1,176 @@
+{
+  "contract_id": "smart-fill-group-output-v1",
+  "schema_version": 1,
+  "description": "五个并行抽取Item共用的结构化输出外壳。",
+  "status_values": [
+    "filled",
+    "missing",
+    "conflict",
+    "invalid_format",
+    "needs_review"
+  ],
+  "confidence": {
+    "enabled": false,
+    "reason": "置信度公式按改造目标后置，基线阶段不冻结评分算法。"
+  },
+  "field_result": {
+    "required": [
+      "field_id",
+      "status",
+      "value",
+      "evidence"
+    ],
+    "properties": {
+      "field_id": {
+        "type": "string"
+      },
+      "status": {
+        "enum": [
+          "filled",
+          "missing",
+          "conflict",
+          "invalid_format",
+          "needs_review"
+        ]
+      },
+      "value": {
+        "description": "普通字段为标量，动态表格为对象数组；missing时为空字符串、null或空数组。"
+      },
+      "evidence": {
+        "type": "array",
+        "items": {
+          "required": [
+            "file_id",
+            "quote"
+          ],
+          "properties": {
+            "file_id": {
+              "type": "string"
+            },
+            "file_name": {
+              "type": "string"
+            },
+            "section": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "page": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "paragraph_index": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "char_start": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "char_end": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "quote": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "warnings": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "group_output": {
+    "required": [
+      "group_id",
+      "fields",
+      "missing_field_ids",
+      "warnings"
+    ],
+    "properties": {
+      "group_id": {
+        "enum": [
+          "project",
+          "company",
+          "financial",
+          "risk",
+          "analysis"
+        ]
+      },
+      "fields": {
+        "type": "array",
+        "items": {
+          "$ref": "field_result"
+        }
+      },
+      "missing_field_ids": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "warnings": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "dynamic_value_contracts": {
+    "financial_forecast_table": {
+      "type": "array",
+      "item_example": {
+        "year": 2026,
+        "revenue": 301275,
+        "net_profit": 22438
+      },
+      "export_mapping": "确认t0定义后再映射到t0至t0+7。"
+    },
+    "risk_table": {
+      "type": "array",
+      "must_preserve_all_rows": true
+    },
+    "target_company_equity_table": {
+      "type": "array",
+      "must_preserve_all_rows": true
+    },
+    "investor_table": {
+      "type": "array",
+      "must_preserve_all_rows": true
+    },
+    "non_financial_indicator_table": {
+      "type": "array",
+      "must_preserve_all_rows": true
+    }
+  },
+  "open_decisions": [
+    {
+      "id": "t0_definition",
+      "status": "pending_business_confirmation",
+      "question": "t0表示投资发生年份，还是首个经营预测年份？",
+      "blocking_for": [
+        "excel_export_mapping"
+      ],
+      "not_blocking_for": [
+        "document_parse",
+        "field_extract",
+        "draft_review"
+      ]
+    }
+  ]
+}

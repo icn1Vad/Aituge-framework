@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.staticfiles import StaticFiles
 
 from backend.simple_chat_app import create_app as create_simple_chat_app
 from backend.data.RAG.tool_retrieval import LocalRagStore, ToolRetrievalRAG
@@ -18,6 +19,7 @@ from scheduling.agent_registry import ensure_default_agent_profiles
 from scheduling.api import create_scheduling_router
 from scheduling.scheduler import SchedulingRuntimeOptions
 from skill import ensure_default_skill_packages
+from smart_autofill import CombinedRagStore, SmartFillDocumentStore, create_smart_autofill_router
 from task_manager import create_task_manager_router
 from tool import ToolBundle
 from tool.registry import ToolManager
@@ -26,11 +28,14 @@ from tool.registry import ToolManager
 LOCAL_PYTHON_ARTIFACT_DIR = (
     Path(__file__).resolve().parent / "tool" / "local_runtime" / "artifacts"
 )
+TASK_MEMORY_TEST_DIR = Path(__file__).resolve().parents[1] / "frontend" / "task-memory-test"
 DEFAULT_RAG_PDF_PATH = (
     Path(__file__).resolve().parents[2]
     / "兼用_原02_致远互联：北京致远互联软件股份有限公司内部审计制度.pdf"
 )
 RAG_STORE = LocalRagStore()
+SMART_FILL_DOCUMENT_STORE = SmartFillDocumentStore()
+COMBINED_RAG_STORE = CombinedRagStore(RAG_STORE, SMART_FILL_DOCUMENT_STORE)
 
 
 def _rag_status_payload() -> dict:
@@ -134,10 +139,16 @@ def create_app() -> FastAPI:
     scheduling_options = SchedulingRuntimeOptions(
         local_python_artifact_dir=LOCAL_PYTHON_ARTIFACT_DIR,
         artifact_base_url="/tool-artifacts/local-python",
-        rag_store=RAG_STORE,
+        rag_store=COMBINED_RAG_STORE,
     )
     app.include_router(create_scheduling_router(scheduling_options))
     app.include_router(create_task_manager_router(scheduling_options))
+    app.mount(
+        "/task-memory-test",
+        StaticFiles(directory=TASK_MEMORY_TEST_DIR, html=True),
+        name="task-memory-test",
+    )
+    app.include_router(create_smart_autofill_router(SMART_FILL_DOCUMENT_STORE))
 
     @app.get("/rag/status")
     async def rag_status():

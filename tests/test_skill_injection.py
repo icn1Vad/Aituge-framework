@@ -46,6 +46,56 @@ def test_skill_manager_builds_report_package_context(tmp_path, monkeypatch):
         reset_engine_for_test()
 
 
+def test_skill_manager_builds_main_agent_and_managed_agent_packages(tmp_path, monkeypatch):
+    async def run():
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'main-skills.db'}")
+        reset_engine_for_test()
+        await init_db()
+
+        main = await SkillManager().create_context("main-agent-orchestration-package")
+        consult = await SkillManager().create_context("media-writer-consult-package")
+        delegate = await SkillManager().create_context("media-storyboard-delegate-package")
+
+        assert main.skills["active_package"]["primary"]["name"] == (
+            "main-agent-orchestration"
+        )
+        assert [
+            item["name"]
+            for item in main.skills["active_package"]["auxiliary_index"]
+        ] == ["media-script-writer", "workspace-storyboard-editor"]
+        assert [tool.metadata.name for tool in main.tools] == ["ReadSkill"]
+        assert consult.skills["active_package"]["primary"]["name"] == (
+            "managed-agent-consult"
+        )
+        assert consult.skills["active_package"]["auxiliary_index"][0]["name"] == (
+            "media-script-writer"
+        )
+        assert delegate.skills["active_package"]["primary"]["name"] == (
+            "managed-agent-delegate"
+        )
+        assert delegate.skills["active_package"]["auxiliary_index"][0]["name"] == (
+            "workspace-storyboard-editor"
+        )
+
+        script_task = await SkillManager().create_context("media-script-main-agent-package")
+        assert script_task.skills["active_package"]["primary"]["name"] == (
+            "media-script-task-orchestration"
+        )
+        assert [
+            item["name"]
+            for item in script_task.skills["active_package"]["auxiliary_index"]
+        ] == [
+            "main-agent-orchestration",
+            "media-script-writer",
+            "workspace-storyboard-editor",
+        ]
+
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
+
+
 def test_skill_manager_empty_and_disabled_packages(tmp_path, monkeypatch):
     async def run():
         monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'skill-disabled.db'}")
@@ -70,6 +120,41 @@ def test_skill_manager_empty_and_disabled_packages(tmp_path, monkeypatch):
         assert disabled.tools == []
         assert disabled.task_prompt == ""
         assert disabled.skills == {}
+
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
+
+
+def test_default_skill_packages_backfill_legacy_writer_skill_names(tmp_path, monkeypatch):
+    async def run():
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'skill-backfill.db'}")
+        reset_engine_for_test()
+        await init_db()
+        async with create_db_session() as session:
+            await ensure_default_skill_packages(session)
+            packages = await get_skill_packages_by_names(
+                session,
+                ["main-agent-orchestration-package", "media-writer-delegate-package"],
+            )
+            packages[0].auxiliary_skills_json = (
+                '["workspace-script-editor", "workspace-storyboard-editor"]'
+            )
+            packages[1].auxiliary_skills_json = '["workspace-script-editor"]'
+            session.add(packages[0])
+            session.add(packages[1])
+            await session.commit()
+
+            await ensure_default_skill_packages(session)
+            await session.refresh(packages[0])
+            await session.refresh(packages[1])
+
+        assert packages[0].auxiliary_skills == [
+            "media-script-writer",
+            "workspace-storyboard-editor",
+        ]
+        assert packages[1].auxiliary_skills == ["media-script-writer"]
 
     try:
         asyncio.run(run())

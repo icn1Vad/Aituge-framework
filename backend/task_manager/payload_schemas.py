@@ -36,6 +36,68 @@ class MediaScriptGenerateInput(TaskPayloadBase):
     conversation_thread_id: Optional[str] = None
     require_human_review: bool = False
     context: dict[str, Any] = Field(default_factory=dict)
+    revision_mode: bool = False
+    base_script_id: Optional[str] = None
+    base_artifact_id: Optional[str] = None
+    proposal_artifact_id: Optional[str] = None
+    previous_script: dict[str, Any] = Field(default_factory=dict)
+    change_proposal: dict[str, Any] = Field(default_factory=dict)
+    preserve_fields: list[str] = Field(default_factory=list)
+    parent_task_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_revision_context(self):
+        if not self.revision_mode:
+            return self
+        missing = []
+        if not self.base_script_id:
+            missing.append("base_script_id")
+        if not self.proposal_artifact_id:
+            missing.append("proposal_artifact_id")
+        if not self.previous_script:
+            missing.append("previous_script")
+        if not self.change_proposal:
+            missing.append("change_proposal")
+        if missing:
+            raise ValueError(f"Revision mode requires: {', '.join(missing)}.")
+        return self
+
+
+class MediaScriptChangeProposalInput(TaskPayloadBase):
+    message: str = Field(min_length=1)
+    base_script_id: str = Field(min_length=1)
+    base_artifact_id: Optional[str] = None
+    conversation_thread_id: Optional[str] = None
+    recent_messages: list[dict[str, Any]] = Field(default_factory=list)
+    current_script: dict[str, Any] = Field(default_factory=dict)
+    topic_card: dict[str, Any] = Field(default_factory=dict)
+    persona: dict[str, Any] = Field(default_factory=dict)
+    user_constraints: dict[str, Any] = Field(default_factory=dict)
+
+
+class MediaScriptProposalChange(StrictPayload):
+    field: str = Field(min_length=1)
+    instruction: str = Field(min_length=1)
+
+
+class MediaScriptChangeProposalOutput(StrictPayload):
+    status: Literal["pending_confirmation", "needs_clarification"]
+    summary: str = Field(min_length=1)
+    reason: str = ""
+    target_fields: list[str] = Field(default_factory=list)
+    changes: list[MediaScriptProposalChange] = Field(default_factory=list)
+    preserve_fields: list[str] = Field(default_factory=list)
+    storyboard_regeneration_required: bool = False
+    warnings: list[str] = Field(default_factory=list)
+    clarification_question: str = ""
+
+    @model_validator(mode="after")
+    def validate_status_contract(self):
+        if self.status == "pending_confirmation" and not (self.target_fields and self.changes):
+            raise ValueError("A pending proposal requires target_fields and changes.")
+        if self.status == "needs_clarification" and not self.clarification_question:
+            raise ValueError("A clarification question is required when status is needs_clarification.")
+        return self
 
 
 class MediaScriptSelectInput(TaskPayloadBase):
@@ -63,6 +125,20 @@ class MediaChatInput(TaskPayloadBase):
         if not (self.message or self.question or self.topic):
             raise ValueError("One of message, question, or topic is required.")
         return self
+
+
+class MediaScriptMainAgentInput(TaskPayloadBase):
+    workspace_id: str = Field(min_length=1)
+    instruction: str = Field(min_length=1)
+    operation: Literal["generate", "interact"] = "interact"
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class MediaScriptWorkspaceOutput(StrictPayload):
+    workspace_id: str = Field(min_length=1)
+    script_text: str = ""
+    storyboard_text: str = ""
+    response: str = ""
 
 
 class AiSearchChatInput(TaskPayloadBase):
@@ -385,6 +461,70 @@ class TableAuditInput(TaskPayloadBase):
     duration_seconds: int = Field(default=60, ge=15, le=300)
     source_brief: str = ""
     expected_output: str = ""
+
+
+SmartFillGroupId = Literal["project", "company", "financial", "risk", "analysis"]
+SmartFillSkillPackage = Literal[
+    "smart-fill-project-package",
+    "smart-fill-company-package",
+    "smart-fill-financial-package",
+    "smart-fill-risk-package",
+    "smart-fill-analysis-package",
+]
+
+SMART_FILL_GROUP_PACKAGES = {
+    "project": "smart-fill-project-package",
+    "company": "smart-fill-company-package",
+    "financial": "smart-fill-financial-package",
+    "risk": "smart-fill-risk-package",
+    "analysis": "smart-fill-analysis-package",
+}
+
+
+class SmartFillExtractItem(StrictPayload):
+    id: SmartFillGroupId
+    group_id: SmartFillGroupId
+    skill_package: SmartFillSkillPackage
+    field_ids: list[str] = Field(min_length=1)
+    field_specs: list[dict[str, Any]] = Field(default_factory=list)
+    extraction_instructions: str = ""
+
+    @model_validator(mode="after")
+    def validate_group_package(self):
+        if self.id != self.group_id:
+            raise ValueError("Smart fill item id must match group_id.")
+        expected = SMART_FILL_GROUP_PACKAGES[self.group_id]
+        if self.skill_package != expected:
+            raise ValueError(
+                f"Smart fill group '{self.group_id}' must use skill package '{expected}'."
+            )
+        if len(self.field_ids) != len(set(self.field_ids)):
+            raise ValueError(f"Smart fill group '{self.group_id}' contains duplicate field_ids.")
+        return self
+
+
+class SmartFillExtractInput(TaskPayloadBase):
+    document_ids: list[str] = Field(default_factory=list)
+    items: list[SmartFillExtractItem] = Field(min_length=5, max_length=5)
+    max_concurrency: Literal[5] = 5
+    failure_policy: Literal["continue", "fail_fast"] = "continue"
+    retry_per_item: int = Field(default=1, ge=0, le=3)
+    source_context: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_complete_group_set(self):
+        expected = set(SMART_FILL_GROUP_PACKAGES)
+        actual = {item.group_id for item in self.items}
+        if actual != expected:
+            missing = sorted(expected - actual)
+            unexpected = sorted(actual - expected)
+            raise ValueError(
+                f"Smart fill task must contain all five groups; missing={missing}, unexpected={unexpected}."
+            )
+        all_field_ids = [field_id for item in self.items for field_id in item.field_ids]
+        if len(all_field_ids) != len(set(all_field_ids)):
+            raise ValueError("Smart fill field_ids must not overlap across extraction groups.")
+        return self
 
 
 class PipelineDemoInput(TaskPayloadBase):
@@ -740,6 +880,33 @@ class TableAuditItemOutput(StrictPayload):
     evidence: list[Any] = Field(default_factory=list)
 
 
+class SmartFillEvidence(StrictPayload):
+    file_id: str = Field(min_length=1)
+    file_name: str = ""
+    section: Optional[str] = None
+    page: Optional[int] = Field(default=None, ge=1)
+    paragraph_index: Optional[int] = Field(default=None, ge=0)
+    table_index: Optional[int] = Field(default=None, ge=0)
+    char_start: Optional[int] = Field(default=None, ge=0)
+    char_end: Optional[int] = Field(default=None, ge=0)
+    quote: str = Field(min_length=1)
+
+
+class SmartFillFieldResult(StrictPayload):
+    field_id: str = Field(min_length=1)
+    status: Literal["filled", "missing", "conflict", "invalid_format", "needs_review"]
+    value: Any = None
+    evidence: list[SmartFillEvidence] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class SmartFillGroupOutput(StrictPayload):
+    group_id: SmartFillGroupId
+    fields: list[SmartFillFieldResult] = Field(default_factory=list)
+    missing_field_ids: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class BatchSummary(StrictPayload):
     total: int = Field(ge=0)
     succeeded: int = Field(ge=0)
@@ -754,8 +921,10 @@ class BatchTaskOutput(StrictPayload):
 
 _INPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "media_script_generate_input": MediaScriptGenerateInput,
+    "media_script_change_proposal_input": MediaScriptChangeProposalInput,
     "media_script_select_input": MediaScriptSelectInput,
     "media_chat_input": MediaChatInput,
+    "media_script_main_agent_input": MediaScriptMainAgentInput,
     "ai_search_chat_input": AiSearchChatInput,
     "industry_calendar_official_date_lookup_input": IndustryCalendarOfficialDateLookupInput,
     "media_topic_search_input": MediaTopicSearchInput,
@@ -764,11 +933,14 @@ _INPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "douyin_account_report_input": DouyinAccountReportInput,
     "douyin_content_analysis_batch_input": DouyinContentAnalysisBatchInput,
     "table_audit_input": TableAuditInput,
+    "smart_fill_extract_input": SmartFillExtractInput,
     "pipeline_demo_input": PipelineDemoInput,
 }
 
 _OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "media_script_output": MediaScriptOutput,
+    "media_script_workspace_output": MediaScriptWorkspaceOutput,
+    "media_script_change_proposal_output": MediaScriptChangeProposalOutput,
     "ai_search_output": AiSearchOutput,
     "industry_calendar_official_date_lookup_output": IndustryCalendarOfficialDateLookupOutput,
     "media_topic_search_output": AiSearchOutput,
@@ -777,6 +949,7 @@ _OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "douyin_account_report_output": DouyinAccountReportOutput,
     "douyin_content_analysis_item_output": DouyinContentAnalysisItemOutput,
     "table_audit_item_output": TableAuditItemOutput,
+    "smart_fill_group_output": SmartFillGroupOutput,
     "batch_task_output": BatchTaskOutput,
     "pipeline_demo_analysis": PipelineDemoAnalysis,
     "pipeline_demo_normalized": PipelineDemoNormalized,
