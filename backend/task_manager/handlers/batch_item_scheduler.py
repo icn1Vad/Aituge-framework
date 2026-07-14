@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator
 from db.db_context import create_db_session
 from scheduling.agent_registry import ensure_default_agent_profiles, get_agent_profile
 from scheduling.scheduler import SchedulingChatRequest, SchedulingRuntimeOptions, SchedulingService
+from skill import ensure_default_skill_packages
 
 from task_manager import item_store
 from task_manager.handlers.base import TaskHandlerEvent
@@ -30,6 +31,8 @@ class BatchItemSchedulerHandler:
         config = _batch_config(task)
         items = await item_store.list_pending_items(task.id)
         async with create_db_session() as session:
+            # Seed packages before parallel workers create their skill contexts.
+            await ensure_default_skill_packages(session)
             await ensure_default_agent_profiles(session)
             profile = await get_agent_profile(session, task.agent_id or definition.default_agent_id)
 
@@ -155,6 +158,7 @@ async def _process_item(
                         "item_key": running_item.item_key,
                         "item_type": running_item.item_type,
                         "attempt": attempt,
+                        "skill_package": _item_skill_package(running_item, definition),
                     },
                 )
             )
@@ -295,7 +299,7 @@ async def _run_scheduler_for_item(
         user_id=task.user_id,
         session_id=f"{task.id}:{item.id}",
         stream=True,
-        skill_package=definition.default_skill_package,
+        skill_package=_item_skill_package(item, definition),
         extra_tools=definition.default_tools,
         extra_datasets=definition.default_datasets,
     )
@@ -342,6 +346,11 @@ async def _run_scheduler_for_item(
             )
         )
     return final_content, final_usage
+
+
+def _item_skill_package(item: TaskItemEntity, definition: TaskDefinition) -> str | None:
+    requested = str((item.input_payload_json or {}).get("skill_package") or "").strip()
+    return requested or definition.default_skill_package
 
 
 def _build_item_message(task: TaskEntity, definition: TaskDefinition, item: TaskItemEntity) -> str:

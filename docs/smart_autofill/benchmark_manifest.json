@@ -1,0 +1,49 @@
+{
+  "manifest_id": "smart-autofill-baseline-2026-07-12",
+  "purpose": "第一阶段固定测试材料；当前仅记录文件事实，不把当前解析器结果当作新实现验收答案。",
+  "single_user_test_mode": true,
+  "files": [
+    {
+      "absolute_path": "E:\\MyProjects\\proofreading\\EPC合同  (Executed 31082023).pdf",
+      "file_name": "EPC合同  (Executed 31082023).pdf",
+      "extension": ".pdf",
+      "size_bytes": 1213475,
+      "sha256": "cfaefaa3d720434b9f1cc3fd725b42a3d14df2e5b921467d5d55a67ef2e7b688",
+      "current_reader": {
+        "reader": "pypdf",
+        "page_count": 155,
+        "extractable_text_chars": 384500,
+        "pages_with_text": 155
+      }
+    },
+    {
+      "absolute_path": "E:\\MyProjects\\方案\\03-2关于航天长征化学工程股份有限公司收购航天氢能有限公司股权的可行性研究报告（公开）.docx",
+      "file_name": "03-2关于航天长征化学工程股份有限公司收购航天氢能有限公司股权的可行性研究报告（公开）.docx",
+      "extension": ".docx",
+      "size_bytes": 123550,
+      "sha256": "41a84177847e85428bf0188d2d913a109995a2458888a3c4b69622fc15f06d5a",
+      "current_reader": {
+        "reader": "docx-xml",
+        "paragraph_nodes": 1065,
+        "table_nodes": 17,
+        "text_nodes": 1749
+      }
+    }
+  ],
+  "quality_baseline": {
+    "smart_autofill_strict_accuracy": 0.703,
+    "smart_autofill_completeness": 0.81,
+    "prooof_new_strict_accuracy": 0.698,
+    "prooof_new_completeness": 0.57,
+    "source": "E:\\MyProjects\\改造目标.md"
+  },
+  "phase_acceptance": {
+    "required_extensions": [
+      ".pdf",
+      ".docx"
+    ],
+    "field_schema_id": "smart-autofill-79-fields-v1",
+    "parallel_item_mapping_id": "smart-autofill-five-parallel-items-v1",
+    "output_contract_id": "smart-fill-group-output-v1"
+  }
+}

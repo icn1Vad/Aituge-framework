@@ -1,0 +1,282 @@
+{
+  "mapping_id": "smart-autofill-five-parallel-items-v1",
+  "schema_id": "smart-autofill-79-fields-v1",
+  "handler": "batch_item_scheduler",
+  "agent_profile": "default-single-agent",
+  "max_concurrency": 5,
+  "field_count": 79,
+  "items": [
+    {
+      "item_id": "project",
+      "item_name": "项目基本信息与项目分类",
+      "skill_package": "smart-fill-project-package",
+      "primary_skill": "project-basic-extraction",
+      "shared_auxiliary_skills": [
+        "smart-fill-common",
+        "source-citation",
+        "structured-output"
+      ],
+      "source_group_ids": [
+        "industry_market_analysis",
+        "project_basic",
+        "project_category"
+      ],
+      "field_count": 38,
+      "automatic_field_ids": [
+        "project_unit",
+        "managing_unit",
+        "project_code",
+        "project_name",
+        "parent_project",
+        "project_classification",
+        "project_type",
+        "reserve_type",
+        "approval_method",
+        "is_main_business",
+        "project_currency",
+        "filing_type",
+        "project_total_investment",
+        "group_internal_investment",
+        "external_shareholder_investment",
+        "own_unit_investment",
+        "post_financing_control",
+        "is_nominee_shareholding",
+        "is_employee_shareholding",
+        "has_industry_market_analysis",
+        "project_background",
+        "project_content",
+        "national_economy_industry_category",
+        "national_economy_industry_code",
+        "strategic_emerging_industry_category",
+        "is_high_tech_manufacturing",
+        "new_industry_business_model",
+        "is_commercial_space",
+        "aerospace_tech_application_transfer",
+        "belt_road_country",
+        "is_state_capital_project",
+        "sector",
+        "key_business_area",
+        "business_type",
+        "is_ppp_project",
+        "key_industry_area",
+        "estimated_investment_time"
+      ],
+      "manual_only_field_ids": [
+        "industry_market_analysis_table"
+      ],
+      "allowed_field_ids": [
+        "project_unit",
+        "managing_unit",
+        "project_code",
+        "project_name",
+        "parent_project",
+        "project_classification",
+        "project_type",
+        "reserve_type",
+        "approval_method",
+        "is_main_business",
+        "project_currency",
+        "filing_type",
+        "project_total_investment",
+        "group_internal_investment",
+        "external_shareholder_investment",
+        "own_unit_investment",
+        "post_financing_control",
+        "is_nominee_shareholding",
+        "is_employee_shareholding",
+        "has_industry_market_analysis",
+        "project_background",
+        "project_content",
+        "national_economy_industry_category",
+        "national_economy_industry_code",
+        "strategic_emerging_industry_category",
+        "is_high_tech_manufacturing",
+        "new_industry_business_model",
+        "is_commercial_space",
+        "aerospace_tech_application_transfer",
+        "belt_road_country",
+        "is_state_capital_project",
+        "sector",
+        "key_business_area",
+        "business_type",
+        "is_ppp_project",
+        "key_industry_area",
+        "estimated_investment_time",
+        "industry_market_analysis_table"
+      ]
+    },
+    {
+      "item_id": "company",
+      "item_name": "投资主体、标的公司、股权结构与资产评估",
+      "skill_package": "smart-fill-company-package",
+      "primary_skill": "target-company-extraction",
+      "shared_auxiliary_skills": [
+        "smart-fill-common",
+        "source-citation",
+        "structured-output"
+      ],
+      "source_group_ids": [
+        "investor",
+        "target_company",
+        "target_company_asset_valuation",
+        "target_company_equity"
+      ],
+      "field_count": 23,
+      "automatic_field_ids": [
+        "investor_table",
+        "target_company_name",
+        "target_company_nature",
+        "target_company_source",
+        "target_company_management_level",
+        "target_company_property_level",
+        "direct_superior_management_unit",
+        "target_company_currency",
+        "pre_registered_capital",
+        "post_registered_capital",
+        "is_mixed_ownership",
+        "domestic_or_overseas",
+        "target_company_continent",
+        "country_region",
+        "target_company_province",
+        "target_company_city",
+        "target_company_district_county",
+        "key_focus_area",
+        "main_business_summary",
+        "financial_summary",
+        "performance_indicator_summary",
+        "target_company_equity_table"
+      ],
+      "manual_only_field_ids": [
+        "target_company_asset_valuation_table"
+      ],
+      "allowed_field_ids": [
+        "investor_table",
+        "target_company_name",
+        "target_company_nature",
+        "target_company_source",
+        "target_company_management_level",
+        "target_company_property_level",
+        "direct_superior_management_unit",
+        "target_company_currency",
+        "pre_registered_capital",
+        "post_registered_capital",
+        "is_mixed_ownership",
+        "domestic_or_overseas",
+        "target_company_continent",
+        "country_region",
+        "target_company_province",
+        "target_company_city",
+        "target_company_district_county",
+        "key_focus_area",
+        "main_business_summary",
+        "financial_summary",
+        "performance_indicator_summary",
+        "target_company_equity_table",
+        "target_company_asset_valuation_table"
+      ]
+    },
+    {
+      "item_id": "financial",
+      "item_name": "财务预测与财务可行性",
+      "skill_package": "smart-fill-financial-package",
+      "primary_skill": "financial-forecast-extraction",
+      "shared_auxiliary_skills": [
+        "smart-fill-common",
+        "source-citation",
+        "structured-output"
+      ],
+      "source_group_ids": [
+        "financial_feasibility"
+      ],
+      "field_count": 9,
+      "automatic_field_ids": [
+        "financial_forecast_currency",
+        "financial_forecast_table",
+        "irr_after_tax",
+        "dynamic_payback_period",
+        "npv_after_tax",
+        "total_investment_return",
+        "profit_forecast",
+        "financial_evaluation",
+        "uncertainty_analysis"
+      ],
+      "manual_only_field_ids": [],
+      "allowed_field_ids": [
+        "financial_forecast_currency",
+        "financial_forecast_table",
+        "irr_after_tax",
+        "dynamic_payback_period",
+        "npv_after_tax",
+        "total_investment_return",
+        "profit_forecast",
+        "financial_evaluation",
+        "uncertainty_analysis"
+      ]
+    },
+    {
+      "item_id": "risk",
+      "item_name": "风险与非财务指标",
+      "skill_package": "smart-fill-risk-package",
+      "primary_skill": "risk-extraction",
+      "shared_auxiliary_skills": [
+        "smart-fill-common",
+        "source-citation",
+        "structured-output"
+      ],
+      "source_group_ids": [
+        "non_financial_indicators",
+        "risk"
+      ],
+      "field_count": 2,
+      "automatic_field_ids": [
+        "non_financial_indicator_table",
+        "risk_table"
+      ],
+      "manual_only_field_ids": [],
+      "allowed_field_ids": [
+        "non_financial_indicator_table",
+        "risk_table"
+      ]
+    },
+    {
+      "item_id": "analysis",
+      "item_name": "可行性、必要性与竞争性",
+      "skill_package": "smart-fill-analysis-package",
+      "primary_skill": "feasibility-analysis-extraction",
+      "shared_auxiliary_skills": [
+        "smart-fill-common",
+        "source-citation",
+        "structured-output"
+      ],
+      "source_group_ids": [
+        "competitiveness",
+        "feasibility_necessity"
+      ],
+      "field_count": 7,
+      "automatic_field_ids": [
+        "policy_feasibility",
+        "technology_product_feasibility",
+        "existing_foundation_condition",
+        "competitor_count",
+        "major_competitors",
+        "competitive_advantage",
+        "competitive_disadvantage"
+      ],
+      "manual_only_field_ids": [],
+      "allowed_field_ids": [
+        "policy_feasibility",
+        "technology_product_feasibility",
+        "existing_foundation_condition",
+        "competitor_count",
+        "major_competitors",
+        "competitive_advantage",
+        "competitive_disadvantage"
+      ]
+    }
+  ],
+  "coverage": {
+    "assigned_field_count": 79,
+    "missing_field_ids": [],
+    "duplicate_field_ids": []
+  }
+}
