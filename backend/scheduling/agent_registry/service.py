@@ -7,8 +7,20 @@ from typing import Any
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from .defaults import build_default_agent_profiles
+from .defaults import LEGACY_DEFAULT_SYSTEM_PROMPTS, build_default_agent_profiles
 from .models import AgentProfileEntity
+
+
+def _merge_missing(defaults: dict[str, Any], configured: dict[str, Any]) -> dict[str, Any]:
+    """Add new default-owned keys without overwriting user configuration."""
+    merged = dict(configured)
+    for key, default_value in defaults.items():
+        current_value = merged.get(key)
+        if isinstance(default_value, dict) and isinstance(current_value, dict):
+            merged[key] = _merge_missing(default_value, current_value)
+        elif key not in merged:
+            merged[key] = default_value
+    return merged
 
 
 async def ensure_default_agent_profiles(session: AsyncSession) -> None:
@@ -20,6 +32,21 @@ async def ensure_default_agent_profiles(session: AsyncSession) -> None:
             changed = False
             if not existing.system_prompt and profile.system_prompt:
                 existing.system_prompt = profile.system_prompt
+                changed = True
+            elif existing.system_prompt in LEGACY_DEFAULT_SYSTEM_PROMPTS.get(
+                profile.agent_id, set()
+            ):
+                existing.system_prompt = profile.system_prompt
+                changed = True
+            merged_runtime_config = _merge_missing(
+                profile.runtime_config,
+                existing.runtime_config,
+            )
+            if merged_runtime_config != existing.runtime_config:
+                existing.runtime_config_json = json.dumps(
+                    merged_runtime_config,
+                    ensure_ascii=True,
+                )
                 changed = True
             if not changed:
                 continue

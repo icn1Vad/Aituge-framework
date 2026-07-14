@@ -7,13 +7,20 @@ from fastapi import FastAPI
 from llama_index.core.tools.function_tool import FunctionTool
 
 from scheduling.agent_registry import ensure_default_agent_profiles, get_agent_profile
+from scheduling.agent_registry.defaults import (
+    LEGACY_MEDIA_WRITER_AGENT_PROMPT,
+    build_default_agent_profiles,
+)
+from scheduling.agent_registry.models import AgentProfileEntity
 from scheduling.api import create_scheduling_router
 from scheduling.main_agent.service import (
+    MAIN_SKILL_PACKAGE,
     MainAgentService,
     _ScopedSingleAgentService,
+    _delegation_mode_config,
     _main_runtime_profile,
-    _require_managed_write,
-    _tools_allowed_for_managed_agent,
+    _require_successful_managed_tool,
+    _select_workspace_tools,
 )
 from scheduling.main_agent.schemas import MainAgentChatRequest
 from scheduling.main_agent.store import (
@@ -32,9 +39,7 @@ def _options(tmp_path):
     return SchedulingRuntimeOptions(local_python_artifact_dir=tmp_path / "artifacts")
 
 
-def test_media_specialists_keep_shared_reads_but_have_separate_write_tools():
-    from llama_index.core.tools.function_tool import FunctionTool
-
+def test_registry_mode_config_selects_workspace_tools_and_required_success():
     async def placeholder(value: str = "") -> str:
         return value
 
@@ -47,24 +52,119 @@ def test_media_specialists_keep_shared_reads_but_have_separate_write_tools():
         ]
     ]
 
-    writer_names = [
+    profiles = {profile.agent_id: profile for profile in build_default_agent_profiles()}
+    writer = profiles["media-writer-agent"]
+    storyboard = profiles["media-storyboard-agent"]
+    writer_consult = _delegation_mode_config(writer, "consult")
+    writer_delegate = _delegation_mode_config(writer, "delegate")
+    storyboard_delegate = _delegation_mode_config(storyboard, "delegate")
+
+    assert writer_consult == {
+        "skill_package": "media-writer-consult-package",
+        "workspace_tools": ["read_script_workspace"],
+        "required_success_tool": "",
+    }
+    assert [
         tool.metadata.name
-        for tool in _tools_allowed_for_managed_agent("media-writer-agent", tools)
-    ]
-    storyboard_names = [
+        for tool in _select_workspace_tools(
+            tools,
+            writer_delegate["workspace_tools"],
+            agent_id=writer.agent_id,
+            mode="delegate",
+        )
+    ] == ["read_script_workspace", "write_script_workspace"]
+    assert [
         tool.metadata.name
-        for tool in _tools_allowed_for_managed_agent("media-storyboard-agent", tools)
-    ]
-    assert writer_names == ["read_script_workspace", "write_script_workspace"]
-    assert storyboard_names == ["read_script_workspace", "write_storyboard_workspace"]
+        for tool in _select_workspace_tools(
+            tools,
+            storyboard_delegate["workspace_tools"],
+            agent_id=storyboard.agent_id,
+            mode="delegate",
+        )
+    ] == ["read_script_workspace", "write_storyboard_workspace"]
 
     with pytest.raises(ValueError, match="completed without a successful"):
-        _require_managed_write(
+        _require_successful_managed_tool(
             "media-writer-agent",
             "delegate",
-            [next(tool for tool in tools if tool.metadata.name == "write_script_workspace")],
+            "write_script_workspace",
             set(),
         )
+
+    with pytest.raises(ValueError, match="requires unavailable Workspace tools"):
+        _select_workspace_tools(
+            tools[:1],
+            writer_delegate["workspace_tools"],
+            agent_id=writer.agent_id,
+            mode="delegate",
+        )
+
+    broken = AgentProfileEntity(
+        agent_id="broken-agent",
+        name="Broken Agent",
+        runtime_config_json=json.dumps(
+            {
+                "delegation": {
+                    "enabled": True,
+                    "modes": {
+                        "consult": {
+                            "skill_package": "",
+                            "workspace_tools": [],
+                        }
+                    },
+                }
+            }
+        ),
+    )
+    with pytest.raises(ValueError, match="no Skill Package configured"):
+        _delegation_mode_config(broken, "consult")
+
+
+def test_default_registry_backfills_modes_without_overwriting_private_config(tmp_path, monkeypatch):
+    async def run():
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'registry.db'}")
+        reset_engine_for_test()
+        await init_db()
+        async with create_db_session() as session:
+            await ensure_default_agent_profiles(session)
+            writer = await get_agent_profile(session, "media-writer-agent")
+            assert writer is not None
+            writer.runtime_config_json = json.dumps(
+                {
+                    "delegation": {
+                        "enabled": True,
+                        "use_when": "private writer rule",
+                        "modes": {
+                            "consult": {
+                                "skill_package": "private-consult-package",
+                                "workspace_tools": [],
+                            }
+                        },
+                    }
+                }
+            )
+            writer.system_prompt = LEGACY_MEDIA_WRITER_AGENT_PROMPT
+            session.add(writer)
+            await session.commit()
+
+            await ensure_default_agent_profiles(session)
+            await session.refresh(writer)
+
+        delegation = writer.runtime_config["delegation"]
+        assert writer.system_prompt == "You are Media Writer Agent."
+        assert delegation["use_when"] == "private writer rule"
+        assert delegation["modes"]["consult"] == {
+            "skill_package": "private-consult-package",
+            "workspace_tools": [],
+        }
+        assert delegation["modes"]["delegate"]["skill_package"] == (
+            "media-writer-delegate-package"
+        )
+
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
 
 
 def test_workspace_write_tools_are_terminal_and_return_small_receipts(tmp_path, monkeypatch):
@@ -107,7 +207,7 @@ def test_workspace_write_tools_are_terminal_and_return_small_receipts(tmp_path, 
         reset_engine_for_test()
 
 
-def test_main_agent_reuses_single_scheduler_and_persists_only_its_session_state(tmp_path, monkeypatch):
+def test_main_agent_tools_do_not_depend_on_legacy_session_phase(tmp_path, monkeypatch):
     async def run():
         monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'main-agent.db'}")
         reset_engine_for_test()
@@ -127,11 +227,11 @@ def test_main_agent_reuses_single_scheduler_and_persists_only_its_session_state(
             model=None,
             task=None,
             workspace_tools=[],
-            main_session=main_session,
         )
         assert [tool.metadata.name for tool in new_tools] == [
-            "produce_script_and_storyboard",
             "consult_agent",
+            "delegate_agent",
+            "list_delegatable_agents",
             "list_active_agents",
         ]
 
@@ -148,12 +248,9 @@ def test_main_agent_reuses_single_scheduler_and_persists_only_its_session_state(
             model=None,
             task=None,
             workspace_tools=[],
-            main_session=main_session,
         )
         assert [tool.metadata.name for tool in active_tools] == [
-            "consult_agent",
-            "delegate_agent",
-            "list_active_agents",
+            tool.metadata.name for tool in new_tools
         ]
 
         workspace = await ScriptWorkspaceStore().create(
@@ -176,6 +273,44 @@ def test_main_agent_reuses_single_scheduler_and_persists_only_its_session_state(
         assert main_session.phase == "active"
         assert workspace.to_read_model()["script_text"] == "初始脚本"
         assert "agent_id" not in workspace.to_read_model()
+
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
+
+
+def test_main_agent_prepare_uses_fixed_package_and_direct_workspace_tools(tmp_path, monkeypatch):
+    async def run():
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'main-prepare.db'}")
+        reset_engine_for_test()
+        await init_db()
+        workspace = await ScriptWorkspaceStore().create(
+            script_text="初始脚本",
+            user_id="main-user",
+        )
+        service = MainAgentService(_options(tmp_path))
+        prepared = await service._prepare_turn(
+            MainAgentChatRequest(
+                message="做一个简单修改",
+                workspace_id=workspace.id,
+                user_id="main-user",
+                stream=False,
+            ),
+            stream=False,
+        )
+
+        assert prepared["scoped_request"].skill_package == MAIN_SKILL_PACKAGE
+        assert [tool.metadata.name for tool in service.runtime_tools] == [
+            "consult_agent",
+            "delegate_agent",
+            "list_delegatable_agents",
+            "list_active_agents",
+            "read_script_workspace",
+            "write_script_workspace",
+            "write_storyboard_workspace",
+        ]
+        await service._fail_prepared_task(prepared, RuntimeError("test cleanup"))
 
     try:
         asyncio.run(run())
@@ -217,10 +352,22 @@ def test_main_agent_routes_expose_catalog_and_workspace(tmp_path, monkeypatch):
         ) as client:
             catalog = await client.get("/scheduling/agents/delegatable")
             assert catalog.status_code == 200
-            assert any(
-                row["agent_id"] == "media-writer-agent"
+            writer = next(
+                row
                 for row in catalog.json()["agents"]
+                if row["agent_id"] == "media-writer-agent"
             )
+            assert writer["modes"]["consult"] == {
+                "skill_package": "media-writer-consult-package",
+                "workspace_tools": ["read_script_workspace"],
+            }
+            assert writer["modes"]["delegate"] == {
+                "skill_package": "media-writer-delegate-package",
+                "workspace_tools": [
+                    "read_script_workspace",
+                    "write_script_workspace",
+                ],
+            }
             assert not any(
                 row["agent_id"] == "media-main-agent"
                 for row in catalog.json()["agents"]
@@ -277,7 +424,8 @@ def test_same_managed_single_agent_can_consult_then_delegate(tmp_path, monkeypat
                 "thread_id": request.thread_id,
                 "session_id": request.session_id,
                 "tools": [tool.metadata.name for tool in self.runtime_tools],
-                "prompt": self.runtime_prompt,
+                "skill_package": request.skill_package,
+                "message": request.message,
             }
         )
         return {
@@ -308,6 +456,24 @@ def test_same_managed_single_agent_can_consult_then_delegate(tmp_path, monkeypat
         assert primary is not None
 
         service = MainAgentService(_options(tmp_path))
+
+        async def read_demo() -> str:
+            return "workspace"
+
+        async def write_demo(script_text: str) -> str:
+            return script_text
+
+        read_tool = FunctionTool.from_defaults(
+            async_fn=read_demo,
+            name="read_script_workspace",
+            description="test tool",
+        )
+        write_tool = FunctionTool.from_defaults(
+            async_fn=write_demo,
+            name="write_script_workspace",
+            description="test tool",
+        )
+        workspace_tools = [read_tool, write_tool]
         first = json.loads(
             await service._call_managed_agent(
                 mode="consult",
@@ -320,18 +486,8 @@ def test_same_managed_single_agent_can_consult_then_delegate(tmp_path, monkeypat
                 user_id="main-user",
                 model=None,
                 task=None,
-                runtime_tools=[],
+                available_workspace_tools=workspace_tools,
             )
-        )
-        from llama_index.core.tools.function_tool import FunctionTool
-
-        async def write_demo(value: str) -> str:
-            return value
-
-        write_tool = FunctionTool.from_defaults(
-            async_fn=write_demo,
-            name="write_script_workspace",
-            description="test tool",
         )
         second = json.loads(
             await service._call_managed_agent(
@@ -345,15 +501,22 @@ def test_same_managed_single_agent_can_consult_then_delegate(tmp_path, monkeypat
                 user_id="main-user",
                 model=None,
                 task=None,
-                runtime_tools=[write_tool],
+                available_workspace_tools=workspace_tools,
             )
         )
 
         assert second["instance_id"] == first["instance_id"]
-        assert calls[0]["tools"] == []
-        assert "consultation only" in calls[0]["prompt"]
+        assert calls[0]["tools"] == ["read_script_workspace"]
+        assert calls[0]["skill_package"] == "media-writer-consult-package"
+        assert calls[0]["message"].endswith(
+            "Context explicitly shared by the MainAgent:\n脚本上下文"
+        )
         assert calls[1]["thread_id"] == "child-thread-1"
-        assert calls[1]["tools"] == ["write_script_workspace"]
+        assert calls[1]["tools"] == [
+            "read_script_workspace",
+            "write_script_workspace",
+        ]
+        assert calls[1]["skill_package"] == "media-writer-delegate-package"
 
     try:
         asyncio.run(run())
@@ -404,9 +567,17 @@ def test_managed_agent_stream_wraps_single_events_and_requires_write(tmp_path, m
             primary = await get_agent_profile(session, "default-single-agent")
         assert primary is not None
 
+        async def read_demo() -> str:
+            return "workspace"
+
         async def write_demo(script_text: str) -> str:
             return script_text
 
+        read_tool = FunctionTool.from_defaults(
+            async_fn=read_demo,
+            name="read_script_workspace",
+            description="test tool",
+        )
         write_tool = FunctionTool.from_defaults(
             async_fn=write_demo,
             name="write_script_workspace",
@@ -430,7 +601,7 @@ def test_managed_agent_stream_wraps_single_events_and_requires_write(tmp_path, m
                 user_id="main-user",
                 model=None,
                 task=None,
-                runtime_tools=[write_tool],
+                available_workspace_tools=[read_tool, write_tool],
                 event_sink=emit,
             )
         )

@@ -21,17 +21,13 @@ from scheduling.scheduler.service import SchedulingToolContext
 from task_manager.schemas import TaskCreateRequest
 from task_manager.service import TaskManagerService, task_to_read
 
-from .models import MainAgentSessionEntity, ManagedSingleAgentEntity
+from .models import ManagedSingleAgentEntity
 from .schemas import MainAgentChatRequest
 from .store import MainAgentSessionStore, ManagedSingleAgentStore, ScriptWorkspaceStore
 
 
 MAIN_RUNTIME_AGENT_ID = "main-agent-runtime"
-MAIN_RUNTIME_PROMPT = (
-    "You are Media Main Agent. You own the user conversation and coordinate specialist Single Agents. "
-    "Keep the shared Workspace as the source of truth, never pretend that chat text was saved, and never "
-    "write production content directly when a specialist workflow is required."
-)
+MAIN_SKILL_PACKAGE = "main-agent-orchestration-package"
 
 SubagentEventSink = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -43,7 +39,7 @@ def _main_runtime_profile(model_id: str | None = None) -> AgentProfileEntity:
         name="Media Main Agent",
         description="Main scheduling runtime for media production.",
         model_id=model_id or "deepseek-v4-pro",
-        system_prompt=MAIN_RUNTIME_PROMPT,
+        system_prompt="You are Media Main Agent.",
         default_tools_json="[]",
         default_datasets_json="[]",
         runtime_config_json="{}",
@@ -66,12 +62,10 @@ class _ScopedSingleAgentService(SchedulingService):
         options: SchedulingRuntimeOptions,
         *,
         runtime_tools: list[FunctionTool] | None = None,
-        runtime_prompt: str = "",
         tenant_id: str = DEFAULT_TENANT_ID,
     ) -> None:
         super().__init__(options, tenant_id=tenant_id)
         self.runtime_tools = list(runtime_tools or [])
-        self.runtime_prompt = runtime_prompt
 
     async def _build_context(
         self,
@@ -80,10 +74,6 @@ class _ScopedSingleAgentService(SchedulingService):
     ) -> SchedulingToolContext:
         context = await super()._build_context(profile, request)
         context.tools.extend(self.runtime_tools)
-        if self.runtime_prompt:
-            context.task_prompt = "\n\n".join(
-                item for item in [context.task_prompt, self.runtime_prompt] if item
-            )
         return context
 
 
@@ -208,7 +198,11 @@ class MainAgentService(_ScopedSingleAgentService):
         self.subagent_outputs = []
         primary_session_id = request.session_id or request.thread_id or f"main-agent:{uuid.uuid4().hex}"
         scoped_request = request.model_copy(
-            update={"session_id": primary_session_id, "stream": stream}
+            update={
+                "session_id": primary_session_id,
+                "stream": stream,
+                "skill_package": MAIN_SKILL_PACKAGE,
+            }
         )
         main_session = await self.session_store.get_or_create(
             primary_session_id,
@@ -252,12 +246,6 @@ class MainAgentService(_ScopedSingleAgentService):
             "task": task,
         }
         try:
-            catalog = await self.list_delegatable_agents()
-            managed = await self.managed_store.list(
-                primary_session_id=primary_session_id,
-                user_id=request.user_id,
-                tenant_id=self.tenant_id,
-            )
             workspace_tools = self._workspace_tools(workspace.id, task) if workspace else []
             delegation_tools = self._delegation_tools(
                 primary_profile=profile,
@@ -266,16 +254,9 @@ class MainAgentService(_ScopedSingleAgentService):
                 model=request.model,
                 task=task,
                 workspace_tools=workspace_tools,
-                main_session=main_session,
                 event_sink=event_sink,
             )
-            main_workspace_tools = [
-                tool for tool in workspace_tools if tool.metadata.name == "read_script_workspace"
-            ]
-            self.runtime_tools = delegation_tools + main_workspace_tools
-            self.runtime_prompt = _main_agent_prompt(
-                catalog, managed, workspace, phase=main_session.phase
-            )
+            self.runtime_tools = delegation_tools + workspace_tools
             return prepared
         except Exception as exc:
             await self._fail_prepared_task(prepared, exc)
@@ -347,7 +328,11 @@ class MainAgentService(_ScopedSingleAgentService):
         if task is not None:
             await self.task_service.fail_external_task(task.id, exc)
 
-    async def list_delegatable_agents(self, *, exclude_agent_id: str | None = None) -> list[dict[str, str]]:
+    async def list_delegatable_agents(
+        self,
+        *,
+        exclude_agent_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         async with create_db_session() as session:
             await ensure_default_agent_profiles(session)
             profiles = await list_agent_profiles(session)
@@ -356,12 +341,25 @@ class MainAgentService(_ScopedSingleAgentService):
             if profile.agent_type != "single" or profile.agent_id == exclude_agent_id:
                 continue
             delegation = profile.runtime_config.get("delegation") or {}
+            modes = delegation.get("modes") or {}
+            if not delegation.get("enabled") or not isinstance(modes, dict) or not modes:
+                continue
             rows.append(
                 {
                     "agent_id": profile.agent_id,
                     "name": profile.name,
                     "good_at": profile.description,
                     "use_when": str(delegation.get("use_when") or profile.description),
+                    "modes": {
+                        str(mode): {
+                            "skill_package": str((config or {}).get("skill_package") or ""),
+                            "workspace_tools": [
+                                str(name) for name in (config or {}).get("workspace_tools") or []
+                            ],
+                        }
+                        for mode, config in modes.items()
+                        if isinstance(config, dict)
+                    },
                 }
             )
         return rows
@@ -465,7 +463,6 @@ class MainAgentService(_ScopedSingleAgentService):
         model: str | None,
         task,
         workspace_tools: list[FunctionTool],
-        main_session: MainAgentSessionEntity,
         event_sink: SubagentEventSink | None = None,
     ) -> list[FunctionTool]:
         async def consult_agent(
@@ -485,7 +482,7 @@ class MainAgentService(_ScopedSingleAgentService):
                 user_id=user_id,
                 model=model,
                 task=task,
-                runtime_tools=[],
+                available_workspace_tools=workspace_tools,
                 event_sink=event_sink,
             )
 
@@ -506,9 +503,15 @@ class MainAgentService(_ScopedSingleAgentService):
                 user_id=user_id,
                 model=model,
                 task=task,
-                runtime_tools=workspace_tools,
+                available_workspace_tools=workspace_tools,
                 event_sink=event_sink,
             )
+
+        async def list_delegatable_agents() -> str:
+            rows = await self.list_delegatable_agents(
+                exclude_agent_id=primary_profile.agent_id,
+            )
+            return json.dumps(rows, ensure_ascii=False)
 
         async def list_active_agents() -> str:
             rows = await self.managed_store.list(
@@ -518,79 +521,27 @@ class MainAgentService(_ScopedSingleAgentService):
             )
             return json.dumps([row.to_read_model() for row in rows], ensure_ascii=False)
 
-        async def produce_script_and_storyboard(instruction: str) -> str:
-            if task is None or not workspace_tools:
-                raise ValueError("Create a Workspace before starting media production.")
-            current_session = await self.session_store.get_or_create(
-                primary_session_id,
-                user_id=user_id,
-                tenant_id=self.tenant_id,
-            )
-            if current_session.phase != "new":
-                raise ValueError(
-                    "The initial production workflow is complete; use delegate_agent for later revisions."
-                )
-
-            managed = await self.managed_store.list(
-                primary_session_id=primary_session_id,
-                user_id=user_id,
-                tenant_id=self.tenant_id,
-            )
-            for target_agent_id, child_instruction in [
-                (
-                    "media-writer-agent",
-                    f"{instruction}\n请读取共享 Workspace，完成脚本修改并保存完整脚本。",
-                ),
-                (
-                    "media-storyboard-agent",
-                    f"{instruction}\n请读取脚本 Agent 刚保存的最新脚本，生成并保存完整分镜。",
-                ),
-            ]:
-                existing = next((row for row in managed if row.agent_id == target_agent_id), None)
-                await self._call_managed_agent(
-                    mode="delegate",
-                    message=child_instruction,
-                    agent_id="" if existing else target_agent_id,
-                    instance_id=existing.instance_id if existing else "",
-                    shared_context="",
-                    primary_profile=primary_profile,
-                    primary_session_id=primary_session_id,
-                    user_id=user_id,
-                    model=model,
-                    task=task,
-                    runtime_tools=workspace_tools,
-                    event_sink=event_sink,
-                )
-            await self.session_store.update(
-                primary_session_id,
-                user_id=user_id,
-                tenant_id=self.tenant_id,
-                phase="active",
-            )
-            workspace = await self.workspace_store.get(
-                task.input_payload_json["workspace_id"],
-                user_id=user_id,
-                tenant_id=self.tenant_id,
-            )
-            return json.dumps(
-                {
-                    "status": "completed",
-                    "specialists": self.subagent_outputs[-2:],
-                    "workspace": workspace.to_read_model() if workspace else None,
-                },
-                ensure_ascii=False,
-            )
-
-        tools = [
+        return [
             FunctionTool.from_defaults(
                 async_fn=consult_agent,
                 name="consult_agent",
-                description="Ask a managed Single Agent for advice. Reuse instance_id for follow-up discussion.",
+                description=(
+                    "Ask a managed Single Agent for read-only advice. Provide a complete consultation question "
+                    "and reuse instance_id for follow-up discussion."
+                ),
             ),
             FunctionTool.from_defaults(
                 async_fn=delegate_agent,
                 name="delegate_agent",
-                description="Delegate execution to a managed Single Agent. It may receive current task tools.",
+                description=(
+                    "Delegate a complete execution instruction to a managed Single Agent. Its Skill Package and "
+                    "Workspace permissions come from Agent Registry mode configuration."
+                ),
+            ),
+            FunctionTool.from_defaults(
+                async_fn=list_delegatable_agents,
+                name="list_delegatable_agents",
+                description="List reusable child Agent types and their supported consult/delegate modes.",
             ),
             FunctionTool.from_defaults(
                 async_fn=list_active_agents,
@@ -598,21 +549,6 @@ class MainAgentService(_ScopedSingleAgentService):
                 description="List Single Agent instances already managed by this MainAgent conversation.",
             ),
         ]
-        if main_session.phase == "new":
-            tools.insert(
-                0,
-                FunctionTool.from_defaults(
-                    async_fn=produce_script_and_storyboard,
-                    name="produce_script_and_storyboard",
-                    description=(
-                        "Run the mandatory first media-production workflow: the writer saves the complete script, "
-                        "then the storyboard specialist reads that saved script and saves the complete storyboard. "
-                        "Use this for the first request to create or revise production content."
-                    ),
-                ),
-            )
-            tools = [tool for tool in tools if tool.metadata.name != "delegate_agent"]
-        return tools
 
     async def _call_managed_agent(
         self,
@@ -627,10 +563,11 @@ class MainAgentService(_ScopedSingleAgentService):
         user_id: str,
         model: str | None,
         task,
-        runtime_tools: list[FunctionTool],
+        available_workspace_tools: list[FunctionTool],
         event_sink: SubagentEventSink | None = None,
     ) -> str:
         managed = await self._resolve_managed_agent(
+            mode=mode,
             agent_id=agent_id,
             instance_id=instance_id,
             primary_profile=primary_profile,
@@ -641,6 +578,13 @@ class MainAgentService(_ScopedSingleAgentService):
             child_profile = await get_agent_profile(session, managed.agent_id)
         if child_profile is None or not child_profile.enabled or child_profile.agent_type != "single":
             raise ValueError(f"Agent '{managed.agent_id}' is not an enabled Single Agent.")
+        mode_config = _delegation_mode_config(child_profile, mode)
+        runtime_tools = _select_workspace_tools(
+            available_workspace_tools,
+            mode_config["workspace_tools"],
+            agent_id=managed.agent_id,
+            mode=mode,
+        )
 
         if task is not None:
             await self.task_service.record_event(
@@ -649,28 +593,32 @@ class MainAgentService(_ScopedSingleAgentService):
                 event_type=f"subagent_{mode}_started",
                 stage="main_agent",
                 message=f"{mode.title()} call started for {managed.agent_id}.",
-                payload={"instance_id": managed.instance_id},
+                payload={
+                    "instance_id": managed.instance_id,
+                    "skill_package": mode_config["skill_package"],
+                },
                 agent_id=managed.agent_id,
                 source={"type": "managed_agent", "id": managed.instance_id},
             )
 
-        mode_prompt = _managed_agent_prompt(managed.agent_id, mode)
+        child_message = message
         if shared_context:
-            mode_prompt += f"\n\nContext explicitly shared by the MainAgent:\n{shared_context}"
-        runtime_tools = _tools_allowed_for_managed_agent(managed.agent_id, runtime_tools)
+            child_message = (
+                f"{message}\n\nContext explicitly shared by the MainAgent:\n{shared_context}"
+            )
         child_service = _ScopedSingleAgentService(
             self.options,
             runtime_tools=runtime_tools,
-            runtime_prompt=mode_prompt,
             tenant_id=self.tenant_id,
         )
         child_request = SchedulingChatRequest(
-            message=message,
+            message=child_message,
             model=model,
             thread_id=managed.child_thread_id,
             session_id=managed.child_session_id,
             user_id=user_id,
             stream=event_sink is not None,
+            skill_package=mode_config["skill_package"],
         )
         successful_tools: set[str] = set()
         if event_sink is None:
@@ -725,7 +673,12 @@ class MainAgentService(_ScopedSingleAgentService):
                 )
                 raise
 
-        _require_managed_write(managed.agent_id, mode, runtime_tools, successful_tools)
+        _require_successful_managed_tool(
+            managed.agent_id,
+            mode,
+            mode_config["required_success_tool"],
+            successful_tools,
+        )
         await self.managed_store.update_child_thread(managed.instance_id, child_thread_id)
         self.subagent_outputs.append(
             {
@@ -756,7 +709,10 @@ class MainAgentService(_ScopedSingleAgentService):
                 event_type=f"subagent_{mode}_completed",
                 stage="main_agent",
                 message=f"{mode.title()} call completed for {managed.agent_id}.",
-                payload={"instance_id": managed.instance_id},
+                payload={
+                    "instance_id": managed.instance_id,
+                    "skill_package": mode_config["skill_package"],
+                },
                 agent_id=managed.agent_id,
                 source={"type": "managed_agent", "id": managed.instance_id},
             )
@@ -772,6 +728,7 @@ class MainAgentService(_ScopedSingleAgentService):
     async def _resolve_managed_agent(
         self,
         *,
+        mode: str,
         agent_id: str,
         instance_id: str,
         primary_profile: AgentProfileEntity,
@@ -796,6 +753,7 @@ class MainAgentService(_ScopedSingleAgentService):
             profile = await get_agent_profile(session, agent_id)
         if profile is None or not profile.enabled or profile.agent_type != "single":
             raise ValueError(f"Agent '{agent_id}' is not an enabled Single Agent.")
+        _delegation_mode_config(profile, mode)
         return await self.managed_store.create(
             primary_session_id=primary_session_id,
             primary_agent_id=primary_profile.agent_id,
@@ -812,24 +770,58 @@ def _last_user_message(messages: list[dict] | None) -> str:
     return ""
 
 
-def _tools_allowed_for_managed_agent(
-    agent_id: str,
-    runtime_tools: list[FunctionTool],
-) -> list[FunctionTool]:
-    """Keep shared reads while separating the two media write capabilities."""
-    write_tool_by_agent = {
-        "media-writer-agent": "write_script_workspace",
-        "media-storyboard-agent": "write_storyboard_workspace",
-    }
-    allowed_write_tool = write_tool_by_agent.get(agent_id)
-    if allowed_write_tool is None:
-        return runtime_tools
-    return [
-        tool
-        for tool in runtime_tools
-        if not tool.metadata.name.startswith("write_")
-        or tool.metadata.name == allowed_write_tool
+def _delegation_mode_config(profile: AgentProfileEntity, mode: str) -> dict[str, Any]:
+    delegation = profile.runtime_config.get("delegation") or {}
+    if not delegation.get("enabled"):
+        raise ValueError(f"Agent '{profile.agent_id}' is not enabled for delegation.")
+    modes = delegation.get("modes") or {}
+    config = modes.get(mode) if isinstance(modes, dict) else None
+    if not isinstance(config, dict):
+        raise ValueError(f"Agent '{profile.agent_id}' does not support mode '{mode}'.")
+
+    skill_package = str(config.get("skill_package") or "").strip()
+    if not skill_package:
+        raise ValueError(
+            f"Agent '{profile.agent_id}' mode '{mode}' has no Skill Package configured."
+        )
+    configured_workspace_tools = config.get("workspace_tools")
+    if not isinstance(configured_workspace_tools, list):
+        raise ValueError(
+            f"Agent '{profile.agent_id}' mode '{mode}' has no valid Workspace tool list configured."
+        )
+    workspace_tools = [
+        str(name).strip()
+        for name in configured_workspace_tools
+        if str(name).strip()
     ]
+    required_success_tool = str(config.get("required_success_tool") or "").strip()
+    if required_success_tool and required_success_tool not in workspace_tools:
+        raise ValueError(
+            f"Agent '{profile.agent_id}' mode '{mode}' requires tool "
+            f"'{required_success_tool}' but does not allow it."
+        )
+    return {
+        "skill_package": skill_package,
+        "workspace_tools": workspace_tools,
+        "required_success_tool": required_success_tool,
+    }
+
+
+def _select_workspace_tools(
+    available_tools: list[FunctionTool],
+    requested_names: list[str],
+    *,
+    agent_id: str,
+    mode: str,
+) -> list[FunctionTool]:
+    available = {tool.metadata.name: tool for tool in available_tools}
+    missing = [name for name in requested_names if name not in available]
+    if missing:
+        raise ValueError(
+            f"Agent '{agent_id}' mode '{mode}' requires unavailable Workspace tools: "
+            + ", ".join(missing)
+        )
+    return [available[name] for name in requested_names]
 
 
 def _successful_tool_names(steps: list[dict] | None) -> set[str]:
@@ -845,92 +837,16 @@ def _successful_tool_names(steps: list[dict] | None) -> set[str]:
     return names
 
 
-def _require_managed_write(
+def _require_successful_managed_tool(
     agent_id: str,
     mode: str,
-    runtime_tools: list[FunctionTool],
+    required_tool: str,
     successful_tools: set[str],
 ) -> None:
-    if mode != "delegate":
+    if not required_tool:
         return
-    expected_by_agent = {
-        "media-writer-agent": "write_script_workspace",
-        "media-storyboard-agent": "write_storyboard_workspace",
-    }
-    expected = expected_by_agent.get(agent_id)
-    available = {tool.metadata.name for tool in runtime_tools}
-    if expected and expected in available and expected not in successful_tools:
-        raise ValueError(f"Agent '{agent_id}' completed without a successful {expected} call.")
-
-
-def _main_agent_prompt(
-    catalog: list[dict[str, str]],
-    managed: list[ManagedSingleAgentEntity],
-    workspace,
-    *,
-    phase: str,
-) -> str:
-    sections = [
-        "You are the MainAgent for a media production task. Decide whether to answer directly, consult a "
-        "specialist, or delegate execution according to the user's current request. Reuse an existing instance_id "
-        "when continuing with a managed agent so its conversation memory is preserved. Delegate only when a "
-        "specialist should actually change shared work; use consult for discussion without writes.",
-        "Delegatable Agent catalog:\n" + json.dumps(catalog, ensure_ascii=False),
-        "Managed Agent instances:\n"
-        + json.dumps([row.to_read_model() for row in managed], ensure_ascii=False),
-    ]
-    if phase == "new":
-        sections.append(
-            "This conversation has not completed its first production workflow. You may answer ordinary chat "
-            "or questions about yourself directly. If the user asks to create or revise a script, storyboard, "
-            "or other production content, you MUST call produce_script_and_storyboard exactly once and let it "
-            "run writer first, then storyboard. Do not draft the production content yourself."
+    if required_tool not in successful_tools:
+        raise ValueError(
+            f"Agent '{agent_id}' mode '{mode}' completed without a successful "
+            f"{required_tool} call."
         )
-    else:
-        sections.append(
-            "The first production workflow is complete. For later turns, decide whether to answer directly, "
-            "consult a specialist, or delegate an edit. Prefer reusing an existing instance_id when the same "
-            "specialist should continue with its earlier context."
-        )
-    if workspace:
-        sections.append(
-            "Current shared script text:\n"
-            + (workspace.script_text or "(empty)")
-            + "\n\nCurrent shared storyboard:\n"
-            + (workspace.storyboard_text or "(empty)")
-            + "\n\nWhen you delegate script work, require write_script_workspace. When you delegate storyboard "
-            "work, require the agent to read the latest workspace and then use write_storyboard_workspace."
-        )
-    return "\n\n".join(sections)
-
-
-def _managed_agent_prompt(agent_id: str, mode: str) -> str:
-    if mode == "consult":
-        return (
-            "This turn is consultation only. Discuss the request and return concrete advice. "
-            "Do not claim to modify shared data."
-        )
-    if agent_id == "media-writer-agent":
-        return (
-            "You own the script-writing step. First call read_script_workspace. Produce a complete replacement "
-            "script, then call write_script_workspace with the full text. Know-how: open with a concrete 3-second "
-            "hook; keep one clear audience and one central claim; use short speakable sentences; structure the body "
-            "as hook, context, 2-4 evidence-backed points, transition, and closing action; preserve facts from the "
-            "workspace; avoid unsupported numbers and generic slogans; include natural pauses and visual cues only "
-            "when they help production. A successful Workspace write is the final result: do not review, revise, "
-            "call another tool, or return a separate summary afterward."
-        )
-    if agent_id == "media-storyboard-agent":
-        return (
-            "You own the storyboard step. First call read_script_workspace so you use the writer's latest saved "
-            "script. Create an executable shot list, then call write_storyboard_workspace with the full storyboard. "
-            "Know-how: cover every narration segment; number shots; include time range, framing, subject/action, "
-            "camera movement, matching voice-over, on-screen text, asset or location need, transition, and production "
-            "notes; keep continuity of screen direction, wardrobe, props, light, and tempo; prefer shootable visuals "
-            "over abstract descriptions. A successful Workspace write is the final result: do not review, revise, "
-            "call another tool, or return a separate summary afterward."
-        )
-    return (
-        "Execute the instruction. Read the current workspace before acting and use the available task write tool "
-        "to save the completed result."
-    )

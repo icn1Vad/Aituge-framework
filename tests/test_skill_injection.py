@@ -46,6 +46,43 @@ def test_skill_manager_builds_report_package_context(tmp_path, monkeypatch):
         reset_engine_for_test()
 
 
+def test_skill_manager_builds_main_agent_and_managed_agent_packages(tmp_path, monkeypatch):
+    async def run():
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'main-skills.db'}")
+        reset_engine_for_test()
+        await init_db()
+
+        main = await SkillManager().create_context("main-agent-orchestration-package")
+        consult = await SkillManager().create_context("media-writer-consult-package")
+        delegate = await SkillManager().create_context("media-storyboard-delegate-package")
+
+        assert main.skills["active_package"]["primary"]["name"] == (
+            "main-agent-orchestration"
+        )
+        assert [
+            item["name"]
+            for item in main.skills["active_package"]["auxiliary_index"]
+        ] == ["workspace-script-editor", "workspace-storyboard-editor"]
+        assert [tool.metadata.name for tool in main.tools] == ["ReadSkill"]
+        assert consult.skills["active_package"]["primary"]["name"] == (
+            "managed-agent-consult"
+        )
+        assert consult.skills["active_package"]["auxiliary_index"][0]["name"] == (
+            "workspace-script-editor"
+        )
+        assert delegate.skills["active_package"]["primary"]["name"] == (
+            "managed-agent-delegate"
+        )
+        assert delegate.skills["active_package"]["auxiliary_index"][0]["name"] == (
+            "workspace-storyboard-editor"
+        )
+
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
+
+
 def test_skill_manager_empty_and_disabled_packages(tmp_path, monkeypatch):
     async def run():
         monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'skill-disabled.db'}")
