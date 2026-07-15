@@ -10,7 +10,6 @@ from common.system_constants import DEFAULT_TENANT_ID
 from db.db_context import create_db_session, init_db, reset_engine_for_test
 from db.models.llm import LlmModelEntity
 from service.cache.session_history_manager import session_history_manager
-from service.thread.thread_service import ThreadService
 from task_manager.output_parser import parse_json_output
 import task_manager.adapters.legacy_douyin as legacy_douyin_adapter
 import service.agent.single_agent_runner as runner_mod
@@ -123,16 +122,6 @@ async def _seed_llm_config():
         )
 
 
-async def _delete_thread(thread_id: str | None):
-    if not thread_id:
-        return
-    async with create_db_session() as session:
-        try:
-            await ThreadService(session).delete_thread(thread_id)
-        except ValueError:
-            pass
-
-
 def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
     async def run():
         monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'task-manager.db'}")
@@ -160,6 +149,13 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
                 item["task_type"] == "media.script.generate"
                 for item in definitions.json()["definitions"]
             )
+            script_definition = next(
+                item for item in definitions.json()["definitions"]
+                if item["task_type"] == "media.script.generate"
+            )
+            assert script_definition["handler"] == "external"
+            assert script_definition["required_task_key"] == "media_script"
+            assert script_definition["default_agent_id"] == "main-agent-runtime"
             table_definition = next(
                 item for item in definitions.json()["definitions"]
                 if item["task_type"] == "table.audit"
@@ -183,6 +179,7 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
                 json={
                     "task_type": "media.script.generate",
                     "title": "Missing topic",
+                    "task_key": "media_script",
                     "input_payload": {
                         "platform": "douyin",
                         "duration_seconds": 60,
@@ -190,7 +187,7 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
                 },
             )
             assert missing_field_response.status_code == 400
-            assert "media_script_generate_input" in missing_field_response.text
+            assert "media_script_main_agent_input" in missing_field_response.text
 
             extra_field_response = await client.post(
                 "/task-manager/tasks",
@@ -198,10 +195,11 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
                 json={
                     "task_type": "media.script.generate",
                     "title": "Extra field",
+                    "task_key": "media_script",
                     "input_payload": {
-                        "topic": "TaskManager",
-                        "platform": "douyin",
-                        "duration_seconds": 60,
+                        "workspace_id": "workspace-extra",
+                        "instruction": "Test strict input validation.",
+                        "operation": "interact",
                         "unexpected_field": "must fail",
                     },
                 },
@@ -329,12 +327,13 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
                 json={
                     "task_type": "media.script.generate",
                     "title": "生成短视频脚本",
+                    "task_key": "media_script",
                     "user_id": "task-manager-test-user",
                     "stream": True,
                     "input_payload": {
-                        "topic": "Agent 架构设计",
-                        "platform": "douyin",
-                        "duration_seconds": 60,
+                        "workspace_id": "workspace-main-agent",
+                        "instruction": "Agent 架构设计",
+                        "operation": "generate",
                     },
                 },
             )
@@ -342,7 +341,9 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             created_task = create_response.json()["task"]
             task_id = created_task["id"]
             assert created_task["root_task_id"] == task_id
-            assert created_task["handler_name"] == "scheduler"
+            assert created_task["handler_name"] == "external"
+            assert created_task["task_key"] == "media_script"
+            assert created_task["agent_id"] == "main-agent-runtime"
             assert created_task["user_id"] == "task-manager-test-user"
             assert created_task["tenant_id"] == DEFAULT_TENANT_ID
             assert created_task["definition_snapshot_json"]["task_type"] == "media.script.generate"
@@ -358,10 +359,11 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
                 json={
                     "task_type": "media.script.generate",
                     "title": "Gateway ref smoke",
+                    "task_key": "media_script",
                     "input_payload": {
-                        "topic": "Gateway",
-                        "platform": "douyin",
-                        "duration_seconds": 60,
+                        "workspace_id": "workspace-gateway",
+                        "instruction": "Gateway",
+                        "operation": "interact",
                         "resource_refs": [
                             {"type": "kb", "id": "kb_1", "operation": "search"}
                         ],
@@ -378,10 +380,11 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
                 json={
                     "task_type": "media.script.generate",
                     "title": "Blocked ref",
+                    "task_key": "media_script",
                     "input_payload": {
-                        "topic": "Gateway",
-                        "platform": "douyin",
-                        "duration_seconds": 60,
+                        "workspace_id": "workspace-blocked",
+                        "instruction": "Gateway",
+                        "operation": "interact",
                         "resource_refs": [
                             {"type": "file", "id": "file_1", "metadata": {"path": "E:/secret.txt"}}
                         ],
@@ -419,31 +422,11 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             assert all(item["item_type"] == "script_candidate" for item in items)
             assert all(item["status"] == "pending" for item in items)
 
-            run_response = await client.post(
-                f"/task-manager/tasks/{task_id}/run",
-                headers=headers,
-                json={"stream": False},
-            )
-            assert run_response.status_code == 200
-            body = run_response.json()
-            task = body["task"]
-            assert task["status"] == "succeeded"
-            assert task["progress_current"] == task["progress_total"] == 1
-            assert task["thread_id"]
-            assert task["session_id"]
-            assert task["result_payload_json"]["structured"]["final_script"]["topic_name"] == "Agent 架构设计"
-            assert any(event["event_type"] == "task_started" for event in body["events"])
-            assert any(event["event_type"] == "task_succeeded" for event in body["events"])
-
             events_response = await client.get(f"/task-manager/tasks/{task_id}/events", headers=headers)
             assert events_response.status_code == 200
             event_types = [event["event_type"] for event in events_response.json()["events"]]
             assert "task_created" in event_types
-            assert "scheduler_request_built" in event_types
-            assert "agent_final" in event_types
             events = events_response.json()["events"]
-            assert any(event["step_id"] == "scheduler_request_build" for event in events)
-            assert any(event["step_id"] == "agent_final" for event in events)
             assert all("token_usage_json" in event for event in events)
 
             douyin_report_response = await client.post(
@@ -536,9 +519,6 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
 
             for item in batch_items:
                 await session_history_manager.clear_history("task-manager-test-user", f"{batch_task_id}:{item['id']}")
-
-        await session_history_manager.clear_history("task-manager-test-user", task["session_id"])
-        await _delete_thread(task["thread_id"])
 
     try:
         asyncio.run(run())

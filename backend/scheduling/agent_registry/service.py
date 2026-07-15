@@ -7,7 +7,11 @@ from typing import Any
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from .defaults import LEGACY_DEFAULT_SYSTEM_PROMPTS, build_default_agent_profiles
+from .defaults import (
+    LEGACY_DEFAULT_SYSTEM_PROMPTS,
+    LEGACY_DEFAULT_TOOLS,
+    build_default_agent_profiles,
+)
 from .models import AgentProfileEntity
 
 
@@ -37,6 +41,11 @@ async def ensure_default_agent_profiles(session: AsyncSession) -> None:
                 profile.agent_id, set()
             ):
                 existing.system_prompt = profile.system_prompt
+                changed = True
+            if tuple(existing.default_tools) in LEGACY_DEFAULT_TOOLS.get(
+                profile.agent_id, set()
+            ):
+                existing.default_tools_json = profile.default_tools_json
                 changed = True
             merged_runtime_config = _merge_missing(
                 profile.runtime_config,

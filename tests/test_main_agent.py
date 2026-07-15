@@ -14,7 +14,6 @@ from scheduling.agent_registry.defaults import (
 from scheduling.agent_registry.models import AgentProfileEntity
 from scheduling.api import create_scheduling_router
 from scheduling.main_agent.service import (
-    MAIN_SKILL_PACKAGE,
     MainAgentService,
     _ScopedSingleAgentService,
     _delegation_mode_config,
@@ -31,6 +30,7 @@ from scheduling.main_agent.store import (
 from scheduling.scheduler import SchedulingRuntimeOptions, SchedulingService
 from service.agent import SingleAgentStreamEvent
 from task_manager.schemas import TaskCreateRequest
+from task_manager.models import TaskMemoryEntity
 from task_manager.service import TaskManagerService
 from db.db_context import create_db_session, init_db, reset_engine_for_test
 
@@ -152,6 +152,7 @@ def test_default_registry_backfills_modes_without_overwriting_private_config(tmp
 
         delegation = writer.runtime_config["delegation"]
         assert writer.system_prompt == "You are Media Writer Agent."
+        assert writer.default_tools == ["media_master_library"]
         assert delegation["use_when"] == "private writer rule"
         assert delegation["modes"]["consult"] == {
             "skill_package": "private-consult-package",
@@ -176,10 +177,14 @@ def test_workspace_write_tools_are_terminal_and_return_small_receipts(tmp_path, 
         task_service = TaskManagerService(_options(tmp_path))
         task = await task_service.create_task(
             TaskCreateRequest(
-                task_type="media.script.text.modify",
-                input_payload={"workspace_id": workspace.id, "instruction": "write"},
+                task_type="media.script.generate",
+                task_key="media_script",
+                input_payload={
+                    "workspace_id": workspace.id,
+                    "instruction": "write",
+                    "operation": "interact",
+                },
                 user_id="main-user",
-                agent_id="main-agent-runtime",
                 stream=False,
             )
         )
@@ -191,7 +196,16 @@ def test_workspace_write_tools_are_terminal_and_return_small_receipts(tmp_path, 
         assert by_name["write_script_workspace"].metadata.return_direct is True
         assert by_name["write_storyboard_workspace"].metadata.return_direct is True
 
-        output = await by_name["write_script_workspace"].acall(script_text="final script")
+        output = await by_name["write_script_workspace"].acall(
+            script_text="final script",
+            role_id="role_yanjie",
+            strategy_id="strategy_path",
+            template_id="template_three_step",
+            script_type_id="script_type_advice",
+            script_example_ids=["example_1"],
+            risk_rule_ids=["risk_policy"],
+            replace_reason="Initial selection for this topic.",
+        )
         receipt = json.loads(output.content)
         assert receipt == {
             "status": "saved",
@@ -200,6 +214,17 @@ def test_workspace_write_tools_are_terminal_and_return_small_receipts(tmp_path, 
             "character_count": len("final script"),
         }
         assert "final script" not in output.content
+        updated_task = await task_service.get_task(task.id)
+        assert updated_task is not None
+        assert updated_task.metadata_json["master_library_usage"] == {
+            "role_id": "role_yanjie",
+            "strategy_id": "strategy_path",
+            "template_id": "template_three_step",
+            "script_type_id": "script_type_advice",
+            "script_example_ids": ["example_1"],
+            "risk_rule_ids": ["risk_policy"],
+            "replace_reason": "Initial selection for this topic.",
+        }
 
     try:
         asyncio.run(run())
@@ -280,27 +305,56 @@ def test_main_agent_tools_do_not_depend_on_legacy_session_phase(tmp_path, monkey
         reset_engine_for_test()
 
 
-def test_main_agent_prepare_uses_fixed_package_and_direct_workspace_tools(tmp_path, monkeypatch):
+def test_main_agent_prepare_uses_task_package_and_direct_workspace_tools(tmp_path, monkeypatch):
     async def run():
         monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'main-prepare.db'}")
         reset_engine_for_test()
         await init_db()
+        async with create_db_session() as session:
+            session.add(
+                TaskMemoryEntity(
+                    user_id="main-user",
+                    task_key="media_script",
+                    content="Open with the conclusion and keep the tone conversational.",
+                )
+            )
+            await session.commit()
         workspace = await ScriptWorkspaceStore().create(
             script_text="初始脚本",
             user_id="main-user",
         )
         service = MainAgentService(_options(tmp_path))
+        instruction = "做一个简单修改"
+        task = await service.task_service.create_task(
+            TaskCreateRequest(
+                task_type="media.script.generate",
+                task_key="media_script",
+                input_payload={
+                    "workspace_id": workspace.id,
+                    "instruction": instruction,
+                    "operation": "interact",
+                },
+                user_id="main-user",
+                stream=False,
+            )
+        )
         prepared = await service._prepare_turn(
             MainAgentChatRequest(
-                message="做一个简单修改",
+                message=instruction,
                 workspace_id=workspace.id,
+                task_id=task.id,
                 user_id="main-user",
                 stream=False,
             ),
             stream=False,
         )
 
-        assert prepared["scoped_request"].skill_package == MAIN_SKILL_PACKAGE
+        assert prepared["scoped_request"].skill_package == "media-script-main-agent-package"
+        assert prepared["task"].id == task.id
+        assert prepared["task"].status == "running"
+        assert "Stable task key: media_script" in prepared["runtime_task_prompt"]
+        assert "Open with the conclusion" in prepared["runtime_task_prompt"]
+        assert "Open with the conclusion" in service.runtime_task_prompt
         assert [tool.metadata.name for tool in service.runtime_tools] == [
             "consult_agent",
             "delegate_agent",
@@ -311,6 +365,129 @@ def test_main_agent_prepare_uses_fixed_package_and_direct_workspace_tools(tmp_pa
             "write_storyboard_workspace",
         ]
         await service._fail_prepared_task(prepared, RuntimeError("test cleanup"))
+
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
+
+
+def test_main_agent_workspace_requires_matching_formal_task(tmp_path, monkeypatch):
+    async def run():
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'main-contract.db'}")
+        reset_engine_for_test()
+        await init_db()
+        workspace = await ScriptWorkspaceStore().create(
+            script_text="existing script",
+            user_id="main-user",
+        )
+        service = MainAgentService(_options(tmp_path))
+
+        with pytest.raises(ValueError, match="task_id is required"):
+            await service._prepare_turn(
+                MainAgentChatRequest(
+                    message="edit",
+                    workspace_id=workspace.id,
+                    user_id="main-user",
+                ),
+                stream=False,
+            )
+
+        with pytest.raises(ValueError, match="requires task_key 'media_script'"):
+            await service.task_service.create_task(
+                TaskCreateRequest(
+                    task_type="media.script.generate",
+                    task_key="wrong-key",
+                    input_payload={
+                        "workspace_id": workspace.id,
+                        "instruction": "edit",
+                        "operation": "interact",
+                    },
+                    user_id="main-user",
+                )
+            )
+
+        task = await service.task_service.create_task(
+            TaskCreateRequest(
+                task_type="media.script.generate",
+                task_key="media_script",
+                input_payload={
+                    "workspace_id": workspace.id,
+                    "instruction": "edit",
+                    "operation": "interact",
+                },
+                user_id="main-user",
+            )
+        )
+        with pytest.raises(ValueError, match="instruction does not match"):
+            await service._prepare_turn(
+                MainAgentChatRequest(
+                    message="different instruction",
+                    workspace_id=workspace.id,
+                    task_id=task.id,
+                    user_id="main-user",
+                ),
+                stream=False,
+            )
+
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
+
+
+def test_generate_task_requires_script_and_storyboard_workspace_outputs(tmp_path, monkeypatch):
+    async def run():
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'main-generate.db'}")
+        reset_engine_for_test()
+        await init_db()
+        workspace = await ScriptWorkspaceStore().create(script_text="", user_id="main-user")
+        service = MainAgentService(_options(tmp_path))
+        instruction = "Generate a complete script and storyboard."
+        task = await service.task_service.create_task(
+            TaskCreateRequest(
+                task_type="media.script.generate",
+                task_key="media_script",
+                input_payload={
+                    "workspace_id": workspace.id,
+                    "instruction": instruction,
+                    "operation": "generate",
+                },
+                user_id="main-user",
+            )
+        )
+        prepared = await service._prepare_turn(
+            MainAgentChatRequest(
+                message=instruction,
+                workspace_id=workspace.id,
+                task_id=task.id,
+                user_id="main-user",
+            ),
+            stream=False,
+        )
+
+        with pytest.raises(ValueError, match="delegate both Writer and Storyboard"):
+            await service._finalize_turn(
+                prepared,
+                thread_id="main-thread",
+                session_id="main-session",
+                response_content="done",
+            )
+        service.subagent_outputs = [
+            {"mode": "delegate", "agent_id": "media-writer-agent"},
+            {"mode": "delegate", "agent_id": "media-storyboard-agent"},
+        ]
+        with pytest.raises(ValueError, match="save both script_text and storyboard_text"):
+            await service._finalize_turn(
+                prepared,
+                thread_id="main-thread",
+                session_id="main-session",
+                response_content="done",
+            )
+        await service._fail_prepared_task(prepared, RuntimeError("missing outputs"))
+        failed = await service.task_service.get_task(task.id)
+        assert failed is not None
+        assert failed.status == "failed"
 
     try:
         asyncio.run(run())
@@ -426,6 +603,7 @@ def test_same_managed_single_agent_can_consult_then_delegate(tmp_path, monkeypat
                 "tools": [tool.metadata.name for tool in self.runtime_tools],
                 "skill_package": request.skill_package,
                 "message": request.message,
+                "runtime_task_prompt": self.runtime_task_prompt,
             }
         )
         return {
@@ -487,6 +665,7 @@ def test_same_managed_single_agent_can_consult_then_delegate(tmp_path, monkeypat
                 model=None,
                 task=None,
                 available_workspace_tools=workspace_tools,
+                runtime_task_prompt="# Task Memory\nPrefer a direct opening.",
             )
         )
         second = json.loads(
@@ -502,6 +681,7 @@ def test_same_managed_single_agent_can_consult_then_delegate(tmp_path, monkeypat
                 model=None,
                 task=None,
                 available_workspace_tools=workspace_tools,
+                runtime_task_prompt="# Task Memory\nPrefer a direct opening.",
             )
         )
 
@@ -517,6 +697,8 @@ def test_same_managed_single_agent_can_consult_then_delegate(tmp_path, monkeypat
             "write_script_workspace",
         ]
         assert calls[1]["skill_package"] == "media-writer-delegate-package"
+        assert "Prefer a direct opening" in calls[0]["runtime_task_prompt"]
+        assert "Prefer a direct opening" in calls[1]["runtime_task_prompt"]
 
     try:
         asyncio.run(run())
@@ -708,7 +890,7 @@ def test_main_agent_stream_merges_subagent_events_and_augments_final(tmp_path, m
     asyncio.run(run())
 
 
-def test_script_modify_task_can_be_completed_by_external_main_agent(tmp_path, monkeypatch):
+def test_script_task_can_be_completed_by_external_main_agent(tmp_path, monkeypatch):
     async def run():
         monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'task.db'}")
         reset_engine_for_test()
@@ -717,10 +899,14 @@ def test_script_modify_task_can_be_completed_by_external_main_agent(tmp_path, mo
         task_service = TaskManagerService(_options(tmp_path))
         task = await task_service.create_task(
             TaskCreateRequest(
-                task_type="media.script.text.modify",
-                input_payload={"workspace_id": workspace.id, "instruction": "改成 v2"},
+                task_type="media.script.generate",
+                task_key="media_script",
+                input_payload={
+                    "workspace_id": workspace.id,
+                    "instruction": "改成 v2",
+                    "operation": "interact",
+                },
                 user_id="main-user",
-                agent_id="default-single-agent",
                 stream=False,
             )
         )
@@ -728,7 +914,12 @@ def test_script_modify_task_can_be_completed_by_external_main_agent(tmp_path, mo
         assert task.status == "running"
         task = await task_service.complete_external_task(
             task.id,
-            result={"workspace_id": workspace.id, "script_text": "v2"},
+            result={
+                "workspace_id": workspace.id,
+                "script_text": "v2",
+                "storyboard_text": "",
+                "response": "saved",
+            },
         )
         assert task.status == "succeeded"
         assert task.result_payload_json["script_text"] == "v2"

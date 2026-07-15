@@ -72,7 +72,19 @@ DEFAULT_SKILL_PACKAGES = [
         "description": "Choose direct Workspace work, specialist consultation, or delegated execution.",
         "tags": ["main-agent", "orchestration", "workspace"],
         "primary_skill": "main-agent-orchestration",
-        "auxiliary_skills": ["workspace-script-editor", "workspace-storyboard-editor"],
+        "auxiliary_skills": ["media-script-writer", "workspace-storyboard-editor"],
+    },
+    {
+        "package_name": "media-script-main-agent-package",
+        "display_name": "Media Script MainAgent Package",
+        "description": "Run a formal script Task through MainAgent, Writer, and Storyboard Workspace stages.",
+        "tags": ["main-agent", "media", "script", "task-manager"],
+        "primary_skill": "media-script-task-orchestration",
+        "auxiliary_skills": [
+            "main-agent-orchestration",
+            "media-script-writer",
+            "workspace-storyboard-editor",
+        ],
     },
     {
         "package_name": "media-writer-consult-package",
@@ -80,7 +92,7 @@ DEFAULT_SKILL_PACKAGES = [
         "description": "Read-only script consultation grounded in the shared Workspace.",
         "tags": ["main-agent", "consult", "media", "script"],
         "primary_skill": "managed-agent-consult",
-        "auxiliary_skills": ["workspace-script-editor"],
+        "auxiliary_skills": ["media-script-writer"],
     },
     {
         "package_name": "media-writer-delegate-package",
@@ -88,7 +100,7 @@ DEFAULT_SKILL_PACKAGES = [
         "description": "Delegated script execution with a required Workspace save.",
         "tags": ["main-agent", "delegate", "media", "script"],
         "primary_skill": "managed-agent-delegate",
-        "auxiliary_skills": ["workspace-script-editor"],
+        "auxiliary_skills": ["media-script-writer"],
     },
     {
         "package_name": "media-storyboard-consult-package",
@@ -279,7 +291,27 @@ async def ensure_default_skill_packages(
             SkillPackageEntity.package_name == definition["package_name"],
         )
         result = await session.exec(statement)
-        if result.first() is not None:
+        existing = result.first()
+        if existing is not None:
+            legacy_auxiliary = {
+                "main-agent-orchestration-package": [
+                    "workspace-script-editor",
+                    "workspace-storyboard-editor",
+                ],
+                "media-writer-consult-package": ["workspace-script-editor"],
+                "media-writer-delegate-package": ["workspace-script-editor"],
+            }.get(definition["package_name"])
+            if (
+                legacy_auxiliary is not None
+                and existing.primary_skill == definition["primary_skill"]
+                and existing.auxiliary_skills == legacy_auxiliary
+            ):
+                existing.auxiliary_skills_json = json.dumps(
+                    definition["auxiliary_skills"],
+                    ensure_ascii=True,
+                )
+                existing.updated_at = datetime.utcnow()
+                session.add(existing)
             continue
         session.add(
             SkillPackageEntity(

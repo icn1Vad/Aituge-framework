@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from dataclasses import asdict
 from typing import Any, AsyncIterator, Optional
@@ -39,12 +40,21 @@ from .pipeline.store import (
 )
 
 
+STREAM_EVENT_BUFFER_CHARS = 1000
+MAX_EVENT_PAYLOAD_CHARS = 8192
+
+
 class TaskManagerService:
     def __init__(self, options: SchedulingRuntimeOptions) -> None:
         self.options = options
 
     async def create_task(self, request: TaskCreateRequest) -> TaskEntity:
         definition = get_task_definition(request.task_type)
+        if definition.required_task_key and request.task_key != definition.required_task_key:
+            raise ValueError(
+                f"Task type '{request.task_type}' requires task_key "
+                f"'{definition.required_task_key}'."
+            )
         if request.idempotency_key:
             async with create_db_session() as session:
                 result = await session.exec(
@@ -130,6 +140,24 @@ class TaskManagerService:
         async with create_db_session() as session:
             return await session.get(TaskEntity, task_id)
 
+    async def update_task_metadata(
+        self,
+        task_id: str,
+        metadata_patch: dict[str, Any],
+    ) -> TaskEntity:
+        """Merge runtime business metadata without replacing Task ownership fields."""
+
+        async with create_db_session() as session:
+            task = await session.get(TaskEntity, task_id)
+            if task is None:
+                raise ValueError(f"Task '{task_id}' not found.")
+            task.metadata_json = {**(task.metadata_json or {}), **metadata_patch}
+            task.updated_at = utc_now()
+            session.add(task)
+            await session.commit()
+            await session.refresh(task)
+            return task
+
     async def list_tasks(
         self,
         user_id: Optional[str] = None,
@@ -176,10 +204,26 @@ class TaskManagerService:
     async def get_run(self, run_id: str) -> TaskRunEntity | None:
         return await get_run(run_id)
 
-    async def begin_external_task(self, task_id: str, *, user_id: str) -> TaskEntity:
+    async def begin_external_task(
+        self,
+        task_id: str,
+        *,
+        user_id: str,
+        stream: bool = False,
+    ) -> TaskEntity:
         """Open a TaskManager run whose executor lives in another scheduling mode."""
 
-        task = await self._prepare_run(task_id, TaskRunRequest(stream=False, user_id=user_id))
+        task = await self.get_task(task_id)
+        if task is None:
+            raise ValueError(f"Task '{task_id}' not found.")
+        if task.user_id != user_id:
+            raise ValueError(f"Task '{task_id}' is not available to this user.")
+        if task.handler_name != "external":
+            raise ValueError(f"Task '{task_id}' is not an external task.")
+        task = await self._prepare_run(
+            task_id,
+            TaskRunRequest(stream=stream, user_id=user_id),
+        )
         await self.record_event(
             task_id=task.id,
             run_id=task.current_run_id,
@@ -201,6 +245,16 @@ class TaskManagerService:
         task = await self.get_task(task_id)
         if task is None:
             raise ValueError(f"Task '{task_id}' not found.")
+        definition = get_task_definition(task.task_type)
+        is_valid, validation_error = validate_output_payload(
+            definition.output_schema_name,
+            result,
+        )
+        if not is_valid:
+            raise ValueError(
+                f"External task output does not match schema "
+                f"'{definition.output_schema_name}': {validation_error}"
+            )
         if thread_id or session_id:
             task = await self._update_task_session(
                 task_id,
@@ -886,7 +940,7 @@ class TaskManagerService:
                 error_code=error_code,
                 visible=visible,
                 message=message,
-                payload_json=payload or {},
+                payload_json=_bounded_event_payload(payload or {}),
             )
             session.add(event)
             await session.commit()
@@ -1115,6 +1169,17 @@ class TaskManagerService:
             await session.commit()
             await session.refresh(task)
             return task
+
+
+def _bounded_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+    if len(encoded) <= MAX_EVENT_PAYLOAD_CHARS:
+        return payload
+    return {
+        "truncated": True,
+        "original_chars": len(encoded),
+        "preview": encoded[: MAX_EVENT_PAYLOAD_CHARS // 2],
+    }
 
 
 def _definition_snapshot(definition: TaskDefinition) -> dict[str, Any]:
