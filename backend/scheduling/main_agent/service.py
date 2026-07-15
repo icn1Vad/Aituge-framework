@@ -572,6 +572,7 @@ class MainAgentService(_ScopedSingleAgentService):
                     "Save the complete shared storyboard as structured fields. "
                     "A successful save completes this agent turn."
                 ),
+                fn_schema=StoryboardWorkspacePayload,
                 return_direct=True,
             ),
         ]

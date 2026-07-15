@@ -195,6 +195,14 @@ def test_workspace_write_tools_are_terminal_and_return_small_receipts(tmp_path, 
         assert by_name["read_script_workspace"].metadata.return_direct is False
         assert by_name["write_script_workspace"].metadata.return_direct is True
         assert by_name["write_storyboard_workspace"].metadata.return_direct is True
+        storyboard_schema = by_name["write_storyboard_workspace"].metadata.get_parameters_dict()
+        assert storyboard_schema["required"] == [
+            "storyboard",
+            "storyboard_plan",
+            "visual_direction",
+            "warnings",
+        ]
+        assert storyboard_schema["properties"]["storyboard"]["type"] == "array"
 
         output = await by_name["write_script_workspace"].acall(
             script_text="final script",
