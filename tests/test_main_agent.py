@@ -61,9 +61,13 @@ def test_registry_mode_config_selects_workspace_tools_and_required_success():
 
     assert writer_consult == {
         "skill_package": "media-writer-consult-package",
+        "extra_tools": [],
         "workspace_tools": ["read_script_workspace"],
         "required_success_tool": "",
     }
+    assert writer.default_tools == []
+    assert writer_delegate["extra_tools"] == ["media_master_library"]
+    assert storyboard_delegate["extra_tools"] == []
     assert [
         tool.metadata.name
         for tool in _select_workspace_tools(
@@ -144,6 +148,7 @@ def test_default_registry_backfills_modes_without_overwriting_private_config(tmp
                 }
             )
             writer.system_prompt = LEGACY_MEDIA_WRITER_AGENT_PROMPT
+            writer.default_tools_json = json.dumps(["media_master_library"])
             session.add(writer)
             await session.commit()
 
@@ -152,7 +157,7 @@ def test_default_registry_backfills_modes_without_overwriting_private_config(tmp
 
         delegation = writer.runtime_config["delegation"]
         assert writer.system_prompt == "You are Media Writer Agent."
-        assert writer.default_tools == ["media_master_library"]
+        assert writer.default_tools == []
         assert delegation["use_when"] == "private writer rule"
         assert delegation["modes"]["consult"] == {
             "skill_package": "private-consult-package",
@@ -161,6 +166,9 @@ def test_default_registry_backfills_modes_without_overwriting_private_config(tmp
         assert delegation["modes"]["delegate"]["skill_package"] == (
             "media-writer-delegate-package"
         )
+        assert delegation["modes"]["delegate"]["extra_tools"] == [
+            "media_master_library"
+        ]
 
     try:
         asyncio.run(run())
@@ -658,6 +666,7 @@ def test_same_managed_single_agent_can_consult_then_delegate(tmp_path, monkeypat
                 "thread_id": request.thread_id,
                 "session_id": request.session_id,
                 "tools": [tool.metadata.name for tool in self.runtime_tools],
+                "extra_tools": request.extra_tools,
                 "skill_package": request.skill_package,
                 "message": request.message,
                 "runtime_task_prompt": self.runtime_task_prompt,
@@ -744,6 +753,7 @@ def test_same_managed_single_agent_can_consult_then_delegate(tmp_path, monkeypat
 
         assert second["instance_id"] == first["instance_id"]
         assert calls[0]["tools"] == ["read_script_workspace"]
+        assert calls[0]["extra_tools"] == []
         assert calls[0]["skill_package"] == "media-writer-consult-package"
         assert calls[0]["message"].endswith(
             "Context explicitly shared by the MainAgent:\n脚本上下文"
@@ -753,6 +763,7 @@ def test_same_managed_single_agent_can_consult_then_delegate(tmp_path, monkeypat
             "read_script_workspace",
             "write_script_workspace",
         ]
+        assert calls[1]["extra_tools"] == ["media_master_library"]
         assert calls[1]["skill_package"] == "media-writer-delegate-package"
         assert "Prefer a direct opening" in calls[0]["runtime_task_prompt"]
         assert "Prefer a direct opening" in calls[1]["runtime_task_prompt"]

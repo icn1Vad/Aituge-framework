@@ -747,6 +747,7 @@ class MainAgentService(_ScopedSingleAgentService):
             user_id=user_id,
             stream=event_sink is not None,
             skill_package=mode_config["skill_package"],
+            extra_tools=mode_config["extra_tools"],
         )
         successful_tools: set[str] = set()
         if event_sink is None:
@@ -948,6 +949,16 @@ def _delegation_mode_config(profile: AgentProfileEntity, mode: str) -> dict[str,
         for name in configured_workspace_tools
         if str(name).strip()
     ]
+    configured_extra_tools = config.get("extra_tools", [])
+    if not isinstance(configured_extra_tools, list):
+        raise ValueError(
+            f"Agent '{profile.agent_id}' mode '{mode}' has no valid extra tool list configured."
+        )
+    extra_tools = [
+        str(name).strip()
+        for name in configured_extra_tools
+        if str(name).strip()
+    ]
     required_success_tool = str(config.get("required_success_tool") or "").strip()
     if required_success_tool and required_success_tool not in workspace_tools:
         raise ValueError(
@@ -956,6 +967,7 @@ def _delegation_mode_config(profile: AgentProfileEntity, mode: str) -> dict[str,
         )
     return {
         "skill_package": skill_package,
+        "extra_tools": extra_tools,
         "workspace_tools": workspace_tools,
         "required_success_tool": required_success_tool,
     }

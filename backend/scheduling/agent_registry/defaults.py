@@ -126,7 +126,7 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
         agent_id="media-writer-agent",
         name="Media Writer Agent",
         description="Structured short-video script writer.",
-        default_tools=["media_master_library"],
+        default_tools=[],
         system_prompt=MEDIA_WRITER_AGENT_PROMPT,
         runtime_config={
             "delegation": {
@@ -139,6 +139,7 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
                     },
                     "delegate": {
                         "skill_package": "media-writer-delegate-package",
+                        "extra_tools": ["media_master_library"],
                         "workspace_tools": [
                             "read_script_workspace",
                             "write_script_workspace",
@@ -194,7 +195,7 @@ LEGACY_DEFAULT_SYSTEM_PROMPTS = {
 # Default profile migrations are limited to values previously owned by this
 # registry. Explicitly configured non-default tool lists remain untouched.
 LEGACY_DEFAULT_TOOLS = {
-    "media-writer-agent": {()},
+    "media-writer-agent": {(), ("media_master_library",)},
 }
 
 
