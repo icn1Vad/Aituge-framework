@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from scheduling.scheduler import SchedulingChatRequest
 
@@ -10,6 +12,27 @@ class MainAgentChatRequest(SchedulingChatRequest):
 
     workspace_id: str | None = None
     task_id: str | None = None
+
+
+class StoryboardShot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    time: str = Field(min_length=1)
+    scene: str = Field(min_length=1)
+    shot: str = Field(min_length=1)
+    action: str = Field(min_length=1)
+    voiceover: str = Field(min_length=1)
+    subtitle_focus: str = Field(min_length=1)
+    visual_prompt: str = Field(min_length=1)
+
+
+class StoryboardWorkspacePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    storyboard: list[StoryboardShot] = Field(min_length=1)
+    storyboard_plan: dict[str, Any]
+    visual_direction: list[str] | str
+    warnings: list[str]
 
 
 class ScriptWorkspaceCreateRequest(BaseModel):

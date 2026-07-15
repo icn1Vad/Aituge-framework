@@ -42,7 +42,7 @@ Do not produce Markdown tables, headings, code fences, separators, commentary, o
 ## Workspace output protocol
 
 - In delegate or edit mode, first call `read_script_workspace`.
-- Serialize the complete structured storyboard object as valid JSON and pass that full JSON text to `write_storyboard_workspace`.
+- Pass the four structured fields directly to `write_storyboard_workspace`; do not serialize them into a nested JSON string.
 - Save a complete replacement object, never a diff or partial shot list.
 - Never claim that the storyboard was saved unless `write_storyboard_workspace` succeeds.
 - For a bounded revision, parse the latest saved storyboard JSON, change only the requested shots, preserve unaffected shots and top-level metadata, then save the complete replacement JSON.

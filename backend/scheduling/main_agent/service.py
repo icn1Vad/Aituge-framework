@@ -22,7 +22,7 @@ from task_manager.memory import TaskMemoryService, render_task_memory
 from task_manager.service import TaskManagerService, task_to_read
 
 from .models import ManagedSingleAgentEntity
-from .schemas import MainAgentChatRequest
+from .schemas import MainAgentChatRequest, StoryboardShot, StoryboardWorkspacePayload
 from .store import MainAgentSessionStore, ManagedSingleAgentStore, ScriptWorkspaceStore
 
 
@@ -509,7 +509,22 @@ class MainAgentService(_ScopedSingleAgentService):
                 ensure_ascii=False,
             )
 
-        async def write_storyboard_workspace(storyboard_text: str) -> str:
+        async def write_storyboard_workspace(
+            storyboard: list[StoryboardShot],
+            storyboard_plan: dict[str, Any],
+            visual_direction: list[str] | str,
+            warnings: list[str],
+        ) -> str:
+            payload = StoryboardWorkspacePayload(
+                storyboard=storyboard,
+                storyboard_plan=storyboard_plan,
+                visual_direction=visual_direction,
+                warnings=warnings,
+            )
+            storyboard_text = json.dumps(
+                payload.model_dump(mode="json"),
+                ensure_ascii=False,
+            )
             row = await self.workspace_store.update(
                 workspace_id,
                 storyboard_text=storyboard_text,
@@ -553,7 +568,10 @@ class MainAgentService(_ScopedSingleAgentService):
             FunctionTool.from_defaults(
                 async_fn=write_storyboard_workspace,
                 name="write_storyboard_workspace",
-                description="Save the complete shared storyboard. A successful save completes this agent turn.",
+                description=(
+                    "Save the complete shared storyboard as structured fields. "
+                    "A successful save completes this agent turn."
+                ),
                 return_direct=True,
             ),
         ]

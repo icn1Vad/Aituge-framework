@@ -226,6 +226,40 @@ def test_workspace_write_tools_are_terminal_and_return_small_receipts(tmp_path, 
             "replace_reason": "Initial selection for this topic.",
         }
 
+        storyboard_output = await by_name["write_storyboard_workspace"].acall(
+            storyboard=[
+                {
+                    "time": "0-3s",
+                    "scene": "Indoor close-up",
+                    "shot": "Static close-up",
+                    "action": "Look into the camera",
+                    "voiceover": 'Your rights finally have a "backstop".',
+                    "subtitle_focus": "Know your rights",
+                    "visual_prompt": "A veteran speaking directly to camera",
+                }
+            ],
+            storyboard_plan={"total_shots": 1},
+            visual_direction=["Keep the framing stable."],
+            warnings=[],
+        )
+        storyboard_receipt = json.loads(storyboard_output.content)
+        saved_workspace = await ScriptWorkspaceStore().get(
+            workspace.id,
+            user_id="main-user",
+        )
+        assert saved_workspace is not None
+        assert storyboard_receipt == {
+            "status": "saved",
+            "workspace_id": workspace.id,
+            "field": "storyboard_text",
+            "character_count": len(saved_workspace.storyboard_text),
+        }
+        saved_storyboard = json.loads(saved_workspace.storyboard_text)
+        assert saved_storyboard["storyboard"][0]["voiceover"] == (
+            'Your rights finally have a "backstop".'
+        )
+        assert saved_storyboard["storyboard_plan"] == {"total_shots": 1}
+
     try:
         asyncio.run(run())
     finally:
