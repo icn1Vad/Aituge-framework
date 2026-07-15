@@ -37,4 +37,14 @@ When the validated Task input has `operation: interact`, read `main-agent-orches
 - consult a specialist for advice;
 - delegate a substantial script or storyboard edit.
 
+When the current operation requires both `script_text` and `storyboard_text` to change, always execute the two revisions serially:
+
+1. Delegate only to `media-writer-agent` first. Do not request a Storyboard revision or issue either Workspace write in the same tool-call batch.
+2. Wait for the Writer delegation result to confirm that `write_script_workspace` succeeded.
+3. Only after that success, delegate to `media-storyboard-agent`.
+4. Require Storyboard to read the newly saved script before it saves the complete replacement `storyboard_text`.
+5. Finish only after both delegations and both Workspace writes have succeeded.
+
+Do not use direct MainAgent Workspace writes for a revision that changes both values, and never schedule the Writer and Storyboard delegations in parallel.
+
 Preserve unaffected Workspace content and do not force both specialists to run for every interaction.
