@@ -152,6 +152,7 @@ def test_default_registry_backfills_modes_without_overwriting_private_config(tmp
 
         delegation = writer.runtime_config["delegation"]
         assert writer.system_prompt == "You are Media Writer Agent."
+        assert writer.default_tools == ["media_master_library"]
         assert delegation["use_when"] == "private writer rule"
         assert delegation["modes"]["consult"] == {
             "skill_package": "private-consult-package",
@@ -195,7 +196,16 @@ def test_workspace_write_tools_are_terminal_and_return_small_receipts(tmp_path, 
         assert by_name["write_script_workspace"].metadata.return_direct is True
         assert by_name["write_storyboard_workspace"].metadata.return_direct is True
 
-        output = await by_name["write_script_workspace"].acall(script_text="final script")
+        output = await by_name["write_script_workspace"].acall(
+            script_text="final script",
+            role_id="role_yanjie",
+            strategy_id="strategy_path",
+            template_id="template_three_step",
+            script_type_id="script_type_advice",
+            script_example_ids=["example_1"],
+            risk_rule_ids=["risk_policy"],
+            replace_reason="Initial selection for this topic.",
+        )
         receipt = json.loads(output.content)
         assert receipt == {
             "status": "saved",
@@ -204,6 +214,17 @@ def test_workspace_write_tools_are_terminal_and_return_small_receipts(tmp_path, 
             "character_count": len("final script"),
         }
         assert "final script" not in output.content
+        updated_task = await task_service.get_task(task.id)
+        assert updated_task is not None
+        assert updated_task.metadata_json["master_library_usage"] == {
+            "role_id": "role_yanjie",
+            "strategy_id": "strategy_path",
+            "template_id": "template_three_step",
+            "script_type_id": "script_type_advice",
+            "script_example_ids": ["example_1"],
+            "risk_rule_ids": ["risk_policy"],
+            "replace_reason": "Initial selection for this topic.",
+        }
 
     try:
         asyncio.run(run())

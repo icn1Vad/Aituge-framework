@@ -25,6 +25,7 @@ def test_default_tool_list_contains_current_tool_providers():
     assert ("code_interpreter", "local_python") in entries
     assert ("code_interpreter", "limited_sandbox") in entries
     assert ("web_search", "aliyun") in entries
+    assert ("media_master_library", "media_military_http") in entries
 
 
 def test_default_tool_list_exposes_llm_tool_names():
@@ -41,6 +42,35 @@ def test_default_tool_list_exposes_llm_tool_names():
     assert tool_list.get("web_search", "aliyun").llm_tool_names == (
         "aliyun-websearch",
     )
+    assert tool_list.get(
+        "media_master_library", "media_military_http"
+    ).llm_tool_names == (
+        "media_get_master_library_manifest",
+        "media_search_master_library",
+        "media_fetch_master_library_item",
+        "media_recommend_templates_for_strategy",
+        "media_get_random_script_type_candidates",
+        "media_get_script_examples_by_strategy",
+    )
+
+
+def test_tool_list_builds_media_master_library_bundle():
+    bundle = get_default_tool_list().create_bundle(
+        ToolProviderConfig(
+            tool_name="media_master_library",
+            provider="media_military_http",
+            config={"base_url": "http://127.0.0.1:8010"},
+        )
+    )
+
+    assert [tool.metadata.name for tool in bundle.tools] == [
+        "media_get_master_library_manifest",
+        "media_search_master_library",
+        "media_fetch_master_library_item",
+        "media_recommend_templates_for_strategy",
+        "media_get_random_script_type_candidates",
+        "media_get_script_examples_by_strategy",
+    ]
 
 
 def test_tool_list_builds_local_python_bundle(tmp_path: Path):

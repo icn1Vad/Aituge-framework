@@ -456,13 +456,40 @@ class MainAgentService(_ScopedSingleAgentService):
                 ensure_ascii=False,
             )
 
-        async def write_script_workspace(script_text: str) -> str:
+        async def write_script_workspace(
+            script_text: str,
+            role_id: str = "",
+            strategy_id: str = "",
+            template_id: str = "",
+            script_type_id: str = "",
+            script_example_ids: list[str] | None = None,
+            risk_rule_ids: list[str] | None = None,
+            replace_reason: str = "",
+        ) -> str:
             row = await self.workspace_store.update(
                 workspace_id,
                 script_text=script_text,
                 user_id=task.user_id,
                 tenant_id=task.tenant_id,
             )
+            master_library_usage = {
+                "role_id": role_id,
+                "strategy_id": strategy_id,
+                "template_id": template_id,
+                "script_type_id": script_type_id,
+                "script_example_ids": script_example_ids or [],
+                "risk_rule_ids": risk_rule_ids or [],
+                "replace_reason": replace_reason,
+            }
+            if any(
+                value
+                for key, value in master_library_usage.items()
+                if key not in {"script_example_ids", "risk_rule_ids"}
+            ) or master_library_usage["script_example_ids"] or master_library_usage["risk_rule_ids"]:
+                await self.task_service.update_task_metadata(
+                    task.id,
+                    {"master_library_usage": master_library_usage},
+                )
             await self.task_service.record_event(
                 task_id=task.id,
                 run_id=task.current_run_id,
@@ -517,7 +544,10 @@ class MainAgentService(_ScopedSingleAgentService):
             FunctionTool.from_defaults(
                 async_fn=write_script_workspace,
                 name="write_script_workspace",
-                description="Save the complete shared script. A successful save completes this agent turn.",
+                description=(
+                    "Save the complete shared script and the ids of master-library cards actually adopted. "
+                    "A successful save completes this agent turn."
+                ),
                 return_direct=True,
             ),
             FunctionTool.from_defaults(

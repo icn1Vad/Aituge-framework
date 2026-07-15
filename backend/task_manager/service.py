@@ -140,6 +140,24 @@ class TaskManagerService:
         async with create_db_session() as session:
             return await session.get(TaskEntity, task_id)
 
+    async def update_task_metadata(
+        self,
+        task_id: str,
+        metadata_patch: dict[str, Any],
+    ) -> TaskEntity:
+        """Merge runtime business metadata without replacing Task ownership fields."""
+
+        async with create_db_session() as session:
+            task = await session.get(TaskEntity, task_id)
+            if task is None:
+                raise ValueError(f"Task '{task_id}' not found.")
+            task.metadata_json = {**(task.metadata_json or {}), **metadata_patch}
+            task.updated_at = utc_now()
+            session.add(task)
+            await session.commit()
+            await session.refresh(task)
+            return task
+
     async def list_tasks(
         self,
         user_id: Optional[str] = None,
