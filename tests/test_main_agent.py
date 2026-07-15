@@ -186,6 +186,7 @@ def test_workspace_write_tools_are_terminal_and_return_small_receipts(tmp_path, 
                 },
                 user_id="main-user",
                 stream=False,
+                metadata={"existing_marker": "keep"},
             )
         )
         task = await task_service.begin_external_task(task.id, user_id="main-user")
@@ -224,6 +225,7 @@ def test_workspace_write_tools_are_terminal_and_return_small_receipts(tmp_path, 
         assert "final script" not in output.content
         updated_task = await task_service.get_task(task.id)
         assert updated_task is not None
+        assert updated_task.metadata_json["existing_marker"] == "keep"
         assert updated_task.metadata_json["master_library_usage"] == {
             "role_id": "role_yanjie",
             "strategy_id": "strategy_path",
@@ -256,6 +258,7 @@ def test_workspace_write_tools_are_terminal_and_return_small_receipts(tmp_path, 
             user_id="main-user",
         )
         assert saved_workspace is not None
+        assert saved_workspace.script_text == "final script"
         assert storyboard_receipt == {
             "status": "saved",
             "workspace_id": workspace.id,
@@ -267,6 +270,18 @@ def test_workspace_write_tools_are_terminal_and_return_small_receipts(tmp_path, 
             'Your rights finally have a "backstop".'
         )
         assert saved_storyboard["storyboard_plan"] == {"total_shots": 1}
+
+        await by_name["write_script_workspace"].acall(script_text="revised script")
+        revised_workspace = await ScriptWorkspaceStore().get(
+            workspace.id,
+            user_id="main-user",
+        )
+        assert revised_workspace is not None
+        assert revised_workspace.script_text == "revised script"
+        assert revised_workspace.storyboard_text == saved_workspace.storyboard_text
+        preserved_task = await task_service.get_task(task.id)
+        assert preserved_task is not None
+        assert preserved_task.metadata_json == updated_task.metadata_json
 
     try:
         asyncio.run(run())
