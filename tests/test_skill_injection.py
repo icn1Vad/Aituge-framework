@@ -54,6 +54,7 @@ def test_skill_manager_builds_main_agent_and_managed_agent_packages(tmp_path, mo
 
         main = await SkillManager().create_context("main-agent-orchestration-package")
         consult = await SkillManager().create_context("media-writer-consult-package")
+        writer_delegate = await SkillManager().create_context("media-writer-delegate-package")
         delegate = await SkillManager().create_context("media-storyboard-delegate-package")
 
         assert main.skills["active_package"]["primary"]["name"] == (
@@ -70,6 +71,11 @@ def test_skill_manager_builds_main_agent_and_managed_agent_packages(tmp_path, mo
         assert consult.skills["active_package"]["auxiliary_index"][0]["name"] == (
             "media-script-writer"
         )
+        writer_skill = await writer_delegate.tools[0].acall(
+            skill_name="media-script-writer"
+        )
+        assert "Non-negotiable paid-training rule" in str(writer_skill)
+        assert "免费培训" in str(writer_skill)
         assert delegate.skills["active_package"]["primary"]["name"] == (
             "managed-agent-delegate"
         )
