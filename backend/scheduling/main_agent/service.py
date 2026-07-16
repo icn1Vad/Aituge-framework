@@ -864,8 +864,8 @@ class MainAgentService(_ScopedSingleAgentService):
         primary_session_id: str,
         user_id: str,
     ) -> ManagedSingleAgentEntity:
-        if bool(agent_id) == bool(instance_id):
-            raise ValueError("Provide exactly one of agent_id or instance_id.")
+        if not agent_id and not instance_id:
+            raise ValueError("Provide agent_id or instance_id.")
         if instance_id:
             row = await self.managed_store.get(
                 instance_id,
@@ -875,6 +875,11 @@ class MainAgentService(_ScopedSingleAgentService):
             )
             if row is None:
                 raise ValueError(f"Managed agent instance '{instance_id}' not found.")
+            if agent_id and row.agent_id != agent_id:
+                raise ValueError(
+                    f"Managed agent instance '{instance_id}' belongs to "
+                    f"'{row.agent_id}', not '{agent_id}'."
+                )
             return row
         if agent_id == primary_profile.agent_id:
             raise ValueError("The MainAgent cannot manage itself as a child instance.")

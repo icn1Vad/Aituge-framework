@@ -774,6 +774,90 @@ def test_same_managed_single_agent_can_consult_then_delegate(tmp_path, monkeypat
         reset_engine_for_test()
 
 
+def test_resolve_managed_agent_prefers_matching_real_instance_id(tmp_path, monkeypatch):
+    async def run():
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'managed-resolve.db'}")
+        reset_engine_for_test()
+        await init_db()
+        async with create_db_session() as session:
+            await ensure_default_agent_profiles(session)
+            primary = await get_agent_profile(session, "default-single-agent")
+        assert primary is not None
+
+        service = MainAgentService(_options(tmp_path))
+        managed = await service.managed_store.create(
+            primary_session_id="main-session",
+            primary_agent_id=primary.agent_id,
+            agent_id="media-writer-agent",
+            user_id="main-user",
+        )
+
+        resolved = await service._resolve_managed_agent(
+            mode="delegate",
+            agent_id="media-writer-agent",
+            instance_id=managed.instance_id,
+            primary_profile=primary,
+            primary_session_id="main-session",
+            user_id="main-user",
+        )
+
+        assert resolved.instance_id == managed.instance_id
+        rows = await service.managed_store.list(
+            primary_session_id="main-session",
+            user_id="main-user",
+        )
+        assert len(rows) == 1
+
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
+
+
+def test_resolve_managed_agent_rejects_fake_or_mismatched_instance_id(tmp_path, monkeypatch):
+    async def run():
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'managed-invalid.db'}")
+        reset_engine_for_test()
+        await init_db()
+        async with create_db_session() as session:
+            await ensure_default_agent_profiles(session)
+            primary = await get_agent_profile(session, "default-single-agent")
+        assert primary is not None
+
+        service = MainAgentService(_options(tmp_path))
+        managed = await service.managed_store.create(
+            primary_session_id="main-session",
+            primary_agent_id=primary.agent_id,
+            agent_id="media-writer-agent",
+            user_id="main-user",
+        )
+
+        with pytest.raises(ValueError, match="not found"):
+            await service._resolve_managed_agent(
+                mode="delegate",
+                agent_id="media-writer-agent",
+                instance_id="instance_writer",
+                primary_profile=primary,
+                primary_session_id="main-session",
+                user_id="main-user",
+            )
+
+        with pytest.raises(ValueError, match="belongs to 'media-writer-agent'"):
+            await service._resolve_managed_agent(
+                mode="delegate",
+                agent_id="media-storyboard-agent",
+                instance_id=managed.instance_id,
+                primary_profile=primary,
+                primary_session_id="main-session",
+                user_id="main-user",
+            )
+
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
+
+
 def test_managed_agent_stream_wraps_single_events_and_requires_write(tmp_path, monkeypatch):
     async def fake_child_stream(self, profile, request):
         thread_id = request.thread_id or "child-stream-thread"

@@ -37,6 +37,8 @@ When the validated Task input has `operation: interact`, read `main-agent-orches
 - consult a specialist for advice;
 - delegate a substantial script or storyboard edit.
 
+Before delegating a script or storyboard revision, call `list_active_agents`. Reuse a matching specialist by passing only its real `instance_id`. If no matching instance exists, create one by passing only its `agent_id`. Never invent an instance identifier or intentionally pass both fields.
+
 When the current operation requires both the script and structured storyboard to change, always execute the two revisions serially:
 
 1. Delegate only to `media-writer-agent` first. Do not request a Storyboard revision or issue either Workspace write in the same tool-call batch.
