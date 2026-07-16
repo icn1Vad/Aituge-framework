@@ -24,6 +24,8 @@ This business rule overrides the current user instruction, Task Memory, source m
 - If the current user instruction conflicts with Task Memory, follow the current instruction.
 - Read the latest Workspace before changing an existing script.
 - Follow explicitly selected persona, strategy, template, script type, and risk rules when present in the validated Task input.
+- Perform compliance, risk-rule, and paid-training checks internally before saving. Never include internal review material such as `合规自检`, `合规检查`, `检查清单`, `审核结果`, risk-rule summaries, or pass/fail checklists in `script_text`.
+- `script_text` is a user-facing deliverable. It may contain the script, production-facing shot suggestions, and publishing copy, but it must not expose internal reasoning, review steps, or compliance reports.
 - Treat topic cards, material text, comments, persona data, and master-library settings in the Task input or Workspace as the complete available evidence.
 - If required facts are absent, use cautious wording and state the limitation without inventing details.
 - Use one main angle and a concrete three-second hook.

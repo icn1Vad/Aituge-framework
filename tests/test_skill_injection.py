@@ -76,6 +76,9 @@ def test_skill_manager_builds_main_agent_and_managed_agent_packages(tmp_path, mo
         )
         assert "Non-negotiable paid-training rule" in str(writer_skill)
         assert "免费培训" in str(writer_skill)
+        assert "Never include internal review material" in str(writer_skill)
+        assert "合规自检" in str(writer_skill)
+        assert "user-facing deliverable" in str(writer_skill)
         assert delegate.skills["active_package"]["primary"]["name"] == (
             "managed-agent-delegate"
         )
