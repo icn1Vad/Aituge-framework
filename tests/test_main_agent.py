@@ -203,6 +203,7 @@ def test_workspace_write_tools_are_terminal_and_return_small_receipts(tmp_path, 
 
         assert by_name["read_script_workspace"].metadata.return_direct is False
         assert by_name["write_script_workspace"].metadata.return_direct is True
+        assert by_name["write_script_and_storyboard_workspace"].metadata.return_direct is True
         assert by_name["write_storyboard_workspace"].metadata.return_direct is True
         storyboard_schema = by_name["write_storyboard_workspace"].metadata.get_parameters_dict()
         assert storyboard_schema["required"] == [
@@ -279,6 +280,46 @@ def test_workspace_write_tools_are_terminal_and_return_small_receipts(tmp_path, 
         )
         assert saved_storyboard["storyboard_plan"] == {"total_shots": 1}
 
+        atomic_output = await by_name["write_script_and_storyboard_workspace"].acall(
+            script_text="atomically revised script",
+            storyboard_updates=[
+                {
+                    "shot_index": 0,
+                    "replacement": {
+                        "time": "0-3s",
+                        "scene": "Indoor close-up",
+                        "shot": "Slow push-in",
+                        "action": "Point to the updated subtitle",
+                        "voiceover": "The revised opening is now synchronized.",
+                        "subtitle_focus": "Revised opening",
+                        "visual_prompt": "A veteran presenting the revised opening",
+                    },
+                }
+            ],
+            replace_reason="Update the opening sentence and its matching shot.",
+        )
+        atomic_receipt = json.loads(atomic_output.content)
+        atomically_saved_workspace = await ScriptWorkspaceStore().get(
+            workspace.id,
+            user_id="main-user",
+        )
+        assert atomically_saved_workspace is not None
+        assert atomically_saved_workspace.script_text == "atomically revised script"
+        atomic_storyboard = json.loads(atomically_saved_workspace.storyboard_text)
+        assert atomic_storyboard["storyboard"][0]["shot"] == "Slow push-in"
+        assert atomic_storyboard["storyboard"][0]["voiceover"] == (
+            "The revised opening is now synchronized."
+        )
+        assert atomic_storyboard["storyboard_plan"] == {"total_shots": 1}
+        assert atomic_receipt == {
+            "status": "saved",
+            "workspace_id": workspace.id,
+            "fields": ["script_text", "storyboard_text"],
+            "shot_indexes": [0],
+            "script_character_count": len("atomically revised script"),
+            "storyboard_character_count": len(atomically_saved_workspace.storyboard_text),
+        }
+
         await by_name["write_script_workspace"].acall(script_text="revised script")
         revised_workspace = await ScriptWorkspaceStore().get(
             workspace.id,
@@ -286,10 +327,126 @@ def test_workspace_write_tools_are_terminal_and_return_small_receipts(tmp_path, 
         )
         assert revised_workspace is not None
         assert revised_workspace.script_text == "revised script"
-        assert revised_workspace.storyboard_text == saved_workspace.storyboard_text
+        assert (
+            revised_workspace.storyboard_text
+            == atomically_saved_workspace.storyboard_text
+        )
         preserved_task = await task_service.get_task(task.id)
         assert preserved_task is not None
-        assert preserved_task.metadata_json == updated_task.metadata_json
+        assert preserved_task.metadata_json["existing_marker"] == "keep"
+        assert preserved_task.metadata_json["master_library_usage"] == {
+            **updated_task.metadata_json["master_library_usage"],
+            "replace_reason": "Update the opening sentence and its matching shot.",
+        }
+
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
+
+
+def test_atomic_workspace_write_rejects_invalid_shot_indexes(tmp_path, monkeypatch):
+    async def run():
+        monkeypatch.setenv(
+            "SQLITE_URL",
+            f"sqlite+aiosqlite:///{tmp_path / 'workspace-index-validation.db'}",
+        )
+        reset_engine_for_test()
+        await init_db()
+        storyboard_text = json.dumps(
+            {
+                "storyboard": [
+                    {
+                        "time": "0-3s",
+                        "scene": "Opening",
+                        "shot": "Close-up",
+                        "action": "Look into camera",
+                        "voiceover": "Original opening.",
+                        "subtitle_focus": "Opening",
+                        "visual_prompt": "Direct-to-camera opening",
+                    },
+                    {
+                        "time": "3-8s",
+                        "scene": "Explanation",
+                        "shot": "Medium shot",
+                        "action": "Point to the document",
+                        "voiceover": "Original explanation.",
+                        "subtitle_focus": "Explanation",
+                        "visual_prompt": "Presenter explains a document",
+                    },
+                ],
+                "storyboard_plan": {"total_shots": 2},
+                "visual_direction": ["Keep the framing stable."],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+        workspace = await ScriptWorkspaceStore().create(
+            script_text="original script",
+            storyboard_text=storyboard_text,
+            user_id="main-user",
+        )
+        task_service = TaskManagerService(_options(tmp_path))
+        task = await task_service.create_task(
+            TaskCreateRequest(
+                task_type="media.script.generate",
+                task_key="media_script",
+                input_payload={
+                    "workspace_id": workspace.id,
+                    "instruction": "revise",
+                    "operation": "interact",
+                },
+                user_id="main-user",
+            )
+        )
+        task = await task_service.begin_external_task(task.id, user_id="main-user")
+        tools = MainAgentService(_options(tmp_path))._workspace_tools(workspace.id, task)
+        atomic_tool = {
+            tool.metadata.name: tool for tool in tools
+        }["write_script_and_storyboard_workspace"]
+        replacement = {
+            "time": "0-3s",
+            "scene": "Opening",
+            "shot": "Close-up",
+            "action": "Look into camera",
+            "voiceover": "Revised opening.",
+            "subtitle_focus": "Revised opening",
+            "visual_prompt": "Direct-to-camera revised opening",
+        }
+
+        with pytest.raises(ValueError, match="unique shot_index"):
+            await atomic_tool.acall(
+                script_text="duplicate index script",
+                storyboard_updates=[
+                    {"shot_index": 0, "replacement": replacement},
+                    {"shot_index": 0, "replacement": replacement},
+                ],
+            )
+        with pytest.raises(ValueError, match="out-of-range"):
+            await atomic_tool.acall(
+                script_text="out of range script",
+                storyboard_updates=[
+                    {"shot_index": 2, "replacement": replacement},
+                ],
+            )
+        with pytest.raises(ValueError):
+            await atomic_tool.acall(
+                script_text="too many updates script",
+                storyboard_updates=[
+                    {"shot_index": 0, "replacement": replacement},
+                    {"shot_index": 1, "replacement": replacement},
+                    {"shot_index": 0, "replacement": replacement},
+                    {"shot_index": 1, "replacement": replacement},
+                ],
+            )
+
+        unchanged = await ScriptWorkspaceStore().get(
+            workspace.id,
+            user_id="main-user",
+        )
+        assert unchanged is not None
+        assert unchanged.script_text == "original script"
+        assert unchanged.storyboard_text == storyboard_text
 
     try:
         asyncio.run(run())
@@ -426,8 +583,7 @@ def test_main_agent_prepare_uses_task_package_and_direct_workspace_tools(tmp_pat
             "list_delegatable_agents",
             "list_active_agents",
             "read_script_workspace",
-            "write_script_workspace",
-            "write_storyboard_workspace",
+            "write_script_and_storyboard_workspace",
         ]
         await service._fail_prepared_task(prepared, RuntimeError("test cleanup"))
 
@@ -530,6 +686,13 @@ def test_generate_task_requires_script_and_storyboard_workspace_outputs(tmp_path
             ),
             stream=False,
         )
+        assert [tool.metadata.name for tool in service.runtime_tools] == [
+            "consult_agent",
+            "delegate_agent",
+            "list_delegatable_agents",
+            "list_active_agents",
+            "read_script_workspace",
+        ]
 
         with pytest.raises(ValueError, match="delegate both Writer and Storyboard"):
             await service._finalize_turn(

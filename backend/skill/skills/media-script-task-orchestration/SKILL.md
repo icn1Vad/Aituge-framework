@@ -33,9 +33,11 @@ Do not replace these two specialist stages with a direct MainAgent write during 
 When the validated Task input has `operation: interact`, read `main-agent-orchestration` and choose its smallest useful path:
 
 - answer directly for explanation only;
-- directly save a small, explicit Workspace edit;
+- directly save a small, explicit Workspace edit only through `write_script_and_storyboard_workspace`, using the existing zero-based storyboard array indexes;
 - consult a specialist for advice;
 - delegate a substantial script or storyboard edit.
+
+A direct small edit must satisfy every small-edit condition in `main-agent-orchestration`. If the request affects more than 3 spoken sentences, cannot be mapped to at most 3 existing shot indexes, changes shot count/order/timing, changes the selected persona or master-library cards, changes the core topic/factual basis/overall structure/duration, or requires new research, delegate it instead. When uncertain, delegate.
 
 Before delegating a script or storyboard revision, call `list_active_agents`. Reuse a matching specialist by passing only its real `instance_id`. If no matching instance exists, create one by passing only its `agent_id`. Never invent an instance identifier or intentionally pass both fields.
 

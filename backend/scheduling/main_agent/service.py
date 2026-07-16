@@ -22,7 +22,13 @@ from task_manager.memory import TaskMemoryService, render_task_memory
 from task_manager.service import TaskManagerService, task_to_read
 
 from .models import ManagedSingleAgentEntity
-from .schemas import MainAgentChatRequest, StoryboardShot, StoryboardWorkspacePayload
+from .schemas import (
+    IndexedStoryboardShotUpdate,
+    MainAgentChatRequest,
+    ScriptStoryboardWorkspaceUpdatePayload,
+    StoryboardShot,
+    StoryboardWorkspacePayload,
+)
 from .store import MainAgentSessionStore, ManagedSingleAgentStore, ScriptWorkspaceStore
 
 
@@ -276,7 +282,18 @@ class MainAgentService(_ScopedSingleAgentService):
                 runtime_task_prompt=runtime_task_prompt,
                 event_sink=event_sink,
             )
-            self.runtime_tools = delegation_tools + workspace_tools
+            main_workspace_tools = [
+                tool
+                for tool in workspace_tools
+                if tool.metadata.name == "read_script_workspace"
+                or (
+                    task is not None
+                    and str((task.input_payload_json or {}).get("operation") or "interact")
+                    == "interact"
+                    and tool.metadata.name == "write_script_and_storyboard_workspace"
+                )
+            ]
+            self.runtime_tools = delegation_tools + main_workspace_tools
             self.runtime_task_prompt = runtime_task_prompt
             return prepared
         except Exception as exc:
@@ -439,6 +456,59 @@ class MainAgentService(_ScopedSingleAgentService):
         return rows
 
     def _workspace_tools(self, workspace_id: str, task) -> list[FunctionTool]:
+        async def update_master_library_usage(
+            *,
+            role_id: str = "",
+            strategy_id: str = "",
+            template_id: str = "",
+            script_type_id: str = "",
+            script_example_ids: list[str] | None = None,
+            risk_rule_ids: list[str] | None = None,
+            replace_reason: str = "",
+            preserve_existing: bool = False,
+        ) -> None:
+            if preserve_existing:
+                current_task = await self.task_service.get_task(task.id)
+                existing_usage = dict(
+                    ((current_task.metadata_json if current_task else {}) or {}).get(
+                        "master_library_usage"
+                    )
+                    or {}
+                )
+                role_id = role_id or str(existing_usage.get("role_id") or "")
+                strategy_id = strategy_id or str(existing_usage.get("strategy_id") or "")
+                template_id = template_id or str(existing_usage.get("template_id") or "")
+                script_type_id = script_type_id or str(
+                    existing_usage.get("script_type_id") or ""
+                )
+                script_example_ids = script_example_ids or list(
+                    existing_usage.get("script_example_ids") or []
+                )
+                risk_rule_ids = risk_rule_ids or list(
+                    existing_usage.get("risk_rule_ids") or []
+                )
+                replace_reason = replace_reason or str(
+                    existing_usage.get("replace_reason") or ""
+                )
+            master_library_usage = {
+                "role_id": role_id,
+                "strategy_id": strategy_id,
+                "template_id": template_id,
+                "script_type_id": script_type_id,
+                "script_example_ids": script_example_ids or [],
+                "risk_rule_ids": risk_rule_ids or [],
+                "replace_reason": replace_reason,
+            }
+            if any(
+                value
+                for key, value in master_library_usage.items()
+                if key not in {"script_example_ids", "risk_rule_ids"}
+            ) or master_library_usage["script_example_ids"] or master_library_usage["risk_rule_ids"]:
+                await self.task_service.update_task_metadata(
+                    task.id,
+                    {"master_library_usage": master_library_usage},
+                )
+
         async def read_script_workspace() -> str:
             row = await self.workspace_store.get(
                 workspace_id,
@@ -472,24 +542,15 @@ class MainAgentService(_ScopedSingleAgentService):
                 user_id=task.user_id,
                 tenant_id=task.tenant_id,
             )
-            master_library_usage = {
-                "role_id": role_id,
-                "strategy_id": strategy_id,
-                "template_id": template_id,
-                "script_type_id": script_type_id,
-                "script_example_ids": script_example_ids or [],
-                "risk_rule_ids": risk_rule_ids or [],
-                "replace_reason": replace_reason,
-            }
-            if any(
-                value
-                for key, value in master_library_usage.items()
-                if key not in {"script_example_ids", "risk_rule_ids"}
-            ) or master_library_usage["script_example_ids"] or master_library_usage["risk_rule_ids"]:
-                await self.task_service.update_task_metadata(
-                    task.id,
-                    {"master_library_usage": master_library_usage},
-                )
+            await update_master_library_usage(
+                role_id=role_id,
+                strategy_id=strategy_id,
+                template_id=template_id,
+                script_type_id=script_type_id,
+                script_example_ids=script_example_ids,
+                risk_rule_ids=risk_rule_ids,
+                replace_reason=replace_reason,
+            )
             await self.task_service.record_event(
                 task_id=task.id,
                 run_id=task.current_run_id,
@@ -505,6 +566,123 @@ class MainAgentService(_ScopedSingleAgentService):
                     "workspace_id": row.id,
                     "field": "script_text",
                     "character_count": len(row.script_text),
+                },
+                ensure_ascii=False,
+            )
+
+        async def write_script_and_storyboard_workspace(
+            script_text: str,
+            storyboard_updates: list[IndexedStoryboardShotUpdate | dict[str, Any]],
+            role_id: str = "",
+            strategy_id: str = "",
+            template_id: str = "",
+            script_type_id: str = "",
+            script_example_ids: list[str] | None = None,
+            risk_rule_ids: list[str] | None = None,
+            replace_reason: str = "",
+        ) -> str:
+            operation = str((task.input_payload_json or {}).get("operation") or "interact")
+            if operation != "interact":
+                raise ValueError(
+                    "write_script_and_storyboard_workspace is only available for interact tasks."
+                )
+            validated_update = ScriptStoryboardWorkspaceUpdatePayload.model_validate(
+                {
+                    "script_text": script_text,
+                    "storyboard_updates": storyboard_updates,
+                    "role_id": role_id,
+                    "strategy_id": strategy_id,
+                    "template_id": template_id,
+                    "script_type_id": script_type_id,
+                    "script_example_ids": script_example_ids or [],
+                    "risk_rule_ids": risk_rule_ids or [],
+                    "replace_reason": replace_reason,
+                }
+            )
+            script_text = validated_update.script_text
+            storyboard_updates = validated_update.storyboard_updates
+            row = await self.workspace_store.get(
+                workspace_id,
+                user_id=task.user_id,
+                tenant_id=task.tenant_id,
+            )
+            if row is None:
+                raise ValueError(f"Script workspace '{workspace_id}' not found.")
+            if not row.storyboard_text.strip():
+                raise ValueError(
+                    "The current Workspace has no storyboard to update by shot_index."
+                )
+            try:
+                current_storyboard = StoryboardWorkspacePayload.model_validate_json(
+                    row.storyboard_text
+                )
+            except Exception as exc:
+                raise ValueError(
+                    "The current Workspace storyboard is not valid structured JSON."
+                ) from exc
+
+            indexes = [item.shot_index for item in storyboard_updates]
+            invalid_indexes = [
+                index
+                for index in indexes
+                if index < 0 or index >= len(current_storyboard.storyboard)
+            ]
+            if invalid_indexes:
+                raise ValueError(
+                    "storyboard_updates contains out-of-range shot_index values: "
+                    + ", ".join(str(index) for index in invalid_indexes)
+                )
+
+            updated_shots = list(current_storyboard.storyboard)
+            for item in storyboard_updates:
+                updated_shots[item.shot_index] = item.replacement
+            updated_storyboard = current_storyboard.model_copy(
+                update={"storyboard": updated_shots}
+            )
+            storyboard_text = json.dumps(
+                updated_storyboard.model_dump(mode="json"),
+                ensure_ascii=False,
+            )
+            row = await self.workspace_store.update(
+                workspace_id,
+                script_text=script_text,
+                storyboard_text=storyboard_text,
+                user_id=task.user_id,
+                tenant_id=task.tenant_id,
+            )
+            await update_master_library_usage(
+                role_id=role_id,
+                strategy_id=strategy_id,
+                template_id=template_id,
+                script_type_id=script_type_id,
+                script_example_ids=validated_update.script_example_ids,
+                risk_rule_ids=validated_update.risk_rule_ids,
+                replace_reason=replace_reason,
+                preserve_existing=True,
+            )
+            await self.task_service.record_event(
+                task_id=task.id,
+                run_id=task.current_run_id,
+                event_type="workspace_updated",
+                stage="main_agent",
+                message="Script and storyboard workspace updated atomically.",
+                payload={
+                    "workspace_id": workspace_id,
+                    "fields": ["script_text", "storyboard_text"],
+                    "shot_indexes": indexes,
+                    "script_character_count": len(row.script_text),
+                    "storyboard_character_count": len(row.storyboard_text),
+                },
+                source={"type": "workspace", "id": workspace_id},
+            )
+            return json.dumps(
+                {
+                    "status": "saved",
+                    "workspace_id": row.id,
+                    "fields": ["script_text", "storyboard_text"],
+                    "shot_indexes": indexes,
+                    "script_character_count": len(row.script_text),
+                    "storyboard_character_count": len(row.storyboard_text),
                 },
                 ensure_ascii=False,
             )
@@ -563,6 +741,18 @@ class MainAgentService(_ScopedSingleAgentService):
                     "Save the complete shared script and the ids of master-library cards actually adopted. "
                     "A successful save completes this agent turn."
                 ),
+                return_direct=True,
+            ),
+            FunctionTool.from_defaults(
+                async_fn=write_script_and_storyboard_workspace,
+                name="write_script_and_storyboard_workspace",
+                description=(
+                    "Atomically save a complete replacement script and up to 3 complete "
+                    "replacement storyboard shots selected by the existing zero-based "
+                    "shot_index. Use only for a small explicit interact edit. "
+                    "A successful save completes this agent turn."
+                ),
+                fn_schema=ScriptStoryboardWorkspaceUpdatePayload,
                 return_direct=True,
             ),
             FunctionTool.from_defaults(
