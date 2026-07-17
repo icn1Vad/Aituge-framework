@@ -12,12 +12,14 @@ from db.models.llm import LlmModelEntity
 import service.agent.single_agent_runner as runner_mod
 from service.cache.session_history_manager import session_history_manager
 from task_manager.models import TaskMemoryEntity
+from task_manager.memory import TaskMemoryService
 from task_manager.pipeline import media_script as media_pipeline
 from task_manager.runtime.broker import reset_event_broker_for_test
 
 
 class MediaPipelineAgent:
     seen_messages: dict[str, str] = {}
+    seen_system_prompts: dict[str, str] = {}
 
     def __init__(self, llm, system_prompt, tools):
         if "Media Script Writer" in system_prompt:
@@ -26,6 +28,7 @@ class MediaPipelineAgent:
             self.stage = "storyboard"
         else:
             raise AssertionError(system_prompt[:500])
+        self.seen_system_prompts[self.stage] = system_prompt
 
     async def run_async(self, state):
         self.seen_messages[self.stage] = str(state.messages[-1].get("content") or "")
@@ -92,6 +95,16 @@ def test_media_script_lite_pipeline_runs_writer_and_storyboard_agents(tmp_path, 
         await init_db()
         await _seed_llm_config()
         MediaPipelineAgent.seen_messages = {}
+        MediaPipelineAgent.seen_system_prompts = {}
+        get_latest_calls = 0
+        original_get_latest = TaskMemoryService.get_latest
+
+        async def counting_get_latest(self, **kwargs):
+            nonlocal get_latest_calls
+            get_latest_calls += 1
+            return await original_get_latest(self, **kwargs)
+
+        monkeypatch.setattr(TaskMemoryService, "get_latest", counting_get_latest)
         async with create_db_session() as session:
             session.add(
                 TaskMemoryEntity(
@@ -182,9 +195,11 @@ def test_media_script_lite_pipeline_runs_writer_and_storyboard_agents(tmp_path, 
             assert output["workflow_state"]["workflow_status"] == "pass"
             assert output["workflow_state"]["review_result"]["reviewed"] is False
             assert output["final_script"]["storyboard"]
-            assert "# Task Memory" in MediaPipelineAgent.seen_messages["writer"]
-            assert "开头直接给出结论" in MediaPipelineAgent.seen_messages["writer"]
-            assert "开头直接给出结论" in MediaPipelineAgent.seen_messages["storyboard"]
+            assert "# Task Memory" in MediaPipelineAgent.seen_system_prompts["writer"]
+            assert "开头直接给出结论" in MediaPipelineAgent.seen_system_prompts["writer"]
+            assert "开头直接给出结论" in MediaPipelineAgent.seen_system_prompts["storyboard"]
+            assert "# Task Memory" not in MediaPipelineAgent.seen_messages["writer"]
+            assert get_latest_calls == 1
 
     try:
         asyncio.run(run())

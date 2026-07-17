@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from scheduling.scheduler import SchedulingRuntimeOptions
 
 from .access import TaskAccessContext, assert_can_access_task, task_access_context
-from .memory import TaskMemoryService
+from .memory import TaskMemoryMaterial, TaskMemoryService
 from .registry import list_task_definitions
 from .pipeline.registry import list_pipeline_definitions
 from .runtime import get_event_broker
@@ -163,11 +163,17 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
         context: TaskAccessContext = Depends(task_access_context),
     ):
         try:
-            row = await TaskMemoryService(options).compress(
+            row = await TaskMemoryService(options).consolidate(
                 tenant_id=context.tenant_id,
                 user_id=context.user_id,
                 task_key=task_key,
-                new_information=request.new_information,
+                materials=[
+                    TaskMemoryMaterial(
+                        kind="manual",
+                        content=request.new_information,
+                        source={"type": "manual_api"},
+                    )
+                ],
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

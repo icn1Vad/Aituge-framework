@@ -3,8 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Protocol
 
+from scheduling.scheduler import SchedulingRuntimeContext
+from task_manager.memory import TaskMemoryView
 from task_manager.models import TaskEntity
-from task_manager.registry import TaskDefinition
+from task_manager.registry import TaskType
+
+
+@dataclass(frozen=True, slots=True)
+class TaskExecutionContext:
+    task: TaskEntity
+    task_type: TaskType
+    memory_view: TaskMemoryView
+    runtime_context: SchedulingRuntimeContext
 
 
 @dataclass(slots=True)
@@ -40,7 +50,6 @@ class TaskHandler(Protocol):
     async def stream(
         self,
         *,
-        task: TaskEntity,
-        definition: TaskDefinition,
+        context: TaskExecutionContext,
     ) -> AsyncIterator[TaskHandlerEvent]:
         ...

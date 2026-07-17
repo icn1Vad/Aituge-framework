@@ -8,6 +8,7 @@ from common.llm.utils import (
     convert_gen_to_chat_completions,
     convert_gen_to_stream_chat_completions,
 )
+from common.llm.constants import DEFAULT_LLM_MODEL_ID
 from common.system_constants import DEFAULT_TENANT_ID
 from llama_index.core.tools.function_tool import FunctionTool
 from loguru import logger
@@ -78,7 +79,7 @@ class SingleAgentRunner:
     def __init__(
         self,
         tenant_id: str = DEFAULT_TENANT_ID,
-        default_model_id: str = "deepseek-v4-pro",
+        default_model_id: str = DEFAULT_LLM_MODEL_ID,
         system_prompt: str = REACT_PROMPT,
     ):
         self.tenant_id = tenant_id

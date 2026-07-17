@@ -10,15 +10,20 @@ from common.system_constants import DEFAULT_TENANT_ID
 from db.db_context import create_db_session, init_db, reset_engine_for_test
 from db.models.llm import LlmModelEntity
 from service.cache.session_history_manager import session_history_manager
+from task_manager.models import TaskMemoryEntity
 from task_manager.output_parser import parse_json_output
 import task_manager.adapters.legacy_douyin as legacy_douyin_adapter
 import service.agent.single_agent_runner as runner_mod
 
 
 class JsonCapturingAgent:
+    all_system_prompts: list[str] = []
+    table_audit_system_prompts: list[str] = []
+
     def __init__(self, llm, system_prompt, tools):
         self.system_prompt = system_prompt
         self.tools = tools
+        self.all_system_prompts.append(system_prompt)
 
     async def run_async(self, state):
         async def gen():
@@ -54,6 +59,7 @@ class JsonCapturingAgent:
                 return
 
             if "# Table Audit" in self.system_prompt:
+                self.table_audit_system_prompts.append(self.system_prompt)
                 content = {
                     "risk_level": "low",
                     "passed": True,
@@ -63,6 +69,10 @@ class JsonCapturingAgent:
                     "evidence": ["test fixture"],
                 }
                 yield TextChunk(delta=json.dumps(content, ensure_ascii=False))
+                return
+
+            if "Prefer a direct, evidence-backed selection" in self.system_prompt:
+                yield TextChunk(delta='{"selected":"candidate-a"}')
                 return
 
             content = {
@@ -131,6 +141,26 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
 
         await init_db()
         await _seed_llm_config()
+        JsonCapturingAgent.all_system_prompts = []
+        JsonCapturingAgent.table_audit_system_prompts = []
+        async with create_db_session() as session:
+            session.add_all(
+                [
+                    TaskMemoryEntity(
+                        tenant_id=DEFAULT_TENANT_ID,
+                        user_id="task-manager-test-user",
+                        task_key="table-audit-smoke",
+                        content="Always verify the evidence column before passing a row.",
+                    ),
+                    TaskMemoryEntity(
+                        tenant_id=DEFAULT_TENANT_ID,
+                        user_id="task-manager-test-user",
+                        task_key="media-select-smoke",
+                        content="Prefer a direct, evidence-backed selection.",
+                    ),
+                ]
+            )
+            await session.commit()
 
         app = create_app()
         transport = httpx.ASGITransport(app=app)
@@ -421,6 +451,16 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             assert [item["item_key"] for item in items] == ["candidate-a", "candidate-b"]
             assert all(item["item_type"] == "script_candidate" for item in items)
             assert all(item["status"] == "pending" for item in items)
+            single_run_response = await client.post(
+                f"/task-manager/tasks/{item_task['id']}/run",
+                headers=headers,
+                json={"stream": False},
+            )
+            assert single_run_response.status_code == 200, single_run_response.text
+            assert any(
+                "Prefer a direct, evidence-backed selection" in prompt
+                for prompt in JsonCapturingAgent.all_system_prompts
+            )
 
             events_response = await client.get(f"/task-manager/tasks/{task_id}/events", headers=headers)
             assert events_response.status_code == 200
@@ -516,6 +556,11 @@ def test_task_manager_create_run_and_events(tmp_path, monkeypatch):
             assert "item_succeeded" in batch_event_types
             assert "batch_succeeded" in batch_event_types
             assert any(event["item_id"] for event in batch_events if event["event_type"].startswith("item_"))
+            assert len(JsonCapturingAgent.table_audit_system_prompts) == 3
+            assert all(
+                "Always verify the evidence column" in prompt
+                for prompt in JsonCapturingAgent.table_audit_system_prompts
+            )
 
             for item in batch_items:
                 await session_history_manager.clear_history("task-manager-test-user", f"{batch_task_id}:{item['id']}")

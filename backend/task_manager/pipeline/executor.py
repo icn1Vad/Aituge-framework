@@ -10,8 +10,7 @@ from db.db_context import create_db_session
 from scheduling.agent_registry import ensure_default_agent_profiles, get_agent_profile
 from scheduling.scheduler import SchedulingChatRequest, SchedulingRuntimeOptions, SchedulingService
 
-from task_manager.handlers.base import TaskHandlerEvent
-from task_manager.memory import TaskMemoryService, render_task_memory
+from task_manager.handlers.base import TaskExecutionContext, TaskHandlerEvent
 from task_manager.models import TaskArtifactEntity, TaskEntity, TaskRunEntity, utc_now
 from task_manager.output_parser import parse_json_output
 from task_manager.payload_schemas import validate_stage_payload
@@ -37,10 +36,11 @@ class PipelineExecutor:
     async def stream(
         self,
         *,
-        task: TaskEntity,
+        context: TaskExecutionContext,
         run: TaskRunEntity,
         definition: PipelineDefinition,
     ) -> AsyncIterator[TaskHandlerEvent]:
+        task = context.task
         ordered = definition.ordered_stages()
         artifacts = await _artifacts_by_stage(run.id)
         existing_stage_runs = await list_stage_runs(run.id)
@@ -103,6 +103,7 @@ class PipelineExecutor:
                     async with asyncio.timeout(stage.timeout_seconds):
                         if stage.stage_type == "agent":
                             async for item in self._stream_agent_stage(
+                                context=context,
                                 task=task,
                                 run=run,
                                 stage=stage,
@@ -297,6 +298,7 @@ class PipelineExecutor:
     async def _stream_agent_stage(
         self,
         *,
+        context: TaskExecutionContext,
         task: TaskEntity,
         run: TaskRunEntity,
         stage: StageDefinition,
@@ -319,17 +321,7 @@ class PipelineExecutor:
             )
 
         session_id = _stage_session_id(run, stage, attempt)
-        memory = None
-        if task.task_key:
-            memory = await TaskMemoryService(self.options).get_latest(
-                tenant_id=task.tenant_id,
-                user_id=task.user_id,
-                task_key=task.task_key,
-            )
         stage_message = _stage_message(task, stage, stage_input)
-        memory_prompt = render_task_memory(memory)
-        if memory_prompt:
-            stage_message = f"{memory_prompt}\n\n{stage_message}"
 
         request = SchedulingChatRequest(
             message=stage_message,
@@ -342,7 +334,11 @@ class PipelineExecutor:
         )
         final_content = ""
         service = SchedulingService(self.options, tenant_id=task.tenant_id)
-        async for event in service.stream_chat(profile, request):
+        async for event in service.stream_chat(
+            profile,
+            request,
+            runtime_context=context.runtime_context,
+        ):
             payload = event.model_dump(exclude_none=True)
             if event.event == "metadata":
                 await update_stage_run(
@@ -359,7 +355,7 @@ class PipelineExecutor:
                     payload={
                         "thread_id": event.thread_id,
                         "session_id": event.session_id,
-                        "task_memory_version": memory.version if memory else None,
+                        "task_memory_version": context.memory_view.version,
                     },
                 )
                 continue

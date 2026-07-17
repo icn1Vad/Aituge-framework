@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from typing import Any
 
+from common.llm.constants import DEFAULT_LLM_MODEL_ID
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -89,7 +90,7 @@ async def upsert_agent_profile(
     name: str,
     description: str = "",
     agent_type: str = "single",
-    model_id: str = "deepseek-v4-pro",
+    model_id: str = DEFAULT_LLM_MODEL_ID,
     system_prompt: str = "",
     default_tools: list[str] | None = None,
     default_datasets: list[str] | None = None,

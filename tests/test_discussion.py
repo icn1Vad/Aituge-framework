@@ -10,7 +10,11 @@ from common.system_constants import DEFAULT_TENANT_ID
 from db.db_context import create_db_session, init_db, reset_engine_for_test
 from db.models.llm import LlmModelEntity
 from scheduling.discussion import DiscussionRunCreateRequest, DiscussionService
-from scheduling.scheduler import SchedulingRuntimeOptions
+from scheduling.scheduler import (
+    RuntimeContextBlock,
+    SchedulingRuntimeContext,
+    SchedulingRuntimeOptions,
+)
 from service.cache.session_history_manager import session_history_manager
 import service.agent.single_agent_runner as runner_mod
 
@@ -168,6 +172,7 @@ def test_discussion_user_message_affects_later_agent_prompt(tmp_path, monkeypatc
     async def run():
         monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'discussion-interjection.db'}")
         reset_engine_for_test()
+
         monkeypatch.setattr(runner_mod, "ReactAgent", InterjectionAwareAgent)
         monkeypatch.setattr(runner_mod, "create_llm", lambda config: object())
 
@@ -204,6 +209,73 @@ def test_discussion_user_message_affects_later_agent_prompt(tmp_path, monkeypatc
             "discussion-interjection-user",
             participant["agent_session_id"],
         )
+
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()
+
+
+class RuntimeContextDiscussionAgent:
+    system_prompts: list[str] = []
+
+    def __init__(self, llm, system_prompt, tools):
+        self.system_prompts.append(system_prompt)
+
+    async def run_async(self, state):
+        async def gen():
+            yield TextChunk(
+                delta=json.dumps(
+                    {"action": "speak", "content": "context checked", "reason": "done"}
+                )
+            )
+
+        return gen()
+
+
+def test_discussion_runtime_context_is_internal_and_optional(tmp_path, monkeypatch):
+    async def run():
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'discussion-context.db'}")
+        reset_engine_for_test()
+        monkeypatch.setattr(runner_mod, "ReactAgent", RuntimeContextDiscussionAgent)
+        monkeypatch.setattr(runner_mod, "create_llm", lambda config: object())
+        RuntimeContextDiscussionAgent.system_prompts = []
+
+        await init_db()
+        await _seed_llm_config()
+        options = SchedulingRuntimeOptions(local_python_artifact_dir=tmp_path / "artifacts")
+        memory_context = SchedulingRuntimeContext(
+            blocks=(
+                RuntimeContextBlock(
+                    kind="task_memory",
+                    content="# Task Memory\nUse verified evidence first.",
+                ),
+            )
+        )
+        bound_service = DiscussionService(options, runtime_context=memory_context)
+        bound_run = await bound_service.create_run(
+            DiscussionRunCreateRequest(
+                topic="bound discussion",
+                participant_agent_ids=["report-agent"],
+                moderator_agent_id="report-agent",
+                user_id="bound-user",
+            )
+        )
+        await bound_service.execute_run(bound_run.id)
+
+        standalone_service = DiscussionService(options)
+        standalone_run = await standalone_service.create_run(
+            DiscussionRunCreateRequest(
+                topic="standalone discussion",
+                participant_agent_ids=["report-agent"],
+                moderator_agent_id="report-agent",
+                user_id="standalone-user",
+            )
+        )
+        await standalone_service.execute_run(standalone_run.id)
+
+        assert "Use verified evidence first" in RuntimeContextDiscussionAgent.system_prompts[0]
+        assert "Use verified evidence first" not in RuntimeContextDiscussionAgent.system_prompts[1]
 
     try:
         asyncio.run(run())

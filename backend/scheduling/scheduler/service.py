@@ -16,6 +16,7 @@ from tool.registry import ToolManager
 from ..agent_registry.models import AgentProfileEntity
 
 from .models import SchedulingChatRequest, SchedulingRuntimeOptions
+from .runtime_context import SchedulingRuntimeContext
 
 
 @dataclass(slots=True)
@@ -57,10 +58,15 @@ class SchedulingService:
         self,
         profile: AgentProfileEntity,
         request: SchedulingChatRequest,
+        *,
+        runtime_context: SchedulingRuntimeContext | None = None,
     ):
-        context = await self._build_context(profile, request)
+        context = await self._build_context(profile, request, runtime_context=runtime_context)
         model_id = request.model or profile.model_id
-        runner = SingleAgentRunner(default_model_id=model_id)
+        runner = SingleAgentRunner(
+            tenant_id=self.tenant_id,
+            default_model_id=model_id,
+        )
         try:
             result = await runner.chat(
                 messages=request.messages,
@@ -84,10 +90,15 @@ class SchedulingService:
         self,
         profile: AgentProfileEntity,
         request: SchedulingChatRequest,
+        *,
+        runtime_context: SchedulingRuntimeContext | None = None,
     ) -> AsyncIterator[SingleAgentStreamEvent]:
-        context = await self._build_context(profile, request)
+        context = await self._build_context(profile, request, runtime_context=runtime_context)
         model_id = request.model or profile.model_id
-        runner = SingleAgentRunner(default_model_id=model_id)
+        runner = SingleAgentRunner(
+            tenant_id=self.tenant_id,
+            default_model_id=model_id,
+        )
         try:
             first = True
             async for event in runner.stream_chat(
@@ -116,6 +127,8 @@ class SchedulingService:
         self,
         profile: AgentProfileEntity,
         request: SchedulingChatRequest,
+        *,
+        runtime_context: SchedulingRuntimeContext | None = None,
     ) -> SchedulingToolContext:
         tool_names = _dedupe(profile.default_tools + request.extra_tools)
         dataset_names = _dedupe(profile.default_datasets + request.extra_datasets)
@@ -123,8 +136,11 @@ class SchedulingService:
         skill_context = await SkillManager(tenant_id=self.tenant_id).create_context(
             request.skill_package
         )
+        runtime_prompt = runtime_context.render_prompt() if runtime_context else ""
         task_prompts = [
-            item for item in [profile.system_prompt, skill_context.task_prompt] if item
+            item
+            for item in [profile.system_prompt, skill_context.task_prompt, runtime_prompt]
+            if item
         ]
 
         return SchedulingToolContext(

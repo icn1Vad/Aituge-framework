@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from typing import Any
 
+from common.llm.constants import DEFAULT_LLM_MODEL_ID
 from sqlmodel import Field, SQLModel
 
 
@@ -25,7 +26,7 @@ class AgentProfileEntity(SQLModel, table=True):
     name: str = Field(max_length=120)
     description: str = ""
     agent_type: str = Field(default="single", max_length=32)
-    model_id: str = Field(default="deepseek-v4-pro", max_length=120)
+    model_id: str = Field(default=DEFAULT_LLM_MODEL_ID, max_length=120)
     system_prompt: str = ""
     default_tools_json: str = Field(default="[]")
     default_datasets_json: str = Field(default="[]")

@@ -3,11 +3,12 @@ from dataclasses import dataclass, field
 from inspect import isawaitable
 from typing import Any, Optional
 
+from common.llm.constants import DEFAULT_LLM_MODEL_ID
+from db.db_context import create_db_session
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from llama_index.core.tools.function_tool import FunctionTool
 from pydantic import BaseModel, ConfigDict
-from db.db_context import create_db_session
 from service.agent import SingleAgentRunner
 from service.conversation import ConversationManager
 from skill import SkillManager, ensure_default_skill_packages, list_skill_packages
@@ -18,7 +19,7 @@ class SingleAgentChatRequest(BaseModel):
 
     messages: Optional[list[dict]] = None
     message: Optional[str] = None
-    model: str = "deepseek-v4-pro"
+    model: str = DEFAULT_LLM_MODEL_ID
     thread_id: Optional[str] = None
     session_id: Optional[str] = None
     user_id: str = "default_user"

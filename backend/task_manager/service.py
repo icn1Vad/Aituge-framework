@@ -16,14 +16,15 @@ from scheduling.scheduler import SchedulingRuntimeOptions
 from .adapters.douyin_report_compat import add_legacy_monthly_report
 from .adapters.legacy_douyin import enrich_douyin_account_report_payload
 from .gateway.service import DataAccessGateway
-from .handlers.base import TaskHandlerEvent
+from .handlers.base import TaskExecutionContext, TaskHandlerEvent
 from .handlers.batch_item_scheduler import BatchItemSchedulerHandler
 from .handlers.pipeline_task import PipelineTaskHandler
 from .handlers.scheduler_task import SchedulerTaskHandler
 from .models import TaskEntity, TaskEventEntity, TaskItemEntity, TaskRunEntity, utc_now
+from .memory import TaskMemoryRefreshContext, TaskMemoryRefreshResult, TaskMemoryService
 from .output_parser import parse_json_output
 from .payload_schemas import validate_input_payload, validate_output_payload
-from .registry import TaskDefinition, get_task_definition
+from .registry import TaskType, get_task_definition
 from .runtime import executor_lock, get_event_broker, start_background_run
 from .schemas import TaskCreateRequest, TaskEventRead, TaskItemRead, TaskRead, TaskRunRequest
 from .pipeline.registry import get_pipeline_definition
@@ -139,6 +140,16 @@ class TaskManagerService:
     async def get_task(self, task_id: str) -> TaskEntity | None:
         async with create_db_session() as session:
             return await session.get(TaskEntity, task_id)
+
+    async def refresh_task_memory(self, task_id: str) -> TaskMemoryRefreshResult:
+        task = await self.get_task(task_id)
+        if task is None:
+            raise ValueError(f"Task '{task_id}' not found.")
+        task_type = get_task_definition(task.task_type)
+        return await task_type.refresh_memory(
+            task,
+            TaskMemoryRefreshContext(options=self.options),
+        )
 
     async def update_task_metadata(
         self,
@@ -673,6 +684,13 @@ class TaskManagerService:
     async def _stream_prepared_task(self, task: TaskEntity) -> AsyncIterator[TaskEventRead]:
         definition = get_task_definition(task.task_type)
         handler = self._get_handler(definition)
+        memory_view = await TaskMemoryService(self.options).load_view(task)
+        execution_context = TaskExecutionContext(
+            task=task,
+            task_type=definition,
+            memory_view=memory_view,
+            runtime_context=memory_view.to_runtime_context(),
+        )
         final_content = ""
         final_usage = None
         structured_output: Any = None
@@ -705,7 +723,7 @@ class TaskManagerService:
         yield TaskEventRead.model_validate(started)
 
         try:
-            async for item in handler.stream(task=task, definition=definition):
+            async for item in handler.stream(context=execution_context):
                 if item.delta:
                     buffer_key = (item.event_type, item.stage, item.stage_run_id, item.agent_id)
                     current_key = (
@@ -952,7 +970,7 @@ class TaskManagerService:
                 logger.warning("Task event broker publish failed for run {}: {}", run_id, exc)
         return event
 
-    def _get_handler(self, definition: TaskDefinition):
+    def _get_handler(self, definition: TaskType):
         if definition.handler == "scheduler":
             return SchedulerTaskHandler(self.options)
         if definition.handler == "batch_item_scheduler":
@@ -1182,7 +1200,7 @@ def _bounded_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _definition_snapshot(definition: TaskDefinition) -> dict[str, Any]:
+def _definition_snapshot(definition: TaskType) -> dict[str, Any]:
     return asdict(definition)
 
 

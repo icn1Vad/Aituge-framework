@@ -27,7 +27,12 @@ from scheduling.main_agent.store import (
     ManagedSingleAgentStore,
     ScriptWorkspaceStore,
 )
-from scheduling.scheduler import SchedulingRuntimeOptions, SchedulingService
+from scheduling.scheduler import (
+    RuntimeContextBlock,
+    SchedulingRuntimeContext,
+    SchedulingRuntimeOptions,
+    SchedulingService,
+)
 from service.agent import SingleAgentStreamEvent
 from task_manager.schemas import TaskCreateRequest
 from task_manager.models import TaskMemoryEntity
@@ -574,9 +579,10 @@ def test_main_agent_prepare_uses_task_package_and_direct_workspace_tools(tmp_pat
         assert prepared["scoped_request"].skill_package == "media-script-main-agent-package"
         assert prepared["task"].id == task.id
         assert prepared["task"].status == "running"
-        assert "Stable task key: media_script" in prepared["runtime_task_prompt"]
-        assert "Open with the conclusion" in prepared["runtime_task_prompt"]
-        assert "Open with the conclusion" in service.runtime_task_prompt
+        prepared_prompt = prepared["runtime_context"].render_prompt()
+        assert "Stable task key: media_script" in prepared_prompt
+        assert "Open with the conclusion" in prepared_prompt
+        assert "Open with the conclusion" in service.runtime_context.render_prompt()
         assert [tool.metadata.name for tool in service.runtime_tools] == [
             "consult_agent",
             "delegate_agent",
@@ -832,7 +838,7 @@ def test_same_managed_single_agent_can_consult_then_delegate(tmp_path, monkeypat
                 "extra_tools": request.extra_tools,
                 "skill_package": request.skill_package,
                 "message": request.message,
-                "runtime_task_prompt": self.runtime_task_prompt,
+                "runtime_prompt": self.runtime_context.render_prompt(),
             }
         )
         return {
@@ -881,6 +887,14 @@ def test_same_managed_single_agent_can_consult_then_delegate(tmp_path, monkeypat
             description="test tool",
         )
         workspace_tools = [read_tool, write_tool]
+        runtime_context = SchedulingRuntimeContext(
+            blocks=(
+                RuntimeContextBlock(
+                    kind="task_memory",
+                    content="# Task Memory\nPrefer a direct opening.",
+                ),
+            )
+        )
         first = json.loads(
             await service._call_managed_agent(
                 mode="consult",
@@ -894,7 +908,7 @@ def test_same_managed_single_agent_can_consult_then_delegate(tmp_path, monkeypat
                 model=None,
                 task=None,
                 available_workspace_tools=workspace_tools,
-                runtime_task_prompt="# Task Memory\nPrefer a direct opening.",
+                runtime_context=runtime_context,
             )
         )
         second = json.loads(
@@ -910,7 +924,7 @@ def test_same_managed_single_agent_can_consult_then_delegate(tmp_path, monkeypat
                 model=None,
                 task=None,
                 available_workspace_tools=workspace_tools,
-                runtime_task_prompt="# Task Memory\nPrefer a direct opening.",
+                runtime_context=runtime_context,
             )
         )
 
@@ -928,8 +942,8 @@ def test_same_managed_single_agent_can_consult_then_delegate(tmp_path, monkeypat
         ]
         assert calls[1]["extra_tools"] == ["media_master_library"]
         assert calls[1]["skill_package"] == "media-writer-delegate-package"
-        assert "Prefer a direct opening" in calls[0]["runtime_task_prompt"]
-        assert "Prefer a direct opening" in calls[1]["runtime_task_prompt"]
+        assert "Prefer a direct opening" in calls[0]["runtime_prompt"]
+        assert "Prefer a direct opening" in calls[1]["runtime_prompt"]
 
     try:
         asyncio.run(run())

@@ -1,6 +1,7 @@
 from typing import Any, Callable, Optional
 
 from common.encrypt_utils import decrypt_key
+from common.llm.constants import DEFAULT_LLM_MODEL_ID
 from common.llm.llm_model import PaiLlm
 from common.system_constants import DEFAULT_TENANT_ID
 from db.db_context import create_db_session
@@ -53,20 +54,21 @@ class LlmRuntime:
         self.tenant_id = tenant_id
         self.llm_factory = llm_factory
 
-    async def get_llm(self, model_id: str) -> Any:
+    async def get_llm(self, model_id: Optional[str] = None) -> Any:
+        resolved_model_id = model_id or DEFAULT_LLM_MODEL_ID
         async with create_db_session() as session:
             llm_model = await LlmService(session).get_llm_by_model_id(
-                model_id=model_id,
+                model_id=resolved_model_id,
                 tenant_id=self.tenant_id,
             )
             if not llm_model:
-                raise ValueError(f"LLM model `{model_id}` not found.")
+                raise ValueError(f"LLM model `{resolved_model_id}` not found.")
             return self.llm_factory(llm_model)
 
     async def complete(
         self,
-        model_id: str,
         messages: list[dict],
+        model_id: Optional[str] = None,
         system_prompt: str = "",
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,

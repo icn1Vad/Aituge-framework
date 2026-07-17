@@ -1,3 +1,4 @@
+from .history import load_durable_conversation_messages, stored_content_text
 from .llm_runner import LlmRuntime, create_llm
 from .manager import (
     ConversationManager,
@@ -17,6 +18,8 @@ __all__ = [
     "ConversationThreadMessages",
     "ConversationThreadSummary",
     "ConversationTurn",
+    "load_durable_conversation_messages",
+    "stored_content_text",
     "LlmRuntime",
     "create_llm",
 ]

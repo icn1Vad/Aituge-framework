@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from common.llm.constants import DEFAULT_LLM_MODEL_ID
+
 from .models import AgentProfileEntity
 
 
@@ -58,7 +60,7 @@ def _profile_definition(
     description: str,
     default_tools: list[str],
     default_datasets: list[str] | None = None,
-    model_id: str = "deepseek-v4-pro",
+    model_id: str = DEFAULT_LLM_MODEL_ID,
     system_prompt: str = "",
     runtime_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:

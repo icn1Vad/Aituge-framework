@@ -12,6 +12,10 @@ from service.cache.session_history_manager import session_history_manager
 from service.cache.redis_cache import cache_manager
 from service.cache.session_history_manager import session_history_key
 from service.conversation.compressor import ContextCompressor
+from service.conversation.history import (
+    load_durable_conversation_messages,
+    stored_content_text,
+)
 from service.conversation.llm_runner import LlmRuntime
 from service.conversation.window import ConversationWindow
 from service.thread.message_service import MessageService
@@ -86,16 +90,6 @@ def message_text(message: dict) -> str:
             if isinstance(part, dict) and part.get("type") == "text"
         )
     return str(content or "")
-
-
-def stored_content_text(content: list[dict] | None) -> str:
-    if not content:
-        return ""
-    return "\n".join(
-        part.get("text", "")
-        for part in content
-        if isinstance(part, dict) and part.get("type") == "text"
-    )
 
 
 def default_title(message: dict) -> str:
@@ -391,23 +385,11 @@ class ConversationManager:
         thread_id: str,
         current_user_message_id: Optional[str],
     ) -> list[dict]:
-        async with create_db_session() as session:
-            messages = await MessageService(session).list_messages(
-                thread_id=thread_id,
-                tenant_id=self.tenant_id,
-            )
-
-        history: list[dict] = []
-        for message in messages:
-            if message.id == current_user_message_id:
-                continue
-            if message.role not in {"user", "assistant"}:
-                continue
-            text = stored_content_text(message.content)
-            if not text:
-                continue
-            history.append({"role": message.role, "content": text})
-        return history
+        return await load_durable_conversation_messages(
+            thread_id=thread_id,
+            tenant_id=self.tenant_id,
+            exclude_message_id=current_user_message_id,
+        )
 
     async def persist_assistant_message(
         self,

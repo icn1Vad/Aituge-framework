@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from typing import Any
 
+from common.llm.constants import DEFAULT_LLM_MODEL_ID
 from common.system_constants import DEFAULT_TENANT_ID
 from db.db_context import create_db_session
 from llama_index.core.tools.function_tool import FunctionTool
@@ -16,9 +17,15 @@ from scheduling.agent_registry import (
     list_agent_profiles,
 )
 from scheduling.agent_registry.models import AgentProfileEntity
-from scheduling.scheduler import SchedulingChatRequest, SchedulingRuntimeOptions, SchedulingService
+from scheduling.scheduler import (
+    RuntimeContextBlock,
+    SchedulingChatRequest,
+    SchedulingRuntimeContext,
+    SchedulingRuntimeOptions,
+    SchedulingService,
+)
 from scheduling.scheduler.service import SchedulingToolContext
-from task_manager.memory import TaskMemoryService, render_task_memory
+from task_manager.memory import TaskMemoryService
 from task_manager.service import TaskManagerService, task_to_read
 
 from .models import ManagedSingleAgentEntity
@@ -44,7 +51,7 @@ def _main_runtime_profile(model_id: str | None = None) -> AgentProfileEntity:
         agent_id=MAIN_RUNTIME_AGENT_ID,
         name="Media Main Agent",
         description="Main scheduling runtime for media production.",
-        model_id=model_id or "deepseek-v4-pro",
+        model_id=model_id or DEFAULT_LLM_MODEL_ID,
         system_prompt="You are Media Main Agent.",
         default_tools_json="[]",
         default_datasets_json="[]",
@@ -68,24 +75,27 @@ class _ScopedSingleAgentService(SchedulingService):
         options: SchedulingRuntimeOptions,
         *,
         runtime_tools: list[FunctionTool] | None = None,
-        runtime_task_prompt: str = "",
+        runtime_context: SchedulingRuntimeContext | None = None,
         tenant_id: str = DEFAULT_TENANT_ID,
     ) -> None:
         super().__init__(options, tenant_id=tenant_id)
         self.runtime_tools = list(runtime_tools or [])
-        self.runtime_task_prompt = runtime_task_prompt.strip()
+        self.runtime_context = runtime_context or SchedulingRuntimeContext()
 
     async def _build_context(
         self,
         profile: AgentProfileEntity,
         request: SchedulingChatRequest,
+        *,
+        runtime_context: SchedulingRuntimeContext | None = None,
     ) -> SchedulingToolContext:
-        context = await super()._build_context(profile, request)
+        combined_context = self.runtime_context.combine(runtime_context)
+        context = await super()._build_context(
+            profile,
+            request,
+            runtime_context=combined_context,
+        )
         context.tools.extend(self.runtime_tools)
-        if self.runtime_task_prompt:
-            context.task_prompt = "\n\n".join(
-                item for item in [context.task_prompt, self.runtime_task_prompt] if item
-            )
         return context
 
 
@@ -217,7 +227,7 @@ class MainAgentService(_ScopedSingleAgentService):
         profile = _main_runtime_profile(request.model)
         workspace = None
         task = None
-        runtime_task_prompt = ""
+        runtime_context = SchedulingRuntimeContext()
         skill_package = MAIN_SKILL_PACKAGE
         if request.workspace_id:
             if not request.task_id:
@@ -243,7 +253,7 @@ class MainAgentService(_ScopedSingleAgentService):
             ).strip()
             if not skill_package:
                 raise ValueError(f"Task '{task.id}' has no MainAgent Skill Package.")
-            runtime_task_prompt = await self._build_task_runtime_prompt(task)
+            runtime_context = await self._build_task_runtime_context(task)
             task = await self.task_service.begin_external_task(
                 task.id,
                 user_id=request.user_id,
@@ -268,7 +278,7 @@ class MainAgentService(_ScopedSingleAgentService):
             "profile": profile,
             "workspace": workspace,
             "task": task,
-            "runtime_task_prompt": runtime_task_prompt,
+            "runtime_context": runtime_context,
         }
         try:
             workspace_tools = self._workspace_tools(workspace.id, task) if workspace else []
@@ -279,7 +289,7 @@ class MainAgentService(_ScopedSingleAgentService):
                 model=request.model,
                 task=task,
                 workspace_tools=workspace_tools,
-                runtime_task_prompt=runtime_task_prompt,
+                runtime_context=runtime_context,
                 event_sink=event_sink,
             )
             main_workspace_tools = [
@@ -294,7 +304,7 @@ class MainAgentService(_ScopedSingleAgentService):
                 )
             ]
             self.runtime_tools = delegation_tools + main_workspace_tools
-            self.runtime_task_prompt = runtime_task_prompt
+            self.runtime_context = runtime_context
             return prepared
         except Exception as exc:
             await self._fail_prepared_task(prepared, exc)
@@ -388,15 +398,8 @@ class MainAgentService(_ScopedSingleAgentService):
             extras["task"] = task_to_read(task).model_dump(mode="json")
         return extras
 
-    async def _build_task_runtime_prompt(self, task) -> str:
-        memory = None
-        if task.task_key:
-            memory = await TaskMemoryService(self.options).get_latest(
-                tenant_id=task.tenant_id,
-                user_id=task.user_id,
-                task_key=task.task_key,
-            )
-        memory_prompt = render_task_memory(memory)
+    async def _build_task_runtime_context(self, task) -> SchedulingRuntimeContext:
+        memory_view = await TaskMemoryService(self.options).load_view(task)
         task_prompt = "\n".join(
             [
                 "# Formal Task Context",
@@ -408,7 +411,16 @@ class MainAgentService(_ScopedSingleAgentService):
                 json.dumps(task.input_payload_json or {}, ensure_ascii=False, indent=2),
             ]
         )
-        return "\n\n".join(item for item in [task_prompt, memory_prompt] if item)
+        formal_context = SchedulingRuntimeContext(
+            blocks=(
+                RuntimeContextBlock(
+                    kind="formal_task",
+                    content=task_prompt,
+                    metadata={"task_id": task.id, "task_type": task.task_type},
+                ),
+            )
+        )
+        return formal_context.combine(memory_view.to_runtime_context())
 
     async def _fail_prepared_task(
         self,
@@ -776,7 +788,7 @@ class MainAgentService(_ScopedSingleAgentService):
         model: str | None,
         task,
         workspace_tools: list[FunctionTool],
-        runtime_task_prompt: str = "",
+        runtime_context: SchedulingRuntimeContext | None = None,
         event_sink: SubagentEventSink | None = None,
     ) -> list[FunctionTool]:
         async def consult_agent(
@@ -797,7 +809,7 @@ class MainAgentService(_ScopedSingleAgentService):
                 model=model,
                 task=task,
                 available_workspace_tools=workspace_tools,
-                runtime_task_prompt=runtime_task_prompt,
+                runtime_context=runtime_context,
                 event_sink=event_sink,
             )
 
@@ -819,7 +831,7 @@ class MainAgentService(_ScopedSingleAgentService):
                 model=model,
                 task=task,
                 available_workspace_tools=workspace_tools,
-                runtime_task_prompt=runtime_task_prompt,
+                runtime_context=runtime_context,
                 event_sink=event_sink,
             )
 
@@ -880,7 +892,7 @@ class MainAgentService(_ScopedSingleAgentService):
         model: str | None,
         task,
         available_workspace_tools: list[FunctionTool],
-        runtime_task_prompt: str = "",
+        runtime_context: SchedulingRuntimeContext | None = None,
         event_sink: SubagentEventSink | None = None,
     ) -> str:
         managed = await self._resolve_managed_agent(
@@ -926,7 +938,7 @@ class MainAgentService(_ScopedSingleAgentService):
         child_service = _ScopedSingleAgentService(
             self.options,
             runtime_tools=runtime_tools,
-            runtime_task_prompt=runtime_task_prompt,
+            runtime_context=runtime_context,
             tenant_id=self.tenant_id,
         )
         child_request = SchedulingChatRequest(

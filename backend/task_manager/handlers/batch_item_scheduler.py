@@ -7,15 +7,20 @@ from typing import Any, AsyncIterator
 
 from db.db_context import create_db_session
 from scheduling.agent_registry import ensure_default_agent_profiles, get_agent_profile
-from scheduling.scheduler import SchedulingChatRequest, SchedulingRuntimeOptions, SchedulingService
+from scheduling.scheduler import (
+    SchedulingChatRequest,
+    SchedulingRuntimeContext,
+    SchedulingRuntimeOptions,
+    SchedulingService,
+)
 from skill import ensure_default_skill_packages
 
 from task_manager import item_store
-from task_manager.handlers.base import TaskHandlerEvent
+from task_manager.handlers.base import TaskExecutionContext, TaskHandlerEvent
 from task_manager.models import TaskEntity, TaskItemEntity
 from task_manager.output_parser import parse_json_output
 from task_manager.payload_schemas import validate_output_payload
-from task_manager.registry import TaskDefinition
+from task_manager.registry import TaskType
 
 
 class BatchItemSchedulerHandler:
@@ -25,9 +30,10 @@ class BatchItemSchedulerHandler:
     async def stream(
         self,
         *,
-        task: TaskEntity,
-        definition: TaskDefinition,
+        context: TaskExecutionContext,
     ) -> AsyncIterator[TaskHandlerEvent]:
+        task = context.task
+        definition = context.task_type
         config = _batch_config(task)
         items = await item_store.list_pending_items(task.id)
         async with create_db_session() as session:
@@ -86,6 +92,7 @@ class BatchItemSchedulerHandler:
                     queue=queue,
                     stop_event=stop_event,
                     options=self.options,
+                    runtime_context=context.runtime_context,
                 )
 
         workers = [asyncio.create_task(worker(item)) for item in items]
@@ -134,12 +141,13 @@ async def _process_item(
     *,
     item: TaskItemEntity,
     task: TaskEntity,
-    definition: TaskDefinition,
+    definition: TaskType,
     profile,
     config: dict[str, Any],
     queue: asyncio.Queue[TaskHandlerEvent | None],
     stop_event: asyncio.Event,
     options: SchedulingRuntimeOptions,
+    runtime_context: SchedulingRuntimeContext,
 ) -> None:
     attempts = config["retry_per_item"] + 1
     for attempt in range(1, attempts + 1):
@@ -170,6 +178,7 @@ async def _process_item(
                 profile=profile,
                 options=options,
                 queue=queue,
+                runtime_context=runtime_context,
             )
             parse_result = parse_json_output(content)
             parsed = parse_result.structured
@@ -289,10 +298,11 @@ async def _run_scheduler_for_item(
     *,
     item: TaskItemEntity,
     task: TaskEntity,
-    definition: TaskDefinition,
+    definition: TaskType,
     profile,
     options: SchedulingRuntimeOptions,
     queue: asyncio.Queue[TaskHandlerEvent | None],
+    runtime_context: SchedulingRuntimeContext,
 ) -> tuple[str, dict[str, Any] | None]:
     request = SchedulingChatRequest(
         message=_build_item_message(task, definition, item),
@@ -308,7 +318,11 @@ async def _run_scheduler_for_item(
     final_usage = None
     buffered_delta: list[str] = []
 
-    async for event in service.stream_chat(profile, request):
+    async for event in service.stream_chat(
+        profile,
+        request,
+        runtime_context=runtime_context,
+    ):
         payload = event.model_dump(exclude_none=True)
         if event.event == "final":
             data = event.data or {}
@@ -348,12 +362,12 @@ async def _run_scheduler_for_item(
     return final_content, final_usage
 
 
-def _item_skill_package(item: TaskItemEntity, definition: TaskDefinition) -> str | None:
+def _item_skill_package(item: TaskItemEntity, definition: TaskType) -> str | None:
     requested = str((item.input_payload_json or {}).get("skill_package") or "").strip()
     return requested or definition.default_skill_package
 
 
-def _build_item_message(task: TaskEntity, definition: TaskDefinition, item: TaskItemEntity) -> str:
+def _build_item_message(task: TaskEntity, definition: TaskType, item: TaskItemEntity) -> str:
     global_input = dict(task.input_payload_json or {})
     for key in ("items", "rows", "script_candidates"):
         global_input.pop(key, None)

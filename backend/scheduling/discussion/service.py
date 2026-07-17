@@ -9,7 +9,12 @@ from db.models.message import MessageCreate, MessageEntity
 from db.models.thread import ThreadCreate
 from scheduling.agent_registry import ensure_default_agent_profiles, get_agent_profile
 from scheduling.agent_registry.models import AgentProfileEntity
-from scheduling.scheduler import SchedulingChatRequest, SchedulingRuntimeOptions, SchedulingService
+from scheduling.scheduler import (
+    SchedulingChatRequest,
+    SchedulingRuntimeContext,
+    SchedulingRuntimeOptions,
+    SchedulingService,
+)
 from service.thread.message_service import MessageService
 from service.thread.thread_service import ThreadService
 from sqlmodel import select
@@ -92,8 +97,14 @@ def _public_text_for_decision(decision: dict[str, str]) -> str:
 
 
 class DiscussionService:
-    def __init__(self, options: SchedulingRuntimeOptions) -> None:
+    def __init__(
+        self,
+        options: SchedulingRuntimeOptions,
+        *,
+        runtime_context: SchedulingRuntimeContext | None = None,
+    ) -> None:
         self.options = options
+        self.runtime_context = runtime_context or SchedulingRuntimeContext()
 
     async def create_run(self, request: DiscussionRunCreateRequest) -> DiscussionRunEntity:
         agent_ids = [agent_id for agent_id in request.participant_agent_ids if agent_id]
@@ -281,7 +292,11 @@ class DiscussionService:
                 session_id=participant.agent_session_id,
                 stream=False,
             )
-            result = await SchedulingService(self.options).chat(profile, request)
+            result = await SchedulingService(self.options).chat(
+                profile,
+                request,
+                runtime_context=self.runtime_context,
+            )
             content = _assistant_content(result.get("response") or {})
             decision = _parse_decision(content)
             public_message = None
@@ -349,7 +364,11 @@ class DiscussionService:
                 session_id=participant.agent_session_id,
                 stream=True,
             )
-            async for event in SchedulingService(self.options).stream_chat(profile, request):
+            async for event in SchedulingService(self.options).stream_chat(
+                profile,
+                request,
+                runtime_context=self.runtime_context,
+            ):
                 single_event = event.model_dump()
                 data = event.data or {}
                 if event.event == "metadata":

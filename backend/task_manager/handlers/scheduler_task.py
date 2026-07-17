@@ -7,10 +7,9 @@ from db.db_context import create_db_session
 from scheduling.agent_registry import ensure_default_agent_profiles, get_agent_profile
 from scheduling.scheduler import SchedulingChatRequest, SchedulingRuntimeOptions, SchedulingService
 
-from task_manager.handlers.base import TaskHandlerEvent
-from task_manager.memory import TaskMemoryService, render_task_memory
+from task_manager.handlers.base import TaskExecutionContext, TaskHandlerEvent
 from task_manager.models import TaskEntity
-from task_manager.registry import TaskDefinition
+from task_manager.registry import TaskType
 
 
 class SchedulerTaskHandler:
@@ -20,9 +19,10 @@ class SchedulerTaskHandler:
     async def stream(
         self,
         *,
-        task: TaskEntity,
-        definition: TaskDefinition,
+        context: TaskExecutionContext,
     ) -> AsyncIterator[TaskHandlerEvent]:
+        task = context.task
+        definition = context.task_type
         async with create_db_session() as session:
             await ensure_default_agent_profiles(session)
             profile = await get_agent_profile(session, task.agent_id or definition.default_agent_id)
@@ -32,17 +32,7 @@ class SchedulerTaskHandler:
         if profile.agent_type != "single":
             raise ValueError(f"Agent profile '{profile.agent_id}' has unsupported type '{profile.agent_type}'.")
 
-        memory = None
-        if task.task_key:
-            memory = await TaskMemoryService(self.options).get_latest(
-                tenant_id=task.tenant_id,
-                user_id=task.user_id,
-                task_key=task.task_key,
-            )
         task_message = _build_task_message(task, definition)
-        memory_prompt = render_task_memory(memory)
-        if memory_prompt:
-            task_message = f"{memory_prompt}\n\n{task_message}"
 
         request = SchedulingChatRequest(
             message=task_message,
@@ -68,12 +58,16 @@ class SchedulerTaskHandler:
                 "candidate_skills": definition.default_candidate_skills,
                 "extra_tools": request.extra_tools,
                 "extra_datasets": request.extra_datasets,
-                "task_memory_version": memory.version if memory else None,
+                "task_memory_version": context.memory_view.version,
             },
         )
 
         service = SchedulingService(self.options)
-        async for event in service.stream_chat(profile, request):
+        async for event in service.stream_chat(
+            profile,
+            request,
+            runtime_context=context.runtime_context,
+        ):
             if event.event == "metadata":
                 yield TaskHandlerEvent(
                     event_type="agent_metadata",
@@ -114,7 +108,7 @@ class SchedulerTaskHandler:
                 yield translated
 
 
-def _build_task_message(task: TaskEntity, definition: TaskDefinition) -> str:
+def _build_task_message(task: TaskEntity, definition: TaskType) -> str:
     payload = dict(task.input_payload_json or {})
     task_type = task.task_type
     pretty_payload = json.dumps(payload, ensure_ascii=False, indent=2)

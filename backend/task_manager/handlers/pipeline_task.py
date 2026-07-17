@@ -4,13 +4,11 @@ from collections.abc import AsyncIterator
 
 from scheduling.scheduler import SchedulingRuntimeOptions
 
-from task_manager.handlers.base import TaskHandlerEvent
-from task_manager.models import TaskEntity
+from task_manager.handlers.base import TaskExecutionContext, TaskHandlerEvent
 from task_manager.pipeline.errors import PipelineCancelled
 from task_manager.pipeline.executor import PipelineExecutor
 from task_manager.pipeline.registry import get_pipeline_definition
 from task_manager.pipeline.store import get_run
-from task_manager.registry import TaskDefinition
 
 
 class PipelineTaskHandler:
@@ -20,9 +18,10 @@ class PipelineTaskHandler:
     async def stream(
         self,
         *,
-        task: TaskEntity,
-        definition: TaskDefinition,
+        context: TaskExecutionContext,
     ) -> AsyncIterator[TaskHandlerEvent]:
+        task = context.task
+        definition = context.task_type
         if not definition.pipeline_id:
             raise ValueError(f"Pipeline task '{task.task_type}' has no pipeline_id.")
         if not task.current_run_id:
@@ -36,7 +35,11 @@ class PipelineTaskHandler:
                 f"Pipeline '{pipeline.pipeline_id}' belongs to '{pipeline.task_type}', not '{task.task_type}'."
             )
         try:
-            async for event in PipelineExecutor(self.options).stream(task=task, run=run, definition=pipeline):
+            async for event in PipelineExecutor(self.options).stream(
+                context=context,
+                run=run,
+                definition=pipeline,
+            ):
                 yield event
         except PipelineCancelled as exc:
             yield TaskHandlerEvent(
