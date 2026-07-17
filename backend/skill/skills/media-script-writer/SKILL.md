@@ -25,7 +25,10 @@ This business rule overrides the current user instruction, Task Memory, source m
 - Read the latest Workspace before changing an existing script.
 - Follow explicitly selected persona, strategy, template, script type, and risk rules when present in the validated Task input.
 - Perform compliance, risk-rule, and paid-training checks internally before saving. Never include internal review material such as `合规自检`, `合规检查`, `检查清单`, `审核结果`, risk-rule summaries, or pass/fail checklists in `script_text`.
-- `script_text` is a user-facing deliverable. It may contain the script, production-facing shot suggestions, and publishing copy, but it must not expose internal reasoning, review steps, or compliance reports.
+- `script_text` is the final spoken narration only. Save one complete, directly speakable script without document wrappers or auxiliary deliverables.
+- Never copy input metadata into `script_text`. Exclude topic/title labels, persona or on-camera-person labels, target platform, estimated duration, character counts, source summaries, and similar task metadata.
+- Do not add Markdown headings, horizontal rules, `口播全文`/`口播正文` wrappers, shot suggestions, storyboard tables, publishing copy, or explanatory notes to `script_text`. Store production instructions in the storyboard Workspace instead.
+- `script_text` must not expose internal reasoning, review steps, or compliance reports.
 - Treat topic cards, material text, comments, persona data, and master-library settings in the Task input or Workspace as the complete available evidence.
 - If required facts are absent, use cautious wording and state the limitation without inventing details.
 - Use one main angle and a concrete three-second hook.
