@@ -463,70 +463,6 @@ class TableAuditInput(TaskPayloadBase):
     expected_output: str = ""
 
 
-SmartFillGroupId = Literal["project", "company", "financial", "risk", "analysis"]
-SmartFillSkillPackage = Literal[
-    "smart-fill-project-package",
-    "smart-fill-company-package",
-    "smart-fill-financial-package",
-    "smart-fill-risk-package",
-    "smart-fill-analysis-package",
-]
-
-SMART_FILL_GROUP_PACKAGES = {
-    "project": "smart-fill-project-package",
-    "company": "smart-fill-company-package",
-    "financial": "smart-fill-financial-package",
-    "risk": "smart-fill-risk-package",
-    "analysis": "smart-fill-analysis-package",
-}
-
-
-class SmartFillExtractItem(StrictPayload):
-    id: SmartFillGroupId
-    group_id: SmartFillGroupId
-    skill_package: SmartFillSkillPackage
-    field_ids: list[str] = Field(min_length=1)
-    field_specs: list[dict[str, Any]] = Field(default_factory=list)
-    extraction_instructions: str = ""
-
-    @model_validator(mode="after")
-    def validate_group_package(self):
-        if self.id != self.group_id:
-            raise ValueError("Smart fill item id must match group_id.")
-        expected = SMART_FILL_GROUP_PACKAGES[self.group_id]
-        if self.skill_package != expected:
-            raise ValueError(
-                f"Smart fill group '{self.group_id}' must use skill package '{expected}'."
-            )
-        if len(self.field_ids) != len(set(self.field_ids)):
-            raise ValueError(f"Smart fill group '{self.group_id}' contains duplicate field_ids.")
-        return self
-
-
-class SmartFillExtractInput(TaskPayloadBase):
-    document_ids: list[str] = Field(default_factory=list)
-    items: list[SmartFillExtractItem] = Field(min_length=5, max_length=5)
-    max_concurrency: Literal[5] = 5
-    failure_policy: Literal["continue", "fail_fast"] = "continue"
-    retry_per_item: int = Field(default=1, ge=0, le=3)
-    source_context: dict[str, Any] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def validate_complete_group_set(self):
-        expected = set(SMART_FILL_GROUP_PACKAGES)
-        actual = {item.group_id for item in self.items}
-        if actual != expected:
-            missing = sorted(expected - actual)
-            unexpected = sorted(actual - expected)
-            raise ValueError(
-                f"Smart fill task must contain all five groups; missing={missing}, unexpected={unexpected}."
-            )
-        all_field_ids = [field_id for item in self.items for field_id in item.field_ids]
-        if len(all_field_ids) != len(set(all_field_ids)):
-            raise ValueError("Smart fill field_ids must not overlap across extraction groups.")
-        return self
-
-
 class PipelineDemoInput(TaskPayloadBase):
     goal: str = Field(min_length=1)
     context: dict[str, Any] = Field(default_factory=dict)
@@ -880,33 +816,6 @@ class TableAuditItemOutput(StrictPayload):
     evidence: list[Any] = Field(default_factory=list)
 
 
-class SmartFillEvidence(StrictPayload):
-    file_id: str = Field(min_length=1)
-    file_name: str = ""
-    section: Optional[str] = None
-    page: Optional[int] = Field(default=None, ge=1)
-    paragraph_index: Optional[int] = Field(default=None, ge=0)
-    table_index: Optional[int] = Field(default=None, ge=0)
-    char_start: Optional[int] = Field(default=None, ge=0)
-    char_end: Optional[int] = Field(default=None, ge=0)
-    quote: str = Field(min_length=1)
-
-
-class SmartFillFieldResult(StrictPayload):
-    field_id: str = Field(min_length=1)
-    status: Literal["filled", "missing", "conflict", "invalid_format", "needs_review"]
-    value: Any = None
-    evidence: list[SmartFillEvidence] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-
-
-class SmartFillGroupOutput(StrictPayload):
-    group_id: SmartFillGroupId
-    fields: list[SmartFillFieldResult] = Field(default_factory=list)
-    missing_field_ids: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-
-
 class BatchSummary(StrictPayload):
     total: int = Field(ge=0)
     succeeded: int = Field(ge=0)
@@ -933,7 +842,6 @@ _INPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "douyin_account_report_input": DouyinAccountReportInput,
     "douyin_content_analysis_batch_input": DouyinContentAnalysisBatchInput,
     "table_audit_input": TableAuditInput,
-    "smart_fill_extract_input": SmartFillExtractInput,
     "pipeline_demo_input": PipelineDemoInput,
 }
 
@@ -949,7 +857,6 @@ _OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "douyin_account_report_output": DouyinAccountReportOutput,
     "douyin_content_analysis_item_output": DouyinContentAnalysisItemOutput,
     "table_audit_item_output": TableAuditItemOutput,
-    "smart_fill_group_output": SmartFillGroupOutput,
     "batch_task_output": BatchTaskOutput,
     "pipeline_demo_analysis": PipelineDemoAnalysis,
     "pipeline_demo_normalized": PipelineDemoNormalized,
@@ -977,7 +884,8 @@ def _register_schema(registry: dict[str, type[BaseModel]], name: str, schema: ty
         raise ValueError("Schema name is required.")
     existing = registry.get(name)
     if existing is not None and existing is not schema:
-        raise ValueError(f"Schema '{name}' is already registered.")
+        if existing.model_json_schema() != schema.model_json_schema():
+            raise ValueError(f"Schema '{name}' is already registered with a different contract.")
     registry[name] = schema
 
 

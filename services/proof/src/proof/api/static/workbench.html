@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Proof 制度工作台</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f2f5f4;
+      --panel: #fff;
+      --ink: #17231f;
+      --muted: #6b7873;
+      --line: #dce4e0;
+      --brand: #176b5b;
+      --brand-dark: #0d4d41;
+      --brand-soft: #e1f3ed;
+      --amber: #926316;
+      --amber-soft: #fff2d6;
+      --red: #a23d36;
+      --red-soft: #fdecea;
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    .topbar { position: sticky; top: 0; z-index: 10; height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 0 24px; background: rgba(255,255,255,.95); border-bottom: 1px solid var(--line); backdrop-filter: blur(12px); }
+    .brand { display: flex; align-items: center; gap: 11px; font-size: 18px; font-weight: 750; }
+    .brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; color: white; background: var(--brand); font-weight: 800; }
+    .top-actions { display: flex; align-items: center; gap: 9px; }
+    .link { color: var(--brand); text-decoration: none; font-size: 13px; padding: 8px 10px; border-radius: 7px; }
+    .link:hover { background: var(--brand-soft); }
+    .layout { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 16px; max-width: 1800px; margin: 0 auto; padding: 18px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 2px 8px rgba(24,52,44,.03); }
+    .sidebar { align-self: start; position: sticky; top: 82px; overflow: hidden; }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 16px; border-bottom: 1px solid var(--line); }
+    .panel-head h2, .detail-head h1 { margin: 0; }
+    .panel-head h2 { font-size: 15px; }
+    .small { color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .upload { padding: 16px; }
+    .field { margin-bottom: 12px; }
+    .field label { display: block; margin-bottom: 5px; color: #53615c; font-size: 12px; font-weight: 650; }
+    .field input, .field select { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; background: #fff; color: var(--ink); }
+    .field input[type=file] { padding: 8px; font-size: 12px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+    .primary { width: 100%; border: 0; border-radius: 8px; padding: 10px 14px; color: #fff; background: var(--brand); font-weight: 700; }
+    .primary:hover { background: var(--brand-dark); }
+    .primary:disabled { opacity: .55; cursor: wait; }
+    .example { margin-top: 10px; padding: 10px; border-radius: 8px; background: #f7faf9; border: 1px dashed #bfd2cb; }
+    .pipeline { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin: 13px 0 0; }
+    .step { position: relative; text-align: center; color: #8a9691; font-size: 10px; padding-top: 22px; }
+    .step::before { content: ""; position: absolute; top: 5px; left: 50%; width: 11px; height: 11px; margin-left: -6px; border: 2px solid #b9c4c0; border-radius: 50%; background: #fff; z-index: 2; }
+    .step:not(:last-child)::after { content: ""; position: absolute; top: 11px; left: 58%; width: 84%; height: 2px; background: #d7dfdc; }
+    .step.active { color: var(--brand); font-weight: 650; }
+    .step.active::before { border-color: var(--brand); background: var(--brand); }
+    .notice { display: none; margin-top: 11px; padding: 9px 10px; border-radius: 7px; font-size: 12px; line-height: 1.5; }
+    .notice.show { display: block; }
+    .notice.ok { color: var(--brand-dark); background: var(--brand-soft); }
+    .notice.error { color: var(--red); background: var(--red-soft); }
+    .main { min-width: 0; }
+    .retrieval { margin-bottom: 16px; overflow: hidden; }
+    .retrieval-tools { display: grid; grid-template-columns: minmax(260px, 1fr) 150px auto; gap: 9px; padding: 13px; }
+    .retrieval-tools input, .retrieval-tools select { border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; background: #fff; }
+    .retrieval-body { display: none; padding: 0 13px 13px; }
+    .retrieval-body.show { display: block; }
+    .retrieval-flow { display: grid; grid-template-columns: repeat(5, minmax(90px, 1fr)); gap: 7px; margin-bottom: 10px; }
+    .retrieval-stage { position: relative; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #f8faf9; }
+    .retrieval-stage:not(:last-child)::after { content: "→"; position: absolute; right: -8px; top: 50%; z-index: 2; transform: translate(50%, -50%); color: #93a19c; font-weight: 800; }
+    .retrieval-stage .value { margin-top: 4px; color: var(--brand-dark); font-size: 17px; font-weight: 760; }
+    .retrieval-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-bottom: 10px; }
+    .retrieval-result { display: grid; grid-template-columns: 52px minmax(180px, .8fr) minmax(260px, 1.5fr); gap: 10px; padding: 10px 11px; border-top: 1px solid #edf1ef; font-size: 12px; align-items: start; }
+    .retrieval-result:first-child { border-top: 0; }
+    .result-score { color: var(--brand); font-weight: 750; font-variant-numeric: tabular-nums; }
+    .result-text { display: -webkit-box; overflow: hidden; color: #4f5e58; line-height: 1.55; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .repo-tools { display: grid; grid-template-columns: minmax(220px, 1fr) 180px auto; gap: 9px; padding: 13px; border-bottom: 1px solid var(--line); }
+    .repo-tools input, .repo-tools select { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: #fff; }
+    .secondary { border: 1px solid var(--line); background: #fff; color: #41514b; border-radius: 8px; padding: 8px 12px; }
+    .secondary:hover { border-color: #a9beb6; background: #fafcfb; }
+    .repo-wrap { overflow: auto; max-height: 310px; }
+    table { width: 100%; min-width: 960px; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+    th { position: sticky; top: 0; z-index: 2; padding: 9px 11px; color: #596761; text-align: left; background: #f8faf9; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    td { padding: 10px 11px; border-bottom: 1px solid #eef2f0; vertical-align: middle; }
+    tbody tr { cursor: pointer; }
+    tbody tr:hover, tbody tr.selected { background: #f1f9f6; }
+    .title-cell { font-weight: 650; max-width: 300px; }
+    .badge { display: inline-block; padding: 3px 7px; border-radius: 999px; background: #edf2f0; color: #53615c; font-size: 10px; white-space: nowrap; }
+    .badge.brand { color: var(--brand-dark); background: var(--brand-soft); }
+    .badge.amber { color: var(--amber); background: var(--amber-soft); }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .empty { padding: 30px; color: var(--muted); text-align: center; }
+    .detail { margin-top: 16px; overflow: hidden; min-height: 420px; }
+    .detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 18px; border-bottom: 1px solid var(--line); }
+    .detail-head h1 { font-size: 20px; margin-bottom: 7px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 6px; }
+    .tabs { display: flex; gap: 6px; }
+    .tab { border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 7px 11px; color: #53615c; }
+    .tab.active { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
+    .view { display: none; padding: 17px; }
+    .view.active { display: block; }
+    .report-cards { display: grid; grid-template-columns: repeat(5, minmax(120px, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .report-card { border: 1px solid var(--line); border-radius: 9px; padding: 12px; background: #fcfdfd; }
+    .report-card .value { margin-top: 5px; font-size: 22px; font-weight: 750; }
+    .report-ok { padding: 22px; text-align: center; color: var(--brand-dark); background: var(--brand-soft); border-radius: 9px; }
+    .finding { border: 1px solid var(--line); border-left: 4px solid var(--amber); border-radius: 8px; padding: 12px 13px; margin-bottom: 9px; }
+    .finding-title { font-weight: 700; margin-bottom: 5px; }
+    .finding-meta { color: var(--muted); font-size: 11px; line-height: 1.6; }
+    .audit-state { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; margin-bottom: 12px; border-radius: 8px; background: #f7faf9; border: 1px solid var(--line); }
+    .workflow-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .workflow-actions .primary { width: auto; }
+    .danger { border: 1px solid #e4b9b5; background: #fff; color: var(--red); border-radius: 8px; padding: 8px 12px; }
+    .chunk { border: 1px solid var(--line); border-radius: 9px; margin-bottom: 9px; overflow: hidden; }
+    .chunk summary { display: flex; justify-content: space-between; gap: 14px; list-style: none; padding: 10px 12px; background: #f8faf9; cursor: pointer; }
+    .chunk summary::-webkit-details-marker { display: none; }
+    .chunk-label { font-weight: 700; }
+    .chunk-text { margin: 0; padding: 12px; white-space: pre-wrap; word-break: break-word; font: 13px/1.72 Inter, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    .loading { padding: 30px; color: var(--muted); text-align: center; }
+    @media (max-width: 1050px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar { position: static; }
+      .repo-tools { grid-template-columns: 1fr 1fr; }
+      .retrieval-flow { grid-template-columns: repeat(3, 1fr); }
+    }
+    @media (max-width: 650px) {
+      .topbar { padding: 0 14px; }
+      .layout { padding: 10px; }
+      .repo-tools, .retrieval-tools, .grid-2 { grid-template-columns: 1fr; }
+      .retrieval-flow { grid-template-columns: 1fr 1fr; }
+      .retrieval-result { grid-template-columns: 44px 1fr; }
+      .retrieval-result .result-text { grid-column: 1 / -1; }
+      .report-cards { grid-template-columns: 1fr 1fr; }
+      .detail-head { display: block; }
+      .tabs { margin-top: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">P</span>Proof 制度工作台</div>
+    <div class="top-actions">
+      <a class="link" id="agentLink" href="#">问答 Agent</a>
+      <a class="link" href="/dataset">数据集检查台</a>
+      <a class="link" href="/docs">API 文档</a>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="panel sidebar">
+      <div class="panel-head"><h2>上传制度</h2><span class="small">PDF / DOCX / MD / TXT</span></div>
+      <form class="upload" id="uploadForm">
+        <div class="field"><label for="policyFile">制度文件</label><input id="policyFile" name="file" type="file" accept=".pdf,.docx,.md,.txt" required></div>
+        <div class="field"><label for="title">制度名称（可留空）</label><input id="title" name="title" placeholder="默认使用文件名"></div>
+        <div class="field"><label for="version">版本</label><input id="version" name="version" value="1.0"></div>
+        <div class="grid-2">
+          <div class="field"><label for="level">层级</label><select id="level" name="level_code"><option value="">未指定</option></select></div>
+          <div class="field"><label for="category">分类</label><select id="category" name="category_code"><option value="auto" selected>自动识别</option></select></div>
+        </div>
+        <button class="primary" id="uploadButton" type="submit">上传并开始审校</button>
+        <div class="pipeline" id="pipeline">
+          <div class="step">上传</div><div class="step">结构</div><div class="step">Chunks</div><div class="step">审校</div><div class="step">确认</div>
+        </div>
+        <div class="notice" id="uploadNotice"></div>
+        <div class="example">
+          <div class="small">实验样本同时包含：重复编号、编号缺失、混合结构。</div>
+          <a class="link" href="/examples/policy-structure-errors.txt">获取实验制度 TXT</a>
+        </div>
+      </form>
+    </aside>
+
+    <section class="main">
+      <div class="panel retrieval">
+        <div class="panel-head"><h2>RAG 检索诊断</h2><span class="small">中文全文 + pgvector + Qwen Reranker</span></div>
+        <form class="retrieval-tools" id="retrievalForm">
+          <input id="retrievalQuery" value="关联交易需要履行哪些审批程序？" aria-label="检索问题">
+          <select id="retrievalMode" aria-label="检索模式"><option value="hybrid">混合检索</option><option value="keyword">仅中文全文</option><option value="vector">仅向量</option></select>
+          <button class="primary" id="retrievalButton" type="submit">运行检索</button>
+        </form>
+        <div class="retrieval-body" id="retrievalBody"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>制度仓库</h2><span class="small" id="repoCount">正在读取…</span></div>
+        <div class="repo-tools">
+          <input id="search" type="search" placeholder="搜索制度名称">
+          <select id="profileFilter"><option value="">全部结构</option><option value="article">第X条</option><option value="decimal_outline">小数层级</option><option value="chinese_outline">中文序号</option><option value="mixed">混合结构</option></select>
+          <button class="secondary" id="refreshButton" type="button">刷新仓库</button>
+        </div>
+        <div class="repo-wrap">
+          <table>
+            <thead><tr><th>制度</th><th>状态</th><th>版本</th><th>层级</th><th>分类</th><th>结构</th><th class="num">Chunks</th></tr></thead>
+            <tbody id="repoRows"><tr><td colspan="7" class="loading">正在读取制度仓库…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel detail" id="detailPanel">
+        <div class="empty">从制度仓库选择一份制度，或上传新的制度。</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const state = { policies: [], selectedId: null, activeTab: "report", auditTimer: null };
+    const $ = (id) => document.getElementById(id);
+    const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[char]);
+    const profileName = { article: "第X条", decimal_outline: "小数层级", chinese_outline: "中文序号", mixed: "混合结构" };
+    const findingName = { duplicate_number: "重复编号", missing_number: "编号缺失", mixed_structure: "混合结构", semantic_ambiguity: "语义问题" };
+    const policyStatusName = { draft: "待确认", effective: "已入库", expired: "已失效" };
+    const auditStatusName = { disabled: "语义审校未启用", not_requested: "历史制度未执行语义审校", pending: "等待语义审校", running: "语义审校进行中", completed: "语义审校已完成", failed: "语义审校失败" };
+
+    async function api(url, options) {
+      const response = await fetch(url, options);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || payload.error || "请求失败");
+      return payload.data;
+    }
+
+    async function loadMetadata() {
+      const [levels, categories] = await Promise.all([api("/v1/meta/policy-levels"), api("/v1/categories")]);
+      levels.forEach((item) => $("level").insertAdjacentHTML("beforeend", `<option value="${escapeHtml(item.code)}">${escapeHtml(item.name)}</option>`));
+      categories.forEach((item) => $("category").insertAdjacentHTML("beforeend", `<option value="${escapeHtml(item.code)}">${escapeHtml(item.name)}</option>`));
+    }
+
+    async function loadRepository(selectId = null) {
+      $("refreshButton").disabled = true;
+      try {
+        state.policies = await api("/v1/policies?limit=500");
+        $("repoCount").textContent = `${state.policies.length} 份制度`;
+        renderRepository();
+        if (selectId) await selectPolicy(selectId);
+      } finally {
+        $("refreshButton").disabled = false;
+      }
+    }
+
+    function renderRepository() {
+      const query = $("search").value.trim().toLowerCase();
+      const profile = $("profileFilter").value;
+      const rows = state.policies.filter((item) => {
+        if (query && !String(item.title).toLowerCase().includes(query)) return false;
+        if (profile && item.structure_profile !== profile) return false;
+        return true;
+      });
+      if (!rows.length) {
+        $("repoRows").innerHTML = '<tr><td colspan="7" class="empty">没有符合条件的制度。</td></tr>';
+        return;
+      }
+      $("repoRows").innerHTML = rows.map((item) => `<tr class="${item.id === state.selectedId ? "selected" : ""}" data-policy-id="${item.id}">
+        <td class="title-cell">${escapeHtml(item.title)}</td>
+        <td><span class="badge ${item.status === "effective" ? "brand" : "amber"}">${policyStatusName[item.status] || escapeHtml(item.status)}</span></td>
+        <td>${escapeHtml(item.version)}</td>
+        <td>${escapeHtml(item.level_name || "未指定")}</td>
+        <td>${escapeHtml(item.category_name)}</td>
+        <td><span class="badge ${item.structure_profile === "mixed" ? "amber" : "brand"}">${profileName[item.structure_profile] || escapeHtml(item.structure_profile)}</span></td>
+        <td class="num">${item.clause_count}</td>
+      </tr>`).join("");
+      $("repoRows").querySelectorAll("tr[data-policy-id]").forEach((row) => row.addEventListener("click", () => selectPolicy(row.dataset.policyId)));
+    }
+
+    async function selectPolicy(policyId) {
+      clearTimeout(state.auditTimer);
+      state.selectedId = policyId;
+      renderRepository();
+      $("detailPanel").innerHTML = '<div class="loading">正在读取制度、chunks 和检查报告…</div>';
+      try {
+        const [policy, clauses, report] = await Promise.all([
+          api(`/v1/policies/${policyId}`),
+          api(`/v1/policies/${policyId}/clauses?include_text=true`),
+          api(`/v1/policies/${policyId}/quality-report`),
+        ]);
+        renderDetail(policy, clauses, report);
+        if (policy.status === "draft" && ["pending", "running"].includes(report.semantic_audit?.status)) {
+          state.auditTimer = setTimeout(() => selectPolicy(policyId), 2000);
+        }
+      } catch (error) {
+        $("detailPanel").innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+      }
+    }
+
+    function renderDetail(policy, clauses, report) {
+      const counts = report.finding_counts;
+      $("detailPanel").innerHTML = `<div class="detail-head">
+        <div><h1>${escapeHtml(policy.title)}</h1><div class="meta">
+          <span class="badge">版本 ${escapeHtml(policy.version)}</span>
+          <span class="badge ${policy.status === "effective" ? "brand" : "amber"}">${policyStatusName[policy.status] || escapeHtml(policy.status)}</span>
+          <span class="badge">${escapeHtml(policy.level_name || "未指定层级")}</span>
+          <span class="badge">${escapeHtml(policy.category_name)}</span>
+          <span class="badge ${policy.structure_profile === "mixed" ? "amber" : "brand"}">${profileName[policy.structure_profile] || escapeHtml(policy.structure_profile)}</span>
+        </div></div>
+        <div class="tabs"><button class="tab ${state.activeTab === "report" ? "active" : ""}" data-tab="report">检查报告</button><button class="tab ${state.activeTab === "chunks" ? "active" : ""}" data-tab="chunks">Chunks (${clauses.length})</button></div>
+      </div>
+      <div class="view ${state.activeTab === "report" ? "active" : ""}" id="reportView">${renderReport(report)}</div>
+      <div class="view ${state.activeTab === "chunks" ? "active" : ""}" id="chunksView">${renderChunks(clauses)}</div>`;
+      $("detailPanel").querySelectorAll(".tab").forEach((button) => button.addEventListener("click", () => {
+        state.activeTab = button.dataset.tab;
+        $("detailPanel").querySelectorAll(".tab, .view").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        $(`${state.activeTab}View`).classList.add("active");
+      }));
+      bindWorkflowActions(policy, report);
+    }
+
+    function renderReport(report) {
+      const counts = report.finding_counts;
+      const cards = `<div class="report-cards">
+        <div class="report-card"><div class="small">检查条款</div><div class="value">${report.clause_count}</div></div>
+        <div class="report-card"><div class="small">重复编号</div><div class="value">${counts.duplicate_number}</div></div>
+        <div class="report-card"><div class="small">编号缺失</div><div class="value">${counts.missing_number}</div></div>
+        <div class="report-card"><div class="small">混合结构</div><div class="value">${counts.mixed_structure}</div></div>
+        <div class="report-card"><div class="small">语义问题</div><div class="value">${counts.semantic_ambiguity || 0}</div></div>
+      </div>`;
+      const audit = report.semantic_audit || { status: "disabled" };
+      const stateClass = audit.status === "failed" ? "error" : audit.status === "completed" ? "ok" : "";
+      const auditState = `<div class="audit-state"><div><strong>${escapeHtml(auditStatusName[audit.status] || audit.status)}</strong>${audit.error_message ? `<div class="small">${escapeHtml(audit.error_message)}</div>` : ""}</div><span class="badge ${stateClass === "ok" ? "brand" : "amber"}">${escapeHtml(audit.status)}</span></div>`;
+      const actions = `<div class="workflow-actions" id="workflowActions"></div>`;
+      if (!report.findings.length) return cards + auditState + '<div class="report-ok">当前检查项未发现问题。</div>' + actions;
+      return cards + auditState + report.findings.map((item, index) => `<article class="finding">
+        <div class="finding-title">${index + 1}. ${findingName[item.type] || escapeHtml(item.type)}</div>
+        <div>${escapeHtml(item.message)}</div>
+        <div class="finding-meta">${findingEvidence(item)}</div>
+      </article>`).join("") + actions;
+    }
+
+    function findingEvidence(item) {
+      if (item.type === "duplicate_number") return `位置：${item.occurrences.map((x) => `Chunk #${x.clause_ordinal}${x.line_no ? ` 第${x.line_no}行` : ""}`).join("、")}`;
+      if (item.type === "missing_number") return `缺少：${(item.missing_numbers || []).join("、")}`;
+      if (item.type === "mixed_structure") return `识别结构：${(item.profiles || []).map((x) => profileName[x] || x).join(" + ")}`;
+      if (item.type === "semantic_ambiguity") return `位置：Chunk #${item.clause_ordinal} ${escapeHtml(item.clause_no_raw || "")}<br>原文：${escapeHtml(item.quote)}<br>建议：${escapeHtml(item.suggestion)}`;
+      return "";
+    }
+
+    function bindWorkflowActions(policy, report) {
+      const actions = $("workflowActions");
+      if (!actions || policy.status !== "draft") return;
+      const auditStatus = report.semantic_audit?.status || "disabled";
+      if (["completed", "disabled"].includes(auditStatus)) {
+        actions.insertAdjacentHTML("beforeend", '<button class="primary" id="confirmPolicyButton" type="button">确认入库</button>');
+      }
+      if (auditStatus === "failed") {
+        actions.insertAdjacentHTML("beforeend", '<button class="secondary" id="retryAuditButton" type="button">重新审校</button>');
+      }
+      actions.insertAdjacentHTML("beforeend", '<button class="danger" id="discardPolicyButton" type="button">丢弃草稿</button>');
+      $("confirmPolicyButton")?.addEventListener("click", async () => {
+        const findingCount = report.findings.length;
+        if (findingCount && !confirm(`仍有 ${findingCount} 条检查问题，确认继续入库吗？`)) return;
+        await api(`/v1/policies/${policy.id}/confirm`, { method: "POST" });
+        await loadRepository(policy.id);
+      });
+      $("retryAuditButton")?.addEventListener("click", async () => {
+        await api(`/v1/policies/${policy.id}/semantic-audit`, { method: "POST" });
+        await selectPolicy(policy.id);
+      });
+      $("discardPolicyButton")?.addEventListener("click", async () => {
+        if (!confirm("确认丢弃这份草稿及其审校结果吗？")) return;
+        await api(`/v1/policies/${policy.id}`, { method: "DELETE" });
+        state.selectedId = null;
+        $("detailPanel").innerHTML = '<div class="empty">草稿已丢弃。</div>';
+        await loadRepository();
+      });
+    }
+
+    function renderChunks(clauses) {
+      if (!clauses.length) return '<div class="empty">没有 chunks。</div>';
+      return clauses.map((chunk) => `<details class="chunk" ${chunk.clause_ordinal === 1 ? "open" : ""}>
+        <summary><span class="chunk-label">#${chunk.clause_ordinal} ${escapeHtml(chunk.clause_no_raw)}</span><span class="small">${escapeHtml(profileName[chunk.unit_type] || chunk.unit_type)} · ${String(chunk.text || "").length} 字</span></summary>
+        <pre class="chunk-text">${escapeHtml(chunk.text)}</pre>
+      </details>`).join("");
+    }
+
+    function setPipeline(count) {
+      $("pipeline").querySelectorAll(".step").forEach((step, index) => step.classList.toggle("active", index < count));
+    }
+
+    function renderRetrieval(data) {
+      const counts = data.candidate_counts || {};
+      const reasons = data.degradation_reasons || [];
+      const stages = [
+        ["中文全文", counts.keyword ?? "—"],
+        ["向量召回", counts.vector ?? "—"],
+        ["正文去重", counts.deduplicated ?? 0],
+        ["Reranker", data.reranker_used ? data.reranker_model : "未使用"],
+        ["最终返回", counts.returned ?? 0],
+      ];
+      const results = (data.results || []).map((item) => `<div class="retrieval-result">
+        <div class="result-score">${Number(item.score || 0).toFixed(3)}</div>
+        <div><strong>${escapeHtml(item.citation?.label || "无溯源")}</strong><div class="small">${escapeHtml((item.retrieval_sources || []).join(" + "))}</div></div>
+        <div class="result-text">${escapeHtml(item.text)}</div>
+      </div>`).join("") || '<div class="empty">没有命中条款。</div>';
+      $("retrievalBody").innerHTML = `<div class="retrieval-flow">${stages.map(([name, value]) => `<div class="retrieval-stage"><div class="small">${escapeHtml(name)}</div><div class="value">${escapeHtml(value)}</div></div>`).join("")}</div>
+        <div class="retrieval-summary"><span class="badge brand">${escapeHtml(data.retrieval_mode)}</span><span class="badge ${data.degraded ? "amber" : "brand"}">${data.degraded ? "已降级" : "链路完整"}</span>${reasons.map((reason) => `<span class="badge amber">${escapeHtml(reason)}</span>`).join("")}</div>
+        <div>${results}</div>`;
+      $("retrievalBody").classList.add("show");
+    }
+
+    $("retrievalForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = $("retrievalButton");
+      button.disabled = true;
+      $("retrievalBody").className = "retrieval-body show";
+      $("retrievalBody").innerHTML = '<div class="loading">正在并行召回并排序完整条款…</div>';
+      try {
+        const data = await api("/v1/retrieval/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: $("retrievalQuery").value, retrieval_mode: $("retrievalMode").value, top_k: 8 }),
+        });
+        renderRetrieval(data);
+      } catch (error) {
+        $("retrievalBody").innerHTML = `<div class="notice show error">${escapeHtml(error.message)}</div>`;
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    $("uploadForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = $("uploadButton");
+      const notice = $("uploadNotice");
+      button.disabled = true;
+      notice.className = "notice";
+      setPipeline(1);
+      try {
+        setPipeline(2);
+        const data = await api("/v1/policies", { method: "POST", body: new FormData(event.currentTarget) });
+        setPipeline(3);
+        await loadRepository(data.policy.id);
+        setPipeline(data.policy.status === "effective" ? 5 : 4);
+        notice.textContent = data.reused ? "文件已存在，已打开原制度及最新报告。" : `草稿已保存，生成 ${data.clauses.length} 个 chunks，正在等待审校和确认。`;
+        notice.className = "notice show ok";
+      } catch (error) {
+        notice.textContent = error.message;
+        notice.className = "notice show error";
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    ["search", "profileFilter"].forEach((id) => $(id).addEventListener(id === "search" ? "input" : "change", renderRepository));
+    $("refreshButton").addEventListener("click", () => loadRepository(state.selectedId));
+    $("agentLink").href = `${location.protocol}//${location.hostname}:8894/`;
+    Promise.all([loadMetadata(), loadRepository()]).catch((error) => { $("repoRows").innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(error.message)}</td></tr>`; });
+  </script>
+</body>
+</html>

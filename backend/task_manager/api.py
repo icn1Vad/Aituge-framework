@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from scheduling.scheduler import SchedulingRuntimeOptions
 
 from .access import TaskAccessContext, assert_can_access_task, task_access_context
+from .conversation_service import TaskConversationService
 from .memory import TaskMemoryMaterial, TaskMemoryService
 from .registry import list_task_definitions
 from .pipeline.registry import list_pipeline_definitions
@@ -105,6 +106,8 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
                     output_schema_name=item.output_schema_name,
                     item_output_schema_name=item.item_output_schema_name,
                     pipeline_id=item.pipeline_id,
+                    stream_chunk_chars=item.stream_chunk_chars,
+                    conversation_message_field=item.conversation_message_field,
                 )
                 for item in list_task_definitions()
             ]
@@ -215,6 +218,57 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
             offset=offset,
         )
         return {"tasks": [task_to_read(row) for row in rows]}
+
+    @router.get("/conversations")
+    async def conversations(
+        task_type: str = Query(min_length=1),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+        context: TaskAccessContext = Depends(task_access_context),
+    ):
+        try:
+            rows, has_more = await TaskConversationService().list_conversations(
+                task_type=task_type,
+                user_id=context.user_id,
+                tenant_id=context.tenant_id,
+                limit=limit,
+                offset=offset,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "conversations": rows,
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "has_more": has_more,
+            },
+        }
+
+    @router.get("/conversations/{thread_id}")
+    async def conversation(
+        thread_id: str,
+        task_type: str = Query(min_length=1),
+        context: TaskAccessContext = Depends(task_access_context),
+    ):
+        try:
+            result = await TaskConversationService().get_conversation(
+                thread_id=thread_id,
+                task_type=task_type,
+                user_id=context.user_id,
+                tenant_id=context.tenant_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if result is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "conversation_not_found",
+                    "message": "Task conversation was not found.",
+                },
+            )
+        return result
 
     @router.get("/tasks/{task_id}")
     async def task(

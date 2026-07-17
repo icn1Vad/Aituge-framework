@@ -8,8 +8,49 @@ from .loader import DEFAULT_SKILLS_DIR, SKILL_FILE_NAME, load_skill
 from .models import Skill, SkillSummary
 
 
-def iter_skill_files(skills_dir: str | Path | None = None) -> list[Path]:
-    root = Path(skills_dir) if skills_dir is not None else DEFAULT_SKILLS_DIR
+_EXTERNAL_SKILL_ROOTS: list[Path] = []
+
+
+def skill_roots() -> list[Path]:
+    return [DEFAULT_SKILLS_DIR, *_EXTERNAL_SKILL_ROOTS]
+
+
+def register_skill_root(skills_dir: str | Path) -> Path:
+    """Add one trusted external skill directory after checking name conflicts."""
+
+    root = Path(skills_dir).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"Skill root does not exist or is not a directory: {root}")
+    if root == DEFAULT_SKILLS_DIR.resolve() or root in _EXTERNAL_SKILL_ROOTS:
+        return root
+
+    existing = {
+        skill.name: skill.path
+        for path in _iter_roots(skill_roots())
+        for skill in [load_skill(path)]
+    }
+    incoming: dict[str, Path] = {}
+    for path in _iter_root(root):
+        skill = load_skill(path)
+        if skill.name in incoming:
+            raise ValueError(
+                f"Skill name '{skill.name}' is duplicated inside external root: "
+                f"{incoming[skill.name]}, {skill.path}"
+            )
+        if skill.name in existing:
+            raise ValueError(
+                f"Skill name '{skill.name}' conflicts with existing skill: "
+                f"{existing[skill.name]}"
+            )
+        incoming[skill.name] = skill.path
+
+    if not incoming:
+        raise ValueError(f"Skill root contains no {SKILL_FILE_NAME} files: {root}")
+    _EXTERNAL_SKILL_ROOTS.append(root)
+    return root
+
+
+def _iter_root(root: Path) -> list[Path]:
     if not root.exists():
         return []
     return sorted(
@@ -17,6 +58,16 @@ def iter_skill_files(skills_dir: str | Path | None = None) -> list[Path]:
         for path in root.rglob(SKILL_FILE_NAME)
         if "__pycache__" not in path.parts
     )
+
+
+def _iter_roots(roots: list[Path]) -> list[Path]:
+    return [path for root in roots for path in _iter_root(root)]
+
+
+def iter_skill_files(skills_dir: str | Path | None = None) -> list[Path]:
+    if skills_dir is not None:
+        return _iter_root(Path(skills_dir))
+    return _iter_roots(skill_roots())
 
 
 def list_skills(skills_dir: str | Path | None = None) -> list[SkillSummary]:

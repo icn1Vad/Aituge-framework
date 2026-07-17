@@ -71,7 +71,7 @@ class _ToolCallingFakeLlm:
                         _tool_call(
                             0,
                             "ReadSkill",
-                            {"skill_name": "report-analysis-findings"},
+                            {"skill_name": "media-script-generator"},
                         ),
                         _tool_call(
                             1,
@@ -104,7 +104,7 @@ class _ToolCallingFakeLlm:
 
         async def final_pass():
             tool_context = "\n".join(str(message.get("content") or "") for message in messages)
-            assert "Use this auxiliary skill for the Analysis and Findings section" in tool_context
+            assert "You are a short-video script creator" in tool_context
             assert "drawing artifact ready" in tool_context
             assert "__TUGE_ARTIFACTS__" in tool_context
             assert "Aliyun mocked result" in tool_context
@@ -213,7 +213,7 @@ def test_combined_skill_artifact_search_and_rag_flow(monkeypatch, tmp_path: Path
                 json={
                     "message": "Run the full framework acceptance flow.",
                     "user_id": "combined-framework-test-user",
-                    "skill_package": "report-package",
+                    "skill_package": "media-script-select-package",
                     "stream": False,
                 },
             )
@@ -222,7 +222,9 @@ def test_combined_skill_artifact_search_and_rag_flow(monkeypatch, tmp_path: Path
         body = response.json()
         content = body["response"]["choices"][0]["message"]["content"]
         assert "combined framework ok" in content
-        assert body["skills"]["active_package"]["primary"]["name"] == "report-generator"
+        assert body["skills"]["active_package"]["primary"]["name"] == (
+            "media-script-selector"
+        )
 
         steps = body["response"]["steps"]
         step_names = {step["tool"]["function"]["name"] for step in steps}

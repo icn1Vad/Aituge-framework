@@ -40,7 +40,7 @@ def test_capability_catalog_lists_tools_and_skill_packages(tmp_path, monkeypatch
         }
 
         assert ("tool", "code_interpreter", "local_python") in by_key
-        assert ("tool", "code_interpreter", "limited_sandbox") in by_key
+        assert ("tool", "code_interpreter", "limited_sandbox") not in by_key
         web_search = by_key[("tool", "web_search", "aliyun")]
         assert web_search["configured"] is True
         assert web_search["enabled"] is True
@@ -51,10 +51,10 @@ def test_capability_catalog_lists_tools_and_skill_packages(tmp_path, monkeypatch
         assert local_python["configured"] is False
         assert local_python["enabled"] is True
 
-        report_package = by_key[("skill_package", "report-package", None)]
-        assert report_package["display_name"] == "Report Package"
-        assert report_package["primary"] == "report-generator"
-        assert "report-analysis-findings" in report_package["auxiliary"]
+        script_package = by_key[("skill_package", "media-script-select-package", None)]
+        assert script_package["display_name"] == "Media Script Select Package"
+        assert script_package["primary"] == "media-script-selector"
+        assert script_package["auxiliary"] == ["media-script-generator"]
 
         payload = json.dumps(capabilities, ensure_ascii=False)
         assert "secret-iqs-key" not in payload

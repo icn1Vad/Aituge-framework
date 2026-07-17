@@ -738,7 +738,7 @@ class TaskManagerService:
                             yield TaskEventRead.model_validate(flushed)
                     buffered_item = buffered_item or item
                     stream_buffer.append(item.delta)
-                    if sum(len(part) for part in stream_buffer) < 400:
+                    if sum(len(part) for part in stream_buffer) < definition.stream_chunk_chars:
                         continue
                     flushed = await flush_stream_buffer()
                     if flushed is not None:
@@ -796,7 +796,8 @@ class TaskManagerService:
             synced_items = await self._sync_result_items(task, structured_output)
             if synced_items:
                 result["synced_items"] = synced_items
-            if structured_output is None:
+            structured_output_required = bool(definition.output_schema_name) or definition.handler == "pipeline"
+            if structured_output is None and structured_output_required:
                 parse_failed = await self.record_event(
                     task_id=task.id,
                     run_id=task.current_run_id,
@@ -814,7 +815,7 @@ class TaskManagerService:
                 yield TaskEventRead.model_validate(parse_failed)
                 if definition.handler == "pipeline":
                     raise ValueError("Pipeline final output is not valid JSON.")
-            else:
+            elif structured_output is not None:
                 is_valid, validation_error = validate_output_payload(
                     definition.output_schema_name,
                     structured_output,

@@ -5,11 +5,19 @@ from typing import Any, AsyncIterator
 
 from db.db_context import create_db_session
 from scheduling.agent_registry import ensure_default_agent_profiles, get_agent_profile
-from scheduling.scheduler import SchedulingChatRequest, SchedulingRuntimeOptions, SchedulingService
+from scheduling.scheduler import (
+    RuntimeContextBlock,
+    SchedulingChatRequest,
+    SchedulingRuntimeOptions,
+    SchedulingService,
+)
 
 from task_manager.handlers.base import TaskExecutionContext, TaskHandlerEvent
 from task_manager.models import TaskEntity
 from task_manager.registry import TaskType
+
+
+TOOL_ARGUMENT_MAX_CHARS = 4_000
 
 
 class SchedulerTaskHandler:
@@ -32,7 +40,16 @@ class SchedulerTaskHandler:
         if profile.agent_type != "single":
             raise ValueError(f"Agent profile '{profile.agent_id}' has unsupported type '{profile.agent_type}'.")
 
-        task_message = _build_task_message(task, definition)
+        task_message, task_input_context = _build_scheduler_input(task, definition)
+        runtime_context = context.runtime_context
+        if task_input_context:
+            runtime_context = runtime_context.extend(
+                RuntimeContextBlock(
+                    kind="task_input",
+                    content=task_input_context,
+                    metadata={"task_id": task.id, "task_type": task.task_type},
+                )
+            )
 
         request = SchedulingChatRequest(
             message=task_message,
@@ -66,7 +83,7 @@ class SchedulerTaskHandler:
         async for event in service.stream_chat(
             profile,
             request,
-            runtime_context=context.runtime_context,
+            runtime_context=runtime_context,
         ):
             if event.event == "metadata":
                 yield TaskHandlerEvent(
@@ -262,6 +279,39 @@ def _build_task_message(task: TaskEntity, definition: TaskType) -> str:
     )
 
 
+def _build_scheduler_input(task: TaskEntity, definition: TaskType) -> tuple[str, str]:
+    """Separate the durable user message from internal Task execution parameters."""
+
+    field_name = definition.conversation_message_field
+    if not field_name:
+        return _build_task_message(task, definition), ""
+
+    payload = dict(task.input_payload_json or {})
+    raw_message = payload.get(field_name)
+    if not isinstance(raw_message, str) or not raw_message.strip():
+        raise ValueError(
+            f"Task type '{task.task_type}' requires a non-empty string input field "
+            f"'{field_name}'."
+        )
+
+    execution_parameters = {
+        key: value for key, value in payload.items() if key != field_name
+    }
+    context_lines = [
+        "Internal Task execution context. Use it to execute the request, but do not quote "
+        "or treat it as part of the user's message.",
+        f"Task type: {task.task_type}",
+    ]
+    if execution_parameters:
+        context_lines.extend(
+            [
+                "Execution parameters:",
+                json.dumps(execution_parameters, ensure_ascii=False, indent=2),
+            ]
+        )
+    return raw_message.strip(), "\n".join(context_lines)
+
+
 def _extract_delta(data: dict[str, Any]) -> str:
     choices = data.get("choices") or []
     if not choices:
@@ -303,6 +353,7 @@ def _translate_chunk_event(event) -> list[TaskHandlerEvent]:
                 payload={
                     "tool_name": tool_name,
                     "tool_call_id": tool_call_id,
+                    "arguments": _bounded_tool_arguments(action),
                     "status": "started",
                 },
                 thread_id=event.thread_id,
@@ -343,3 +394,20 @@ def _translate_chunk_event(event) -> list[TaskHandlerEvent]:
 def _tool_identity(payload: dict[str, Any]) -> tuple[str, str]:
     function = payload.get("function") if isinstance(payload.get("function"), dict) else {}
     return str(function.get("name") or "unknown_tool"), str(payload.get("id") or "")
+
+
+def _bounded_tool_arguments(payload: dict[str, Any]) -> str:
+    function = payload.get("function") if isinstance(payload.get("function"), dict) else {}
+    arguments = function.get("arguments")
+    if arguments is None:
+        return ""
+    if isinstance(arguments, str):
+        text = arguments
+    else:
+        text = json.dumps(arguments, ensure_ascii=False)
+    if len(text) <= TOOL_ARGUMENT_MAX_CHARS:
+        return text
+    return (
+        text[:TOOL_ARGUMENT_MAX_CHARS]
+        + f"...（参数已截断，原始 {len(text)} 字符）"
+    )

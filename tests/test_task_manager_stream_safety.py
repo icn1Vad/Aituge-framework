@@ -2,7 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 from task_manager.api import _STREAM_DONE, _run_task_to_queue
-from task_manager.handlers.scheduler_task import _translate_chunk_event
+from task_manager.handlers.scheduler_task import TOOL_ARGUMENT_MAX_CHARS, _translate_chunk_event
 from task_manager.schemas import TaskRunRequest
 from task_manager.service import MAX_EVENT_PAYLOAD_CHARS, _bounded_event_payload
 
@@ -40,10 +40,26 @@ def test_tool_events_are_compact_and_do_not_include_results():
     )
 
     assert started[0].event_type == "tool_started"
+    assert started[0].payload["arguments"] == '{"query":"policy"}'
     assert completed[0].event_type == "tool_completed"
     assert completed[0].payload["result_chars"] > 100_000
     assert "result" not in completed[0].payload
     assert len(str(completed[0].payload)) < 500
+
+
+def test_tool_arguments_are_truncated_with_an_explicit_marker():
+    raw_arguments = '{"text":"' + ("x" * (TOOL_ARGUMENT_MAX_CHARS + 200)) + '"}'
+    action = {
+        "id": "call-large",
+        "function": {"name": "large_tool", "arguments": raw_arguments},
+    }
+
+    started = _translate_chunk_event(_event({"actions": [action]}))[0]
+    arguments = started.payload["arguments"]
+
+    assert arguments.startswith(raw_arguments[:TOOL_ARGUMENT_MAX_CHARS])
+    assert arguments.endswith(f"...（参数已截断，原始 {len(raw_arguments)} 字符）")
+    assert len(arguments) < TOOL_ARGUMENT_MAX_CHARS + 50
 
 
 def test_event_payload_has_a_hard_size_limit():

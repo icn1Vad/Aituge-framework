@@ -16,6 +16,8 @@ venv/
 
 # Runtime data
 backend/single-agent/tmp/
+runtime/
+backups/
 localdata/private_config/
 localdata/external_skills/
 localdata/logs/
@@ -23,6 +25,11 @@ localdata/redis/
 localdata/*.log
 .local/
 *.private.json
+
+# Deployment secrets
+.env
+*.env
+!*.env.example
 
 # Nested worktrees
 aituge-registry/

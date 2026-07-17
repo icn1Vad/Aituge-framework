@@ -175,6 +175,8 @@ class TaskDefinitionRead(BaseModel):
     output_schema_name: Optional[str] = None
     item_output_schema_name: Optional[str] = None
     pipeline_id: Optional[str] = None
+    stream_chunk_chars: int = 400
+    conversation_message_field: Optional[str] = None
 
 
 class TaskRunRead(BaseModel):

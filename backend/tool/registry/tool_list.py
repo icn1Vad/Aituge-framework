@@ -13,10 +13,6 @@ from tool.media_master_library import (
     MediaMasterLibraryConfig,
     create_media_master_library_bundle,
 )
-from tool.sandbox import (
-    LimitedCodeSandboxConfig,
-    create_limited_code_sandbox_bundle,
-)
 from tool.search import AliyunSearchConfig, create_aliyun_web_search_bundle
 
 from .config import ToolProviderConfig
@@ -35,12 +31,6 @@ def _create_local_python_bundle(config: ToolProviderConfig):
         raw["work_dir"] = _coerce_path(raw["work_dir"])
     runtime_config = LimitedLocalPythonConfig(**raw)
     return create_limited_local_python_bundle(runtime_config)
-
-
-def _create_limited_sandbox_bundle(config: ToolProviderConfig):
-    raw = {**dict(config.config), **dict(config.secrets)}
-    sandbox_config = LimitedCodeSandboxConfig(**raw)
-    return create_limited_code_sandbox_bundle(sandbox_config)
 
 
 def _create_aliyun_web_search_bundle(config: ToolProviderConfig):
@@ -67,16 +57,6 @@ def create_default_tool_list() -> ToolList:
             factory=_create_local_python_bundle,
         ),
         make_default=True,
-    )
-    tool_list.register(
-        ToolDefinition(
-            tool_name="code_interpreter",
-            provider="limited_sandbox",
-            display_name="Limited Remote Python Sandbox",
-            description="Run Python code in a limited PAI-style remote sandbox.",
-            llm_tool_names=("LimitedPythonInterpreter", "LimitedInstallPythonPackage"),
-            factory=_create_limited_sandbox_bundle,
-        )
     )
     tool_list.register(
         ToolDefinition(

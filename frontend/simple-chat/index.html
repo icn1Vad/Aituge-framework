@@ -943,7 +943,8 @@
               <summary><span>TaskManager v1</span><span>task</span></summary>
               <div class="task-panel">
                 <select id="taskType" class="task-select">
-                  <option value="pipeline.demo" selected>pipeline.demo</option>
+                  <option value="proof.qa.chat" selected>proof.qa.chat</option>
+                  <option value="pipeline.demo">pipeline.demo</option>
                   <option value="media.topic.search">media.topic.search</option>
                   <option value="analytics.douyin.account_report.generate">analytics.douyin.account_report.generate</option>
                   <option value="ai.search.chat">ai.search.chat</option>
@@ -1113,6 +1114,8 @@
       const USER_ID_KEY = "tuge-simple-chat-user-id";
       const AGENT_ID_KEY = "tuge-simple-chat-agent-id";
       const DEFAULT_AGENT_ID = "default-single-agent";
+      const PROOF_AGENT_ID = "proof-qa-agent";
+      const PROOF_TASK_TYPE = "proof.qa.chat";
 
       let threadId = null;
       let activeMode = "chat";
@@ -1127,8 +1130,13 @@
       let mainWorkspaceId = null;
       let mainAgentSessionId = null;
       let mainFormalTaskId = null;
+      let activeProofTaskId = null;
+      let activeProofRunId = null;
+      let activeProofSequence = 0;
+      let activeProofStreamController = null;
 
       function resetConversationState({ resetWorkspace = false } = {}) {
+        detachProofStream();
         threadId = null;
         currentDiscussionRunId = null;
         activePipelineTaskId = null;
@@ -1224,13 +1232,25 @@
           sub.className = "preview";
           sub.textContent = thread.preview || (thread.id === threadId ? preview : "") || "等待消息";
           item.append(title, sub);
-          item.addEventListener("click", () => loadThread(thread.id));
+          item.addEventListener("click", () => loadThread(thread.id, thread.task_type));
           threadListEl.appendChild(item);
         }
       }
 
       function selectedAgentId() {
         return agentSelectEl.value || DEFAULT_AGENT_ID;
+      }
+
+      function isProofMode() {
+        return selectedAgentId() === PROOF_AGENT_ID;
+      }
+
+      function detachProofStream() {
+        activeProofStreamController?.abort();
+        activeProofStreamController = null;
+        activeProofTaskId = null;
+        activeProofRunId = null;
+        activeProofSequence = 0;
       }
 
       function schedulingChatUrl() {
@@ -1249,7 +1269,11 @@
       }
 
       function renderDiscussionAgents() {
-        const preferred = new Set(["rag-agent", "code-agent", "report-agent"]);
+        const preferred = new Set([
+          "default-single-agent",
+          "media-writer-agent",
+          "media-storyboard-agent",
+        ]);
         discussionAgentsEl.innerHTML = "";
         for (const agent of agents) {
           const label = document.createElement("label");
@@ -1283,6 +1307,7 @@
           : DEFAULT_AGENT_ID;
         activateChatMode("chat", { resetConversation: false });
         renderDiscussionAgents();
+        await loadThreads();
       }
 
       function addUserMessage(text) {
@@ -2001,8 +2026,28 @@
         }
       ];
 
+      function buildProofTaskPayload(question, source = "simple-chat-proof-qa") {
+        return {
+          task_type: "proof.qa.chat",
+          task_key: `simple-chat-proof.qa.chat-${Date.now()}`,
+          title: question || "制度问答",
+          user_id: userId,
+          thread_id: threadId,
+          session_id: threadId,
+          stream: true,
+          input_payload: {
+            question,
+            top_k: 5,
+          },
+          metadata: { source },
+        };
+      }
+
       function buildMediaTaskPayload() {
         const taskType = taskTypeEl.value || "media.script.generate";
+        if (taskType === "proof.qa.chat") {
+          return buildProofTaskPayload(taskTopicEl.value.trim());
+        }
         if (taskType === "pipeline.demo") {
           return {
             task_type: taskType,
@@ -2183,6 +2228,13 @@
         taskHumanReviewEl.disabled = !isPipeline;
         cancelPipelineRunEl.hidden = !isPipeline;
         approvePipelineRunEl.hidden = !isPipeline;
+        if (taskType === "proof.qa.chat") {
+          taskTopicEl.value = "制度管理部门负责什么？";
+          taskBriefEl.value = "回答必须来自制度检索结果，并标注制度、条款和 Chunk 编号。";
+          taskCandidatesEl.value = "[]";
+          taskRowsEl.value = "[]";
+          return;
+        }
         if (isPipeline) {
           const isScriptPipeline = taskType === "media.script.pipeline.generate";
           taskTopicEl.value = isScriptPipeline
@@ -2378,17 +2430,195 @@
         setBusy(false, "ready");
       }
 
-      async function runMediaTask() {
-        const payload = buildMediaTaskPayload();
+      function addProofAgentLabel(nodes, suffix = "Task SSE") {
+        const speaker = document.createElement("span");
+        speaker.className = "agent-speaker";
+        speaker.textContent = `Proof Policy Q&A · ${suffix}`;
+        nodes.actions.prepend(speaker);
+      }
+
+      function applyProofTaskEvent(event, envelope, nodes) {
+        const runId = envelope.run_id || activeProofRunId;
+        const sequence = Number(envelope.sequence || 0);
+        if (runId && activeProofRunId === runId && sequence && sequence <= activeProofSequence) {
+          return;
+        }
+        if (runId && activeProofRunId !== runId) {
+          activeProofRunId = runId;
+          activeProofSequence = 0;
+        }
+        if (sequence) activeProofSequence = Math.max(activeProofSequence, sequence);
+
+        const eventPayload = envelope.payload_json || envelope.payload || {};
+        const taskId = envelope.task_id || activeProofTaskId;
+        if (taskId) activeProofTaskId = taskId;
+        taskStatusEl.textContent = `Proof: ${event}${taskId ? ` / ${taskId.slice(0, 8)}` : ""}`;
+        statusEl.textContent = `proof: ${event}${taskId ? ` / ${taskId.slice(0, 8)}` : ""}`;
+
+        if (event === "tool_started") {
+          const toolId = eventPayload.tool_call_id || eventPayload.tool_name || "proof-tool";
+          upsertToolTrace(nodes, {
+            id: toolId,
+            function: {
+              name: eventPayload.tool_name || "proof tool",
+              arguments: eventPayload.arguments || "",
+            },
+          });
+        }
+        if (event === "tool_completed") {
+          const toolId = eventPayload.tool_call_id || eventPayload.tool_name || "proof-tool";
+          upsertToolTrace(nodes, {
+            id: toolId,
+            function: { name: eventPayload.tool_name || "proof tool" },
+          }, {
+            id: toolId,
+            result: eventPayload.error
+              ? undefined
+              : `完成（返回 ${eventPayload.result_chars || 0} 字符）`,
+            error: eventPayload.error || undefined,
+          });
+        }
+
+        const delta = eventPayload.delta || "";
+        if (delta) {
+          nodes.bubble.textContent += delta;
+          nodes.bubble.scrollIntoView({ behavior: "smooth", block: "end" });
+        }
+        if (event === "task_failed" || event === "task_cancelled") {
+          const message = envelope.message || eventPayload.message || event;
+          nodes.bubble.textContent += `${nodes.bubble.textContent ? "\n\n" : ""}${message}`;
+        }
+      }
+
+      async function runProofTask(payload, nodesOverride = null) {
+        const embeddedInChat = Boolean(nodesOverride);
+        if (!embeddedInChat) activeMode = "task";
+        currentThreadTitle = payload.title.slice(0, 18);
+        if (!embeddedInChat) addUserMessage(`TaskManager: ${payload.title}`);
+        const nodes = nodesOverride || addAssistantMessage();
+        nodes.bubble.textContent = "";
+        addProofAgentLabel(nodes);
+
+        detachProofStream();
+        const controller = new AbortController();
+        activeProofStreamController = controller;
+        setTaskBusy(true, "Proof: streaming");
+        setBusy(true, "proof");
+
+        try {
+          const res = await fetch(`${taskManagerApiBase}/stream`, {
+            method: "POST",
+            headers: taskRequestHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          });
+          if (!res.ok || !res.body) throw new Error(await responseErrorText(res));
+
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            buffer = parseSse(buffer, (event, envelope) => {
+              applyProofTaskEvent(event, envelope, nodes);
+            });
+          }
+
+          if (!activeProofTaskId) throw new Error("Task stream ended without a task id.");
+          const { task } = await loadTaskStructure(activeProofTaskId);
+          threadId = task.thread_id || threadId;
+          activeProofRunId = task.current_run_id || activeProofRunId;
+          const result = task.result_payload_json || {};
+          nodes.bubble.textContent = result.content || nodes.bubble.textContent || "未返回制度问答内容。";
+          const usage = result.usage;
+          if (usage) nodes.token.textContent = `${usage.total_tokens || 0} tokens`;
+          await loadThreads();
+          setTaskBusy(false, `Proof: ${task.status} / ${task.id.slice(0, 8)}`);
+          setBusy(false, "ready");
+        } catch (error) {
+          if (error.name === "AbortError") return;
+          throw error;
+        } finally {
+          if (activeProofStreamController === controller) {
+            activeProofStreamController = null;
+            activeProofTaskId = null;
+            activeProofRunId = null;
+            activeProofSequence = 0;
+          }
+        }
+      }
+
+      async function resumeProofRun(threadIdToRestore, latestTask, nodes) {
+        if (!latestTask?.run_id || latestTask.status !== "running") return;
+        detachProofStream();
+        const controller = new AbortController();
+        activeProofStreamController = controller;
+        activeProofTaskId = latestTask.task_id;
+        activeProofRunId = latestTask.run_id;
+        activeProofSequence = 0;
+        addProofAgentLabel(nodes, "恢复中");
+        setTaskBusy(true, `Proof: resuming / ${latestTask.run_id.slice(0, 8)}`);
+        setBusy(true, "proof resume");
+
+        const streamUrl = latestTask.stream_url
+          || `${taskManagerApiBase}/runs/${encodeURIComponent(latestTask.run_id)}/events/stream`;
+        const separator = streamUrl.includes("?") ? "&" : "?";
+        try {
+          const res = await fetch(`${streamUrl}${separator}after_sequence=0`, {
+            headers: taskRequestHeaders(),
+            signal: controller.signal,
+          });
+          if (!res.ok || !res.body) throw new Error(await responseErrorText(res));
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            buffer = parseSse(buffer, (event, envelope) => {
+              applyProofTaskEvent(event, envelope, nodes);
+            });
+          }
+          if (activeProofStreamController === controller) {
+            activeProofStreamController = null;
+            await loadProofConversation(threadIdToRestore, { resume: false });
+            setTaskBusy(false, "Proof: restored");
+            setBusy(false, "ready");
+          }
+        } catch (error) {
+          if (error.name === "AbortError") return;
+          nodes.bubble.textContent += `${nodes.bubble.textContent ? "\n\n" : ""}恢复失败：${error.message}`;
+          setTaskBusy(false, `Proof: ${error.message}`);
+          setBusy(false, "error");
+        } finally {
+          if (activeProofStreamController === controller) {
+            activeProofStreamController = null;
+            activeProofTaskId = null;
+            activeProofRunId = null;
+            activeProofSequence = 0;
+          }
+        }
+      }
+
+      async function runMediaTask(payloadOverride = null, nodesOverride = null) {
+        const payload = payloadOverride || buildMediaTaskPayload();
+        if (payload.task_type === PROOF_TASK_TYPE) {
+          await runProofTask(payload, nodesOverride);
+          return;
+        }
         if (["pipeline.demo", "media.script.pipeline.generate"].includes(payload.task_type)) {
           await runPipelineDemo(payload);
           return;
         }
-        if (!(payload.input_payload.topic || payload.input_payload.message)) return;
-        activeMode = "task";
+        if (!(payload.input_payload.topic || payload.input_payload.message || payload.input_payload.question)) return;
+        const embeddedInChat = Boolean(nodesOverride);
+        if (!embeddedInChat) activeMode = "task";
         currentThreadTitle = payload.title.slice(0, 18);
-        addUserMessage(`TaskManager: ${payload.title}`);
-        const nodes = addAssistantMessage();
+        if (!embeddedInChat) addUserMessage(`TaskManager: ${payload.title}`);
+        const nodes = nodesOverride || addAssistantMessage();
         nodes.bubble.textContent = "";
         setTaskBusy(true, "Task: streaming");
         setBusy(true, "task");
@@ -2404,43 +2634,75 @@
         const decoder = new TextDecoder();
         let buffer = "";
         let taskId = "";
+        let failureMessage = "";
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
-          buffer = parseSse(buffer, async (event, payload) => {
+          buffer = parseSse(buffer, (event, payload) => {
             taskId = payload.task_id || taskId;
             taskStatusEl.textContent = `Task: ${event}${taskId ? ` / ${taskId.slice(0, 8)}` : ""}`;
-            const delta = payload.payload_json?.delta || "";
+            if (embeddedInChat) {
+              statusEl.textContent = `proof: ${event}${taskId ? ` / ${taskId.slice(0, 8)}` : ""}`;
+            }
+            const eventPayload = payload.payload_json || {};
+            if (event === "tool_started") {
+              upsertToolTrace(nodes, {
+                id: eventPayload.tool_call_id || `${eventPayload.tool_name || "task-tool"}-${Date.now()}`,
+                function: {
+                  name: eventPayload.tool_name || "task tool",
+                  arguments: eventPayload.arguments || "",
+                },
+              });
+            }
+            if (event === "tool_completed") {
+              const toolId = eventPayload.tool_call_id || eventPayload.tool_name || "task-tool";
+              upsertToolTrace(nodes, {
+                id: toolId,
+                function: { name: eventPayload.tool_name || "task tool" },
+              }, {
+                id: toolId,
+                result: eventPayload.error
+                  ? undefined
+                  : `完成（返回 ${eventPayload.result_chars || 0} 字符）`,
+                error: eventPayload.error || undefined,
+              });
+            }
+            const delta = eventPayload.delta || "";
             if (delta) {
               nodes.bubble.textContent += delta;
               nodes.bubble.scrollIntoView({ behavior: "smooth", block: "end" });
             }
             if (event === "task_failed") {
-              nodes.bubble.textContent += `\n\nTask failed: ${payload.message || payload.payload_json?.message || ""}`;
-            }
-            if (event === "task_succeeded" && taskId) {
-              const { task, items } = await loadTaskStructure(taskId);
-              threadId = task.thread_id || threadId;
-              const result = task.result_payload_json || {};
-              nodes.bubble.textContent = JSON.stringify(
-                {
-                  result: result.structured || result,
-                  task_manager: {
-                    task_id: task.id,
-                    handler: task.handler_name,
-                    progress: `${task.progress_current || 0}/${task.progress_total || 0}`,
-                    item_count: items.length,
-                  },
-                },
-                null,
-                2
-              );
-              renderThreads((result.content || "").slice(0, 36));
+              failureMessage = payload.message || eventPayload.message || "Task failed";
             }
           });
         }
-        if (taskId) await loadTaskStructure(taskId);
+        if (failureMessage) throw new Error(failureMessage);
+        if (!taskId) throw new Error("Task stream ended without a task id.");
+        const { task, items } = await loadTaskStructure(taskId);
+        threadId = task.thread_id || threadId;
+        const result = task.result_payload_json || {};
+        if (task.task_type === "proof.qa.chat") {
+          nodes.bubble.textContent = result.content || "未返回制度问答内容。";
+        } else {
+          nodes.bubble.textContent = JSON.stringify(
+            {
+              result: result.structured || result,
+              task_manager: {
+                task_id: task.id,
+                handler: task.handler_name,
+                progress: `${task.progress_current || 0}/${task.progress_total || 0}`,
+                item_count: items.length,
+              },
+            },
+            null,
+            2
+          );
+        }
+        const usage = result.usage;
+        if (usage) nodes.token.textContent = `${usage.total_tokens || 0} tokens`;
+        renderThreads((result.content || "").slice(0, 36));
         await loadThreads();
         setTaskBusy(false, taskId ? `Task: done / ${taskId.slice(0, 8)}` : "Task: done");
         setBusy(false, "ready");
@@ -2479,6 +2741,27 @@
       }
 
       async function loadThreads() {
+        if (isProofMode()) {
+          const params = new URLSearchParams({
+            task_type: PROOF_TASK_TYPE,
+            limit: "50",
+            offset: "0",
+          });
+          const res = await fetch(`${taskManagerApiBase}/conversations?${params}`, {
+            headers: taskRequestHeaders(),
+          });
+          if (!res.ok) return;
+          const data = await res.json();
+          threads = (data.conversations || []).map((conversation) => ({
+            id: conversation.thread_id,
+            task_type: conversation.task_type,
+            title: conversation.title || "新会话",
+            preview: conversation.preview || conversation.latest_task?.status || "等待消息",
+            latest_task: conversation.latest_task,
+          }));
+          renderThreads("");
+          return;
+        }
         const res = await fetch(`/single-agent/threads?user_id=${encodeURIComponent(userId)}`);
         if (!res.ok) return;
         const data = await res.json();
@@ -2490,7 +2773,52 @@
         renderThreads("");
       }
 
-      async function loadThread(id) {
+      async function loadProofConversation(id, { resume = true } = {}) {
+        detachProofStream();
+        const params = new URLSearchParams({ task_type: PROOF_TASK_TYPE });
+        const res = await fetch(
+          `${taskManagerApiBase}/conversations/${encodeURIComponent(id)}?${params}`,
+          { headers: taskRequestHeaders() }
+        );
+        if (!res.ok) throw new Error(await responseErrorText(res));
+        const data = await res.json();
+        threadId = data.conversation.thread_id;
+        currentThreadTitle = data.conversation.title || "新会话";
+        messagesEl.innerHTML = "";
+        let lastRole = "";
+        for (const message of data.messages || []) {
+          lastRole = message.role;
+          if (message.role === "user") addUserMessage(message.text || "");
+          if (message.role === "assistant") {
+            const assistant = addAssistantText(message.text || "");
+            addProofAgentLabel(assistant, "历史");
+          }
+        }
+
+        const latestTask = data.latest_task || {};
+        if (resume && latestTask.status === "running" && latestTask.run_id) {
+          const nodes = addAssistantMessage();
+          nodes.bubble.textContent = "";
+          await resumeProofRun(id, latestTask, nodes);
+          return;
+        }
+        if (latestTask.status === "failed" && lastRole === "user") {
+          const nodes = addAssistantMessage();
+          addProofAgentLabel(nodes, "任务状态");
+          nodes.bubble.textContent = "该轮任务执行失败，可重新提问。";
+        }
+        if (!messagesEl.children.length) {
+          messagesEl.innerHTML = '<div id="empty" class="empty">开始一轮制度问答</div>';
+        }
+        renderThreads("");
+      }
+
+      async function loadThread(id, taskType = null) {
+        if (taskType === PROOF_TASK_TYPE || isProofMode()) {
+          await loadProofConversation(id);
+          return;
+        }
+        detachProofStream();
         const res = await fetch(`/single-agent/threads/${encodeURIComponent(id)}/messages`);
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
@@ -2844,10 +3172,18 @@
       for (const item of sidebarNavItems) {
         item.addEventListener("click", () => switchSidebarView(item.dataset.sidebarView));
       }
-      agentSelectEl.addEventListener("change", () => {
+      agentSelectEl.addEventListener("change", async () => {
         const selected = selectedAgentId();
         localStorage.setItem(AGENT_ID_KEY, selected);
+        if (selected === PROOF_AGENT_ID) streamEl.checked = true;
         updateSelectedAgentMeta();
+        threads = [];
+        resetConversationState();
+        try {
+          await loadThreads();
+        } catch (error) {
+          statusEl.textContent = `历史记录加载失败：${error.message}`;
+        }
       });
 
       formEl.addEventListener("submit", async (event) => {
@@ -2891,6 +3227,11 @@
               if (usage) assistant.token.textContent = `${usage.total_tokens || 0} tokens`;
               renderThreads(assistant.bubble.textContent.slice(0, 36));
             }
+          } else if (selectedAgentId() === PROOF_AGENT_ID) {
+            await runMediaTask(
+              buildProofTaskPayload(text, "simple-chat-proof-qa-main"),
+              assistant
+            );
           } else if (streamEl.checked) {
             await sendStream(text, assistant);
           } else {
@@ -2918,8 +3259,8 @@
         agentSelectEl.innerHTML = `<option value="${DEFAULT_AGENT_ID}">Default Single Agent</option>`;
         modelNameEl.textContent = "deepseek-v4-pro";
         console.warn(error);
+        loadThreads().catch(() => {});
       });
-      loadThreads();
       refreshRagStatus().catch(() => {
         ragStatusEl.textContent = "RAG: 状态不可用";
         ragListEl.innerHTML = "";

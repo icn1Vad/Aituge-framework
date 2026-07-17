@@ -40,7 +40,7 @@ from .store import MainAgentSessionStore, ManagedSingleAgentStore, ScriptWorkspa
 
 
 MAIN_RUNTIME_AGENT_ID = "main-agent-runtime"
-MAIN_SKILL_PACKAGE = "main-agent-orchestration-package"
+MAIN_SKILL_PACKAGE = "media-script-main-agent-package"
 
 SubagentEventSink = Callable[[dict[str, Any]], Awaitable[None]]
 

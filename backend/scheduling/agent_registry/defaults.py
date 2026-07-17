@@ -8,12 +8,6 @@ from common.llm.constants import DEFAULT_LLM_MODEL_ID
 from .models import AgentProfileEntity
 
 
-ALL_CAPABILITY_TOOLS = [
-    "code_interpreter",
-    "enabled_db_tools",
-    "rag_retrieval",
-]
-
 DEFAULT_SINGLE_AGENT_PROMPT = (
     "You are Default Single Agent, a general-purpose TUGE single agent. "
     "Use your configured tools, skills, and datasets to answer the user's task."
@@ -21,22 +15,6 @@ DEFAULT_SINGLE_AGENT_PROMPT = (
 REPORT_AGENT_PROMPT = (
     "You are Report Agent, a TUGE single agent specialized in complete, "
     "evidence-grounded reports."
-)
-ALL_CAPABLE_AGENT_PROMPT = (
-    "You are All Capable Agent, a TUGE single agent used for integration testing "
-    "with every currently registered local capability enabled by allowlist."
-)
-RAG_AGENT_PROMPT = (
-    "You are RAG Agent, a TUGE single agent specialized in retrieving and "
-    "answering from the configured local knowledge base."
-)
-CODE_AGENT_PROMPT = (
-    "You are Code Agent, a TUGE single agent specialized in local Python "
-    "execution, calculation, verification, and artifact generation."
-)
-MEDIA_RESEARCH_AGENT_PROMPT = (
-    "You are Media Research Agent. Build a factual evidence package for one short-video script task. "
-    "Use only the supplied business context and allowed search tool; do not write the final script."
 )
 LEGACY_MEDIA_WRITER_AGENT_PROMPT = (
     "You are Media Writer Agent. Write one complete speakable short-video script from verified research, "
@@ -48,12 +26,6 @@ LEGACY_MEDIA_STORYBOARD_AGENT_PROMPT = (
 )
 MEDIA_WRITER_AGENT_PROMPT = "You are Media Writer Agent."
 MEDIA_STORYBOARD_AGENT_PROMPT = "You are Media Storyboard Agent."
-MEDIA_REVIEW_AGENT_PROMPT = (
-    "You are Media Review Agent. Review script, storyboard, evidence, and deterministic findings for "
-    "compliance, factual risk, quality, and production feasibility."
-)
-
-
 def _profile_definition(
     agent_id: str,
     name: str,
@@ -92,37 +64,6 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
         default_tools=["code_interpreter", "enabled_db_tools", "rag_retrieval"],
         default_datasets=["local_rag"],
         system_prompt=REPORT_AGENT_PROMPT,
-    ),
-    _profile_definition(
-        agent_id="all-capable-agent",
-        name="All Capable Agent",
-        description="Single agent with every currently registered local capability enabled by allowlist.",
-        default_tools=ALL_CAPABILITY_TOOLS,
-        default_datasets=["local_rag"],
-        system_prompt=ALL_CAPABLE_AGENT_PROMPT,
-        runtime_config={"tool_policy": "allowlist", "skill_policy": "allowlist"},
-    ),
-    _profile_definition(
-        agent_id="rag-agent",
-        name="RAG Agent",
-        description="Single agent focused on local knowledge-base retrieval.",
-        default_tools=["rag_retrieval"],
-        default_datasets=["local_rag"],
-        system_prompt=RAG_AGENT_PROMPT,
-    ),
-    _profile_definition(
-        agent_id="code-agent",
-        name="Code Agent",
-        description="Single agent focused on local Python execution and artifact generation.",
-        default_tools=["code_interpreter"],
-        system_prompt=CODE_AGENT_PROMPT,
-    ),
-    _profile_definition(
-        agent_id="media-research-agent",
-        name="Media Research Agent",
-        description="Evidence research for the media script Pipeline.",
-        default_tools=["web_search"],
-        system_prompt=MEDIA_RESEARCH_AGENT_PROMPT,
     ),
     _profile_definition(
         agent_id="media-writer-agent",
@@ -179,14 +120,19 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
             }
         },
     ),
-    _profile_definition(
-        agent_id="media-review-agent",
-        name="Media Review Agent",
-        description="Compliance, quality, and storyboard reviewer.",
-        default_tools=[],
-        system_prompt=MEDIA_REVIEW_AGENT_PROMPT,
-    ),
 ]
+
+
+# Built-in profiles that were previously seeded but are not reachable from the
+# current simple-chat frontend. Startup removes only these framework-owned IDs;
+# user-created profiles remain untouched.
+RETIRED_DEFAULT_AGENT_IDS = {
+    "all-capable-agent",
+    "rag-agent",
+    "code-agent",
+    "media-research-agent",
+    "media-review-agent",
+}
 
 
 LEGACY_DEFAULT_SYSTEM_PROMPTS = {

@@ -15,11 +15,11 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from db.db_context import create_db_session, init_db
+from capability_mount import mount_capability_from_env
 from scheduling.agent_registry import ensure_default_agent_profiles
 from scheduling.api import create_scheduling_router
 from scheduling.scheduler import SchedulingRuntimeOptions
 from skill import ensure_default_skill_packages
-from smart_autofill import CombinedRagStore, SmartFillDocumentStore, create_smart_autofill_router
 from task_manager import create_task_manager_router
 from tool import ToolBundle
 from tool.registry import ToolManager
@@ -34,8 +34,6 @@ DEFAULT_RAG_PDF_PATH = (
     / "兼用_原02_致远互联：北京致远互联软件股份有限公司内部审计制度.pdf"
 )
 RAG_STORE = LocalRagStore()
-SMART_FILL_DOCUMENT_STORE = SmartFillDocumentStore()
-COMBINED_RAG_STORE = CombinedRagStore(RAG_STORE, SMART_FILL_DOCUMENT_STORE)
 
 
 def _rag_status_payload() -> dict:
@@ -133,13 +131,14 @@ def create_app() -> FastAPI:
         async with create_db_session() as session:
             await ensure_default_skill_packages(session)
             await ensure_default_agent_profiles(session)
+            await mount_capability_from_env(session=session)
         yield
 
     app = create_simple_chat_app(tool_provider=tool_provider, lifespan=lifespan)
     scheduling_options = SchedulingRuntimeOptions(
         local_python_artifact_dir=LOCAL_PYTHON_ARTIFACT_DIR,
         artifact_base_url="/tool-artifacts/local-python",
-        rag_store=COMBINED_RAG_STORE,
+        rag_store=RAG_STORE,
     )
     app.include_router(create_scheduling_router(scheduling_options))
     app.include_router(create_task_manager_router(scheduling_options))
@@ -148,8 +147,6 @@ def create_app() -> FastAPI:
         StaticFiles(directory=TASK_MEMORY_TEST_DIR, html=True),
         name="task-memory-test",
     )
-    app.include_router(create_smart_autofill_router(SMART_FILL_DOCUMENT_STORE))
-
     @app.get("/rag/status")
     async def rag_status():
         return _rag_status_payload()

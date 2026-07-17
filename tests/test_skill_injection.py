@@ -24,21 +24,21 @@ async def _delete_thread(thread_id: str):
             pass
 
 
-def test_skill_manager_builds_report_package_context(tmp_path, monkeypatch):
+def test_skill_manager_builds_media_script_select_context(tmp_path, monkeypatch):
     async def run():
         monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'skill-manager.db'}")
         reset_engine_for_test()
         await init_db()
 
-        context = await SkillManager().create_context("report-package")
+        context = await SkillManager().create_context("media-script-select-package")
 
-        assert "# Report Generator Skill" in context.task_prompt
-        assert "report-analysis-findings: Turn evidence" in context.task_prompt
+        assert "# Media Script Selector" in context.task_prompt
+        assert "media-script-generator: Generate a Douyin-ready" in context.task_prompt
         assert [tool.metadata.name for tool in context.tools] == ["ReadSkill"]
         active_package = context.skills["active_package"]
-        assert active_package["package_name"] == "report-package"
-        assert active_package["primary"]["name"] == "report-generator"
-        assert active_package["auxiliary_index"][0]["name"] == "report-context-scope"
+        assert active_package["package_name"] == "media-script-select-package"
+        assert active_package["primary"]["name"] == "media-script-selector"
+        assert active_package["auxiliary_index"][0]["name"] == "media-script-generator"
 
     try:
         asyncio.run(run())
@@ -52,19 +52,10 @@ def test_skill_manager_builds_main_agent_and_managed_agent_packages(tmp_path, mo
         reset_engine_for_test()
         await init_db()
 
-        main = await SkillManager().create_context("main-agent-orchestration-package")
         consult = await SkillManager().create_context("media-writer-consult-package")
         writer_delegate = await SkillManager().create_context("media-writer-delegate-package")
         delegate = await SkillManager().create_context("media-storyboard-delegate-package")
 
-        assert main.skills["active_package"]["primary"]["name"] == (
-            "main-agent-orchestration"
-        )
-        assert [
-            item["name"]
-            for item in main.skills["active_package"]["auxiliary_index"]
-        ] == ["media-script-writer", "workspace-storyboard-editor"]
-        assert [tool.metadata.name for tool in main.tools] == ["ReadSkill"]
         assert consult.skills["active_package"]["primary"]["name"] == (
             "managed-agent-consult"
         )
@@ -114,13 +105,15 @@ def test_skill_manager_empty_and_disabled_packages(tmp_path, monkeypatch):
         await init_db()
         async with create_db_session() as session:
             await ensure_default_skill_packages(session)
-            packages = await get_skill_packages_by_names(session, ["report-package"])
+            packages = await get_skill_packages_by_names(
+                session, ["media-script-select-package"]
+            )
             packages[0].enabled = False
             session.add(packages[0])
 
         empty = await SkillManager().create_context(None)
         blank = await SkillManager().create_context("")
-        disabled = await SkillManager().create_context("report-package")
+        disabled = await SkillManager().create_context("media-script-select-package")
 
         assert empty.tools == []
         assert empty.task_prompt == ""
@@ -147,11 +140,9 @@ def test_default_skill_packages_backfill_legacy_writer_skill_names(tmp_path, mon
             await ensure_default_skill_packages(session)
             packages = await get_skill_packages_by_names(
                 session,
-                ["main-agent-orchestration-package", "media-writer-delegate-package"],
+                ["media-writer-consult-package", "media-writer-delegate-package"],
             )
-            packages[0].auxiliary_skills_json = (
-                '["workspace-script-editor", "workspace-storyboard-editor"]'
-            )
+            packages[0].auxiliary_skills_json = '["workspace-script-editor"]'
             packages[1].auxiliary_skills_json = '["workspace-script-editor"]'
             session.add(packages[0])
             session.add(packages[1])
@@ -161,10 +152,7 @@ def test_default_skill_packages_backfill_legacy_writer_skill_names(tmp_path, mon
             await session.refresh(packages[0])
             await session.refresh(packages[1])
 
-        assert packages[0].auxiliary_skills == [
-            "media-script-writer",
-            "workspace-storyboard-editor",
-        ]
+        assert packages[0].auxiliary_skills == ["media-script-writer"]
         assert packages[1].auxiliary_skills == ["media-script-writer"]
 
     try:
@@ -228,9 +216,8 @@ def test_api_loads_skill_package_from_request(tmp_path, monkeypatch):
 
             async def run_async(self, state):
                 async def gen():
-                    assert "# Report Generator Skill" in self.system_prompt
-                    assert "report-executive-summary: Write the report opening" in self.system_prompt
-                    assert "report-analysis-findings: Turn evidence" in self.system_prompt
+                    assert "# Media Script Selector" in self.system_prompt
+                    assert "media-script-generator: Generate a Douyin-ready" in self.system_prompt
                     assert [tool.metadata.name for tool in self.tools] == ["ReadSkill"]
                     yield TextChunk(delta="request skill package loaded")
 
@@ -255,7 +242,7 @@ def test_api_loads_skill_package_from_request(tmp_path, monkeypatch):
                 json={
                     "message": "hello request skill package",
                     "user_id": "skill-package-request-test-user",
-                    "skill_package": "report-package",
+                    "skill_package": "media-script-select-package",
                     "stream": False,
                 },
             )
@@ -264,7 +251,7 @@ def test_api_loads_skill_package_from_request(tmp_path, monkeypatch):
             assert body["response"]["choices"][0]["message"]["content"] == (
                 "request skill package loaded"
             )
-            assert body["skills"]["active_package"]["package_name"] == "report-package"
+            assert body["skills"]["active_package"]["package_name"] == "media-script-select-package"
 
         await session_history_manager.clear_history(
             "skill-package-request-test-user",
@@ -314,7 +301,7 @@ def test_api_stream_metadata_includes_skill_package(tmp_path, monkeypatch):
                 json={
                     "message": "hello stream skill package",
                     "user_id": "skill-package-stream-test-user",
-                    "skill_package": "general-package",
+                    "skill_package": "pipeline-demo-package",
                     "stream": True,
                 },
             )
@@ -322,8 +309,8 @@ def test_api_stream_metadata_includes_skill_package(tmp_path, monkeypatch):
         assert response.status_code == 200
         assert '"skills"' in response.text
         assert '"active_package"' in response.text
-        assert '"package_name":"general-package"' in response.text
-        assert '"primary":{"name":"task-style"' in response.text
+        assert '"package_name":"pipeline-demo-package"' in response.text
+        assert '"primary":{"name":"pipeline-demo"' in response.text
         for line in response.text.splitlines():
             if line.startswith("data: ") and '"event":"metadata"' in line:
                 thread_id = line.split('"thread_id":"', 1)[1].split('"', 1)[0]
@@ -355,8 +342,10 @@ def test_api_lists_available_skill_packages(tmp_path, monkeypatch):
 
         assert response.status_code == 200
         packages = {item["package_name"]: item for item in response.json()["skill_packages"]}
-        assert packages["general-package"]["primary_skill"] == "task-style"
-        assert packages["report-package"]["primary_skill"] == "report-generator"
+        assert packages["pipeline-demo-package"]["primary_skill"] == "pipeline-demo"
+        assert packages["media-script-select-package"]["primary_skill"] == (
+            "media-script-selector"
+        )
 
     try:
         asyncio.run(run())

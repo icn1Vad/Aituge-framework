@@ -6,6 +6,7 @@ import json
 from datetime import datetime
 
 from common.system_constants import DEFAULT_TENANT_ID
+from sqlalchemy import delete
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -22,57 +23,12 @@ DEFAULT_SKILL_PACKAGES = [
         "auxiliary_skills": [],
     },
     {
-        "package_name": "general-package",
-        "display_name": "General Task Package",
-        "description": "General task planning, review, debugging, and concise answer style.",
-        "tags": ["general", "task"],
-        "primary_skill": "task-style",
-        "auxiliary_skills": [
-            "implementation-plan",
-            "debugging-checklist",
-            "review-style",
-            "concise-summary",
-        ],
-    },
-    {
-        "package_name": "report-package",
-        "display_name": "Report Package",
-        "description": "Complete evidence-grounded report writing package.",
-        "tags": ["report", "analysis"],
-        "primary_skill": "report-generator",
-        "auxiliary_skills": [
-            "report-context-scope",
-            "report-executive-summary",
-            "report-analysis-findings",
-            "report-quantitative-calculation",
-            "report-chart-figure",
-            "report-code-verification",
-            "report-risk-actions",
-        ],
-    },
-    {
-        "package_name": "media-script-generate-package",
-        "display_name": "Media Script Generate Package",
-        "description": "Generate structured short-video scripts for reusable TaskManager media tasks.",
-        "tags": ["media", "script", "task-manager"],
-        "primary_skill": "media-script-generator",
-        "auxiliary_skills": ["media-script-selector"],
-    },
-    {
         "package_name": "media-script-chat-package",
         "display_name": "Media Script Chat Package",
         "description": "Read-only, context-grounded conversation about one current media script.",
         "tags": ["media", "script", "chat", "task-manager"],
         "primary_skill": "media-script-chat",
         "auxiliary_skills": [],
-    },
-    {
-        "package_name": "main-agent-orchestration-package",
-        "display_name": "MainAgent Orchestration Package",
-        "description": "Choose direct Workspace work, specialist consultation, or delegated execution.",
-        "tags": ["main-agent", "orchestration", "workspace"],
-        "primary_skill": "main-agent-orchestration",
-        "auxiliary_skills": ["media-script-writer", "workspace-storyboard-editor"],
     },
     {
         "package_name": "media-script-main-agent-package",
@@ -119,27 +75,11 @@ DEFAULT_SKILL_PACKAGES = [
         "auxiliary_skills": ["workspace-storyboard-editor"],
     },
     {
-        "package_name": "media-script-change-proposal-package",
-        "display_name": "Media Script Change Proposal Package",
-        "description": "Convert an explicit script edit request into a bounded proposal for human confirmation.",
-        "tags": ["media", "script", "proposal", "task-manager"],
-        "primary_skill": "media-script-change-proposal",
-        "auxiliary_skills": [],
-    },
-    {
         "package_name": "media-script-memory-compression-package",
         "display_name": "Media Script Memory Compression Package",
         "description": "Compress confirmed user information into the next shared Task Memory version.",
         "tags": ["media", "script", "memory", "task-manager"],
         "primary_skill": "media-script-memory-compression",
-        "auxiliary_skills": [],
-    },
-    {
-        "package_name": "media-script-research-package",
-        "display_name": "Media Script Research Package",
-        "description": "Build a source-backed research bundle for one media script task.",
-        "tags": ["media", "script", "research", "pipeline"],
-        "primary_skill": "media-script-research",
         "auxiliary_skills": [],
     },
     {
@@ -156,14 +96,6 @@ DEFAULT_SKILL_PACKAGES = [
         "description": "Generate executable shots from a structured script draft.",
         "tags": ["media", "script", "storyboard", "pipeline"],
         "primary_skill": "media-storyboard",
-        "auxiliary_skills": [],
-    },
-    {
-        "package_name": "media-script-review-package",
-        "display_name": "Media Script Review Package",
-        "description": "Review script and storyboard artifacts against evidence and deterministic checks.",
-        "tags": ["media", "script", "review", "pipeline"],
-        "primary_skill": "media-script-review",
         "auxiliary_skills": [],
     },
     {
@@ -199,30 +131,6 @@ DEFAULT_SKILL_PACKAGES = [
         "auxiliary_skills": [],
     },
     {
-        "package_name": "media-history-viral-topic-variants-package",
-        "display_name": "Media History Viral Topic Variants",
-        "description": "Generate bounded topic variants from qualified historical viral content.",
-        "tags": ["media", "topic", "history", "task-manager"],
-        "primary_skill": "media-history-viral-topic-variants",
-        "auxiliary_skills": [],
-    },
-    {
-        "package_name": "media-industry-calendar-topic-copy-package",
-        "display_name": "Media Industry Calendar Topic Copy",
-        "description": "Generate topic-card copy from confirmed industry calendar events.",
-        "tags": ["media", "topic", "calendar", "task-manager"],
-        "primary_skill": "media-industry-calendar-topic-copy",
-        "auxiliary_skills": [],
-    },
-    {
-        "package_name": "media-calendar-official-date-lookup-package",
-        "display_name": "Media Calendar Official Date Lookup",
-        "description": "Verify annual event dates against allow-listed official sources.",
-        "tags": ["media", "calendar", "search", "task-manager"],
-        "primary_skill": "media-calendar-official-date-lookup",
-        "auxiliary_skills": [],
-    },
-    {
         "package_name": "douyin-account-report-package",
         "display_name": "Douyin Account Report Package",
         "description": "Fact-grounded Douyin account operations reporting across all available data or a requested range.",
@@ -230,61 +138,43 @@ DEFAULT_SKILL_PACKAGES = [
         "primary_skill": "douyin-account-report",
         "auxiliary_skills": [],
     },
-    {
-        "package_name": "douyin-content-analysis-package",
-        "display_name": "Douyin Content Analysis Package",
-        "description": "Analyze deterministic Top3/Bottom3 content evidence item by item.",
-        "tags": ["douyin", "analytics", "content", "task-manager"],
-        "primary_skill": "douyin-content-analysis",
-        "auxiliary_skills": [],
-    },
-    {
-        "package_name": "smart-fill-project-package",
-        "display_name": "Smart Fill Project Fields",
-        "description": "Extract project basics and project classification fields from feasibility materials.",
-        "tags": ["smart-fill", "feasibility", "project"],
-        "primary_skill": "project-basic-extraction",
-        "auxiliary_skills": ["smart-fill-common", "source-citation", "structured-output"],
-    },
-    {
-        "package_name": "smart-fill-company-package",
-        "display_name": "Smart Fill Company Fields",
-        "description": "Extract investor, target company, equity, and valuation fields.",
-        "tags": ["smart-fill", "feasibility", "company"],
-        "primary_skill": "target-company-extraction",
-        "auxiliary_skills": ["smart-fill-common", "source-citation", "structured-output"],
-    },
-    {
-        "package_name": "smart-fill-financial-package",
-        "display_name": "Smart Fill Financial Fields",
-        "description": "Extract dynamic forecasts and financial feasibility indicators.",
-        "tags": ["smart-fill", "feasibility", "financial"],
-        "primary_skill": "financial-forecast-extraction",
-        "auxiliary_skills": ["smart-fill-common", "source-citation", "structured-output"],
-    },
-    {
-        "package_name": "smart-fill-risk-package",
-        "display_name": "Smart Fill Risk Fields",
-        "description": "Extract complete risk rows and non-financial indicator rows.",
-        "tags": ["smart-fill", "feasibility", "risk"],
-        "primary_skill": "risk-extraction",
-        "auxiliary_skills": ["smart-fill-common", "source-citation", "structured-output"],
-    },
-    {
-        "package_name": "smart-fill-analysis-package",
-        "display_name": "Smart Fill Analysis Fields",
-        "description": "Extract feasibility, necessity, and competitive analysis fields.",
-        "tags": ["smart-fill", "feasibility", "analysis"],
-        "primary_skill": "feasibility-analysis-extraction",
-        "auxiliary_skills": ["smart-fill-common", "source-citation", "structured-output"],
-    },
 ]
+
+
+# Framework-owned packages removed from the current simple-chat product surface.
+# Startup deletes only these known legacy names, not tenant-created packages.
+RETIRED_DEFAULT_SKILL_PACKAGE_NAMES = {
+    "general-package",
+    "report-package",
+    "media-script-generate-package",
+    "main-agent-orchestration-package",
+    "media-script-change-proposal-package",
+    "media-script-research-package",
+    "media-script-review-package",
+    "media-history-viral-topic-variants-package",
+    "media-industry-calendar-topic-copy-package",
+    "media-calendar-official-date-lookup-package",
+    "douyin-content-analysis-package",
+    "smart-fill-project-package",
+    "smart-fill-company-package",
+    "smart-fill-financial-package",
+    "smart-fill-risk-package",
+    "smart-fill-analysis-package",
+}
 
 
 async def ensure_default_skill_packages(
     session: AsyncSession,
     tenant_id: str = DEFAULT_TENANT_ID,
 ) -> None:
+    await session.exec(
+        delete(SkillPackageEntity).where(
+            SkillPackageEntity.tenant_id == tenant_id,
+            SkillPackageEntity.package_name.in_(
+                RETIRED_DEFAULT_SKILL_PACKAGE_NAMES
+            ),
+        )
+    )
     for definition in DEFAULT_SKILL_PACKAGES:
         statement = select(SkillPackageEntity).where(
             SkillPackageEntity.tenant_id == tenant_id,
@@ -294,10 +184,6 @@ async def ensure_default_skill_packages(
         existing = result.first()
         if existing is not None:
             legacy_auxiliary = {
-                "main-agent-orchestration-package": [
-                    "workspace-script-editor",
-                    "workspace-storyboard-editor",
-                ],
                 "media-writer-consult-package": ["workspace-script-editor"],
                 "media-writer-delegate-package": ["workspace-script-editor"],
             }.get(definition["package_name"])

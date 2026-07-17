@@ -54,6 +54,9 @@ def test_outer_backend_serves_frontend_and_chat(monkeypatch):
             assert "Media Main Agent · 主" in page.text
             assert "/scheduling/main-agents/" not in page.text
             assert "media-main-agent" not in page.text
+            assert "taskManagerApiBase}/conversations" in page.text
+            assert "loadProofConversation" in page.text
+            assert "resumeProofRun" in page.text
 
             non_stream = await client.post(
                 "/single-agent/chat",

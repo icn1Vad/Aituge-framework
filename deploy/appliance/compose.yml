@@ -1,0 +1,158 @@
+name: ai-framework
+
+services:
+  postgres:
+    image: ai-framework-postgres:pg16-vector0.8.5-jieba1.1.1
+    build:
+      context: ../../infrastructure/postgres
+      network: host
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - ${AI_FRAMEWORK_RUNTIME_ROOT:-../../runtime}/postgres:/var/lib/postgresql/data
+      - ../../infrastructure/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks:
+      - ai_internal
+
+  redis:
+    image: redis:7.2-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --requirepass
+      - ${REDIS_PASSWORD}
+      - --maxmemory-policy
+      - noeviction
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-16379}:6379"
+    volumes:
+      - ${AI_FRAMEWORK_RUNTIME_ROOT:-../../runtime}/redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a '${REDIS_PASSWORD}' --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    networks:
+      - ai_internal
+
+  proof:
+    image: ai-framework-proof:local
+    build:
+      context: ../..
+      dockerfile: deploy/appliance/proof.Dockerfile
+      network: host
+    restart: unless-stopped
+    env_file:
+      - ${PROOF_ENV_FILE:-proof.env}
+    environment:
+      PROOF_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/proofreading
+      PROOF_STORAGE_ROOT: /app/.proof-data
+      PROOF_SEMANTIC_AUDIT_ENABLED: ${PROOF_SEMANTIC_AUDIT_ENABLED:-false}
+      PROOF_FRAMEWORK_BASE_URL: http://framework:8894
+      PROOF_FRAMEWORK_USER_ID: ${PROOF_FRAMEWORK_USER_ID:-proof-service}
+      PROOF_FRAMEWORK_TENANT_ID: ${PROOF_FRAMEWORK_TENANT_ID:-__default_tenant_id__}
+      PROOF_AUDIT_MODEL_ID: ${PROOF_AUDIT_MODEL_ID:-deepseek-v4-pro}
+      PROOF_AUDIT_BATCH_MAX_CHARS: ${PROOF_AUDIT_BATCH_MAX_CHARS:-6000}
+      PROOF_AUDIT_BATCH_MAX_CHUNKS: ${PROOF_AUDIT_BATCH_MAX_CHUNKS:-8}
+      PROOF_AUDIT_MAX_CHUNK_CHARS: ${PROOF_AUDIT_MAX_CHUNK_CHARS:-12000}
+      PROOF_AUDIT_MAX_CONCURRENCY: ${PROOF_AUDIT_MAX_CONCURRENCY:-4}
+    ports:
+      - "${PROOF_BIND_ADDRESS:-0.0.0.0}:${PROOF_PORT:-18100}:18100"
+    volumes:
+      - ${AI_FRAMEWORK_RUNTIME_ROOT:-../../runtime}/proof-data:/app/.proof-data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18100/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    networks:
+      ai_internal:
+      proofspace:
+        aliases:
+          - ai-proof
+
+  framework:
+    image: ai-framework-core:local
+    build:
+      context: ../..
+      dockerfile: deploy/appliance/framework.runtime.Dockerfile
+      network: host
+    restart: unless-stopped
+    environment:
+      DB_TYPE: sqlite
+      SQLITE_URL: sqlite+aiosqlite:////app/runtime/local.db
+      AITUGE_CAPABILITY_ENTRY: /opt/proof-capabilities/register.py
+      PROOF_SERVICE_BASE_URL: http://proof:18100
+      PROOF_QA_MODEL_ID: ${PROOF_QA_MODEL_ID:-deepseek-v4-pro}
+      PROOF_AUDIT_MODEL_ID: ${PROOF_AUDIT_MODEL_ID:-deepseek-v4-pro}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_DB: "0"
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "${FRAMEWORK_BIND_ADDRESS:-0.0.0.0}:${FRAMEWORK_PORT:-8894}:8894"
+    volumes:
+      - ${AI_FRAMEWORK_RUNTIME_ROOT:-../../runtime}/framework:/app/runtime
+      - ../../services/proof/capabilities:/opt/proof-capabilities:ro
+    depends_on:
+      proof:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8894/openapi.json', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    networks:
+      ai_internal:
+      proofspace:
+        aliases:
+          - ai-framework
+      agent_internal:
+        aliases:
+          - ai-framework
+
+networks:
+  ai_internal:
+    name: ai-framework-internal
+  proofspace:
+    external: true
+    name: proofspace-network
+  agent_internal:
+    external: true
+    name: agent-internal

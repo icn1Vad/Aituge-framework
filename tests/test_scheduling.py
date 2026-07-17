@@ -30,12 +30,12 @@ class CapturingAgent:
         async def gen():
             tool_names = ",".join(tool.metadata.name for tool in self.tools)
             has_report_identity = "You are Report Agent" in self.system_prompt
-            has_report_skill = "# Report Generator Skill" in self.system_prompt
+            has_selected_skill = "# Media Script Selector" in self.system_prompt
             yield TextChunk(
                 delta=(
                     f"tools={tool_names}; "
                     f"report_identity={has_report_identity}; "
-                    f"report_skill_prompt={has_report_skill}"
+                    f"selected_skill_prompt={has_selected_skill}"
                 )
             )
 
@@ -104,26 +104,19 @@ def test_agent_registry_creates_default_profiles(tmp_path, monkeypatch):
             profiles = await list_agent_profiles(session)
             report_agent = await get_agent_profile(session, "report-agent")
 
-        assert {profile.agent_id for profile in profiles} >= {
+        assert {profile.agent_id for profile in profiles} == {
             "default-single-agent",
             "report-agent",
-            "all-capable-agent",
-            "rag-agent",
-            "code-agent",
+            "media-writer-agent",
+            "media-storyboard-agent",
         }
         assert report_agent is not None
         assert report_agent.system_prompt.startswith("You are Report Agent")
         assert "code_interpreter" in report_agent.default_tools
 
-        all_capable_agent = await get_agent_profile(session, "all-capable-agent")
-        assert all_capable_agent is not None
-        assert all_capable_agent.system_prompt.startswith("You are All Capable Agent")
-        assert all_capable_agent.default_tools == [
-            "code_interpreter",
-            "enabled_db_tools",
-            "rag_retrieval",
-        ]
-        assert all_capable_agent.runtime_config["tool_policy"] == "allowlist"
+        assert await get_agent_profile(session, "all-capable-agent") is None
+        assert await get_agent_profile(session, "rag-agent") is None
+        assert await get_agent_profile(session, "code-agent") is None
 
     try:
         asyncio.run(run())
@@ -169,7 +162,7 @@ def test_scheduling_loads_new_named_db_tool_without_scheduler_change(tmp_path, m
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.post(
-                "/scheduling/agents/code-agent/chat",
+                "/scheduling/agents/default-single-agent/chat",
                 json={
                     "message": "use a fake db tool",
                     "user_id": "scheduling-fake-tool-user",
@@ -228,10 +221,10 @@ def test_scheduling_chat_uses_only_explicit_skill_package(tmp_path, monkeypatch)
             explicit_response = await client.post(
                 "/scheduling/agents/report-agent/chat",
                 json={
-                    "message": "write a report with report package",
+                    "message": "select a media script",
                     "user_id": "scheduling-skill-test-user",
                     "stream": False,
-                    "skill_package": "report-package",
+                    "skill_package": "media-script-select-package",
                 },
             )
 
@@ -245,15 +238,15 @@ def test_scheduling_chat_uses_only_explicit_skill_package(tmp_path, monkeypatch)
         assert "search-knowledgebase" in content
         assert "ReadSkill" not in content
         assert "report_identity=True" in content
-        assert "report_skill_prompt=False" in content
+        assert "selected_skill_prompt=False" in content
 
         assert explicit_response.status_code == 200
         explicit_body = explicit_response.json()
         explicit_content = explicit_body["response"]["choices"][0]["message"]["content"]
-        assert explicit_body["skills"]["active_package"]["package_name"] == "report-package"
-        assert explicit_body["skills"]["active_package"]["primary"]["name"] == "report-generator"
+        assert explicit_body["skills"]["active_package"]["package_name"] == "media-script-select-package"
+        assert explicit_body["skills"]["active_package"]["primary"]["name"] == "media-script-selector"
         assert "ReadSkill" in explicit_content
-        assert "report_skill_prompt=True" in explicit_content
+        assert "selected_skill_prompt=True" in explicit_content
 
         await session_history_manager.clear_history(
             "scheduling-test-user",

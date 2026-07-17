@@ -23,22 +23,17 @@ def test_default_tool_list_contains_current_tool_providers():
     entries = {(entry.tool_name, entry.provider) for entry in tool_list.list()}
 
     assert ("code_interpreter", "local_python") in entries
-    assert ("code_interpreter", "limited_sandbox") in entries
     assert ("web_search", "aliyun") in entries
     assert ("media_master_library", "media_military_http") in entries
+    assert ("code_interpreter", "limited_sandbox") not in entries
 
 
 def test_default_tool_list_exposes_llm_tool_names():
     tool_list = get_default_tool_list()
 
     local_python = tool_list.get("code_interpreter", "local_python")
-    limited_sandbox = tool_list.get("code_interpreter", "limited_sandbox")
 
     assert local_python.llm_tool_names == ("LimitedLocalPythonInterpreter",)
-    assert limited_sandbox.llm_tool_names == (
-        "LimitedPythonInterpreter",
-        "LimitedInstallPythonPackage",
-    )
     assert tool_list.get("web_search", "aliyun").llm_tool_names == (
         "aliyun-websearch",
     )

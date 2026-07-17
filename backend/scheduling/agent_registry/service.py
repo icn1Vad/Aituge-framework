@@ -5,12 +5,14 @@ from datetime import datetime
 from typing import Any
 
 from common.llm.constants import DEFAULT_LLM_MODEL_ID
+from sqlalchemy import delete
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from .defaults import (
     LEGACY_DEFAULT_SYSTEM_PROMPTS,
     LEGACY_DEFAULT_TOOLS,
+    RETIRED_DEFAULT_AGENT_IDS,
     build_default_agent_profiles,
 )
 from .models import AgentProfileEntity
@@ -29,6 +31,11 @@ def _merge_missing(defaults: dict[str, Any], configured: dict[str, Any]) -> dict
 
 
 async def ensure_default_agent_profiles(session: AsyncSession) -> None:
+    await session.exec(
+        delete(AgentProfileEntity).where(
+            AgentProfileEntity.agent_id.in_(RETIRED_DEFAULT_AGENT_IDS)
+        )
+    )
     for profile in build_default_agent_profiles():
         existing = await session.get(AgentProfileEntity, profile.agent_id)
         if existing is None:

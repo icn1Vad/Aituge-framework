@@ -5,6 +5,8 @@ import json
 import time
 from typing import Any, AsyncIterator
 
+import httpx
+
 from db.db_context import create_db_session
 from scheduling.agent_registry import ensure_default_agent_profiles, get_agent_profile
 from scheduling.scheduler import (
@@ -63,6 +65,7 @@ class BatchItemSchedulerHandler:
 
         if not items:
             final = _summarize_results(await item_store.load_item_results(task.id))
+            await _deliver_result(task, definition, final)
             yield TaskHandlerEvent(
                 event_type="batch_succeeded",
                 stage="batch_item_scheduler",
@@ -114,6 +117,7 @@ class BatchItemSchedulerHandler:
         results = await item_store.load_item_results(task.id)
         final = _summarize_results(results)
         if final["summary"]["failed"] and config["failure_policy"] == "fail_fast":
+            await _deliver_result(task, definition, final)
             yield TaskHandlerEvent(
                 event_type="batch_failed",
                 stage="batch_item_scheduler",
@@ -125,6 +129,7 @@ class BatchItemSchedulerHandler:
             )
             raise ValueError("Batch item scheduler failed with failure_policy=fail_fast.")
 
+        await _deliver_result(task, definition, final)
         yield TaskHandlerEvent(
             event_type="batch_succeeded",
             stage="batch_item_scheduler",
@@ -198,6 +203,7 @@ async def _process_item(
                         },
                     )
                 )
+                raise ValueError("Task item output was not valid JSON.")
             elif definition.item_output_schema_name:
                 is_valid, validation_error = validate_output_payload(
                     definition.item_output_schema_name,
@@ -218,6 +224,9 @@ async def _process_item(
                                 **(validation_error or {}),
                             },
                         )
+                    )
+                    raise ValueError(
+                        "Task item structured output did not match the registered output schema."
                     )
             result = {
                 "item_key": running_item.item_key,
@@ -427,3 +436,27 @@ def _extract_delta(data: dict[str, Any]) -> str:
 
 def _duration_ms(start: float) -> int:
     return int((time.perf_counter() - start) * 1000)
+
+
+async def _deliver_result(task: TaskEntity, definition: TaskType, output: dict[str, Any]) -> None:
+    url = str(definition.result_sink_url or "").strip()
+    if not url:
+        return
+    payload = {
+        "task_id": task.id,
+        "run_id": task.current_run_id,
+        "task_type": task.task_type,
+        "audit_id": str((task.input_payload_json or {}).get("audit_id") or ""),
+        "output": output,
+    }
+    last_error: Exception | None = None
+    for _attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+            return
+        except (httpx.HTTPError, ValueError) as exc:
+            last_error = exc
+            await asyncio.sleep(0.1)
+    raise RuntimeError(f"Batch result sink failed: {last_error}") from last_error

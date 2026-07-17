@@ -26,24 +26,24 @@ class DiscussionAgent:
     async def run_async(self, state):
         user_text = state.messages[-1].get("content", "")
 
-        if "You are RAG Agent" in self.system_prompt:
+        if "You are Default Single Agent" in self.system_prompt:
             decision = {
                 "action": "speak",
-                "content": "rag contribution",
-                "reason": "rag has useful context",
+                "content": "default contribution",
+                "reason": "default agent has useful context",
             }
-        elif "You are Code Agent" in self.system_prompt:
+        elif "You are Media Writer Agent" in self.system_prompt:
             decision = {
                 "action": "pass",
                 "content": "",
-                "reason": "no code needed",
+                "reason": "no script needed",
             }
         else:
-            saw_rag = "rag contribution" in user_text
+            saw_default = "default contribution" in user_text
             decision = {
-                "action": "speak" if saw_rag else "stop",
-                "content": "report saw rag" if saw_rag else "",
-                "reason": "summarize useful contribution" if saw_rag else "nothing to add",
+                "action": "speak" if saw_default else "stop",
+                "content": "report saw default" if saw_default else "",
+                "reason": "summarize useful contribution" if saw_default else "nothing to add",
             }
 
         async def gen():
@@ -85,7 +85,11 @@ def test_discussion_run_uses_public_thread_messages(tmp_path, monkeypatch):
                 "/scheduling/discussions/runs",
                 json={
                     "topic": "讨论内部审计制度如何检索和写报告",
-                    "participant_agent_ids": ["rag-agent", "code-agent", "report-agent"],
+                    "participant_agent_ids": [
+                        "default-single-agent",
+                        "media-writer-agent",
+                        "report-agent",
+                    ],
                     "moderator_agent_id": "report-agent",
                     "user_id": "discussion-test-user",
                     "max_rounds": 1,
@@ -108,8 +112,8 @@ def test_discussion_run_uses_public_thread_messages(tmp_path, monkeypatch):
 
         assert payload["run"]["public_thread_id"]
         assert [item["agent_id"] for item in payload["participants"]] == [
-            "rag-agent",
-            "code-agent",
+            "default-single-agent",
+            "media-writer-agent",
             "report-agent",
         ]
 
@@ -126,14 +130,14 @@ def test_discussion_run_uses_public_thread_messages(tmp_path, monkeypatch):
         public_texts = [message["text"] for message in messages]
         assert public_texts == [
             "讨论内部审计制度如何检索和写报告",
-            "rag contribution",
-            "no code needed",
-            "report saw rag",
+            "default contribution",
+            "no script needed",
+            "report saw default",
             "补充：请优先考虑可验证依据",
         ]
-        assert messages[1]["discussion"]["speaker_id"] == "rag-agent"
+        assert messages[1]["discussion"]["speaker_id"] == "default-single-agent"
         assert messages[1]["discussion"]["turn_id"] == turns[0]["id"]
-        assert messages[2]["discussion"]["speaker_id"] == "code-agent"
+        assert messages[2]["discussion"]["speaker_id"] == "media-writer-agent"
         assert messages[2]["turn"]["action"] == "pass"
         assert messages[3]["turn"]["agent_id"] == "report-agent"
 
@@ -301,8 +305,11 @@ def test_discussion_stream_wraps_single_agent_events(tmp_path, monkeypatch):
                 "/scheduling/discussions/runs",
                 json={
                     "topic": "stream discussion",
-                    "participant_agent_ids": ["rag-agent", "code-agent"],
-                    "moderator_agent_id": "code-agent",
+                    "participant_agent_ids": [
+                        "default-single-agent",
+                        "media-writer-agent",
+                    ],
+                    "moderator_agent_id": "media-writer-agent",
                     "user_id": "discussion-stream-user",
                     "max_rounds": 1,
                     "stream": True,
@@ -318,7 +325,7 @@ def test_discussion_stream_wraps_single_agent_events(tmp_path, monkeypatch):
         assert "event: final" in text
         assert "event: turn_finished" in text
         assert "event: discussion_finished" in text
-        assert '"agent_id": "rag-agent"' in text
+        assert '"agent_id": "default-single-agent"' in text
 
     try:
         asyncio.run(run())

@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Proof 数据集入库检查台</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f5f7;
+      --panel: #ffffff;
+      --ink: #17212b;
+      --muted: #647181;
+      --line: #dce2e8;
+      --brand: #176b5b;
+      --brand-soft: #dff3ed;
+      --danger: #a33b35;
+      --danger-soft: #fde9e7;
+      --warning: #8b5d13;
+      --warning-soft: #fff1d6;
+      --review: #475569;
+      --review-soft: #edf1f5;
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); }
+    button, input, select { font: inherit; }
+    .shell { max-width: 1800px; margin: 0 auto; padding: 28px; }
+    header { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; margin-bottom: 20px; }
+    h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: -.02em; }
+    .subtitle { color: var(--muted); font-size: 14px; line-height: 1.6; }
+    .refresh { border: 1px solid var(--brand); background: var(--panel); color: var(--brand); border-radius: 8px; padding: 9px 14px; cursor: pointer; }
+    .refresh:hover { background: var(--brand-soft); }
+    .cards { display: grid; grid-template-columns: repeat(7, minmax(130px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+    .card .label { color: var(--muted); font-size: 12px; margin-bottom: 7px; }
+    .card .value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    .filters { display: grid; grid-template-columns: minmax(260px, 2fr) repeat(4, minmax(150px, 1fr)); gap: 10px; padding: 14px; border-bottom: 1px solid var(--line); }
+    input, select { width: 100%; border: 1px solid var(--line); border-radius: 7px; background: #fff; padding: 9px 10px; color: var(--ink); }
+    .table-wrap { overflow: auto; max-height: calc(100vh - 310px); }
+    table { width: 100%; min-width: 1650px; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+    th { position: sticky; top: 0; z-index: 2; background: #f8fafb; color: #51606f; text-align: left; font-weight: 600; border-bottom: 1px solid var(--line); padding: 10px 12px; white-space: nowrap; }
+    td { border-bottom: 1px solid #edf0f2; padding: 11px 12px; vertical-align: top; }
+    tbody tr:hover { background: #f8fbfa; }
+    .file { max-width: 360px; font-weight: 600; line-height: 1.45; }
+    .path { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; font-weight: 400; overflow-wrap: anywhere; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .badge { display: inline-block; border-radius: 999px; padding: 3px 8px; margin: 0 4px 4px 0; font-size: 11px; white-space: nowrap; }
+    .ok { color: var(--brand); background: var(--brand-soft); }
+    .blocked { color: var(--danger); background: var(--danger-soft); }
+    .warning { color: var(--warning); background: var(--warning-soft); }
+    .review { color: var(--review); background: var(--review-soft); }
+    .neutral { color: #475569; background: #eef2f6; }
+    .action { border: 0; background: var(--brand); color: #fff; padding: 7px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+    .action:disabled { opacity: .45; cursor: not-allowed; }
+    .empty, .loading, .error { padding: 32px; text-align: center; color: var(--muted); }
+    .error { color: var(--danger); }
+    dialog { width: min(1120px, calc(100vw - 40px)); max-height: calc(100vh - 40px); border: 0; border-radius: 12px; padding: 0; box-shadow: 0 24px 80px rgba(15, 23, 42, .28); }
+    dialog::backdrop { background: rgba(15, 23, 42, .48); }
+    .drawer-head { position: sticky; top: 0; z-index: 3; display: flex; justify-content: space-between; gap: 16px; padding: 18px 20px; border-bottom: 1px solid var(--line); background: #fff; }
+    .drawer-head h2 { margin: 0 0 5px; font-size: 20px; }
+    .close { border: 0; background: #eef2f6; border-radius: 7px; width: 34px; height: 34px; cursor: pointer; }
+    .drawer-body { padding: 18px 20px 28px; background: var(--bg); }
+    .file-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+    .anomaly-box { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 14px; }
+    .chunk { background: #fff; border: 1px solid var(--line); border-radius: 9px; margin-bottom: 10px; overflow: hidden; }
+    .chunk-head { display: flex; justify-content: space-between; gap: 15px; padding: 10px 12px; background: #f8fafb; border-bottom: 1px solid var(--line); }
+    .chunk-title { font-weight: 700; }
+    .chunk-meta { color: var(--muted); font-size: 11px; text-align: right; }
+    .chunk-text { margin: 0; padding: 13px; white-space: pre-wrap; word-break: break-word; font: 13px/1.72 Inter, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    @media (max-width: 900px) {
+      .shell { padding: 16px; }
+      header { display: block; }
+      .refresh { margin-top: 12px; }
+      .cards { grid-template-columns: repeat(2, 1fr); }
+      .filters { grid-template-columns: 1fr; }
+      .table-wrap { max-height: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <h1>Proof 数据集入库检查台</h1>
+        <div class="subtitle">一行一份制度，展示建议分类、当前入库状态、block/chunk 数量和需要人工抽查的异常。</div>
+      </div>
+      <button class="refresh" id="refreshButton" type="button">重新扫描数据集</button>
+    </header>
+
+    <section class="cards" id="cards"></section>
+
+    <section class="panel">
+      <div class="filters">
+        <input id="search" type="search" placeholder="搜索文件名、标题或路径">
+        <select id="groupFilter"><option value="">全部数据组</option></select>
+        <select id="categoryFilter"><option value="">全部分类</option></select>
+        <select id="profileFilter">
+          <option value="">全部结构</option>
+          <option value="article">第X条</option>
+          <option value="decimal_outline">小数层级</option>
+          <option value="chinese_outline">中文序号</option>
+          <option value="mixed">混合结构</option>
+        </select>
+        <select id="statusFilter">
+          <option value="">全部状态</option>
+          <option value="ingested">已入库</option>
+          <option value="not_ingested">可入库</option>
+          <option value="blocked">阻塞</option>
+          <option value="anomaly">有异常</option>
+        </select>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>入库状态</th><th>制度文件</th><th>数据组</th><th>层级</th><th>建议分类</th>
+              <th>结构模板</th><th class="num">结构覆盖</th><th class="num">大小</th><th class="num">Blocks</th><th class="num">Chunks</th><th class="num">最短/最长</th>
+              <th>异常与提示</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="rows"><tr><td colspan="13" class="loading">正在扫描数据集…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="detailDialog">
+    <div class="drawer-head">
+      <div><h2 id="detailTitle">条款 Chunks</h2><div class="subtitle" id="detailPath"></div></div>
+      <button class="close" type="button" aria-label="关闭" id="closeDialog">×</button>
+    </div>
+    <div class="drawer-body" id="detailBody"></div>
+  </dialog>
+
+  <script>
+    const state = { files: [], snapshot: null };
+    const $ = (id) => document.getElementById(id);
+    const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[char]);
+    const formatNumber = (value) => new Intl.NumberFormat("zh-CN").format(value ?? 0);
+    const formatBytes = (value) => value >= 1048576 ? `${(value / 1048576).toFixed(1)} MB` : `${Math.round(value / 1024)} KB`;
+    const statusLabel = { ingested: "已入库", not_ingested: "可入库", blocked: "阻塞" };
+
+    async function loadAudit(refresh = false) {
+      $("rows").innerHTML = '<tr><td colspan="13" class="loading">正在扫描数据集…</td></tr>';
+      $("refreshButton").disabled = true;
+      try {
+        const response = await fetch(`/v1/dataset/audit${refresh ? "?refresh=true" : ""}`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || payload.error || "扫描失败");
+        state.snapshot = payload.data;
+        state.files = payload.data.files;
+        renderCards();
+        renderFilterOptions();
+        renderRows();
+      } catch (error) {
+        $("rows").innerHTML = `<tr><td colspan="13" class="error">${escapeHtml(error.message)}</td></tr>`;
+      } finally {
+        $("refreshButton").disabled = false;
+      }
+    }
+
+    function renderCards() {
+      const summary = state.snapshot.summary;
+      const cards = [
+        ["候选制度", summary.candidate_file_count],
+        ["可解析入库", summary.ready_file_count],
+        ["已入库", summary.ingested_file_count],
+        ["阻塞文件", summary.blocked_file_count],
+        ["完整条款 Chunks", summary.clause_count],
+        ["混合结构", summary.mixed_structure_count],
+        ["需抽查文件", summary.anomaly_file_count],
+      ];
+      $("cards").innerHTML = cards.map(([label, value]) => `<div class="card"><div class="label">${label}</div><div class="value">${formatNumber(value)}</div></div>`).join("");
+    }
+
+    function renderFilterOptions() {
+      const group = $("groupFilter");
+      const category = $("categoryFilter");
+      if (group.options.length === 1) {
+        state.snapshot.groups.forEach((item) => group.insertAdjacentHTML("beforeend", `<option value="${escapeHtml(item.code)}">${escapeHtml(item.name)} (${item.file_count})</option>`));
+      }
+      if (category.options.length === 1) {
+        state.snapshot.categories.forEach((item) => category.insertAdjacentHTML("beforeend", `<option value="${escapeHtml(item.code)}">${escapeHtml(item.name)} (${item.file_count})</option>`));
+      }
+    }
+
+    function renderRows() {
+      const query = $("search").value.trim().toLowerCase();
+      const group = $("groupFilter").value;
+      const category = $("categoryFilter").value;
+      const profile = $("profileFilter").value;
+      const status = $("statusFilter").value;
+      const files = state.files.filter((item) => {
+        const text = `${item.original_name} ${item.title} ${item.relative_path}`.toLowerCase();
+        if (query && !text.includes(query)) return false;
+        if (group && item.group_code !== group) return false;
+        if (category && item.category_code !== category) return false;
+        if (profile && item.structure_profile !== profile) return false;
+        if (status === "anomaly" && !item.anomalies.length) return false;
+        if (status && status !== "anomaly" && item.ingestion.status !== status) return false;
+        return true;
+      });
+      if (!files.length) {
+        $("rows").innerHTML = '<tr><td colspan="13" class="empty">没有符合当前筛选条件的文件。</td></tr>';
+        return;
+      }
+      $("rows").innerHTML = files.map((item) => {
+        const statusClass = item.ingestion.status === "blocked" ? "blocked" : item.ingestion.status === "ingested" ? "ok" : "neutral";
+        const anomalies = item.anomalies.length
+          ? item.anomalies.map((entry) => `<span class="badge ${entry.severity === "blocking" ? "blocked" : entry.severity}">${escapeHtml(entry.message)}</span>`).join("")
+          : '<span class="badge ok">未发现规则异常</span>';
+        const lengths = item.clause_count ? `${item.shortest_clause_chars} / ${item.longest_clause_chars}` : "—";
+        return `<tr>
+          <td><span class="badge ${statusClass}">${statusLabel[item.ingestion.status]}</span></td>
+          <td class="file">${escapeHtml(item.title)}<span class="path">${escapeHtml(item.relative_path)}</span></td>
+          <td>${escapeHtml(item.group_name)}</td>
+          <td><span class="badge neutral">${escapeHtml(item.level_name)}</span></td>
+          <td><span class="badge neutral">${escapeHtml(item.category_name)}</span></td>
+          <td><span class="badge ${item.structure_profile === "mixed" ? "warning" : "neutral"}">${escapeHtml(item.structure_profile_name)}</span></td>
+          <td class="num">${item.scan_status === "ready" ? `${(item.structure_coverage_rate * 100).toFixed(1)}%` : "—"}</td>
+          <td class="num">${formatBytes(item.file_size)}</td>
+          <td class="num">${formatNumber(item.block_count)}</td>
+          <td class="num">${formatNumber(item.clause_count)}</td>
+          <td class="num">${lengths}</td>
+          <td>${anomalies}</td>
+          <td><button class="action" type="button" onclick="openFile('${item.id}')">查看 Chunks</button></td>
+        </tr>`;
+      }).join("");
+    }
+
+    async function openFile(fileId) {
+      $("detailTitle").textContent = "正在读取…";
+      $("detailPath").textContent = "";
+      $("detailBody").innerHTML = '<div class="loading">正在重新解析该文件…</div>';
+      $("detailDialog").showModal();
+      try {
+        const response = await fetch(`/v1/dataset/files/${fileId}`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || payload.error || "读取失败");
+        const item = payload.data;
+        $("detailTitle").textContent = item.title;
+        $("detailPath").textContent = item.relative_path;
+        const metadata = `<div class="file-meta">
+          <span class="badge neutral">${escapeHtml(item.group_name)}</span>
+          <span class="badge neutral">${escapeHtml(item.level_name)}</span>
+          <span class="badge neutral">${escapeHtml(item.category_name)}</span>
+          <span class="badge ${item.structure_profile === "mixed" ? "warning" : "neutral"}">${escapeHtml(item.structure_profile_name)}</span>
+          <span class="badge neutral">结构覆盖 ${(item.structure_coverage_rate * 100).toFixed(1)}%</span>
+          <span class="badge ${item.scan_status === "ready" ? "ok" : "blocked"}">${item.scan_status === "ready" ? `${item.clause_count} 个 chunks` : "无法入库"}</span>
+        </div>`;
+        const regions = (item.structure_regions || []).length
+          ? `<div class="anomaly-box"><strong>识别区域</strong><div style="margin-top:8px">${item.structure_regions.map((region) => `<span class="badge neutral">${escapeHtml(region.profile)} · blocks ${region.block_start_ordinal}–${region.block_end_ordinal} · ${region.unit_count} chunks</span>`).join("")}</div></div>`
+          : "";
+        const anomalies = item.anomalies.length
+          ? `<div class="anomaly-box"><strong>异常与提示</strong><div style="margin-top:8px">${item.anomalies.map((entry) => `<span class="badge ${entry.severity === "blocking" ? "blocked" : entry.severity}">${escapeHtml(entry.message)}</span>`).join("")}</div></div>`
+          : "";
+        const chunks = (item.clauses || []).map((chunk) => `<article class="chunk">
+          <div class="chunk-head">
+            <div class="chunk-title">#${chunk.clause_ordinal} ${escapeHtml(chunk.clause_no_raw)} <span class="badge neutral">${escapeHtml(chunk.unit_type)}</span></div>
+            <div class="chunk-meta">${formatNumber(chunk.text_chars)} 字 · 段落 ${chunk.paragraph_start ?? "—"}–${chunk.paragraph_end ?? "—"}<br>${escapeHtml((chunk.heading_path || []).join(" / ") || "无章节路径")}</div>
+          </div>
+          <pre class="chunk-text">${escapeHtml(chunk.text)}</pre>
+        </article>`).join("");
+        $("detailBody").innerHTML = metadata + regions + anomalies + (chunks || '<div class="empty">该文件没有可展示的结构化 chunk。</div>');
+      } catch (error) {
+        $("detailBody").innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
+      }
+    }
+
+    ["search", "groupFilter", "categoryFilter", "profileFilter", "statusFilter"].forEach((id) => $(id).addEventListener(id === "search" ? "input" : "change", renderRows));
+    $("refreshButton").addEventListener("click", () => loadAudit(true));
+    $("closeDialog").addEventListener("click", () => $("detailDialog").close());
+    $("detailDialog").addEventListener("click", (event) => { if (event.target === $("detailDialog")) $("detailDialog").close(); });
+    window.openFile = openFile;
+    loadAudit();
+  </script>
+</body>
+</html>

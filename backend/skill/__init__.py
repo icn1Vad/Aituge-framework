@@ -1,6 +1,6 @@
 """Task-scoped skill loading and prompt bundling."""
 
-from .catalog import get_skill, list_skills
+from .catalog import get_skill, list_skills, register_skill_root, skill_roots
 from .loader import load_skill
 from .manager import SkillContext, SkillManager
 from .models import Skill, SkillMetadata, SkillSummary
@@ -27,5 +27,7 @@ __all__ = [
     "list_skill_packages",
     "list_skills",
     "load_skill",
+    "register_skill_root",
+    "skill_roots",
     "upsert_skill_package",
 ]
