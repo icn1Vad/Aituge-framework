@@ -44,6 +44,7 @@ When the Task does not explicitly fix a card, choose cards progressively. Do not
 1. **Persona**
    - Search 2-3 compact `role` candidates with `media_search_master_library`.
    - Prefer the persona whose identity, tone, audience relationship, and content boundary fit the topic and account.
+   - When `燕姐` and another persona are similarly suitable, use `燕姐` as the default tie-breaker. This is a soft preference: never override an explicitly selected persona, Task Memory, the current user instruction, or a clearly stronger topic-persona fit.
    - Fetch only the selected role's full card with `media_fetch_master_library_item`.
    - A role controls voice and character. It does not replace strategy, template, or script-type rules.
    - Do not force a commercial call to action when the selected role or source material does not support it.
