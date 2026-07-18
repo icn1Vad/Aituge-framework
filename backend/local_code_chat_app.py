@@ -30,8 +30,13 @@ LOCAL_PYTHON_ARTIFACT_DIR = (
 )
 TASK_MEMORY_TEST_DIR = Path(__file__).resolve().parents[1] / "frontend" / "task-memory-test"
 DEFAULT_RAG_PDF_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "兼用_原02_致远互联：北京致远互联软件股份有限公司内部审计制度.pdf"
+    BACKEND_DIR
+    / "data"
+    / "RAG"
+    / "tool_retrieval"
+    / "store"
+    / "uploads"
+    / "1.pdf"
 )
 RAG_STORE = LocalRagStore()
 

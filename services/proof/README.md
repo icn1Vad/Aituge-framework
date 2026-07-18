@@ -75,7 +75,7 @@ Proof 自己维护 `capabilities/register.py` 和主 Skill，Framework 只提供
 启动 Aituge 前配置：
 
 ```bash
-export AITUGE_CAPABILITY_ENTRY=/home/ningrx25/data/aituge-appliance/services/proof/capabilities/register.py
+export AITUGE_CAPABILITY_ENTRY="$PWD/capabilities/register.py"
 export PROOF_SERVICE_BASE_URL=http://127.0.0.1:18100
 ```
 

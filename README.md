@@ -33,7 +33,7 @@ The framework can load one trusted service-owned registration entry at startup.
 For the local Proof service:
 
 ```bash
-export AITUGE_CAPABILITY_ENTRY=/home/ningrx25/data/aituge-appliance/services/proof/capabilities/register.py
+export AITUGE_CAPABILITY_ENTRY="$PWD/services/proof/capabilities/register.py"
 export PROOF_SERVICE_BASE_URL=http://127.0.0.1:18100
 poetry run uvicorn backend.local_code_chat_app:create_app --factory --host 0.0.0.0 --port 8894
 ```

@@ -2,7 +2,7 @@ import asyncio
 
 import httpx
 
-from backend.local_code_chat_app import create_app
+from backend.local_code_chat_app import DEFAULT_RAG_PDF_PATH, create_app
 from backend.simple_chat_app import LOCAL_PYTHON_ARTIFACT_DIR
 from common.llm.models import TextChunk
 from db.db_context import create_db_session
@@ -21,6 +21,11 @@ class CapturingAgent:
             yield TextChunk(delta=f"tools={tool_names}")
 
         return gen()
+
+
+def test_default_rag_pdf_uses_tracked_repository_file():
+    assert DEFAULT_RAG_PDF_PATH.is_file()
+    assert DEFAULT_RAG_PDF_PATH.name == "1.pdf"
 
 
 async def _delete_thread(thread_id: str):
