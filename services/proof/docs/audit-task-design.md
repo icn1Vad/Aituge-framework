@@ -5,8 +5,8 @@
 ```text
 上传文件
   -> 解析并把 Policy/Document/Chunks 暂存为 draft
-  -> proof.audit.run 异步语义审校
-  -> GET quality-report 查看合并报告
+  -> proof.audit.run 异步生成概览，并行执行语义/可执行性与制度冲突审校
+  -> GET audit-status 轮询轻量状态，按 Stage 分别获取结果
   -> 人工确认
   -> Policy 变为 effective，开始参与知识库检索
 ```
@@ -20,38 +20,59 @@ Chunk。
 Proof 仍使用一个 Capability Registry：
 
 - `proof.qa.chat`：对已生效制度进行问答；
-- `proof.audit.run`：使用 `proof-policy-semantic-audit` 对草稿的全部 Chunk 分批审校。
+- `proof.audit.run`：唯一生产入口。概览、语义/可执行性、制度冲突三个 Stage 并行执行，
+  `finalize_report` 确定性合并 Artifact；
+- `proof.conflict.audit`：保留为冲突能力测试和诊断入口，上传流程不会额外创建它。
+
+```text
+proof.audit.run
+├── policy_summary   -> proof_policy_summary
+├── semantic_audit  -> proof_semantic_audit
+├── conflict_audit  -> proof_conflict_audit
+└── finalize_report (depends on all three) -> proof_audit_result
+```
+
+语义 Stage 按字符预算分批；冲突 Stage 每个 item 固定一个源 Chunk，并复用
+`proof-conflict-agent`、`proof-policy-conflict-audit-package` 和 `proof_conflict_search`。
 
 每个 Chunk 最多返回一条 Finding，同一 Chunk 的多个问题合并：
 
 ```json
 {
   "id": "retrieval_unit_id",
-  "quote": "原文中的连续片段",
-  "problem": "具体语义问题及影响",
+  "category": "semantic_ambiguity",
+  "problem": "语义歧义或可执行性缺口及其影响",
   "suggestion": "可执行的修改建议"
 }
 ```
 
 无问题的 Chunk 不返回。Framework 强校验批次 JSON，并把完整批次结果回传 Proof。Proof 再
-校验 Chunk ID、全量覆盖、每 Chunk 唯一性和 quote 原文定位；任一批次或校验失败，本次审校
+校验 Chunk ID、全量覆盖和每 Chunk 唯一性；任一批次或校验失败，本次审校
 整体失败且不保存部分 Finding。
 
 ## 最小数据
 
 - `proof_audit_run`：每个 Document 一条当前运行记录，保存状态和 Framework task/run ID；
-- `proof_audit_finding`：保存 Chunk ID、quote、problem、suggestion；
+- `proof_audit_finding`：保存 Chunk ID、category、problem、suggestion；
+- `proof_conflict_audit_finding`：保存源/候选 Chunk ID、四类冲突、problem、suggestion；
 - 暂不保存文档快照、规则/Skill/模型版本、字符偏移、失败 Chunk 或历史轮次。
 
-质量报告沿用 `/v1/policies/{policy_id}/quality-report`，版本为 `policy-quality-v2`。确定性结构
-检查和语义 Finding 统一放在 `finding_counts` 与 `findings` 中。
+父 Task 仍统一执行，但读取接口按 Stage 拆分。状态轮询统一返回各类统计，但不返回概览正文或
+Finding；某一 Stage 完成后，Java 或前端只请求该 Stage 的结果并透传其结构。未完成 Stage 的
+模型统计为 `null`，不能按零问题解释。
 
 ## 状态接口
 
-- `POST /v1/policies`：上传并暂存草稿，随后调度审校；
-- `POST /v1/policies/{id}/semantic-audit`：重试失败审校；
+- `POST /v1/policies`：上传并暂存草稿，随后调度审校，返回轻量 `audit_task`；
+- `GET /v1/policies/{id}/audit-status`：返回父审校、三个 Stage 状态及统一统计；
+- `GET /v1/policies/{id}/policy-summary`：返回概览 Stage 结果；
+- `GET /v1/policies/{id}/semantic-findings`：返回语义/可执行性及结构检查结果；
+- `GET /v1/policies/{id}/conflict-findings`：返回冲突 Stage 结果；
 - `POST /v1/policies/{id}/confirm`：审校完成后确认入库；
 - `DELETE /v1/policies/{id}`：只允许丢弃草稿；
 - `POST /v1/internal/semantic-audits/result`：Framework 固定可信回调。
+
+冲突 Stage 成功或失败也回调上述父 Task sink；独立诊断 Task 仍使用
+`POST /v1/internal/conflict-audits/result`。
 
 当 `PROOF_SEMANTIC_AUDIT_ENABLED=false` 时不创建审校任务，用户查看确定性报告后即可确认。

@@ -79,19 +79,20 @@ export AITUGE_CAPABILITY_ENTRY=/home/ningrx25/data/aituge-appliance/services/pro
 export PROOF_SERVICE_BASE_URL=http://127.0.0.1:18100
 ```
 
-挂载后可通过 `POST /task-manager/run` 执行 `proof.qa.chat`，语义审校使用
-`proof.audit.run` 批任务。该问答 Task 仍走现有
+挂载后可通过 TaskManager 执行 `proof.qa.chat`。生产审校只创建一个 `proof.audit.run`，其内部并行
+执行制度概览、清晰性/可执行性和制度冲突 Stage；`proof.conflict.audit` 仅保留用于诊断。该问答 Task 仍走现有
 Scheduler 和 SingleAgent，仅注入 `proof_search`、`proof_sql`、`code_interpreter` 与
 `proof-policy-qa`，不会使用 Framework 本地 RAG。
 
-语义审校默认关闭。启用前配置：
+该审校流程默认关闭。启用前配置：
 
 ```bash
 PROOF_SEMANTIC_AUDIT_ENABLED=true
 PROOF_FRAMEWORK_BASE_URL=http://127.0.0.1:8894
 PROOF_FRAMEWORK_USER_ID=proof-service
-PROOF_FRAMEWORK_TENANT_ID=default
+PROOF_FRAMEWORK_TENANT_ID=__default_tenant_id__
 PROOF_AUDIT_MODEL_ID=deepseek-v4-pro
+PROOF_CONFLICT_MODEL_ID=deepseek-v4-pro
 PROOF_AUDIT_BATCH_MAX_CHARS=6000
 PROOF_AUDIT_BATCH_MAX_CHUNKS=8
 PROOF_AUDIT_MAX_CHUNK_CHARS=12000
@@ -100,9 +101,9 @@ PROOF_AUDIT_MAX_CONCURRENCY=4
 
 `http://127.0.0.1:18100/` 是最小制度工作台，包含上传、结构检测、chunk 展开、
 检查报告、制度仓库管理，以及全文/向量/Reranker 各阶段数量清晰可见的检索诊断。上传先
-保存为草稿，确定性结构检查与语义审校合并展示，人工确认后才进入检索。语义 Finding 是
-提示而不是自动阻断规则。页面内可取得同时包含三类结构问题的
-`policy-structure-errors.txt` 实验制度。
+保存为草稿，制度概览、确定性结构检查、清晰性/可执行性和制度冲突审校合并展示，人工确认后才进入检索。审校 Finding 是
+提示而不是自动阻断规则。页面内可取得同时包含语义歧义、可执行性缺口和跨制度冲突规则的
+`采购管理制度（试行）.txt` 联合审校实验制度。
 
 配置 `PROOF_DATASET_ROOT` 后，`http://127.0.0.1:18100/dataset` 提供数据集入库检查页，
 可按数据组、层级、建议分类、结构模板和入库状态横向查看每份制度，并展开完整 chunk、
@@ -134,7 +135,11 @@ uv run python -m proof.tools.validate_dataset_chunks \
 - `GET /v1/policies`：按层级和分类过滤；
 - `GET /v1/policies/{policy_id}`：制度和文档状态；
 - `GET /v1/policies/{policy_id}/clauses`：按原文顺序查看条款；
-- `GET /v1/policies/{policy_id}/quality-report`：生成重复编号、编号缺失、混合结构检查报告；
+- `GET /v1/policies/{policy_id}/audit-status`：查询父审校、三个 Stage 状态及统一统计；
+- `GET /v1/policies/{policy_id}/policy-summary`：返回制度初步分析；
+- `GET /v1/policies/{policy_id}/semantic-findings`：返回结构、语义与可执行性结果；
+- `GET /v1/policies/{policy_id}/conflict-findings`：返回制度冲突结果；
+- `POST /v1/policies/{policy_id}/confirm`：审校完成后确认制度生效；
 - `GET /v1/ingestion-runs/{run_id}`：查看本次入库、复用或失败的运行记录；
 - `GET /v1/dataset/audit`：扫描固定数据集口径并返回分类、chunk 计数和异常；
 - `GET /v1/dataset/files/{file_id}`：返回单个数据集文件的完整条款 chunk；
@@ -144,6 +149,11 @@ uv run python -m proof.tools.validate_dataset_chunks \
 - `POST /v1/retrieval/search`：按完整条款做混合、向量或中文全文检索，支持制度、层级和分类过滤；
 - `POST /v1/retrieval/fetch`：不依赖 embedding，按 unit ID 返回完整条款和 citation。
 - `POST /v1/query/sql`：执行 Agent 生成的一条只读 `SELECT/WITH`，用于计数、列表、分组和精确过滤。
+
+冲突审校内部工具使用未公开到 OpenAPI 的 `POST /v1/internal/conflict-retrieval`；它在完整四路
+召回结果上保留最多 6 条同归一化标题制度证据，并对排除该制度族后的二级、一级及全库候选
+统一 rerank，默认向 Agent 返回 10 条完整原文证据。
+设计、实测和 Java 批量粒度见 `docs/conflict-agent-design.md`。
 
 同一文件以 SHA-256 去重，重复上传返回既有 policy/document，并带 `reused: true`。
 基础文件校验通过后，每次上传都生成独立的 `ingestion_run_id`；运行记录只保存

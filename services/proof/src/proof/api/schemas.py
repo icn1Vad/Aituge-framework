@@ -29,6 +29,19 @@ class RetrievalSearchRequest(BaseModel):
     category_codes: list[str] = Field(default_factory=list, max_length=50)
 
 
+class ConflictRetrievalRequest(BaseModel):
+    unit_id: str = Field(min_length=1, max_length=160)
+    top_k: int = Field(default=10, ge=1, le=20)
+
+    @field_validator("unit_id")
+    @classmethod
+    def normalize_unit_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("unit_id must not be blank")
+        return normalized
+
+
 class PolicySqlRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     sql: str = Field(min_length=1, max_length=20_000)

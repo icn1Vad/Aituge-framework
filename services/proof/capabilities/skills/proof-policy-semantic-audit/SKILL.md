@@ -1,44 +1,117 @@
 ---
 name: proof-policy-semantic-audit
-description: Audit supplied policy chunks for concrete semantic ambiguity and return strict JSON findings.
+description: Audit supplied policy chunks for material semantic ambiguity and executability gaps, returning strict source-grounded JSON findings.
 ---
 
-# Proof Policy Semantic Audit
+# Proof Policy Clarity and Executability Audit
 
-Inspect every object in `Current item.targets`. Do not audit global task metadata or any text outside
-the target list.
+逐一审校 `Current item.targets` 中的每个制度 Chunk。只审校 target 自身提供的
+`text`、条款编号和标题路径，不审校任务元数据，也不假设 target 之外一定存在或不存在
+某项规则。
 
-Report only ambiguity that can materially change who acts, when a rule applies, what action is required,
-or what boundary and exception applies. In particular, check:
+## 核心原则
 
-- unclear actor or responsible party;
-- undefined trigger, threshold, deadline, or prerequisite;
-- vague action that cannot be translated into a concrete operation;
-- unclear degree, scope, exception, approval authority, or applicable object;
-- missing referent, circular wording, or internally incomplete expression that prevents a reasonable
-  implementer from reaching one stable interpretation.
+审校目标不是把每个条款补写成完整 SOP，而是判断：具备相应专业能力的执行人，依据当前
+Chunk，能否形成稳定理解、采取下一步行动，并使关键结果可以被复核、验证或追责。
 
-Do not report a finding merely because wording could be stylistically improved. Do not demand definitions
-for ordinary words whose meaning is clear from the chunk. When context inside the same target resolves the
-meaning, return no finding.
+只有问题会实质改变规则理解、阻断执行、造成流程断点或使结果无法验证时才返回 Finding。
+单纯可以写得更详细、更流畅或更理想，不构成问题。下面的分类和示例用于建立判断尺度，
+不是封闭清单；可以发现其他符合核心原则、具体且可溯源的问题。
 
-For each problematic target, return at most one finding. Merge all material semantic problems in that
-target into one concise `problem` and one actionable `suggestion`. `quote` must be one exact, continuous
-substring copied from that target's `text`. `id` must exactly equal that target's `id`.
+## 一、语义歧义
 
-Return exactly one JSON object and no Markdown:
+语义歧义是指条款无法让合理读者对“谁、对什么、做什么、何时、在什么条件下、多少、
+适用到哪里、引用哪项规则”形成唯一且稳定的理解。
+
+重点检查：
+
+1. **主体、对象或指代不清**
+   - 问题：执行、审核、审批、备案或承担责任的主体不唯一，行为对象或代词指向不明。
+   - 示例：“费用报销事项审核通过后，应当在系统中备案。”没有说明由谁备案；
+     “由其提交表决意见”中的“其”可能指向多个主体。
+2. **条件、时间、阈值或数据口径不清**
+   - 问题：触发条件、期限起点、金额类型、临界值、计算基数、数据来源或取数时点不能唯一确定。
+   - 示例：“金额达到 100 万元以上”没有说明是预算额、合同额、单笔还是累计金额；
+     “费用超过预算 10%”没有说明比较基数和计算口径；“及时完成”没有客观时限。
+3. **动作、逻辑关系或引用不清**
+   - 问题：动作含义不能转化为稳定指令，并列、否定、修饰范围存在多种解释，或外部引用无法定位。
+   - 示例：“相关部门应加强管理”既不明确责任主体，也不能确定需要采取什么动作；
+     “存在重大风险和重大损失”无法确定两项条件需同时满足还是任一满足；
+     “按照公司有关规定办理”没有给出制度名称或条款。
+4. **程度、范围、规则强度或例外边界不清**
+   - 问题：“重大、适当、必要时、原则上、相关、等”等表述会影响权利义务边界，却没有判断标准；
+     适用范围、例外条件、批准例外的主体或恢复正常规则的条件不明。
+   - 示例：“原则上不允许”没有说明允许例外的情形和批准人；必备材料使用“等资料”但没有可确定的
+     清单边界。
+
+## 二、可执行性缺口
+
+只有当条款的主体、对象、动作、触发条件和边界已经基本可以理解时，才进一步判断可执行性。
+可执行性缺口是指规则意思大体清楚，但仍缺少会直接影响落地、检查或追责的关键机制。
+
+重点检查：
+
+1. **关键要素或流程衔接缺失**
+   - 问题：明确要求完成审批、审查、追偿或处置，但关键输入、输出、责任交接或后续节点缺失，
+     使流程无法继续。
+   - 示例：“内控部门应当对内部控制缺陷整改事项进行审查。”主体和对象明确，但完全没有审查标准、
+     结论形式或记录，无法判断审查是否实际完成。
+2. **只有目标，没有可采取的操作**
+   - 问题：条款把管理目标当成执行规则，执行人无法据此确定下一步动作。
+   - 示例：“应建立健全内部控制体系。”表达了目标，但没有任何承接动作、成果或可定位的办理机制。
+3. **执行结果不可检查**
+   - 问题：要求取得某种效果，却没有最低标准、验收依据、记录或其他可验证证据，无法判断是否履行。
+   - 示例：“应提高服务质量。”没有指标、检查方式或结果载体，无法验证是否达到要求。
+4. **关键异常或例外路径断裂**
+   - 问题：条款明确规定了一条完整流程，但文本中可预见的重要异常会使该流程无法继续，且没有替代、
+     升级、补办或恢复路径。
+   - 示例：制度明确要求所有事项必须事前审批后方可执行，却同时涉及不可等待的紧急事项，且完全没有
+     紧急授权和事后补办路径。
+
+## 分类边界
+
+- 如果读者首先无法唯一确定谁做、做什么、何时做、何种条件适用或边界在哪里，主要根因是
+  **语义歧义**。
+- 如果这些含义已经基本清楚，但流程、输出、验证或异常闭环仍然断裂，主要根因是
+  **可执行性缺口**。
+- 同一 Chunk 同时存在两类问题时只返回一条 Finding，在 `problem` 中合并说明，并以最直接阻碍理解
+  或执行的根因为主。
+
+## 抑制误报
+
+- 目的、定义、授权和原则条款不必天然包含操作流程。
+- 不要求每个条款同时写全主体、期限、标准、材料、审批人、记录和异常路径。
+- 条款没有时间敏感性时，不因缺少时限而报错；没有明确、重要且可预见的异常时，不强行要求例外路径。
+- 不因出现“完整材料”就要求本条列出材料清单、补正程序和时限重新起算规则。
+- 不根据行业常识猜测某部门是否应该编制、接收或审查某项材料。
+- 普通词含义清楚、同一 target 内上下文已经解决问题，或者只是可以进一步细化时，不返回 Finding。
+- 例如：“投资管理部门应当对投资项目进行审查，并在收到完整可行性研究报告之日起 3 个工作日内
+  形成书面意见，报投资决策委员会审批。”已经具有稳定的主体、动作、时限、输出和审批路径，
+  不要挑剔“审批宾语”“完整的定义”或材料不全时的补正机制。
+
+## 输出要求
+
+每个有问题的 target 最多返回一条 Finding；没有问题的 target 不返回。合并同一 Chunk 中所有实质问题，
+不要拆成多条。
+
+- `id` 必须与 target 的 `id` 完全一致。
+- `category` 只能是 `semantic_ambiguity` 或 `executability_gap`，并与主要根因一致。
+- `problem` 具体说明原文中的问题、缺少什么以及实际影响，不能只写分类标签。
+- `suggestion` 给出消除当前问题所需的最小修改，不要扩写整套制度。
+
+只返回一个合法 JSON 对象，不要返回 Markdown、解释过程或额外字段：
 
 ```json
 {
   "findings": [
     {
       "id": "retrieval-unit-id",
-      "quote": "exact source substring",
-      "problem": "specific ambiguity and its practical impact",
-      "suggestion": "concrete revision guidance"
+      "category": "semantic_ambiguity",
+      "problem": "具体问题、缺失要素及其实际影响。",
+      "suggestion": "最小且可落实的修改建议。"
     }
   ]
 }
 ```
 
-If all targets are clear, return `{"findings": []}`.
+如果所有 target 均无实质问题，只返回 `{"findings": []}`。

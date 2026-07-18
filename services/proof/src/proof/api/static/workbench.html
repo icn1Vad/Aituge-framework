@@ -98,7 +98,7 @@
     .tab.active { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
     .view { display: none; padding: 17px; }
     .view.active { display: block; }
-    .report-cards { display: grid; grid-template-columns: repeat(5, minmax(120px, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .report-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 14px; }
     .report-card { border: 1px solid var(--line); border-radius: 9px; padding: 12px; background: #fcfdfd; }
     .report-card .value { margin-top: 5px; font-size: 22px; font-weight: 750; }
     .report-ok { padding: 22px; text-align: center; color: var(--brand-dark); background: var(--brand-soft); border-radius: 9px; }
@@ -106,6 +106,10 @@
     .finding-title { font-weight: 700; margin-bottom: 5px; }
     .finding-meta { color: var(--muted); font-size: 11px; line-height: 1.6; }
     .audit-state { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; margin-bottom: 12px; border-radius: 8px; background: #f7faf9; border: 1px solid var(--line); }
+    .review-section { margin-bottom: 18px; }
+    .review-section + .review-section { padding-top: 17px; border-top: 1px solid var(--line); }
+    .review-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 10px; font-size: 15px; }
+    .overview-lead { margin: 0; padding: 18px 20px; border-radius: 9px; background: var(--brand-soft); color: var(--brand-dark); font-size: 14px; line-height: 1.9; white-space: pre-line; }
     .workflow-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
     .workflow-actions .primary { width: auto; }
     .danger { border: 1px solid #e4b9b5; background: #fff; color: var(--red); border-radius: 8px; padding: 8px 12px; }
@@ -161,8 +165,8 @@
         </div>
         <div class="notice" id="uploadNotice"></div>
         <div class="example">
-          <div class="small">实验样本同时包含：重复编号、编号缺失、混合结构。</div>
-          <a class="link" href="/examples/policy-structure-errors.txt">获取实验制度 TXT</a>
+          <div class="small">实验样本同时包含：语义歧义、可执行性缺口，以及与现有采购制度的数值、流程和规则反转冲突。</div>
+          <a class="link" href="/examples/policy-semantic-conflict-test.txt">获取联合审校实验制度 TXT</a>
         </div>
       </form>
     </aside>
@@ -200,13 +204,16 @@
   </main>
 
   <script>
-    const state = { policies: [], selectedId: null, activeTab: "report", auditTimer: null };
+    const state = { policies: [], selectedId: null, activeTab: "review", auditTimer: null, detail: null, auditResults: null };
     const $ = (id) => document.getElementById(id);
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[char]);
     const profileName = { article: "第X条", decimal_outline: "小数层级", chinese_outline: "中文序号", mixed: "混合结构" };
-    const findingName = { duplicate_number: "重复编号", missing_number: "编号缺失", mixed_structure: "混合结构", semantic_ambiguity: "语义问题" };
+    const findingName = { duplicate_number: "重复编号", missing_number: "编号缺失", mixed_structure: "混合结构", semantic_ambiguity: "语义歧义", executability_gap: "可执行性缺口" };
     const policyStatusName = { draft: "待确认", effective: "已入库", expired: "已失效" };
     const auditStatusName = { disabled: "语义审校未启用", not_requested: "历史制度未执行语义审校", pending: "等待语义审校", running: "语义审校进行中", completed: "语义审校已完成", failed: "语义审校失败" };
+    const conflictStatusName = { disabled: "冲突审校未启用", not_requested: "历史制度未执行冲突审校", pending: "等待冲突审校", running: "冲突审校进行中", completed: "冲突审校已完成", failed: "冲突审校失败" };
+    const summaryStatusName = { disabled: "制度概览未启用", not_requested: "历史制度未生成概览", pending: "等待生成制度概览", running: "制度概览生成中", completed: "制度概览已生成", failed: "制度概览生成失败" };
+    const displayCount = (value) => value == null ? "—" : value;
 
     async function api(url, options) {
       const response = await fetch(url, options);
@@ -260,21 +267,84 @@
     async function selectPolicy(policyId) {
       clearTimeout(state.auditTimer);
       state.selectedId = policyId;
+      state.detail = null;
+      state.auditResults = { summary: null, semantic: null, conflict: null };
       renderRepository();
-      $("detailPanel").innerHTML = '<div class="loading">正在读取制度、chunks 和检查报告…</div>';
+      $("detailPanel").innerHTML = '<div class="loading">正在读取制度、Chunks 和审校状态…</div>';
       try {
-        const [policy, clauses, report] = await Promise.all([
+        const [policy, clauses, auditStatus] = await Promise.all([
           api(`/v1/policies/${policyId}`),
           api(`/v1/policies/${policyId}/clauses?include_text=true`),
-          api(`/v1/policies/${policyId}/quality-report`),
+          api(`/v1/policies/${policyId}/audit-status`),
         ]);
+        state.detail = { policy, clauses };
+        await loadCompletedAuditResults(policyId, auditStatus);
+        const report = composeAuditReport(auditStatus, clauses.length);
         renderDetail(policy, clauses, report);
-        if (policy.status === "draft" && ["pending", "running"].includes(report.semantic_audit?.status)) {
-          state.auditTimer = setTimeout(() => selectPolicy(policyId), 2000);
-        }
+        scheduleAuditPoll(policyId, auditStatus);
       } catch (error) {
         $("detailPanel").innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
       }
+    }
+
+    async function loadCompletedAuditResults(policyId, auditStatus) {
+      const requests = [];
+      const stages = auditStatus.stages || {};
+      const queue = (key, stage, url) => {
+        if (!["completed", "failed"].includes(stage?.status)) return;
+        if (state.auditResults[key]?.status === stage.status) return;
+        requests.push(api(url).then((value) => { state.auditResults[key] = value; }));
+      };
+      queue("summary", stages.policy_summary, `/v1/policies/${policyId}/policy-summary`);
+      queue("semantic", stages.semantic_audit, `/v1/policies/${policyId}/semantic-findings`);
+      queue("conflict", stages.conflict_audit, `/v1/policies/${policyId}/conflict-findings`);
+      await Promise.all(requests);
+    }
+
+    function composeAuditReport(auditStatus, clauseCount) {
+      const stages = auditStatus.stages || {};
+      const counts = auditStatus.counts || {};
+      const semantic = state.auditResults.semantic;
+      const conflict = state.auditResults.conflict;
+      return {
+        clause_count: counts.clause_total ?? clauseCount,
+        report_status: auditStatus.status,
+        can_confirm: auditStatus.can_confirm,
+        policy_summary: state.auditResults.summary || stages.policy_summary || { status: "pending", error_message: null },
+        semantic_audit: stages.semantic_audit || { status: "pending", error_message: null },
+        finding_counts: {
+          duplicate_number: counts.duplicate_number,
+          missing_number: counts.missing_number,
+          mixed_structure: counts.mixed_structure,
+          semantic_ambiguity: counts.semantic_ambiguity,
+          executability_gap: counts.executability_gap,
+        },
+        findings: semantic?.findings || [],
+        conflict_audit: stages.conflict_audit || { status: "pending", error_message: null },
+        conflict_counts: {
+          total: counts.conflict_total,
+          numeric_conflict: counts.numeric_conflict,
+          authority_conflict: counts.authority_conflict,
+          process_conflict: counts.process_conflict,
+          rule_reversal: counts.rule_reversal,
+        },
+        conflict_findings: conflict?.findings || [],
+      };
+    }
+
+    function scheduleAuditPoll(policyId, auditStatus) {
+      if (state.selectedId !== policyId || !["pending", "running"].includes(auditStatus.status)) return;
+      state.auditTimer = setTimeout(async () => {
+        try {
+          const nextStatus = await api(`/v1/policies/${policyId}/audit-status`);
+          if (state.selectedId !== policyId || !state.detail) return;
+          await loadCompletedAuditResults(policyId, nextStatus);
+          renderDetail(state.detail.policy, state.detail.clauses, composeAuditReport(nextStatus, state.detail.clauses.length));
+          scheduleAuditPoll(policyId, nextStatus);
+        } catch (error) {
+          $("detailPanel").innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+        }
+      }, 2000);
     }
 
     function renderDetail(policy, clauses, report) {
@@ -287,9 +357,9 @@
           <span class="badge">${escapeHtml(policy.category_name)}</span>
           <span class="badge ${policy.structure_profile === "mixed" ? "amber" : "brand"}">${profileName[policy.structure_profile] || escapeHtml(policy.structure_profile)}</span>
         </div></div>
-        <div class="tabs"><button class="tab ${state.activeTab === "report" ? "active" : ""}" data-tab="report">检查报告</button><button class="tab ${state.activeTab === "chunks" ? "active" : ""}" data-tab="chunks">Chunks (${clauses.length})</button></div>
+        <div class="tabs"><button class="tab ${state.activeTab === "review" ? "active" : ""}" data-tab="review">审校结果</button><button class="tab ${state.activeTab === "chunks" ? "active" : ""}" data-tab="chunks">Chunks (${clauses.length})</button></div>
       </div>
-      <div class="view ${state.activeTab === "report" ? "active" : ""}" id="reportView">${renderReport(report)}</div>
+      <div class="view ${state.activeTab === "review" ? "active" : ""}" id="reviewView">${renderOverview(report)}${renderReport(report)}</div>
       <div class="view ${state.activeTab === "chunks" ? "active" : ""}" id="chunksView">${renderChunks(clauses)}</div>`;
       $("detailPanel").querySelectorAll(".tab").forEach((button) => button.addEventListener("click", () => {
         state.activeTab = button.dataset.tab;
@@ -300,55 +370,94 @@
       bindWorkflowActions(policy, report);
     }
 
+    function renderOverview(report) {
+      const summary = report.policy_summary || { status: "disabled", content: null };
+      const content = summary.content;
+      if (!content) {
+        const message = ["pending", "running"].includes(summary.status) ? "模型正在读取完整制度并生成概览，页面会自动刷新。" : "当前制度没有可展示的概览。";
+        return `<section class="review-section"><h3 class="review-heading">制度概览 <span class="badge amber">${escapeHtml(summaryStatusName[summary.status] || summary.status)}</span></h3><div class="empty">${escapeHtml(summary.error_message || message)}</div></section>`;
+      }
+      return `<section class="review-section"><h3 class="review-heading">制度初步分析</h3><div class="overview-lead">${escapeHtml(content.plain_summary)}</div></section>`;
+    }
+
     function renderReport(report) {
       const counts = report.finding_counts;
+      const semanticTypes = new Set(["semantic_ambiguity", "executability_gap"]);
+      const semanticFindings = report.findings.filter((item) => semanticTypes.has(item.type));
+      const structureFindings = report.findings.filter((item) => !semanticTypes.has(item.type));
       const cards = `<div class="report-cards">
         <div class="report-card"><div class="small">检查条款</div><div class="value">${report.clause_count}</div></div>
-        <div class="report-card"><div class="small">重复编号</div><div class="value">${counts.duplicate_number}</div></div>
-        <div class="report-card"><div class="small">编号缺失</div><div class="value">${counts.missing_number}</div></div>
-        <div class="report-card"><div class="small">混合结构</div><div class="value">${counts.mixed_structure}</div></div>
-        <div class="report-card"><div class="small">语义问题</div><div class="value">${counts.semantic_ambiguity || 0}</div></div>
+        <div class="report-card"><div class="small">语义歧义</div><div class="value">${displayCount(counts.semantic_ambiguity)}</div></div>
+        <div class="report-card"><div class="small">可执行性缺口</div><div class="value">${displayCount(counts.executability_gap)}</div></div>
+        <div class="report-card"><div class="small">重复编号</div><div class="value">${displayCount(counts.duplicate_number)}</div></div>
+        <div class="report-card"><div class="small">编号缺失</div><div class="value">${displayCount(counts.missing_number)}</div></div>
+        <div class="report-card"><div class="small">混合结构</div><div class="value">${displayCount(counts.mixed_structure)}</div></div>
       </div>`;
       const audit = report.semantic_audit || { status: "disabled" };
       const stateClass = audit.status === "failed" ? "error" : audit.status === "completed" ? "ok" : "";
       const auditState = `<div class="audit-state"><div><strong>${escapeHtml(auditStatusName[audit.status] || audit.status)}</strong>${audit.error_message ? `<div class="small">${escapeHtml(audit.error_message)}</div>` : ""}</div><span class="badge ${stateClass === "ok" ? "brand" : "amber"}">${escapeHtml(audit.status)}</span></div>`;
       const actions = `<div class="workflow-actions" id="workflowActions"></div>`;
-      if (!report.findings.length) return cards + auditState + '<div class="report-ok">当前检查项未发现问题。</div>' + actions;
-      return cards + auditState + report.findings.map((item, index) => `<article class="finding">
+      const renderFindings = (items) => items.map((item, index) => `<article class="finding">
         <div class="finding-title">${index + 1}. ${findingName[item.type] || escapeHtml(item.type)}</div>
-        <div>${escapeHtml(item.message)}</div>
+        <div>${escapeHtml(cleanFindingMessage(item))}</div>
         <div class="finding-meta">${findingEvidence(item)}</div>
-      </article>`).join("") + actions;
+      </article>`).join("");
+      const semanticResult = semanticFindings.length
+        ? renderFindings(semanticFindings)
+        : audit.status === "completed" ? '<div class="report-ok">语义与可执行性审校已完成，未发现问题。</div>' : "";
+      const structureResult = structureFindings.length
+        ? renderFindings(structureFindings)
+        : '<div class="report-ok">结构检查未发现问题。</div>';
+      const conflict = report.conflict_audit || { status: "disabled" };
+      const conflictCounts = report.conflict_counts || {};
+      const conflictState = `<div class="audit-state"><div><strong>${escapeHtml(conflictStatusName[conflict.status] || conflict.status)}</strong>${conflict.error_message ? `<div class="small">${escapeHtml(conflict.error_message)}</div>` : ""}</div><span class="badge ${conflict.status === "completed" ? "brand" : "amber"}">${escapeHtml(conflict.status)}</span></div>`;
+      const conflictCards = `<div class="report-cards">
+        <div class="report-card"><div class="small">冲突总数</div><div class="value">${displayCount(conflictCounts.total)}</div></div>
+        <div class="report-card"><div class="small">数值冲突</div><div class="value">${displayCount(conflictCounts.numeric_conflict)}</div></div>
+        <div class="report-card"><div class="small">权责冲突</div><div class="value">${displayCount(conflictCounts.authority_conflict)}</div></div>
+        <div class="report-card"><div class="small">流程冲突</div><div class="value">${displayCount(conflictCounts.process_conflict)}</div></div>
+        <div class="report-card"><div class="small">规则反转</div><div class="value">${displayCount(conflictCounts.rule_reversal)}</div></div>
+      </div>`;
+      const conflictFindings = (report.conflict_findings || []).map((item, index) => `<article class="finding">
+        <div class="finding-title">${index + 1}. ${escapeHtml({ numeric_conflict: "数值冲突", authority_conflict: "权责冲突", process_conflict: "流程冲突", rule_reversal: "规则反转" }[item.conflict_type] || item.conflict_type)}</div>
+        <div>${escapeHtml(item.problem)}</div>
+        <div class="finding-meta">当前 Chunk：${escapeHtml(item.id)}<br>冲突 Chunk：${escapeHtml((item.candidate_ids || []).join("、"))}<br>建议：${escapeHtml(item.suggestion)}</div>
+      </article>`).join("");
+      const conflictResult = conflictFindings || (conflict.status === "completed" ? '<div class="report-ok">制度冲突审校已完成，未发现问题。</div>' : "");
+      return `<section class="review-section"><h3 class="review-heading">语义与可执行性审校</h3>${auditState}${semanticResult}</section>`
+        + `<section class="review-section"><h3 class="review-heading">制度冲突审校</h3>${conflictState}${conflictCards}${conflictResult}</section>`
+        + `<section class="review-section"><h3 class="review-heading">结构检查</h3>${cards}${structureResult}</section>`
+        + actions;
     }
 
     function findingEvidence(item) {
       if (item.type === "duplicate_number") return `位置：${item.occurrences.map((x) => `Chunk #${x.clause_ordinal}${x.line_no ? ` 第${x.line_no}行` : ""}`).join("、")}`;
       if (item.type === "missing_number") return `缺少：${(item.missing_numbers || []).join("、")}`;
       if (item.type === "mixed_structure") return `识别结构：${(item.profiles || []).map((x) => profileName[x] || x).join(" + ")}`;
-      if (item.type === "semantic_ambiguity") return `位置：Chunk #${item.clause_ordinal} ${escapeHtml(item.clause_no_raw || "")}<br>原文：${escapeHtml(item.quote)}<br>建议：${escapeHtml(item.suggestion)}`;
+      if (["semantic_ambiguity", "executability_gap"].includes(item.type)) return `Chunk ID：${escapeHtml(item.id)}<br>位置：Chunk #${item.clause_ordinal} ${escapeHtml(item.clause_no_raw || "")}<br>建议：${escapeHtml(item.suggestion)}`;
       return "";
+    }
+
+    function cleanFindingMessage(item) {
+      const message = String(item.message || "").trim();
+      const prefix = item.type === "semantic_ambiguity" ? /^语义歧义\s*[：:]\s*/ : item.type === "executability_gap" ? /^可执行性缺口\s*[：:]\s*/ : null;
+      return prefix ? message.replace(prefix, "") : message;
     }
 
     function bindWorkflowActions(policy, report) {
       const actions = $("workflowActions");
       if (!actions || policy.status !== "draft") return;
       const auditStatus = report.semantic_audit?.status || "disabled";
-      if (["completed", "disabled"].includes(auditStatus)) {
+      const conflictStatus = report.conflict_audit?.status || "disabled";
+      if (["completed", "disabled"].includes(auditStatus) && ["completed", "disabled"].includes(conflictStatus)) {
         actions.insertAdjacentHTML("beforeend", '<button class="primary" id="confirmPolicyButton" type="button">确认入库</button>');
-      }
-      if (auditStatus === "failed") {
-        actions.insertAdjacentHTML("beforeend", '<button class="secondary" id="retryAuditButton" type="button">重新审校</button>');
       }
       actions.insertAdjacentHTML("beforeend", '<button class="danger" id="discardPolicyButton" type="button">丢弃草稿</button>');
       $("confirmPolicyButton")?.addEventListener("click", async () => {
-        const findingCount = report.findings.length;
+        const findingCount = report.findings.length + (report.conflict_findings || []).length;
         if (findingCount && !confirm(`仍有 ${findingCount} 条检查问题，确认继续入库吗？`)) return;
         await api(`/v1/policies/${policy.id}/confirm`, { method: "POST" });
         await loadRepository(policy.id);
-      });
-      $("retryAuditButton")?.addEventListener("click", async () => {
-        await api(`/v1/policies/${policy.id}/semantic-audit`, { method: "POST" });
-        await selectPolicy(policy.id);
       });
       $("discardPolicyButton")?.addEventListener("click", async () => {
         if (!confirm("确认丢弃这份草稿及其审校结果吗？")) return;

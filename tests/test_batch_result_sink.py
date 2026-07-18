@@ -1,7 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
-from task_manager.handlers import batch_item_scheduler
+from task_manager import result_sink
 
 
 def test_registered_batch_result_sink_receives_audit_identity(monkeypatch):
@@ -25,7 +25,7 @@ def test_registered_batch_result_sink_receives_audit_identity(monkeypatch):
             calls.append((url, json))
             return Response()
 
-    monkeypatch.setattr(batch_item_scheduler.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(result_sink.httpx, "AsyncClient", Client)
     task = SimpleNamespace(
         id="task-1",
         current_run_id="run-1",
@@ -35,7 +35,7 @@ def test_registered_batch_result_sink_receives_audit_identity(monkeypatch):
     definition = SimpleNamespace(result_sink_url="http://proof/v1/internal/semantic-audits/result")
     output = {"summary": {"total": 1, "succeeded": 1, "failed": 0, "skipped": 0}, "items": []}
 
-    asyncio.run(batch_item_scheduler._deliver_result(task, definition, output))
+    asyncio.run(result_sink.deliver_task_result(task, definition, output))
 
     assert calls == [
         (
@@ -45,6 +45,7 @@ def test_registered_batch_result_sink_receives_audit_identity(monkeypatch):
                 "run_id": "run-1",
                 "task_type": "proof.audit.run",
                 "audit_id": "audit-1",
+                "status": "completed",
                 "output": output,
             },
         )

@@ -5,8 +5,6 @@ import json
 import time
 from typing import Any, AsyncIterator
 
-import httpx
-
 from db.db_context import create_db_session
 from scheduling.agent_registry import ensure_default_agent_profiles, get_agent_profile
 from scheduling.scheduler import (
@@ -23,6 +21,7 @@ from task_manager.models import TaskEntity, TaskItemEntity
 from task_manager.output_parser import parse_json_output
 from task_manager.payload_schemas import validate_output_payload
 from task_manager.registry import TaskType
+from task_manager.result_sink import deliver_task_result
 
 
 class BatchItemSchedulerHandler:
@@ -33,11 +32,12 @@ class BatchItemSchedulerHandler:
         self,
         *,
         context: TaskExecutionContext,
+        item_type: str | None = None,
     ) -> AsyncIterator[TaskHandlerEvent]:
         task = context.task
         definition = context.task_type
         config = _batch_config(task)
-        items = await item_store.list_pending_items(task.id)
+        items = await item_store.list_pending_items(task.id, item_type=item_type)
         async with create_db_session() as session:
             # Seed packages before parallel workers create their skill contexts.
             await ensure_default_skill_packages(session)
@@ -64,7 +64,9 @@ class BatchItemSchedulerHandler:
         )
 
         if not items:
-            final = _summarize_results(await item_store.load_item_results(task.id))
+            final = _summarize_results(
+                await item_store.load_item_results(task.id, item_type=item_type)
+            )
             await _deliver_result(task, definition, final)
             yield TaskHandlerEvent(
                 event_type="batch_succeeded",
@@ -114,7 +116,7 @@ class BatchItemSchedulerHandler:
         finally:
             await closer
 
-        results = await item_store.load_item_results(task.id)
+        results = await item_store.load_item_results(task.id, item_type=item_type)
         final = _summarize_results(results)
         if final["summary"]["failed"] and config["failure_policy"] == "fail_fast":
             await _deliver_result(task, definition, final)
@@ -155,6 +157,7 @@ async def _process_item(
     runtime_context: SchedulingRuntimeContext,
 ) -> None:
     attempts = config["retry_per_item"] + 1
+    retry_feedback = ""
     for attempt in range(1, attempts + 1):
         start = time.perf_counter()
         try:
@@ -184,10 +187,15 @@ async def _process_item(
                 options=options,
                 queue=queue,
                 runtime_context=runtime_context,
+                retry_feedback=retry_feedback,
             )
             parse_result = parse_json_output(content)
             parsed = parse_result.structured
             if parse_result.error is not None:
+                retry_feedback = (
+                    "The previous response was not valid JSON: "
+                    f"{parse_result.error}. Return a corrected JSON object only."
+                )
                 await queue.put(
                     TaskHandlerEvent(
                         event_type="item_output_parse_failed",
@@ -210,6 +218,7 @@ async def _process_item(
                     parsed,
                 )
                 if not is_valid:
+                    retry_feedback = _validation_retry_feedback(validation_error)
                     await queue.put(
                         TaskHandlerEvent(
                             event_type="item_output_validation_failed",
@@ -312,9 +321,10 @@ async def _run_scheduler_for_item(
     options: SchedulingRuntimeOptions,
     queue: asyncio.Queue[TaskHandlerEvent | None],
     runtime_context: SchedulingRuntimeContext,
+    retry_feedback: str = "",
 ) -> tuple[str, dict[str, Any] | None]:
     request = SchedulingChatRequest(
-        message=_build_item_message(task, definition, item),
+        message=_build_item_message(task, definition, item, retry_feedback=retry_feedback),
         user_id=task.user_id,
         session_id=f"{task.id}:{item.id}",
         stream=True,
@@ -376,20 +386,45 @@ def _item_skill_package(item: TaskItemEntity, definition: TaskType) -> str | Non
     return requested or definition.default_skill_package
 
 
-def _build_item_message(task: TaskEntity, definition: TaskType, item: TaskItemEntity) -> str:
+def _build_item_message(
+    task: TaskEntity,
+    definition: TaskType,
+    item: TaskItemEntity,
+    *,
+    retry_feedback: str = "",
+) -> str:
     global_input = dict(task.input_payload_json or {})
-    for key in ("items", "rows", "script_candidates"):
-        global_input.pop(key, None)
-    return "\n".join(
-        [
+    for key in tuple(global_input):
+        if key in {"items", "rows", "script_candidates", "summary_chunks"} or key.endswith("_items"):
+            global_input.pop(key, None)
+    parts = [
             f"You are executing task_type: {task.task_type}.",
             f"Task title: {task.title or definition.name}",
             "Global task input:",
             json.dumps(global_input, ensure_ascii=False, indent=2),
             "Current item:",
             json.dumps(item.input_payload_json or {}, ensure_ascii=False, indent=2),
-            "Return exactly one valid JSON object for this item. Do not add Markdown outside the JSON.",
-        ]
+    ]
+    if retry_feedback:
+        parts.extend(["Previous response validation feedback:", retry_feedback])
+    parts.append("Return exactly one valid JSON object for this item. Do not add Markdown outside the JSON.")
+    return "\n".join(parts)
+
+
+def _validation_retry_feedback(error: dict[str, Any] | None) -> str:
+    details: list[str] = []
+    for item in (error or {}).get("errors") or []:
+        if not isinstance(item, dict):
+            continue
+        location = ".".join(str(part) for part in (item.get("loc") or [])) or "output"
+        message = str(item.get("msg") or "invalid value")
+        details.append(f"{location}: {message}")
+        if len(details) == 5:
+            break
+    summary = "; ".join(details) or "the output did not match the registered schema"
+    return (
+        f"The previous response failed schema validation ({summary}). "
+        "Correct these exact issues; do not repeat the invalid response."
     )
 
 
@@ -439,24 +474,4 @@ def _duration_ms(start: float) -> int:
 
 
 async def _deliver_result(task: TaskEntity, definition: TaskType, output: dict[str, Any]) -> None:
-    url = str(definition.result_sink_url or "").strip()
-    if not url:
-        return
-    payload = {
-        "task_id": task.id,
-        "run_id": task.current_run_id,
-        "task_type": task.task_type,
-        "audit_id": str((task.input_payload_json or {}).get("audit_id") or ""),
-        "output": output,
-    }
-    last_error: Exception | None = None
-    for _attempt in range(3):
-        try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                response = await client.post(url, json=payload)
-                response.raise_for_status()
-            return
-        except (httpx.HTTPError, ValueError) as exc:
-            last_error = exc
-            await asyncio.sleep(0.1)
-    raise RuntimeError(f"Batch result sink failed: {last_error}") from last_error
+    await deliver_task_result(task, definition, output)

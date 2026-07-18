@@ -12,7 +12,13 @@ from proof.domain.numbering import (
 )
 
 
-QUALITY_REPORT_VERSION = "policy-quality-v2"
+QUALITY_REPORT_VERSION = "policy-quality-v4"
+CONFLICT_TYPES = (
+    "numeric_conflict",
+    "authority_conflict",
+    "process_conflict",
+    "rule_reversal",
+)
 _ARTICLE_LABEL_RE = ARTICLE_START_RE
 
 
@@ -20,8 +26,11 @@ def build_policy_quality_report(
     policy: dict[str, Any],
     clauses: list[dict[str, Any]],
     *,
+    policy_summary: dict[str, Any] | None = None,
     semantic_audit: dict[str, Any] | None = None,
     semantic_findings: list[dict[str, Any]] | None = None,
+    conflict_audit: dict[str, Any] | None = None,
+    conflict_findings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     occurrences = _collect_number_occurrences(clauses)
     duplicate_findings = _duplicate_number_findings(occurrences)
@@ -29,10 +38,9 @@ def build_policy_quality_report(
     mixed_findings = _mixed_structure_findings(policy)
     semantic_items = [
         {
-            "type": "semantic_ambiguity",
+            "type": item.get("category") or "semantic_ambiguity",
             "id": item["id"],
             "message": item["problem"],
-            "quote": item["quote"],
             "suggestion": item["suggestion"],
             "clause_ordinal": item.get("clause_ordinal"),
             "clause_no_raw": item.get("clause_no_raw"),
@@ -42,8 +50,44 @@ def build_policy_quality_report(
     findings = [*duplicate_findings, *missing_findings, *mixed_findings, *semantic_items]
     counts = {
         code: sum(item["type"] == code for item in findings)
-        for code in ("duplicate_number", "missing_number", "mixed_structure", "semantic_ambiguity")
+        for code in (
+            "duplicate_number",
+            "missing_number",
+            "mixed_structure",
+            "semantic_ambiguity",
+            "executability_gap",
+        )
     }
+    counts = {"total": len(findings), **counts}
+    audit_state = semantic_audit or {"status": "disabled", "error_message": None}
+    conflict_state = conflict_audit or {
+        "status": "disabled" if audit_state.get("status") == "disabled" else "pending",
+        "error_message": None,
+    }
+    conflict_items = list(conflict_findings or [])
+    conflict_counts = {
+        code: sum(item.get("conflict_type") == code for item in conflict_items)
+        for code in CONFLICT_TYPES
+    }
+    conflict_counts = {"total": len(conflict_items), **conflict_counts}
+    summary_state = policy_summary or {
+        "status": "disabled" if audit_state.get("status") == "disabled" else "pending",
+        "error_message": None,
+        "content": None,
+    }
+    semantic_status = audit_state.get("status")
+    conflict_status = conflict_state.get("status")
+    summary_status = summary_state.get("status")
+    if semantic_status == "failed" or conflict_status == "failed":
+        report_status = "failed"
+    elif (
+        semantic_status in {"completed", "disabled", "not_requested"}
+        and conflict_status in {"completed", "disabled", "not_requested"}
+        and summary_status in {"completed", "failed", "disabled", "not_requested"}
+    ):
+        report_status = "completed"
+    else:
+        report_status = "running"
     return {
         "report_version": QUALITY_REPORT_VERSION,
         "generated_at": datetime.now(UTC).isoformat(),
@@ -56,11 +100,19 @@ def build_policy_quality_report(
             "structure_profile": policy.get("structure_profile"),
         },
         "clause_count": len(clauses),
-        "has_findings": bool(findings),
+        "report_status": report_status,
+        "can_confirm": (
+            semantic_status in {"completed", "disabled", "not_requested"}
+            and conflict_status in {"completed", "disabled", "not_requested"}
+        ),
+        "has_findings": bool(findings or conflict_items),
         "finding_counts": counts,
         "findings": findings,
-        "semantic_audit": semantic_audit
-        or {"status": "disabled", "error_message": None},
+        "policy_summary": summary_state,
+        "semantic_audit": audit_state,
+        "conflict_audit": conflict_state,
+        "conflict_counts": conflict_counts,
+        "conflict_findings": conflict_items,
     }
 
 

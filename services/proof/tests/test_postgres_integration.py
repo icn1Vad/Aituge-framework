@@ -34,11 +34,12 @@ def test_ingest_read_fetch_duplicate_and_atomic_failure(tmp_path) -> None:
             content=content,
             filename="integration.txt",
             level_code="peer",
-            category_code="general",
+            category_code="other",
         )
         policy_id = created["policy"]["id"]
         run_ids.append(created["ingestion_run_id"])
         assert created["reused"] is False
+        assert created["policy"]["normalized_title"] == "integration"
         assert created["document"]["structure_profile"] == "article"
         assert [item["clause_ordinal"] for item in created["clauses"]] == [1, 2]
         assert [item["clause_no_raw"] for item in created["clauses"]] == ["第一条", "第一条"]
@@ -83,10 +84,19 @@ def test_ingest_read_fetch_duplicate_and_atomic_failure(tmp_path) -> None:
             top_k=5,
             policy_ids=[],
             level_codes=["peer"],
-            category_codes=["general"],
+            category_codes=["other"],
         )
         assert [item["id"] for item in search_results] == [units[0]["id"]]
         assert search_results[0]["score"] == pytest.approx(1.0)
+        assert service.repository.vector_search(
+            query_vector=[1.0, 0.0, 0.0],
+            profile=profile,
+            top_k=5,
+            policy_ids=[],
+            level_codes=[],
+            category_codes=[],
+            excluded_policy_ids=[policy_id],
+        ) == []
 
         reused = service.ingest_policy(content=content, filename="renamed.txt")
         run_ids.append(reused["ingestion_run_id"])

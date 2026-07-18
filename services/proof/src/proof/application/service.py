@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from proof.application.dataset_audit import DatasetAuditor
+from proof.application.conflict_retrieval import (
+    ConflictRetrievalLimits,
+    ConflictRetrievalService,
+)
+from proof.application.conflict_retrieval.service import CONFLICT_RERANK_INSTRUCTION
 from proof.application.ingestion import PolicyIngestionPipeline
 from proof.application.quality_report import build_policy_quality_report
 from proof.application.retrieval import HybridPolicyRetriever, RetrievalFilters
@@ -32,6 +37,7 @@ class ProofService:
         retrieval_pipeline: HybridPolicyRetriever | None = None,
         sql_query_service: PolicySqlQueryService | None = None,
         semantic_audit_service: SemanticAuditService | None = None,
+        conflict_retrieval_service: ConflictRetrievalService | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository or ProofRepository(settings)
@@ -52,6 +58,7 @@ class ProofService:
         )
         self.sql_query_service = sql_query_service or PolicySqlQueryService(settings, self.repository)
         self.semantic_audit_service = semantic_audit_service or SemanticAuditService(settings, self.repository)
+        self.conflict_retrieval_service = conflict_retrieval_service
 
     def health(self) -> dict[str, Any]:
         storage_ok = self.storage_root.is_dir() and os.access(self.storage_root, os.W_OK)
@@ -94,9 +101,10 @@ class ProofService:
         policy = result["policy"]
         document = result["document"]
         if policy.get("status") == "draft":
-            result["semantic_audit"] = self.semantic_audit_service.ensure_dispatched(document["id"])
+            audit_state = self.semantic_audit_service.ensure_dispatched(document["id"])
         else:
-            result["semantic_audit"] = self._semantic_state_for_policy(policy, document["id"])
+            audit_state = self._semantic_state_for_policy(policy, document["id"])
+        result["audit_task"] = _audit_task_view(audit_state)
         return result
 
     def get_ingestion_run(self, run_id: str) -> dict[str, Any]:
@@ -146,16 +154,90 @@ class ProofService:
         self.get_policy(policy_id)
         return self.repository.list_clauses(policy_id, include_text=include_text)
 
-    def get_quality_report(self, policy_id: str) -> dict[str, Any]:
+    def get_audit_status(self, policy_id: str) -> dict[str, Any]:
         policy = self.get_policy(policy_id)
-        clauses = self.repository.list_clauses(policy_id, include_text=True)
         document_id = policy["document_id"]
-        return build_policy_quality_report(
+        semantic = self._semantic_state_for_policy(policy, document_id)
+        summary = self._summary_state_for_policy(policy, document_id)
+        conflict = self._conflict_state_for_policy(policy, document_id)
+        stage_states = {
+            "policy_summary": _stage_status(summary),
+            "semantic_audit": _stage_status(semantic),
+            "conflict_audit": _stage_status(conflict),
+        }
+        clauses = self.repository.list_clauses(policy_id, include_text=True)
+        report = build_policy_quality_report(
             policy,
             clauses,
-            semantic_audit=self._semantic_state_for_policy(policy, document_id),
+            semantic_audit=semantic,
+            semantic_findings=self.semantic_audit_service.findings(document_id),
+            conflict_audit=conflict,
+            conflict_findings=self.semantic_audit_service.conflict_findings(document_id),
+        )
+        semantic_ready = semantic.get("status") == "completed"
+        conflict_ready = conflict.get("status") == "completed"
+        finding_counts = report["finding_counts"]
+        conflict_counts = report["conflict_counts"]
+        status = _combined_audit_status(*(stage["status"] for stage in stage_states.values()))
+        return {
+            "id": semantic.get("id"),
+            "policy_id": policy_id,
+            "framework_task_id": semantic.get("framework_task_id"),
+            "framework_run_id": semantic.get("framework_run_id"),
+            "status": status,
+            "can_confirm": (
+                semantic.get("status") in {"completed", "disabled", "not_requested"}
+                and conflict.get("status") in {"completed", "disabled", "not_requested"}
+            ),
+            "stages": stage_states,
+            "counts": {
+                "clause_total": len(clauses),
+                "semantic_ambiguity": finding_counts["semantic_ambiguity"] if semantic_ready else None,
+                "executability_gap": finding_counts["executability_gap"] if semantic_ready else None,
+                "duplicate_number": finding_counts["duplicate_number"],
+                "missing_number": finding_counts["missing_number"],
+                "mixed_structure": finding_counts["mixed_structure"],
+                "conflict_total": conflict_counts["total"] if conflict_ready else None,
+                "numeric_conflict": conflict_counts["numeric_conflict"] if conflict_ready else None,
+                "authority_conflict": conflict_counts["authority_conflict"] if conflict_ready else None,
+                "process_conflict": conflict_counts["process_conflict"] if conflict_ready else None,
+                "rule_reversal": conflict_counts["rule_reversal"] if conflict_ready else None,
+            },
+        }
+
+    def get_policy_summary(self, policy_id: str) -> dict[str, Any]:
+        policy = self.get_policy(policy_id)
+        return self._summary_state_for_policy(policy, policy["document_id"])
+
+    def get_semantic_findings(self, policy_id: str) -> dict[str, Any]:
+        policy = self.get_policy(policy_id)
+        document_id = policy["document_id"]
+        audit = self._semantic_state_for_policy(policy, document_id)
+        report = build_policy_quality_report(
+            policy,
+            self.repository.list_clauses(policy_id, include_text=True),
+            semantic_audit=audit,
             semantic_findings=self.semantic_audit_service.findings(document_id),
         )
+        return {
+            **_stage_status(audit),
+            "findings": report["findings"],
+        }
+
+    def get_conflict_findings(self, policy_id: str) -> dict[str, Any]:
+        policy = self.get_policy(policy_id)
+        document_id = policy["document_id"]
+        audit = self._conflict_state_for_policy(policy, document_id)
+        return {
+            **_stage_status(audit),
+            "findings": self.semantic_audit_service.conflict_findings(document_id),
+        }
+
+    def _summary_state_for_policy(self, policy: dict[str, Any], document_id: str) -> dict[str, Any]:
+        state = self.semantic_audit_service.summary_state(document_id)
+        if policy.get("status") == "effective" and state.get("status") == "pending":
+            return {"status": "not_requested", "error_message": None, "content": None}
+        return state
 
     def _semantic_state_for_policy(self, policy: dict[str, Any], document_id: str) -> dict[str, Any]:
         state = self.semantic_audit_service.get_state(document_id)
@@ -163,18 +245,17 @@ class ProofService:
             return {"status": "not_requested", "error_message": None}
         return state
 
-    def retry_semantic_audit(self, policy_id: str) -> dict[str, Any]:
-        policy = self.get_policy(policy_id)
-        if policy.get("status") != "draft":
-            raise ProofError(
-                "policy_not_draft",
-                "Semantic review can only be started for a draft policy.",
-                status_code=409,
-            )
-        return self.semantic_audit_service.ensure_dispatched(policy["document_id"])
+    def _conflict_state_for_policy(self, policy: dict[str, Any], document_id: str) -> dict[str, Any]:
+        state = self.semantic_audit_service.conflict_state(document_id)
+        if policy.get("status") == "effective" and state.get("status") == "pending":
+            return {"status": "not_requested", "error_message": None}
+        return state
 
     def accept_semantic_audit_result(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.semantic_audit_service.accept_result(payload)
+        return self.semantic_audit_service.accept_result(
+            payload,
+            conflict_output_validator=self._validate_conflict_output,
+        )
 
     def confirm_policy(self, policy_id: str) -> dict[str, Any]:
         policy = self.get_policy(policy_id)
@@ -194,6 +275,14 @@ class ProofService:
                     "Semantic review must complete before the policy can be confirmed.",
                     status_code=409,
                     details={"semantic_audit": audit},
+                )
+            conflict = self.semantic_audit_service.conflict_state(policy["document_id"])
+            if conflict["status"] != "completed":
+                raise ProofError(
+                    "conflict_audit_incomplete",
+                    "Conflict review must complete before the policy can be confirmed.",
+                    status_code=409,
+                    details={"conflict_audit": conflict},
                 )
         confirmed = self.repository.confirm_policy(policy_id)
         if confirmed is None:
@@ -306,6 +395,179 @@ class ProofService:
         payload["results"] = [_with_citation(result) for result in payload["results"]]
         return payload
 
+    def retrieve_conflict_candidates(self, unit_id: str, *, top_k: int = 10) -> dict[str, Any]:
+        if self.conflict_retrieval_service is None:
+            conflict_settings = self.settings.model_copy(
+                update={"rerank_instruction": CONFLICT_RERANK_INSTRUCTION}
+            )
+            self.conflict_retrieval_service = ConflictRetrievalService(
+                repository=self.repository,
+                embedding_client=OpenAICompatibleEmbeddingClient(self.settings),
+                reranker=(
+                    DashScopePolicyReranker(conflict_settings)
+                    if conflict_settings.reranker_configured
+                    else None
+                ),
+                limits=ConflictRetrievalLimits(
+                    same_title=self.settings.conflict_same_title_limit,
+                    leaf_category=self.settings.conflict_leaf_category_limit,
+                    parent_category=self.settings.conflict_parent_category_limit,
+                    global_recall=self.settings.conflict_global_limit,
+                    max_candidates=self.settings.conflict_max_candidates,
+                ),
+            )
+        return self.conflict_retrieval_service.retrieve_for_unit(unit_id, top_k=top_k).to_dict()
+
+    def accept_conflict_audit_result(self, payload: dict[str, Any]) -> dict[str, Any]:
+        findings = self._validate_conflict_output(payload)
+        return {
+            "audit_id": str(payload.get("audit_id") or ""),
+            "status": "validated",
+            "finding_count": len(findings),
+        }
+
+    def _validate_conflict_output(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        task_type = payload.get("task_type")
+        if task_type not in {None, "proof.conflict.audit", "proof.audit.run"}:
+            raise ProofError("invalid_conflict_result", "Unexpected conflict task type.", status_code=422)
+        output = payload.get("output")
+        if not isinstance(output, dict) or not isinstance(output.get("items"), list):
+            raise ProofError("invalid_conflict_result", "Conflict output items are required.", status_code=422)
+
+        expected_source_ids: set[str] | None = None
+        expected_document_id = ""
+        if task_type == "proof.audit.run":
+            audit_id = str(payload.get("audit_id") or "")
+            run = self.repository.get_audit_run(audit_id)
+            if run is None:
+                raise ProofError("audit_run_not_found", "Audit run not found.", status_code=404)
+            expected_document_id = str(run["document_id"])
+            expected_source_ids = {
+                str(unit["id"])
+                for unit in self.repository.get_document_units(expected_document_id)
+            }
+
+        validated_findings: list[dict[str, Any]] = []
+        covered_source_ids: list[str] = []
+        finding_keys: set[tuple[str, tuple[str, ...], str]] = set()
+        for item in output["items"]:
+            if not isinstance(item, dict) or item.get("status") != "succeeded":
+                raise ProofError(
+                    "invalid_conflict_result",
+                    "Every conflict audit item must succeed.",
+                    status_code=422,
+                )
+            target_items = ((item.get("input") or {}).get("targets") or [])
+            target_id_list = [
+                str(target.get("id"))
+                for target in target_items
+                if isinstance(target, dict) and target.get("id")
+            ]
+            if len(target_id_list) != 1:
+                raise ProofError(
+                    "invalid_conflict_result",
+                    "Each integrated conflict item must contain exactly one source Chunk.",
+                    status_code=422,
+                )
+            target_ids = set(target_id_list)
+            covered_source_ids.extend(target_id_list)
+            findings = (((item.get("result") or {}).get("result") or {}).get("findings") or [])
+            if not isinstance(findings, list):
+                raise ProofError("invalid_conflict_result", "Conflict findings must be a list.", status_code=422)
+            for finding in findings:
+                normalized = self._validate_conflict_finding(
+                    finding,
+                    target_ids=target_ids,
+                    expected_document_id=expected_document_id,
+                )
+                key = (
+                    normalized["id"],
+                    tuple(sorted(normalized["candidate_ids"])),
+                    str(normalized.get("conflict_type") or ""),
+                )
+                if key in finding_keys:
+                    raise ProofError(
+                        "invalid_conflict_result",
+                        "Duplicate conflict findings are not allowed.",
+                        status_code=422,
+                    )
+                finding_keys.add(key)
+                validated_findings.append(normalized)
+        if expected_source_ids is not None and (
+            len(covered_source_ids) != len(set(covered_source_ids))
+            or set(covered_source_ids) != expected_source_ids
+        ):
+            raise ProofError(
+                "invalid_conflict_result",
+                "Conflict audit items did not cover every source Chunk exactly once.",
+                status_code=422,
+            )
+        return validated_findings
+
+    def _validate_conflict_finding(
+        self,
+        finding: Any,
+        *,
+        target_ids: set[str],
+        expected_document_id: str = "",
+    ) -> dict[str, Any]:
+        if not isinstance(finding, dict) or str(finding.get("id") or "") not in target_ids:
+            raise ProofError(
+                "conflict_target_mismatch",
+                "Conflict finding id is not a target in the current item.",
+                status_code=422,
+            )
+        source_id = str(finding["id"])
+        candidate_ids = list(dict.fromkeys(str(value) for value in (finding.get("candidate_ids") or [])))
+        if not candidate_ids or source_id in candidate_ids:
+            raise ProofError(
+                "invalid_conflict_result",
+                "Conflict candidate IDs must be non-empty and must not contain the source ID.",
+                status_code=422,
+            )
+        units: dict[str, dict[str, Any]] = {}
+        for unit_id in {source_id, *candidate_ids}:
+            unit = self.repository.get_conflict_source_unit(unit_id)
+            if unit is None:
+                raise ProofError(
+                    "conflict_unit_not_found",
+                    "Conflict finding references an unknown Chunk ID.",
+                    status_code=422,
+                    details={"unit_id": unit_id},
+                )
+            units[unit_id] = unit
+
+        if expected_document_id and str(units[source_id].get("document_id")) != expected_document_id:
+            raise ProofError(
+                "conflict_target_mismatch",
+                "Conflict source does not belong to the audited document.",
+                status_code=422,
+            )
+        for candidate_id in candidate_ids:
+            if expected_document_id and units[candidate_id].get("policy_status") != "effective":
+                raise ProofError(
+                    "conflict_candidate_not_effective",
+                    "Cross-policy conflict candidates must belong to effective policies.",
+                    status_code=422,
+                    details={"unit_id": candidate_id},
+                )
+
+        conflict_type = str(finding.get("conflict_type") or "")
+        if conflict_type not in {
+            "numeric_conflict", "authority_conflict", "process_conflict", "rule_reversal"
+        }:
+            raise ProofError("invalid_conflict_result", "Invalid conflict type.", status_code=422)
+        text_fields = ("problem", "suggestion")
+        if any(not str(finding.get(field) or "").strip() for field in text_fields):
+            raise ProofError("invalid_conflict_result", "Conflict text fields must not be blank.", status_code=422)
+        return {
+            "id": source_id,
+            "candidate_ids": candidate_ids,
+            "conflict_type": conflict_type,
+            "problem": str(finding["problem"]).strip(),
+            "suggestion": str(finding["suggestion"]).strip(),
+        }
+
     def execute_sql(self, *, question: str, sql: str) -> dict[str, Any]:
         return self.sql_query_service.execute(question=question, sql=sql)
 
@@ -331,6 +593,39 @@ def _with_citation(unit: dict[str, Any]) -> dict[str, Any]:
             "page_end": unit.get("page_end"),
             "label": citation_label,
         },
+    }
+
+
+def _stage_status(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": state.get("status") or "pending",
+        "error_message": state.get("error_message"),
+    }
+
+
+def _combined_audit_status(*statuses: str) -> str:
+    values = set(statuses)
+    if "running" in values:
+        return "running"
+    if "pending" in values:
+        return "pending"
+    if "failed" in values:
+        return "failed"
+    return "completed"
+
+
+def _audit_task_view(state: dict[str, Any]) -> dict[str, Any]:
+    summary = state.get("policy_summary") or {}
+    conflict = state.get("conflict_audit") or {}
+    return {
+        "id": state.get("id"),
+        "framework_task_id": state.get("framework_task_id"),
+        "framework_run_id": state.get("framework_run_id"),
+        "status": _combined_audit_status(
+            state.get("status") or "pending",
+            summary.get("status") or state.get("status") or "pending",
+            conflict.get("status") or state.get("status") or "pending",
+        ),
     }
 
 

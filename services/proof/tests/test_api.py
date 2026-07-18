@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from proof.api.app import create_app
+from proof.api.app import _conflict_agent_view, create_app
 from proof.config import Settings
 from proof.errors import ProofError
 
@@ -46,25 +46,53 @@ class FakeService:
             "warning_count": 0,
         }
 
-    def get_quality_report(self, policy_id: str):
+    def get_audit_status(self, policy_id: str):
         if policy_id != "policy-1":
             raise ProofError("policy_not_found", "Policy not found.", status_code=404)
         return {
-            "policy": {"id": policy_id},
-            "clause_count": 4,
-            "has_findings": True,
-            "finding_counts": {
+            "id": "audit-1",
+            "policy_id": policy_id,
+            "status": "completed",
+            "can_confirm": True,
+            "stages": {
+                "policy_summary": {"status": "completed", "error_message": None},
+                "semantic_audit": {"status": "completed", "error_message": None},
+                "conflict_audit": {"status": "completed", "error_message": None},
+            },
+            "counts": {
+                "clause_total": 4,
+                "semantic_ambiguity": 1,
+                "executability_gap": 0,
                 "duplicate_number": 1,
                 "missing_number": 1,
                 "mixed_structure": 1,
-                "semantic_ambiguity": 1,
+                "conflict_total": 1,
+                "numeric_conflict": 1,
+                "authority_conflict": 0,
+                "process_conflict": 0,
+                "rule_reversal": 0,
             },
-            "findings": [],
-            "semantic_audit": {"status": "completed", "error_message": None},
         }
 
-    def retry_semantic_audit(self, policy_id: str):
-        return {"status": "running", "error_message": None}
+    def get_policy_summary(self, policy_id: str):
+        self.get_audit_status(policy_id)
+        return {"status": "completed", "error_message": None, "content": {"plain_summary": "概览"}}
+
+    def get_semantic_findings(self, policy_id: str):
+        self.get_audit_status(policy_id)
+        return {
+            "status": "completed",
+            "error_message": None,
+            "findings": [],
+        }
+
+    def get_conflict_findings(self, policy_id: str):
+        self.get_audit_status(policy_id)
+        return {
+            "status": "completed",
+            "error_message": None,
+            "findings": [{"id": "unit-1", "conflict_type": "numeric_conflict"}],
+        }
 
     def confirm_policy(self, policy_id: str):
         return {"id": policy_id, "status": "effective"}
@@ -74,6 +102,9 @@ class FakeService:
 
     def accept_semantic_audit_result(self, payload):
         return {"audit_id": payload["audit_id"], "status": "completed", "finding_count": 0}
+
+    def accept_conflict_audit_result(self, payload):
+        return {"audit_id": payload["audit_id"], "status": "validated", "finding_count": 1}
 
     def audit_dataset(self, *, refresh: bool = False):
         return {
@@ -102,6 +133,13 @@ class FakeService:
 
     def search(self, **kwargs):
         raise ProofError("embedding_unconfigured", "Embedding API is not configured.", status_code=503)
+
+    def retrieve_conflict_candidates(self, unit_id: str, *, top_k: int = 10):
+        return {
+            "source": {"id": unit_id, "text": "报销时限为三十日。"},
+            "results": [{"id": "unit-2", "text": "报销时限为十五日。"}],
+            "candidate_counts": {"returned": top_k},
+        }
 
     def execute_sql(self, **kwargs):
         return {
@@ -169,17 +207,26 @@ def test_policy_upload_exposes_run_id_on_success_and_failure() -> None:
     assert failed.json()["details"]["ingestion_run_id"] == "run-failed"
 
 
-def test_quality_report_endpoint() -> None:
+def test_split_audit_result_endpoints() -> None:
     client = TestClient(create_app(Settings(), FakeService()))
-    response = client.get("/v1/policies/policy-1/quality-report")
-    assert response.status_code == 200
-    assert response.json()["data"]["finding_counts"] == {
-        "duplicate_number": 1,
-        "missing_number": 1,
-        "mixed_structure": 1,
-        "semantic_ambiguity": 1,
-    }
-    assert client.get("/v1/policies/missing/quality-report").status_code == 404
+    status = client.get("/v1/policies/policy-1/audit-status")
+    assert status.status_code == 200
+    assert status.json()["data"]["stages"]["policy_summary"]["status"] == "completed"
+    assert status.json()["data"]["counts"]["semantic_ambiguity"] == 1
+    assert status.json()["data"]["counts"]["numeric_conflict"] == 1
+
+    summary = client.get("/v1/policies/policy-1/policy-summary")
+    assert summary.json()["data"]["content"]["plain_summary"] == "概览"
+
+    semantic = client.get("/v1/policies/policy-1/semantic-findings")
+    assert "finding_counts" not in semantic.json()["data"]
+
+    conflict = client.get("/v1/policies/policy-1/conflict-findings")
+    assert "conflict_counts" not in conflict.json()["data"]
+    assert client.get("/v1/policies/missing/audit-status").status_code == 404
+
+    assert client.get("/v1/policies/policy-1/quality-report").status_code == 404
+    assert client.post("/v1/policies/policy-1/semantic-audit").status_code == 404
 
 
 def test_dataset_page_and_audit_endpoints() -> None:
@@ -208,17 +255,17 @@ def test_workbench_and_experiment_policy_are_available() -> None:
     home = client.get("/")
     assert home.status_code == 200
     assert "Proof 制度工作台" in home.text
-    assert "重复编号、编号缺失、混合结构" in home.text
+    assert "语义歧义、可执行性缺口" in home.text
 
     workbench = client.get("/workbench")
     assert workbench.status_code == 200
     assert "上传并开始审校" in workbench.text
     assert "确认入库" in workbench.text
 
-    experiment = client.get("/examples/policy-structure-errors.txt")
+    experiment = client.get("/examples/policy-semantic-conflict-test.txt")
     assert experiment.status_code == 200
-    assert "第二条 本条故意与上一条使用相同编号" in experiment.text
-    assert "第四条 本条故意跳过第三条" in experiment.text
+    assert "相关部门应及时处理金额较大的采购事项" in experiment.text
+    assert "5000元以下的采购可以在线下直接办理" in experiment.text
 
 
 def test_sql_query_endpoint() -> None:
@@ -231,11 +278,69 @@ def test_sql_query_endpoint() -> None:
     assert response.json()["data"]["rows"] == [{"policy_count": 85}]
 
 
+def test_internal_conflict_retrieval_endpoint() -> None:
+    client = TestClient(create_app(Settings(), FakeService()))
+
+    response = client.post(
+        "/v1/internal/conflict-retrieval",
+        json={"unit_id": " unit-1 ", "top_k": 7},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["source"]["id"] == "unit-1"
+    assert response.json()["data"]["candidate_counts"]["returned"] == 7
+
+
+def test_internal_conflict_retrieval_defaults_to_ten_results() -> None:
+    client = TestClient(create_app(Settings(), FakeService()))
+
+    response = client.post(
+        "/v1/internal/conflict-retrieval",
+        json={"unit_id": "unit-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["candidate_counts"]["returned"] == 10
+
+
+def test_conflict_agent_view_preserves_service_order_and_removes_noisy_fields() -> None:
+    payload = _conflict_agent_view(
+        {
+            "source": {"id": "source", "text": "source", "citation": {"label": "source"}},
+            "results": [
+                {
+                    "id": "global",
+                    "text": "global",
+                    "retrieval_sources": ["global"],
+                    "branch_ranks": {"global": 1},
+                    "rerank_rank": 7,
+                    "citation": {"label": "global"},
+                    "source_block_ids": ["noise"],
+                },
+                {
+                    "id": "same",
+                    "text": "same",
+                    "retrieval_sources": ["same_title", "leaf_category"],
+                    "branch_ranks": {"same_title": 2, "leaf_category": 5},
+                    "rerank_rank": 2,
+                    "citation": {"label": "same"},
+                    "source_block_ids": ["noise"],
+                },
+            ],
+            "candidate_counts": {"returned": 2},
+        },
+        limit=1,
+    )
+
+    assert [item["id"] for item in payload["results"]] == ["global"]
+    assert payload["results"][0]["rerank_rank"] == 7
+    assert "source_block_ids" not in payload["results"][0]
+    assert payload["candidate_counts"]["judge_returned"] == 1
+
+
 def test_review_workflow_endpoints() -> None:
     client = TestClient(create_app(Settings(), FakeService()))
 
-    retry = client.post("/v1/policies/policy-1/semantic-audit")
-    assert retry.json()["data"]["status"] == "running"
     confirmed = client.post("/v1/policies/policy-1/confirm")
     assert confirmed.json()["data"]["status"] == "effective"
     discarded = client.delete("/v1/policies/policy-1")
@@ -245,3 +350,9 @@ def test_review_workflow_endpoints() -> None:
         json={"audit_id": "audit-1", "output": {"summary": {}, "items": []}},
     )
     assert callback.json()["data"]["status"] == "completed"
+
+    conflict_callback = client.post(
+        "/v1/internal/conflict-audits/result",
+        json={"audit_id": "conflict-1", "output": {"summary": {}, "items": []}},
+    )
+    assert conflict_callback.json()["data"]["status"] == "validated"

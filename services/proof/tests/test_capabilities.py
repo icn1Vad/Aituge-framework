@@ -31,6 +31,7 @@ class _Registry:
             "skill_package": [],
             "skill_root": [],
             "http_tool": [],
+            "pipeline": [],
         }
 
     def register_task(self, **kwargs) -> None:
@@ -47,6 +48,9 @@ class _Registry:
 
     def register_http_tool(self, **kwargs) -> None:
         self.calls["http_tool"].append(kwargs)
+
+    def register_pipeline(self, **kwargs) -> None:
+        self.calls["pipeline"].append(kwargs)
 
 
 def test_proof_capability_declares_minimal_qa_runtime():
@@ -89,12 +93,13 @@ def test_proof_capability_declares_minimal_qa_runtime():
     assert tools["proof_sql"]["path"] == "/v1/query/sql"
     assert (skill_root / "proof-policy-qa" / "SKILL.md").is_file()
     audit_task = registry.calls["task"][1]
-    audit_agent = registry.calls["agent"][1]
-    audit_package = registry.calls["skill_package"][1]
+    agents = {item["agent_id"]: item for item in registry.calls["agent"]}
+    packages = {item["package_name"]: item for item in registry.calls["skill_package"]}
+    audit_agent = agents["proof-audit-agent"]
+    audit_package = packages["proof-policy-semantic-audit-package"]
     assert audit_task["task_type"] == "proof.audit.run"
-    assert audit_task["handler"] == "batch_item_scheduler"
+    assert audit_task["handler"] == "pipeline"
     assert audit_task["input_model"] is proof_capability.ProofAuditInput
-    assert audit_task["item_output_model"] is proof_capability.ProofAuditItemOutput
     assert audit_task["result_sink_url"] == (
         "http://proof:18100/v1/internal/semantic-audits/result"
     )
@@ -102,6 +107,32 @@ def test_proof_capability_declares_minimal_qa_runtime():
     assert audit_agent["default_tools"] == []
     assert audit_package["primary_skill"] == "proof-policy-semantic-audit"
     assert (skill_root / "proof-policy-semantic-audit" / "SKILL.md").is_file()
+    pipeline = registry.calls["pipeline"][0]
+    stages = {stage["stage_id"]: stage for stage in pipeline["stages"]}
+    assert pipeline["max_parallelism"] == 3
+    assert stages["semantic_audit"]["item_source"] == "semantic_items"
+    assert stages["conflict_audit"]["item_source"] == "conflict_items"
+    assert stages["conflict_audit"]["agent_id"] == "proof-conflict-agent"
+    assert stages["conflict_audit"]["artifact_type"] == "proof_conflict_audit"
+    assert set(stages["finalize_report"]["depends_on"]) == {
+        "policy_summary", "semantic_audit", "conflict_audit"
+    }
+    conflict_task = registry.calls["task"][2]
+    conflict_agent = agents["proof-conflict-agent"]
+    conflict_package = packages["proof-policy-conflict-audit-package"]
+    assert conflict_task["task_type"] == "proof.conflict.audit"
+    assert conflict_task["handler"] == "batch_item_scheduler"
+    assert conflict_task["input_model"] is proof_capability.ProofConflictAuditInput
+    assert conflict_task["item_output_model"] is proof_capability.ProofConflictItemOutput
+    assert conflict_task["default_tools"] == ["proof_conflict_search"]
+    assert conflict_task["result_sink_url"] == (
+        "http://proof:18100/v1/internal/conflict-audits/result"
+    )
+    assert conflict_agent["agent_id"] == "proof-conflict-agent"
+    assert conflict_agent["default_tools"] == ["proof_conflict_search"]
+    assert conflict_package["primary_skill"] == "proof-policy-conflict-audit"
+    assert tools["proof_conflict_search"]["path"] == "/v1/internal/conflict-retrieval"
+    assert (skill_root / "proof-policy-conflict-audit" / "SKILL.md").is_file()
 
 
 def test_proof_search_input_matches_retrieval_api_contract():
@@ -151,6 +182,27 @@ def test_primary_skill_requires_search_and_chunk_citations():
     assert "citation.label" in content
 
 
+def test_audit_skill_defines_production_clarity_and_executability_rules():
+    content = (
+        Path(proof_capability.__file__).resolve().parent
+        / "skills"
+        / "proof-policy-semantic-audit"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "核心原则" in content
+    assert "语义歧义" in content
+    assert "可执行性缺口" in content
+    assert "抑制误报" in content
+    assert "不是封闭清单" in content
+    assert "每个有问题的 target 最多返回一条" in content
+    assert '"findings"' in content
+    assert '"id"' in content
+    assert '"quote"' not in content
+    assert '"problem"' in content
+    assert '"suggestion"' in content
+
+
 def test_audit_contract_rejects_duplicate_targets_and_findings():
     batch = {
         "id": "batch-1",
@@ -161,7 +213,14 @@ def test_audit_contract_rejects_duplicate_targets_and_findings():
     payload = proof_capability.ProofAuditInput(
         audit_id="audit-1",
         document_id="document-1",
-        items=[batch],
+        summary_chunks=batch["targets"],
+        semantic_items=[batch],
+        conflict_items=[{
+            "id": "conflict-1",
+            "audit_id": "audit-1",
+            "check": "conflict",
+            "targets": [{"id": "unit-1", "unit_id": "unit-1", "text": "相关部门应及时处理。"}],
+        }],
     )
     assert payload.failure_policy == "fail_fast"
 
@@ -169,12 +228,66 @@ def test_audit_contract_rejects_duplicate_targets_and_findings():
         proof_capability.ProofAuditInput(
             audit_id="audit-1",
             document_id="document-1",
-            items=[batch, {**batch, "id": "batch-2"}],
+            summary_chunks=batch["targets"],
+            semantic_items=[batch, {**batch, "id": "batch-2"}],
+            conflict_items=[{
+                "id": "conflict-1",
+                "audit_id": "audit-1",
+                "check": "conflict",
+                "targets": [{"id": "unit-1", "unit_id": "unit-1"}],
+            }],
         )
     with pytest.raises(ValidationError):
         proof_capability.ProofAuditItemOutput(
             findings=[
-                {"id": "unit-1", "quote": "相关部门", "problem": "主体不明", "suggestion": "明确部门"},
-                {"id": "unit-1", "quote": "及时处理", "problem": "时限不明", "suggestion": "明确时限"},
+                {"id": "unit-1", "category": "semantic_ambiguity", "problem": "主体不明", "suggestion": "明确部门"},
+                {"id": "unit-1", "category": "semantic_ambiguity", "problem": "时限不明", "suggestion": "明确时限"},
             ]
         )
+
+
+def test_conflict_contract_and_skill_define_joint_id_judge():
+    batch = {
+        "id": "batch-1",
+        "audit_id": "audit-1",
+        "check": "conflict",
+        "targets": [{"id": "unit-1", "unit_id": "unit-1", "text": "报销时限为三十日。"}],
+    }
+    payload = proof_capability.ProofConflictAuditInput(
+        audit_id="audit-1",
+        document_id="document-1",
+        items=[batch],
+    )
+    assert payload.max_concurrency == 4
+
+    finding = proof_capability.ProofConflictItemOutput(
+        findings=[
+            {
+                "id": "unit-1",
+                "candidate_ids": ["unit-2"],
+                "conflict_type": "numeric_conflict",
+                "problem": "同一期限分别要求三十日和十五日。",
+                "suggestion": "统一期限并明确适用版本。",
+            }
+        ]
+    )
+    assert finding.findings[0].conflict_type == "numeric_conflict"
+
+    with pytest.raises(ValidationError):
+        proof_capability.ProofConflictAuditInput(
+            audit_id="audit-1",
+            items=[{**batch, "targets": [{"id": "alias", "unit_id": "unit-1"}]}],
+        )
+
+    content = (
+        Path(proof_capability.__file__).resolve().parent
+        / "skills"
+        / "proof-policy-conflict-audit"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "proof_conflict_search" in content
+    assert "同一事项" in content
+    assert "适用范围重叠" in content
+    assert "无法同时满足" in content
+    assert "candidate_ids" in content
+    assert '"findings"' in content

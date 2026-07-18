@@ -83,6 +83,7 @@ def test_ingestion_auto_classifies_policy_from_title(tmp_path) -> None:
 
     assert result["reused"] is False
     assert repository.ingested["category_code"] == "procurement_supply"
+    assert repository.ingested["normalized_title"] == "采购管理"
 
 
 def _block_without_id(block) -> dict:

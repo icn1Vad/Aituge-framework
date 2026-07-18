@@ -238,7 +238,15 @@ class ProofRepository:
 
     def list_categories(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
-            return list(conn.execute("SELECT code, name, description FROM proof_category ORDER BY created_at, code"))
+            return list(
+                conn.execute(
+                    """
+                    SELECT code, name, description, parent_code, level
+                    FROM proof_category
+                    ORDER BY level, parent_code NULLS FIRST, created_at, code
+                    """
+                )
+            )
 
     def create_category(self, code: str, name: str, description: str) -> dict[str, Any]:
         try:
@@ -281,6 +289,7 @@ class ProofRepository:
         policy_id: str,
         document_id: str,
         title: str,
+        normalized_title: str,
         version: str,
         level_code: str | None,
         category_code: str,
@@ -302,10 +311,11 @@ class ProofRepository:
             self._validate_metadata(conn, level_code, category_code)
             conn.execute(
                 """
-                INSERT INTO proof_policy (id, title, version, status, level_code, category_code)
-                VALUES (%s, %s, %s, 'draft', %s, %s)
+                INSERT INTO proof_policy (
+                  id, title, normalized_title, version, status, level_code, category_code
+                ) VALUES (%s, %s, %s, %s, 'draft', %s, %s)
                 """,
-                (policy_id, title, version, level_code, category_code),
+                (policy_id, title, normalized_title, version, level_code, category_code),
             )
             conn.execute(
                 """
@@ -534,7 +544,8 @@ class ProofRepository:
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT p.id, p.title, p.version, p.status, p.level_code, p.category_code,
+                SELECT p.id, p.title, p.normalized_title, p.version, p.status,
+                       p.level_code, p.category_code,
                        p.created_at, p.updated_at,
                        l.name AS level_name, c.name AS category_name,
                        d.id AS document_id, d.status AS document_status,
@@ -558,7 +569,8 @@ class ProofRepository:
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT p.id, p.title, p.version, p.status, p.level_code, p.category_code,
+                SELECT p.id, p.title, p.normalized_title, p.version, p.status,
+                       p.level_code, p.category_code,
                        p.created_at, p.updated_at,
                        l.name AS level_name, c.name AS category_name,
                        d.id AS document_id, d.content_hash, d.original_name,
@@ -590,6 +602,157 @@ class ProofRepository:
                 (document_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def get_conflict_source_unit(self, unit_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT u.id, u.document_id, u.policy_id, u.clause_no_raw,
+                       u.clause_ordinal, u.unit_type, u.text, u.heading_path,
+                       u.page_start, u.page_end, u.text_hash,
+                       p.title AS policy_title, p.normalized_title,
+                       p.version AS policy_version, p.status AS policy_status,
+                       p.level_code, p.category_code,
+                       c.name AS category_name, c.parent_code AS parent_category_code,
+                       c.level AS category_level, d.original_name
+                FROM proof_retrieval_unit u
+                JOIN proof_policy p ON p.id = u.policy_id
+                JOIN proof_document d ON d.id = u.document_id
+                JOIN proof_category c ON c.code = p.category_code
+                WHERE u.id = %s
+                """,
+                (unit_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def resolve_unique_near_unit_id(self, unit_id: str, *, max_distance: int = 1) -> str | None:
+        """Resolve a single-character LLM copy error without guessing among multiple units."""
+
+        if not unit_id or max_distance < 1:
+            return None
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id
+                FROM proof_retrieval_unit
+                WHERE char_length(id) = %s
+                ORDER BY id
+                """,
+                (len(unit_id),),
+            ).fetchall()
+        matches = [
+            str(row["id"])
+            for row in rows
+            if sum(left != right for left, right in zip(unit_id, str(row["id"]), strict=True))
+            <= max_distance
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def find_effective_policy_ids_by_normalized_title(
+        self,
+        normalized_title: str,
+        *,
+        exclude_policy_id: str,
+    ) -> list[str]:
+        if not normalized_title:
+            return []
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id
+                FROM proof_policy
+                WHERE status = 'effective'
+                  AND normalized_title = %s
+                  AND id <> %s
+                ORDER BY id
+                """,
+                (normalized_title, exclude_policy_id),
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
+
+    def get_category_context(self, category_code: str) -> dict[str, Any] | None:
+        if not category_code:
+            return None
+        with self.connect() as conn:
+            category = conn.execute(
+                """
+                SELECT code, name, parent_code, level
+                FROM proof_category
+                WHERE code = %s
+                """,
+                (category_code,),
+            ).fetchone()
+            if category is None:
+                return None
+            parent_code = category["parent_code"] if int(category["level"]) == 2 else category["code"]
+            children = conn.execute(
+                """
+                SELECT code
+                FROM proof_category
+                WHERE parent_code = %s
+                ORDER BY code
+                """,
+                (parent_code,),
+            ).fetchall()
+        child_codes = [str(row["code"]) for row in children]
+        return {
+            **dict(category),
+            "parent_category_codes": child_codes if int(category["level"]) == 2 else [],
+            "child_category_codes": child_codes if int(category["level"]) == 1 else [],
+        }
+
+    def list_policy_metadata(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, title, normalized_title, category_code
+                FROM proof_policy
+                ORDER BY id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_policy_metadata(
+        self,
+        policy_id: str,
+        *,
+        normalized_title: str,
+        category_code: str | None = None,
+    ) -> bool:
+        with self.connect() as conn:
+            if category_code is not None:
+                self._validate_metadata(conn, None, category_code)
+            cursor = conn.execute(
+                """
+                UPDATE proof_policy
+                SET normalized_title = %s,
+                    category_code = COALESCE(%s::text, category_code),
+                    updated_at = CASE
+                      WHEN normalized_title IS DISTINCT FROM %s
+                        OR (%s::text IS NOT NULL AND category_code IS DISTINCT FROM %s::text)
+                      THEN now()
+                      ELSE updated_at
+                    END
+                WHERE id = %s
+                  AND (
+                    normalized_title IS DISTINCT FROM %s
+                    OR (%s::text IS NOT NULL AND category_code IS DISTINCT FROM %s::text)
+                  )
+                """,
+                (
+                    normalized_title,
+                    category_code,
+                    normalized_title,
+                    category_code,
+                    category_code,
+                    policy_id,
+                    normalized_title,
+                    category_code,
+                    category_code,
+                ),
+            )
+            conn.commit()
+        return cursor.rowcount > 0
 
     def list_clauses(self, policy_id: str, *, include_text: bool = False) -> list[dict[str, Any]]:
         with self.connect() as conn:
@@ -687,14 +850,20 @@ class ProofRepository:
                 """
                 UPDATE proof_audit_run
                 SET status = 'pending', framework_task_id = NULL, framework_run_id = NULL,
-                    error_message = NULL, updated_at = now()
-                WHERE id = %s AND status = 'failed'
+                    error_message = NULL, summary_status = 'pending', summary_content = NULL,
+                    summary_error_message = NULL, conflict_status = 'pending',
+                    conflict_error_message = NULL, updated_at = now()
+                WHERE id = %s AND (status = 'failed' OR conflict_status = 'failed')
                 RETURNING id
                 """,
                 (audit_run_id,),
             ).fetchone()
             if row:
                 conn.execute("DELETE FROM proof_audit_finding WHERE audit_run_id = %s", (audit_run_id,))
+                conn.execute(
+                    "DELETE FROM proof_conflict_audit_finding WHERE audit_run_id = %s",
+                    (audit_run_id,),
+                )
             conn.commit()
         return bool(row)
 
@@ -709,9 +878,22 @@ class ProofRepository:
             conn.execute(
                 """
                 UPDATE proof_audit_run
-                SET status = 'running', framework_task_id = %s, framework_run_id = %s,
-                    error_message = NULL, updated_at = now()
-                WHERE id = %s AND status IN ('pending', 'running')
+                SET status = CASE WHEN status = 'pending' THEN 'running' ELSE status END,
+                    framework_task_id = %s, framework_run_id = %s,
+                    error_message = CASE WHEN status = 'pending' THEN NULL ELSE error_message END,
+                    summary_status = CASE WHEN summary_status = 'pending' THEN 'running' ELSE summary_status END,
+                    summary_content = CASE WHEN summary_status = 'pending' THEN NULL ELSE summary_content END,
+                    summary_error_message = CASE
+                      WHEN summary_status = 'pending' THEN NULL ELSE summary_error_message
+                    END,
+                    conflict_status = CASE
+                      WHEN conflict_status = 'pending' THEN 'running' ELSE conflict_status
+                    END,
+                    conflict_error_message = CASE
+                      WHEN conflict_status = 'pending' THEN NULL ELSE conflict_error_message
+                    END,
+                    updated_at = now()
+                WHERE id = %s
                 """,
                 (framework_task_id, framework_run_id, audit_run_id),
             )
@@ -741,6 +923,111 @@ class ProofRepository:
             )
             conn.commit()
 
+    def complete_audit_summary(self, audit_run_id: str, content: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE proof_audit_run
+                SET summary_status = 'completed', summary_content = %s::jsonb,
+                    summary_error_message = NULL, updated_at = now()
+                WHERE id = %s
+                """,
+                (Jsonb(content), audit_run_id),
+            )
+            conn.commit()
+
+    def mark_audit_summary_failed(self, audit_run_id: str, error_message: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE proof_audit_run
+                SET summary_status = 'failed', summary_content = NULL,
+                    summary_error_message = %s, updated_at = now()
+                WHERE id = %s AND summary_status <> 'completed'
+                """,
+                (error_message[:2000], audit_run_id),
+            )
+            conn.commit()
+
+    def complete_conflict_audit(
+        self,
+        audit_run_id: str,
+        findings: list[dict[str, Any]],
+    ) -> None:
+        with self.connect() as conn:
+            run = conn.execute(
+                "SELECT id FROM proof_audit_run WHERE id = %s FOR UPDATE",
+                (audit_run_id,),
+            ).fetchone()
+            if not run:
+                raise ProofError("audit_run_not_found", "Audit run not found.", status_code=404)
+            conn.execute(
+                "DELETE FROM proof_conflict_audit_finding WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            if findings:
+                with conn.cursor() as cursor:
+                    cursor.executemany(
+                        """
+                        INSERT INTO proof_conflict_audit_finding (
+                          audit_run_id, source_unit_id, candidate_ids, conflict_type,
+                          problem, suggestion
+                        ) VALUES (
+                          %s, %s, %s::jsonb, %s, %s, %s
+                        )
+                        """,
+                        [
+                            (
+                                audit_run_id,
+                                item["id"],
+                                Jsonb(item["candidate_ids"]),
+                                item["conflict_type"],
+                                item["problem"],
+                                item["suggestion"],
+                            )
+                            for item in findings
+                        ],
+                    )
+            conn.execute(
+                """
+                UPDATE proof_audit_run
+                SET conflict_status = 'completed', conflict_error_message = NULL,
+                    updated_at = now()
+                WHERE id = %s
+                """,
+                (audit_run_id,),
+            )
+            conn.commit()
+
+    def mark_conflict_audit_failed(self, audit_run_id: str, error_message: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE proof_audit_run
+                SET conflict_status = 'failed', conflict_error_message = %s,
+                    updated_at = now()
+                WHERE id = %s AND conflict_status <> 'completed'
+                """,
+                (error_message[:2000], audit_run_id),
+            )
+            conn.commit()
+
+    def list_conflict_audit_findings(self, audit_run_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT f.source_unit_id AS id, f.candidate_ids, f.conflict_type,
+                       f.problem, f.suggestion,
+                       u.clause_ordinal, u.clause_no_raw
+                FROM proof_conflict_audit_finding f
+                JOIN proof_retrieval_unit u ON u.id = f.source_unit_id
+                WHERE f.audit_run_id = %s
+                ORDER BY u.clause_ordinal, f.id
+                """,
+                (audit_run_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def complete_audit(self, audit_run_id: str, findings: list[dict[str, str]]) -> None:
         with self.connect() as conn:
             run = conn.execute(
@@ -755,14 +1042,14 @@ class ProofRepository:
                     cursor.executemany(
                         """
                         INSERT INTO proof_audit_finding (
-                          audit_run_id, retrieval_unit_id, quote, problem, suggestion
+                          audit_run_id, retrieval_unit_id, category, problem, suggestion
                         ) VALUES (%s, %s, %s, %s, %s)
                         """,
                         [
                             (
                                 audit_run_id,
                                 item["id"],
-                                item["quote"],
+                                item["category"],
                                 item["problem"],
                                 item["suggestion"],
                             )
@@ -783,7 +1070,7 @@ class ProofRepository:
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT f.retrieval_unit_id AS id, f.quote, f.problem, f.suggestion,
+                SELECT f.retrieval_unit_id AS id, f.category, f.problem, f.suggestion,
                        u.clause_ordinal, u.clause_no_raw
                 FROM proof_audit_finding f
                 JOIN proof_retrieval_unit u ON u.id = f.retrieval_unit_id
@@ -907,6 +1194,7 @@ class ProofRepository:
         policy_ids: list[str],
         level_codes: list[str],
         category_codes: list[str],
+        excluded_policy_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         where, where_params = _retrieval_filters(
             policy_ids=policy_ids,
@@ -915,6 +1203,9 @@ class ProofRepository:
         )
         where[0:0] = ["e.profile_id = %s", "e.dimensions = %s"]
         where_params[0:0] = [profile.id, profile.dimensions]
+        if excluded_policy_ids:
+            where.append("NOT (p.id = ANY(%s))")
+            where_params.append(excluded_policy_ids)
         vector = _vector_text(query_vector)
         params: list[Any] = [vector, *where_params, vector, top_k]
         with self.connect() as conn:
@@ -1052,6 +1343,7 @@ class ProofRepository:
                 "status",
                 "level_code",
                 "category_code",
+                "normalized_title",
                 "created_at",
                 "updated_at",
             )

@@ -29,19 +29,17 @@ def test_report_contains_only_duplicate_missing_and_mixed_findings() -> None:
 
     report = build_policy_quality_report(policy, clauses)
 
-    assert report["finding_counts"] == {
-        "duplicate_number": 1,
-        "missing_number": 1,
-        "mixed_structure": 1,
-        "semantic_ambiguity": 0,
-    }
+    assert report["finding_counts"]["duplicate_number"] == 1
+    assert report["finding_counts"]["missing_number"] == 1
+    assert report["finding_counts"]["mixed_structure"] == 1
+    assert report["finding_counts"]["semantic_ambiguity"] == 0
     assert [item["type"] for item in report["findings"]] == [
         "duplicate_number",
         "missing_number",
         "mixed_structure",
     ]
     assert report["findings"][1]["missing_numbers"] == ["第3条"]
-    assert report["report_version"] == "policy-quality-v2"
+    assert report["report_version"] == "policy-quality-v4"
 
 
 def test_report_merges_semantic_findings_in_existing_shape() -> None:
@@ -59,7 +57,6 @@ def test_report_merges_semantic_findings_in_existing_shape() -> None:
         semantic_findings=[
             {
                 "id": "unit-1",
-                "quote": "相关部门应及时处理",
                 "problem": "责任主体和处理时限不明确。",
                 "suggestion": "明确责任部门和完成时限。",
                 "clause_ordinal": 1,
@@ -73,11 +70,57 @@ def test_report_merges_semantic_findings_in_existing_shape() -> None:
         "type": "semantic_ambiguity",
         "id": "unit-1",
         "message": "责任主体和处理时限不明确。",
-        "quote": "相关部门应及时处理",
         "suggestion": "明确责任部门和完成时限。",
         "clause_ordinal": 1,
         "clause_no_raw": "第一条",
     }
+
+
+def test_report_counts_conflicts_deterministically() -> None:
+    policy = {
+        "id": "policy-conflict",
+        "title": "冲突审校制度",
+        "status": "draft",
+        "document_id": "document-conflict",
+        "structure_profile": "article",
+    }
+    findings = [
+        {"id": "unit-1", "conflict_type": "numeric_conflict"},
+        {"id": "unit-2", "conflict_type": "process_conflict"},
+    ]
+
+    report = build_policy_quality_report(
+        policy,
+        [clause(1, "第一条", "第一条 正文。", "article")],
+        semantic_audit={"status": "completed", "error_message": None},
+        policy_summary={"status": "completed", "error_message": None, "content": {}},
+        conflict_audit={"status": "completed", "error_message": None},
+        conflict_findings=findings,
+    )
+
+    assert report["conflict_counts"] == {
+        "total": 2,
+        "numeric_conflict": 1,
+        "authority_conflict": 0,
+        "process_conflict": 1,
+        "rule_reversal": 0,
+    }
+    assert report["conflict_findings"] == findings
+    assert report["report_status"] == "completed"
+
+
+def test_report_exposes_conflict_stage_failure() -> None:
+    report = build_policy_quality_report(
+        {"id": "p", "title": "制度", "status": "draft", "structure_profile": "article"},
+        [],
+        semantic_audit={"status": "completed", "error_message": None},
+        policy_summary={"status": "completed", "error_message": None, "content": {}},
+        conflict_audit={"status": "failed", "error_message": "tool timeout"},
+    )
+
+    assert report["report_status"] == "failed"
+    assert report["conflict_audit"] == {"status": "failed", "error_message": "tool timeout"}
+    assert report["can_confirm"] is False
 
 
 def test_report_detects_missing_decimal_sibling() -> None:

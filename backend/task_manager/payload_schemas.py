@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+import json
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -911,7 +912,11 @@ def validate_output_payload(schema_name: str | None, payload: Any) -> tuple[bool
         schema.model_validate(payload)
         return True, None
     except ValidationError as exc:
-        return False, {"schema_name": schema_name, "errors": exc.errors()}
+        # Pydantic may place the original exception object in ``ctx.error``.
+        # Task events are persisted as JSON, so keep validation diagnostics
+        # detailed while guaranteeing that the event payload is serializable.
+        errors = json.loads(json.dumps(exc.errors(), ensure_ascii=False, default=str))
+        return False, {"schema_name": schema_name, "errors": errors}
 
 
 def validate_stage_payload(schema_name: str | None, payload: Any) -> dict[str, Any]:

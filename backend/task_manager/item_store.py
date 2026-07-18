@@ -9,14 +9,52 @@ from db.db_context import create_db_session
 from .models import TaskEntity, TaskItemEntity, utc_now
 
 
-async def list_pending_items(task_id: str) -> list[TaskItemEntity]:
+async def ensure_stage_items(
+    task_id: str,
+    *,
+    item_type: str,
+    raw_items: list[dict[str, Any]],
+) -> None:
+    """Create one idempotent, stage-local item set for a Pipeline batch stage."""
+
+    async with create_db_session() as session:
+        existing = await session.exec(
+            select(TaskItemEntity)
+            .where(TaskItemEntity.task_id == task_id)
+            .where(TaskItemEntity.item_type == item_type)
+        )
+        if existing.first() is not None:
+            return
+        for index, payload in enumerate(raw_items, start=1):
+            item_key = (
+                payload.get("id")
+                or payload.get("key")
+                or payload.get("name")
+                or payload.get("title")
+                or f"{item_type}-{index}"
+            )
+            session.add(
+                TaskItemEntity(
+                    task_id=task_id,
+                    item_type=item_type,
+                    item_key=str(item_key),
+                    sequence=index,
+                    input_payload_json=payload,
+                )
+            )
+        await session.commit()
+
+
+async def list_pending_items(task_id: str, *, item_type: str | None = None) -> list[TaskItemEntity]:
     async with create_db_session() as session:
         statement = (
             select(TaskItemEntity)
             .where(TaskItemEntity.task_id == task_id)
             .where(TaskItemEntity.status == "pending")
-            .order_by(TaskItemEntity.sequence)
         )
+        if item_type is not None:
+            statement = statement.where(TaskItemEntity.item_type == item_type)
+        statement = statement.order_by(TaskItemEntity.sequence)
         result = await session.exec(statement)
         return list(result.all())
 
@@ -89,13 +127,12 @@ async def refresh_task_progress(task_id: str) -> tuple[int, int]:
         return completed, total
 
 
-async def load_item_results(task_id: str) -> list[dict[str, Any]]:
+async def load_item_results(task_id: str, *, item_type: str | None = None) -> list[dict[str, Any]]:
     async with create_db_session() as session:
-        result = await session.exec(
-            select(TaskItemEntity)
-            .where(TaskItemEntity.task_id == task_id)
-            .order_by(TaskItemEntity.sequence)
-        )
+        statement = select(TaskItemEntity).where(TaskItemEntity.task_id == task_id)
+        if item_type is not None:
+            statement = statement.where(TaskItemEntity.item_type == item_type)
+        result = await session.exec(statement.order_by(TaskItemEntity.sequence))
         rows = list(result.all())
         return [
             {

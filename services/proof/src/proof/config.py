@@ -29,6 +29,11 @@ class Settings(BaseSettings):
 
     retrieval_keyword_limit: int = Field(default=30, ge=1, le=100)
     retrieval_vector_limit: int = Field(default=30, ge=1, le=100)
+    conflict_same_title_limit: int = Field(default=6, ge=1, le=100)
+    conflict_leaf_category_limit: int = Field(default=6, ge=1, le=100)
+    conflict_parent_category_limit: int = Field(default=4, ge=1, le=100)
+    conflict_global_limit: int = Field(default=2, ge=1, le=100)
+    conflict_max_candidates: int = Field(default=60, ge=1, le=200)
 
     rerank_base_url: str = "https://dashscope.aliyuncs.com/compatible-api/v1/reranks"
     rerank_api_key: str = ""
@@ -44,12 +49,13 @@ class Settings(BaseSettings):
     semantic_audit_enabled: bool = False
     framework_base_url: str = ""
     framework_user_id: str = "proof-service"
-    framework_tenant_id: str = "default"
+    framework_tenant_id: str = "__default_tenant_id__"
     audit_model_id: str = "deepseek-v4-pro"
     audit_batch_max_chars: int = Field(default=6000, ge=1)
     audit_batch_max_chunks: int = Field(default=8, ge=1, le=100)
     audit_max_chunk_chars: int = Field(default=12_000, ge=1)
     audit_max_concurrency: int = Field(default=4, ge=1, le=8)
+    summary_max_chars: int = Field(default=60_000, ge=1)
 
     @property
     def embedding_configured(self) -> bool:

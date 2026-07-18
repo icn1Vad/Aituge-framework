@@ -1,3 +1,8 @@
+from proof.application.conflict_retrieval.taxonomy import (
+    CATEGORY_PARENT_BY_CODE,
+    LEAF_CATEGORY_NAMES,
+    PARENT_CATEGORY_NAMES,
+)
 from proof.domain.policy_grouping import infer_policy_category
 
 
@@ -11,3 +16,10 @@ def test_policy_group_inference_uses_business_title() -> None:
     assert infer_policy_category("考勤与休假管理制度") == "attendance_leave"
     assert infer_policy_category("信息化建设管理办法") == "digital_it"
     assert infer_policy_category("未知专项规定") == "other"
+
+
+def test_every_business_leaf_category_has_one_parent() -> None:
+    business_leaf_codes = set(LEAF_CATEGORY_NAMES) - {"other"}
+
+    assert set(CATEGORY_PARENT_BY_CODE) == business_leaf_codes
+    assert set(CATEGORY_PARENT_BY_CODE.values()) == set(PARENT_CATEGORY_NAMES)

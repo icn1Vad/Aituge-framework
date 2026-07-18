@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
-STAGE_TYPES = {"agent", "deterministic", "gateway", "finalizer"}
+STAGE_TYPES = {"agent", "direct_model", "batch", "deterministic", "gateway", "finalizer"}
 FAILURE_POLICIES = {"fail_task", "continue_with_warning", "require_human", "skip_stage"}
 OUTPUT_POLICIES = {"strict", "repair_once", "accept_raw"}
 SESSION_POLICIES = {"isolated_stage", "reuse_previous_attempt", "reuse_named_session"}
@@ -29,6 +29,16 @@ class AgentStageConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class BatchStageConfig:
+    agent_id: str
+    item_source: str = "items"
+    skill_package: str | None = None
+    tools: tuple[str, ...] = ()
+    datasets: tuple[str, ...] = ()
+    item_output_schema: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class StageDefinition:
     stage_id: str
     name: str
@@ -42,6 +52,7 @@ class StageDefinition:
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     failure_policy: str = "fail_task"
     agent_config: AgentStageConfig | None = None
+    batch_config: BatchStageConfig | None = None
     service_handler: str | None = None
     requires_human_review: bool = False
 
@@ -100,13 +111,20 @@ def validate_pipeline_definition(definition: PipelineDefinition) -> None:
             raise ValueError(f"Stage '{stage.stage_id}' depends on unknown stages: {sorted(missing)}.")
         if stage.stage_id in stage.depends_on:
             raise ValueError(f"Stage '{stage.stage_id}' cannot depend on itself.")
-        if stage.stage_type == "agent":
+        if stage.stage_type in {"agent", "direct_model"}:
             if stage.agent_config is None:
-                raise ValueError(f"Agent stage '{stage.stage_id}' requires agent_config.")
+                raise ValueError(f"Model stage '{stage.stage_id}' requires agent_config.")
             if stage.agent_config.session_policy not in SESSION_POLICIES:
-                raise ValueError(f"Agent stage '{stage.stage_id}' has invalid session policy.")
+                raise ValueError(f"Model stage '{stage.stage_id}' has invalid session policy.")
             if stage.agent_config.output_policy not in OUTPUT_POLICIES:
-                raise ValueError(f"Agent stage '{stage.stage_id}' has invalid output policy.")
+                raise ValueError(f"Model stage '{stage.stage_id}' has invalid output policy.")
+            if stage.stage_type == "direct_model" and (
+                stage.agent_config.tools or stage.agent_config.datasets
+            ):
+                raise ValueError(f"Direct model stage '{stage.stage_id}' cannot use tools or datasets.")
+        elif stage.stage_type == "batch":
+            if stage.batch_config is None:
+                raise ValueError(f"Batch stage '{stage.stage_id}' requires batch_config.")
         elif not stage.service_handler:
             raise ValueError(f"Stage '{stage.stage_id}' requires service_handler.")
 

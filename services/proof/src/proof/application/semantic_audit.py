@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -30,9 +31,11 @@ class SemanticAuditService:
                 audit_run_id=uuid.uuid4().hex,
                 document_id=document_id,
             )
-        elif run["status"] in {"running", "completed"}:
+        elif run["status"] == "running":
             return self._state(run)
-        elif run["status"] == "failed":
+        elif run["status"] == "completed" and run.get("conflict_status", "completed") == "completed":
+            return self._state(run)
+        elif run["status"] == "failed" or run.get("conflict_status") == "failed":
             if not self.repository.reset_failed_audit_run(run["id"]):
                 return self.get_state(document_id)
             run = self.repository.get_audit_run(run["id"])
@@ -43,6 +46,8 @@ class SemanticAuditService:
             message = self._error_message(exc)
             logger.exception("Unable to dispatch semantic audit %s", run["id"])
             self.repository.mark_audit_failed(run["id"], message)
+            self.repository.mark_audit_summary_failed(run["id"], message)
+            self._mark_conflict_failed(run["id"], message)
         return self.get_state(document_id)
 
     def get_state(self, document_id: str, *, reconcile: bool = True) -> dict[str, Any]:
@@ -52,7 +57,11 @@ class SemanticAuditService:
                 "status": "disabled" if not self.settings.semantic_audit_enabled else "pending",
                 "error_message": None,
             }
-        if reconcile and run["status"] == "running":
+        if reconcile and (
+            run["status"] == "running"
+            or run.get("summary_status") in {"pending", "running"}
+            or run.get("conflict_status") in {"pending", "running"}
+        ):
             self._reconcile_framework_status(run)
             run = self.repository.get_audit_run(run["id"]) or run
         return self._state(run)
@@ -63,11 +72,46 @@ class SemanticAuditService:
             return []
         return self.repository.list_audit_findings(run["id"])
 
-    def accept_result(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def summary_state(self, document_id: str) -> dict[str, Any]:
+        run = self.repository.get_audit_run_for_document(document_id)
+        if run is None:
+            status = "disabled" if not self.settings.semantic_audit_enabled else "pending"
+            return {"status": status, "error_message": None, "content": None}
+        return {
+            "status": run.get("summary_status") or "pending",
+            "error_message": run.get("summary_error_message"),
+            "content": run.get("summary_content"),
+        }
+
+    def conflict_state(self, document_id: str) -> dict[str, Any]:
+        run = self.repository.get_audit_run_for_document(document_id)
+        if run is None:
+            status = "disabled" if not self.settings.semantic_audit_enabled else "pending"
+            return {"status": status, "error_message": None}
+        return {
+            "status": run.get("conflict_status") or "pending",
+            "error_message": run.get("conflict_error_message"),
+        }
+
+    def conflict_findings(self, document_id: str) -> list[dict[str, Any]]:
+        run = self.repository.get_audit_run_for_document(document_id)
+        if run is None or run.get("conflict_status") != "completed":
+            return []
+        return self.repository.list_conflict_audit_findings(run["id"])
+
+    def accept_result(
+        self,
+        payload: dict[str, Any],
+        *,
+        conflict_output_validator: Callable[[dict[str, Any]], list[dict[str, Any]]] | None = None,
+    ) -> dict[str, Any]:
         audit_id = str(payload.get("audit_id") or "").strip()
         task_id = str(payload.get("task_id") or "").strip()
         run_id = str(payload.get("run_id") or "").strip()
+        stage_id = str(payload.get("stage_id") or "").strip()
+        callback_status = str(payload.get("status") or "completed").strip()
         output = payload.get("output")
+        legacy_semantic_callback = stage_id == "" and isinstance(output, dict) and "summary" in output
         run = self.repository.get_audit_run(audit_id)
         if run is None:
             raise ProofError("audit_run_not_found", "Audit run not found.", status_code=404)
@@ -79,15 +123,153 @@ class SemanticAuditService:
                 raise ValueError("Framework task ID does not match the audit run.")
             if run.get("framework_run_id") and run_id != run["framework_run_id"]:
                 raise ValueError("Framework run ID does not match the audit run.")
-            findings = self._validate_output(run, output)
-            self.repository.complete_audit(audit_id, findings)
+            if stage_id == "policy_summary":
+                result = self._accept_summary_callback(run, callback_status, output, payload)
+            elif stage_id == "semantic_audit":
+                result = self._accept_semantic_callback(run, callback_status, output, payload)
+            elif stage_id == "conflict_audit":
+                result = self._accept_conflict_callback(
+                    run,
+                    callback_status,
+                    output,
+                    payload,
+                    conflict_output_validator,
+                )
+            elif legacy_semantic_callback:
+                result = self._accept_semantic_callback(run, callback_status, output, payload)
+            elif stage_id in {"", "finalize_report"}:
+                result = self._accept_pipeline_callback(
+                    run,
+                    callback_status,
+                    output,
+                    payload,
+                    conflict_output_validator,
+                )
+            else:
+                raise ValueError(f"Unknown Framework pipeline stage: {stage_id}")
         except Exception as exc:
             message = self._error_message(exc)
-            self.repository.mark_audit_failed(audit_id, message)
+            if stage_id == "policy_summary":
+                self.repository.mark_audit_summary_failed(audit_id, message)
+            elif stage_id == "conflict_audit":
+                self._mark_conflict_failed(audit_id, message)
+            else:
+                self.repository.mark_audit_failed(audit_id, message)
             if isinstance(exc, ProofError):
                 raise
             raise ProofError("invalid_audit_result", message, status_code=422) from exc
-        return {"audit_id": audit_id, "status": "completed", "finding_count": len(findings)}
+        if legacy_semantic_callback:
+            result.pop("stage_id", None)
+        return {"audit_id": audit_id, **result}
+
+    def _accept_summary_callback(self, run, status, output, payload) -> dict[str, Any]:
+        if status == "failed":
+            message = str(payload.get("error_message") or "Policy summary stage failed.")
+            self.repository.mark_audit_summary_failed(run["id"], message)
+            return {"stage_id": "policy_summary", "status": "failed"}
+        summary = self._validate_summary(run, output)
+        self.repository.complete_audit_summary(run["id"], summary)
+        return {"stage_id": "policy_summary", "status": "completed"}
+
+    def _accept_semantic_callback(self, run, status, output, payload) -> dict[str, Any]:
+        if status == "failed":
+            message = str(payload.get("error_message") or "Semantic audit stage failed.")
+            self.repository.mark_audit_failed(run["id"], message)
+            return {"stage_id": "semantic_audit", "status": "failed"}
+        findings = self._validate_output(run, output)
+        self.repository.complete_audit(run["id"], findings)
+        return {"stage_id": "semantic_audit", "status": "completed", "finding_count": len(findings)}
+
+    def _accept_conflict_callback(
+        self,
+        run,
+        status,
+        output,
+        payload,
+        validator,
+    ) -> dict[str, Any]:
+        if status == "failed":
+            message = str(payload.get("error_message") or "Conflict audit stage failed.")
+            self._mark_conflict_failed(run["id"], message)
+            return {"stage_id": "conflict_audit", "status": "failed"}
+        if validator is None:
+            raise ValueError("Conflict result validator is not configured.")
+        findings = validator({**payload, "output": output})
+        self.repository.complete_conflict_audit(run["id"], findings)
+        return {"stage_id": "conflict_audit", "status": "completed", "finding_count": len(findings)}
+
+    def _accept_pipeline_callback(self, run, status, output, payload, conflict_validator) -> dict[str, Any]:
+        if status == "failed":
+            self.repository.mark_audit_failed(
+                run["id"], str(payload.get("error_message") or "Policy review pipeline failed.")
+            )
+            self._mark_conflict_failed(
+                run["id"], str(payload.get("error_message") or "Policy review pipeline failed.")
+            )
+            return {"status": "failed"}
+        if not isinstance(output, dict):
+            raise ValueError("Framework final callback output must be an object.")
+        artifacts = output.get("artifacts")
+        stages = output.get("stages")
+        if not isinstance(artifacts, dict) or not isinstance(stages, dict):
+            raise ValueError("Framework final callback is missing artifacts or stages.")
+
+        current = self.repository.get_audit_run(run["id"]) or run
+        summary_output = artifacts.get("policy_summary")
+        summary_stage = stages.get("policy_summary") or {}
+        if current.get("summary_status") != "completed":
+            if summary_output is not None:
+                try:
+                    self.repository.complete_audit_summary(
+                        run["id"], self._validate_summary(run, summary_output)
+                    )
+                except Exception as exc:
+                    self.repository.mark_audit_summary_failed(run["id"], self._error_message(exc))
+            elif summary_stage.get("status") in {"failed", "cancelled"}:
+                self.repository.mark_audit_summary_failed(
+                    run["id"], str(summary_stage.get("error_message") or "Policy summary stage failed.")
+                )
+
+        current = self.repository.get_audit_run(run["id"]) or current
+        semantic_output = artifacts.get("semantic_audit")
+        semantic_stage = stages.get("semantic_audit") or {}
+        if current.get("status") != "completed":
+            if semantic_output is not None:
+                self.repository.complete_audit(run["id"], self._validate_output(run, semantic_output))
+            elif semantic_stage.get("status") in {"failed", "cancelled"}:
+                self.repository.mark_audit_failed(
+                    run["id"], str(semantic_stage.get("error_message") or "Semantic audit stage failed.")
+                )
+        current = self.repository.get_audit_run(run["id"]) or current
+        conflict_output = artifacts.get("conflict_audit")
+        conflict_stage = stages.get("conflict_audit") or {}
+        if current.get("conflict_status") != "completed":
+            if conflict_output is not None:
+                if conflict_validator is None:
+                    self._mark_conflict_failed(
+                        run["id"], "Conflict result validator is not configured."
+                    )
+                else:
+                    try:
+                        findings = conflict_validator(
+                            {
+                                "task_type": "proof.audit.run",
+                                "audit_id": run["id"],
+                                "output": conflict_output,
+                            }
+                        )
+                        self.repository.complete_conflict_audit(run["id"], findings)
+                    except Exception as exc:
+                        self._mark_conflict_failed(
+                            run["id"], self._error_message(exc)
+                        )
+            elif conflict_stage.get("status") in {"failed", "cancelled"}:
+                self._mark_conflict_failed(
+                    run["id"],
+                    str(conflict_stage.get("error_message") or "Conflict audit stage failed."),
+                )
+        final = self.repository.get_audit_run(run["id"]) or current
+        return {"status": final["status"]}
 
     def _dispatch(self, run: dict[str, Any]) -> None:
         base_url = self.settings.framework_base_url.strip().rstrip("/")
@@ -100,7 +282,8 @@ class SemanticAuditService:
         too_long = [item["id"] for item in units if len(item["text"]) > self.settings.audit_max_chunk_chars]
         if too_long:
             raise ValueError(f"Chunks exceed PROOF_AUDIT_MAX_CHUNK_CHARS: {', '.join(too_long)}")
-        items = self._build_batches(run["id"], units)
+        semantic_items = self._build_batches(run["id"], units)
+        conflict_items = self._build_conflict_items(run["id"], units)
         headers = self._headers()
         dispatch_key = uuid.uuid4().hex
         create_payload = {
@@ -109,7 +292,10 @@ class SemanticAuditService:
             "input_payload": {
                 "audit_id": run["id"],
                 "document_id": run["document_id"],
-                "items": items,
+                "summary_chunks": [self._target(unit) for unit in units],
+                "summary_max_chars": self.settings.summary_max_chars,
+                "semantic_items": semantic_items,
+                "conflict_items": conflict_items,
                 "max_concurrency": self.settings.audit_max_concurrency,
                 "failure_policy": "fail_fast",
                 "retry_per_item": 1,
@@ -161,18 +347,45 @@ class SemanticAuditService:
                 "audit_id": audit_id,
                 "check": "semantic",
                 "targets": [
-                    {
-                        "id": unit["id"],
-                        "text": unit["text"],
-                        "clause_no": unit.get("clause_no_raw") or "",
-                        "clause_ordinal": unit.get("clause_ordinal"),
-                        "heading_path": unit.get("heading_path") or [],
-                    }
+                    self._target(unit)
                     for unit in batch
                 ],
             }
             for index, batch in enumerate(batches, start=1)
         ]
+
+    def _build_conflict_items(
+        self,
+        audit_id: str,
+        units: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": f"{audit_id}:conflict:{index:04d}",
+                "audit_id": audit_id,
+                "check": "conflict",
+                "targets": [
+                    {
+                        "id": unit["id"],
+                        "unit_id": unit["id"],
+                        "text": unit["text"],
+                        "clause_no": unit.get("clause_no_raw") or "",
+                        "heading_path": unit.get("heading_path") or [],
+                    }
+                ],
+            }
+            for index, unit in enumerate(units, start=1)
+        ]
+
+    @staticmethod
+    def _target(unit: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": unit["id"],
+            "text": unit["text"],
+            "clause_no": unit.get("clause_no_raw") or "",
+            "clause_ordinal": unit.get("clause_ordinal"),
+            "heading_path": unit.get("heading_path") or [],
+        }
 
     def _validate_output(self, run: dict[str, Any], output: Any) -> list[dict[str, str]]:
         if not isinstance(output, dict):
@@ -208,26 +421,22 @@ class SemanticAuditService:
                 if not isinstance(finding, dict):
                     raise ValueError("Each semantic finding must be an object.")
                 finding_id = str(finding.get("id") or "").strip()
-                quote = str(finding.get("quote") or "").strip()
+                category = str(finding.get("category") or "").strip()
                 problem = str(finding.get("problem") or "").strip()
                 suggestion = str(finding.get("suggestion") or "").strip()
-                if not all((finding_id, quote, problem, suggestion)):
+                if category not in {"semantic_ambiguity", "executability_gap"}:
+                    raise ValueError(f"Semantic finding has an invalid category: {category}")
+                if not all((finding_id, problem, suggestion)):
                     raise ValueError("Semantic finding fields must not be blank.")
                 if finding_id not in target_ids:
                     raise ValueError(f"Finding targets a chunk outside its batch: {finding_id}")
                 if finding_id in finding_ids:
                     raise ValueError(f"A chunk returned more than one finding: {finding_id}")
-                resolved_quote = self._resolve_quote(
-                    unit_by_id[finding_id]["text"],
-                    quote,
-                )
-                if resolved_quote is None:
-                    raise ValueError(f"Finding quote cannot be located in chunk: {finding_id}")
                 finding_ids.add(finding_id)
                 normalized.append(
                     {
                         "id": finding_id,
-                        "quote": resolved_quote,
+                        "category": category,
                         "problem": problem,
                         "suggestion": suggestion,
                     }
@@ -237,40 +446,67 @@ class SemanticAuditService:
             raise ValueError("Semantic audit batches did not cover every chunk exactly once.")
         return normalized
 
-    @staticmethod
-    def _resolve_quote(source: str, quote: str) -> str | None:
-        """Locate a model quote and return the exact source-backed substring.
+    def _validate_summary(self, run: dict[str, Any], output: Any) -> dict[str, Any]:
+        if not isinstance(output, dict):
+            raise ValueError("Policy summary output must be an object.")
+        allowed = {
+            "plain_summary", "purpose", "scope", "concerned_roles",
+            "key_process", "key_rules", "exceptions",
+        }
+        if set(output) - allowed:
+            raise ValueError(f"Policy summary contains unknown fields: {sorted(set(output) - allowed)}")
+        if not isinstance(output.get("plain_summary"), str) or not output["plain_summary"].strip():
+            raise ValueError("Policy summary plain_summary must not be blank.")
+        for field in ("scope", "concerned_roles", "key_process", "key_rules", "exceptions"):
+            if not isinstance(output.get(field), list):
+                raise ValueError(f"Policy summary {field} must be an array.")
+        expected_ids = {item["id"] for item in self.repository.get_document_units(run["document_id"])}
+        if not expected_ids:
+            raise ValueError("The summarized document has no chunks.")
 
-        PDF extraction commonly inserts line breaks or layout spaces that a model
-        removes when quoting. Exact quotes retain the previous behavior. Otherwise,
-        match after removing Unicode whitespace, require a unique occurrence, and
-        map that occurrence back to the original source span.
-        """
-        if quote in source:
-            return quote
+        def walk(value: Any, path: str = "summary") -> None:
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key == "source_ids":
+                        if not isinstance(child, list) or not child:
+                            raise ValueError(f"{path}.source_ids must be a non-empty array.")
+                        ids = [str(item) for item in child]
+                        if len(ids) != len(set(ids)):
+                            raise ValueError(f"{path}.source_ids contains duplicates.")
+                        invalid = set(ids) - expected_ids
+                        if invalid:
+                            raise ValueError(f"Policy summary contains invalid source_ids: {sorted(invalid)}")
+                    else:
+                        walk(child, f"{path}.{key}")
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    walk(child, f"{path}[{index}]")
 
-        source_chars: list[str] = []
-        source_positions: list[int] = []
-        for index, character in enumerate(source):
-            if character.isspace():
-                continue
-            source_chars.append(character)
-            source_positions.append(index)
+        def sourced_text(value: Any, path: str) -> None:
+            if not isinstance(value, dict) or set(value) != {"text", "source_ids"}:
+                raise ValueError(f"{path} must contain exactly text and source_ids.")
+            if not isinstance(value["text"], str) or not value["text"].strip():
+                raise ValueError(f"{path}.text must not be blank.")
 
-        normalized_quote = "".join(character for character in quote if not character.isspace())
-        if not normalized_quote:
-            return None
-        normalized_source = "".join(source_chars)
-
-        first = normalized_source.find(normalized_quote)
-        if first < 0:
-            return None
-        if normalized_source.find(normalized_quote, first + 1) >= 0:
-            return None
-
-        start = source_positions[first]
-        end = source_positions[first + len(normalized_quote) - 1] + 1
-        return source[start:end]
+        walk(output)
+        if output.get("purpose") is not None:
+            sourced_text(output["purpose"], "summary.purpose")
+        for field in ("scope", "key_process", "key_rules", "exceptions"):
+            for index, item in enumerate(output[field]):
+                sourced_text(item, f"summary.{field}[{index}]")
+        for index, role in enumerate(output["concerned_roles"]):
+            path = f"summary.concerned_roles[{index}]"
+            expected = {"role", "source_ids", "responsibilities", "rights", "obligations"}
+            if not isinstance(role, dict) or set(role) != expected:
+                raise ValueError(f"{path} has an invalid structure.")
+            if not isinstance(role["role"], str) or not role["role"].strip():
+                raise ValueError(f"{path}.role must not be blank.")
+            for field in ("responsibilities", "rights", "obligations"):
+                if not isinstance(role[field], list):
+                    raise ValueError(f"{path}.{field} must be an array.")
+                for item_index, item in enumerate(role[field]):
+                    sourced_text(item, f"{path}.{field}[{item_index}]")
+        return output
 
     def _reconcile_framework_status(self, run: dict[str, Any]) -> None:
         task_id = str(run.get("framework_task_id") or "").strip()
@@ -285,16 +521,29 @@ class SemanticAuditService:
         except Exception:
             return
         if status in {"failed", "cancelled", "succeeded"}:
-            self.repository.mark_audit_failed(
-                run["id"],
-                "Framework task ended without delivering a valid semantic audit result.",
-            )
+            if run["status"] == "running":
+                self.repository.mark_audit_failed(
+                    run["id"], "Framework task ended without delivering a valid semantic audit result."
+                )
+            if run.get("summary_status") in {"pending", "running"}:
+                self.repository.mark_audit_summary_failed(
+                    run["id"], "Framework task ended without delivering a valid policy summary result."
+                )
+            if run.get("conflict_status") in {"pending", "running"}:
+                self._mark_conflict_failed(
+                    run["id"], "Framework task ended without delivering a valid conflict audit result."
+                )
 
     def _headers(self) -> dict[str, str]:
         return {
             "X-User-ID": self.settings.framework_user_id,
             "X-Tenant-ID": self.settings.framework_tenant_id,
         }
+
+    def _mark_conflict_failed(self, audit_id: str, message: str) -> None:
+        handler = getattr(self.repository, "mark_conflict_audit_failed", None)
+        if handler is not None:
+            handler(audit_id, message)
 
     @staticmethod
     def _state(run: dict[str, Any]) -> dict[str, Any]:
@@ -304,6 +553,15 @@ class SemanticAuditService:
             "error_message": run.get("error_message"),
             "framework_task_id": run.get("framework_task_id"),
             "framework_run_id": run.get("framework_run_id"),
+            "policy_summary": {
+                "status": run.get("summary_status") or "pending",
+                "error_message": run.get("summary_error_message"),
+                "content": run.get("summary_content"),
+            },
+            "conflict_audit": {
+                "status": run.get("conflict_status") or "pending",
+                "error_message": run.get("conflict_error_message"),
+            },
         }
 
     @staticmethod

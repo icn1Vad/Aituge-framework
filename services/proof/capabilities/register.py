@@ -47,6 +47,21 @@ class ProofSearchInput(BaseModel):
         return normalized
 
 
+class ProofConflictSearchInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    unit_id: str = Field(min_length=1, max_length=160)
+    top_k: int = Field(default=10, ge=1, le=20)
+
+    @field_validator("unit_id")
+    @classmethod
+    def non_blank_unit_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("unit_id must not be blank")
+        return normalized
+
+
 class ProofSqlInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -81,23 +96,18 @@ class ProofAuditBatch(BaseModel):
     targets: list[ProofAuditTarget] = Field(min_length=1, max_length=100)
 
 
-class ProofAuditInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class ProofPolicySummaryInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
 
     audit_id: str = Field(min_length=1, max_length=160)
     document_id: str = Field(min_length=1, max_length=160)
-    items: list[ProofAuditBatch] = Field(min_length=1, max_length=2000)
-    max_concurrency: int = Field(default=4, ge=1, le=8)
-    failure_policy: Literal["fail_fast"] = "fail_fast"
-    retry_per_item: int = Field(default=1, ge=0, le=3)
+    summary_chunks: list[ProofAuditTarget] = Field(min_length=1, max_length=2000)
+    summary_max_chars: int = Field(default=60_000, ge=1)
 
     @model_validator(mode="after")
-    def validate_chunk_coverage(self):
-        ids = [target.id for item in self.items for target in item.targets]
-        if len(ids) != len(set(ids)):
-            raise ValueError("Audit target chunk IDs must be unique across batches.")
-        if any(item.audit_id != self.audit_id for item in self.items):
-            raise ValueError("Every batch audit_id must match the task audit_id.")
+    def enforce_summary_limit(self):
+        if sum(len(item.text) for item in self.summary_chunks) > self.summary_max_chars:
+            raise ValueError("Document exceeds PROOF_SUMMARY_MAX_CHARS.")
         return self
 
 
@@ -105,7 +115,7 @@ class ProofSemanticFinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(min_length=1, max_length=160)
-    quote: str = Field(min_length=1, max_length=100_000)
+    category: Literal["semantic_ambiguity", "executability_gap"]
     problem: str = Field(min_length=1, max_length=4000)
     suggestion: str = Field(min_length=1, max_length=4000)
 
@@ -139,12 +149,177 @@ class ProofAuditOutput(BaseModel):
     items: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ProofSourcedText(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=2000)
+    source_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class ProofConcernedRole(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: str = Field(min_length=1, max_length=200)
+    source_ids: list[str] = Field(min_length=1, max_length=100)
+    responsibilities: list[ProofSourcedText] = Field(default_factory=list, max_length=30)
+    rights: list[ProofSourcedText] = Field(default_factory=list, max_length=30)
+    obligations: list[ProofSourcedText] = Field(default_factory=list, max_length=30)
+
+
+class ProofPolicySummaryOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    plain_summary: str = Field(min_length=1, max_length=6000)
+    purpose: ProofSourcedText | None = None
+    scope: list[ProofSourcedText] = Field(default_factory=list, max_length=30)
+    concerned_roles: list[ProofConcernedRole] = Field(default_factory=list, max_length=100)
+    key_process: list[ProofSourcedText] = Field(default_factory=list, max_length=50)
+    key_rules: list[ProofSourcedText] = Field(default_factory=list, max_length=100)
+    exceptions: list[ProofSourcedText] = Field(default_factory=list, max_length=50)
+
+
+class ProofAuditPipelineOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifacts: dict[str, Any] = Field(default_factory=dict)
+    stages: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
+class ProofConflictTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=160)
+    unit_id: str = Field(min_length=1, max_length=160)
+    text: str = Field(default="", max_length=100_000)
+    clause_no: str = Field(default="", max_length=200)
+    heading_path: list[str] = Field(default_factory=list, max_length=30)
+
+
+class ProofConflictBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=240)
+    audit_id: str = Field(min_length=1, max_length=160)
+    check: Literal["conflict"] = "conflict"
+    targets: list[ProofConflictTarget] = Field(min_length=1, max_length=2)
+
+    @model_validator(mode="after")
+    def validate_target_ids(self):
+        ids = [target.id for target in self.targets]
+        unit_ids = [target.unit_id for target in self.targets]
+        if len(ids) != len(set(ids)) or len(unit_ids) != len(set(unit_ids)):
+            raise ValueError("Conflict target IDs and unit IDs must be unique within a batch.")
+        if any(target.id != target.unit_id for target in self.targets):
+            raise ValueError("Conflict target id must equal unit_id.")
+        return self
+
+
+class ProofConflictAuditInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    audit_id: str = Field(min_length=1, max_length=160)
+    document_id: str = Field(default="", max_length=160)
+    items: list[ProofConflictBatch] = Field(min_length=1, max_length=2000)
+    max_concurrency: int = Field(default=4, ge=1, le=8)
+    failure_policy: Literal["fail_fast"] = "fail_fast"
+    retry_per_item: int = Field(default=1, ge=0, le=3)
+
+    @model_validator(mode="after")
+    def validate_target_coverage(self):
+        target_ids = [target.id for item in self.items for target in item.targets]
+        unit_ids = [target.unit_id for item in self.items for target in item.targets]
+        if len(target_ids) != len(set(target_ids)):
+            raise ValueError("Conflict target IDs must be unique across batches.")
+        if len(unit_ids) != len(set(unit_ids)):
+            raise ValueError("Conflict unit IDs must be unique across batches.")
+        if any(item.audit_id != self.audit_id for item in self.items):
+            raise ValueError("Every conflict batch audit_id must match the task audit_id.")
+        return self
+
+
+class ProofAuditInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    audit_id: str = Field(min_length=1, max_length=160)
+    document_id: str = Field(min_length=1, max_length=160)
+    summary_chunks: list[ProofAuditTarget] = Field(min_length=1, max_length=2000)
+    summary_max_chars: int = Field(default=60_000, ge=1)
+    semantic_items: list[ProofAuditBatch] = Field(min_length=1, max_length=2000)
+    conflict_items: list[ProofConflictBatch] = Field(min_length=1, max_length=2000)
+    max_concurrency: int = Field(default=4, ge=1, le=8)
+    failure_policy: Literal["fail_fast"] = "fail_fast"
+    retry_per_item: int = Field(default=1, ge=0, le=3)
+
+    @model_validator(mode="after")
+    def validate_chunk_coverage(self):
+        semantic_ids = [target.id for item in self.semantic_items for target in item.targets]
+        if len(semantic_ids) != len(set(semantic_ids)):
+            raise ValueError("Audit target chunk IDs must be unique across batches.")
+        if any(item.audit_id != self.audit_id for item in self.semantic_items):
+            raise ValueError("Every batch audit_id must match the task audit_id.")
+        summary_ids = [item.id for item in self.summary_chunks]
+        if len(summary_ids) != len(set(summary_ids)) or set(summary_ids) != set(semantic_ids):
+            raise ValueError("Summary chunks must cover the same unique chunks as audit batches.")
+        conflict_ids = [target.id for item in self.conflict_items for target in item.targets]
+        if len(conflict_ids) != len(set(conflict_ids)) or set(conflict_ids) != set(summary_ids):
+            raise ValueError("Conflict items must cover every chunk exactly once.")
+        if any(item.audit_id != self.audit_id for item in self.conflict_items):
+            raise ValueError("Every conflict item audit_id must match the task audit_id.")
+        if any(len(item.targets) != 1 for item in self.conflict_items):
+            raise ValueError("The integrated conflict stage requires exactly one target per item.")
+        return self
+
+
+class ProofConflictFinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=160)
+    candidate_ids: list[str] = Field(min_length=1, max_length=4)
+    conflict_type: Literal[
+        "numeric_conflict",
+        "authority_conflict",
+        "process_conflict",
+        "rule_reversal",
+    ]
+    problem: str = Field(min_length=1, max_length=4000)
+    suggestion: str = Field(min_length=1, max_length=4000)
+
+    @model_validator(mode="after")
+    def normalize_candidate_ids(self):
+        self.candidate_ids = list(dict.fromkeys(self.candidate_ids))
+        if self.id in self.candidate_ids:
+            raise ValueError("Conflict candidate IDs must not contain the source target ID.")
+        return self
+
+
+class ProofConflictItemOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    findings: list[ProofConflictFinding] = Field(default_factory=list, max_length=6)
+
+    @model_validator(mode="after")
+    def validate_unique_findings(self):
+        keys = [
+            (finding.id, tuple(sorted(finding.candidate_ids)), finding.conflict_type)
+            for finding in self.findings
+        ]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Duplicate conflict findings are not allowed.")
+        counts: dict[str, int] = {}
+        for finding in self.findings:
+            counts[finding.id] = counts.get(finding.id, 0) + 1
+        if any(count > 3 for count in counts.values()):
+            raise ValueError("Each target may return at most three conflict findings.")
+        return self
+
+
 async def register(registry, settings) -> None:
     """Declare Proof capabilities through the framework-owned registry facade."""
 
     base_url = settings.require("PROOF_SERVICE_BASE_URL")
     model_id = settings.get("PROOF_QA_MODEL_ID", "deepseek-v4-pro").strip()
     audit_model_id = settings.get("PROOF_AUDIT_MODEL_ID", "deepseek-v4-pro").strip()
+    conflict_model_id = settings.get("PROOF_CONFLICT_MODEL_ID", audit_model_id).strip()
 
     registry.register_skill_root(CAPABILITY_DIR / "skills")
     registry.register_http_tool(
@@ -177,6 +352,21 @@ async def register(registry, settings) -> None:
         timeout_seconds=10,
         max_response_chars=60_000,
     )
+    registry.register_http_tool(
+        tool_name="proof_conflict_search",
+        provider="proof_http",
+        display_name="Proof Conflict Evidence Search",
+        description=(
+            "Retrieve one source policy unit and cross-policy conflict candidates through "
+            "same-title, leaf-category, parent-category, and global vector branches, then rerank."
+        ),
+        base_url=base_url,
+        path="/v1/internal/conflict-retrieval",
+        method="POST",
+        input_model=ProofConflictSearchInput,
+        timeout_seconds=45,
+        max_response_chars=160_000,
+    )
     registry.register_skill_package(
         package_name="proof-policy-qa-package",
         display_name="Proof Policy Q&A",
@@ -199,6 +389,29 @@ async def register(registry, settings) -> None:
         default_tools=["proof_search", "proof_sql", "code_interpreter"],
         default_datasets=[],
     )
+    registry.register_skill_package(
+        package_name="proof-policy-summary-package",
+        display_name="Proof Preliminary Policy Analysis",
+        description="Produce a source-grounded preliminary analysis report for one complete policy.",
+        tags=["proof", "policy", "summary"],
+        primary_skill="proof-policy-summary",
+        auxiliary_skills=[],
+    )
+    registry.register_agent(
+        agent_id="proof-summary-agent",
+        name="Proof Preliminary Policy Analysis Agent",
+        description="Reads a complete policy once and returns a clear source-grounded preliminary analysis report.",
+        agent_type="single",
+        model_id=audit_model_id or "deepseek-v4-pro",
+        system_prompt=(
+            "You are the Proof preliminary policy analysis agent. Read the complete supplied policy before writing. "
+            "Produce a clear multi-section reader-facing analysis report while explaining only what the policy "
+            "states. Do not perform semantic or conflict auditing, infer missing rules, or claim compliance. "
+            "Return strict source-grounded JSON."
+        ),
+        default_tools=[],
+        default_datasets=[],
+    )
     registry.register_task(
         task_type="proof.qa.chat",
         name="Proof Policy Q&A",
@@ -215,38 +428,138 @@ async def register(registry, settings) -> None:
     )
     registry.register_skill_package(
         package_name="proof-policy-semantic-audit-package",
-        display_name="Proof Policy Semantic Audit",
-        description="Find concrete semantic ambiguity in complete policy chunks.",
-        tags=["proof", "policy", "audit", "semantic"],
+        display_name="Proof Policy Clarity and Executability Audit",
+        description="Find material semantic ambiguity and executability gaps in policy chunks.",
+        tags=["proof", "policy", "audit", "semantic", "executability"],
         primary_skill="proof-policy-semantic-audit",
         auxiliary_skills=[],
     )
     registry.register_agent(
         agent_id="proof-audit-agent",
-        name="Proof Policy Semantic Audit Agent",
-        description="Audits policy chunk batches and returns strict evidence-grounded JSON.",
+        name="Proof Policy Clarity and Executability Audit Agent",
+        description="Audits policy chunks for clarity and executability with strict source-grounded JSON.",
         agent_type="single",
         model_id=audit_model_id or "deepseek-v4-pro",
         system_prompt=(
-            "You are the Proof semantic audit agent. Follow the active primary skill. "
+            "You are the Proof policy clarity and executability audit agent. Follow the active primary skill. "
             "Inspect only target chunks, return strict JSON, return no finding for clear text, "
-            "and never invent or paraphrase quote evidence."
+            "and identify findings only by the supplied target chunk IDs."
         ),
         default_tools=[],
         default_datasets=[],
     )
     registry.register_task(
         task_type="proof.audit.run",
-        name="Proof Policy Semantic Audit",
-        description="Audit every supplied policy chunk for concrete semantic ambiguity.",
-        handler="batch_item_scheduler",
-        default_agent_id="proof-audit-agent",
-        default_skill_package="proof-policy-semantic-audit-package",
-        default_primary_skill="proof-policy-semantic-audit",
+        name="Proof Policy Review Report",
+        description="Summarize a complete policy and run semantic and conflict audits in one pipeline.",
+        handler="pipeline",
+        pipeline_id="proof-audit-pipeline-v1",
+        default_agent_id="proof-summary-agent",
+        default_skill_package="proof-policy-summary-package",
+        default_primary_skill="proof-policy-summary",
         default_tools=[],
         default_datasets=[],
         input_model=ProofAuditInput,
-        output_model=ProofAuditOutput,
-        item_output_model=ProofAuditItemOutput,
+        output_model=ProofAuditPipelineOutput,
         result_sink_url=f"{base_url.rstrip('/')}/v1/internal/semantic-audits/result",
+    )
+    registry.register_pipeline(
+        pipeline_id="proof-audit-pipeline-v1",
+        version="1.1",
+        task_type="proof.audit.run",
+        description="Run policy summary, semantic audit, and conflict audit concurrently, then merge artifacts.",
+        final_artifact_type="proof_audit_result",
+        max_parallelism=3,
+        stages=[
+            {
+                "stage_id": "policy_summary",
+                "name": "Read and summarize complete policy",
+                "stage_type": "direct_model",
+                "input_model": ProofPolicySummaryInput,
+                "output_model": ProofPolicySummaryOutput,
+                "input_adapter": "task_input",
+                "artifact_type": "proof_policy_summary",
+                "agent_id": "proof-summary-agent",
+                "skill_package": "proof-policy-summary-package",
+                "output_policy": "repair_once",
+                "timeout_seconds": 180,
+                "retry_policy": {"max_attempts": 2, "retry_on": ["invalid_output", "timeout"]},
+                "failure_policy": "continue_with_warning",
+            },
+            {
+                "stage_id": "semantic_audit",
+                "name": "Audit policy chunks",
+                "stage_type": "batch",
+                "item_source": "semantic_items",
+                "output_model": ProofAuditOutput,
+                "item_output_model": ProofAuditItemOutput,
+                "artifact_type": "proof_semantic_audit",
+                "agent_id": "proof-audit-agent",
+                "skill_package": "proof-policy-semantic-audit-package",
+                "timeout_seconds": 900,
+                "failure_policy": "fail_task",
+            },
+            {
+                "stage_id": "conflict_audit",
+                "name": "Audit cross-policy rule conflicts",
+                "stage_type": "batch",
+                "item_source": "conflict_items",
+                "output_model": ProofAuditOutput,
+                "item_output_model": ProofConflictItemOutput,
+                "artifact_type": "proof_conflict_audit",
+                "agent_id": "proof-conflict-agent",
+                "skill_package": "proof-policy-conflict-audit-package",
+                "tools": ["proof_conflict_search"],
+                "timeout_seconds": 900,
+                "failure_policy": "continue_with_warning",
+            },
+            {
+                "stage_id": "finalize_report",
+                "name": "Merge policy review artifacts",
+                "stage_type": "finalizer",
+                "depends_on": ["policy_summary", "semantic_audit", "conflict_audit"],
+                "output_model": ProofAuditPipelineOutput,
+                "artifact_type": "proof_audit_result",
+                "service_handler": "merge_pipeline_artifacts",
+                "timeout_seconds": 30,
+            },
+        ],
+    )
+    registry.register_skill_package(
+        package_name="proof-policy-conflict-audit-package",
+        display_name="Proof Policy Conflict Audit",
+        description="Evidence-grounded joint conflict detection over policy units and retrieved rules.",
+        tags=["proof", "policy", "audit", "conflict", "rag"],
+        primary_skill="proof-policy-conflict-audit",
+        auxiliary_skills=[],
+    )
+    registry.register_agent(
+        agent_id="proof-conflict-agent",
+        name="Proof Policy Conflict Audit Agent",
+        description="Retrieves conflict evidence and jointly checks numeric, authority, process, and polarity rules.",
+        agent_type="single",
+        model_id=conflict_model_id or "deepseek-v4-pro",
+        system_prompt=(
+            "You are the Proof policy conflict audit agent. Follow the active primary skill. "
+            "Call proof_conflict_search exactly once for every target unit, compare only supplied "
+            "source-grounded rules, copy source/result chunk IDs exactly from tool output, suppress "
+            "differences that can coexist, and return only IDs, conflict type, problem, and suggestion."
+        ),
+        default_tools=["proof_conflict_search"],
+        default_datasets=[],
+    )
+    registry.register_task(
+        task_type="proof.conflict.audit",
+        name="Proof Policy Conflict Audit",
+        description="Retrieve evidence and audit supplied policy units for material rule conflicts.",
+        handler="batch_item_scheduler",
+        default_agent_id="proof-conflict-agent",
+        default_skill_package="proof-policy-conflict-audit-package",
+        default_primary_skill="proof-policy-conflict-audit",
+        default_tools=["proof_conflict_search"],
+        default_datasets=[],
+        input_model=ProofConflictAuditInput,
+        output_model=ProofAuditOutput,
+        item_output_model=ProofConflictItemOutput,
+        result_sink_url=f"{base_url.rstrip('/')}/v1/internal/conflict-audits/result",
     )

@@ -1,5 +1,7 @@
 import asyncio
 import json
+import time
+from types import MethodType, SimpleNamespace
 
 import httpx
 
@@ -10,7 +12,15 @@ from common.system_constants import DEFAULT_TENANT_ID
 from db.db_context import create_db_session, init_db, reset_engine_for_test
 from db.models.llm import LlmModelEntity
 import service.agent.single_agent_runner as runner_mod
-from task_manager.pipeline.models import PipelineDefinition, StageDefinition, validate_pipeline_definition
+import task_manager.pipeline.executor as pipeline_executor_mod
+from task_manager.handlers.base import TaskHandlerEvent
+from task_manager.pipeline.executor import PipelineExecutor
+from task_manager.pipeline.models import (
+    AgentStageConfig,
+    PipelineDefinition,
+    StageDefinition,
+    validate_pipeline_definition,
+)
 from task_manager.runtime.broker import reset_event_broker_for_test
 from task_manager.runtime.execution import executor_lock
 
@@ -125,6 +135,165 @@ def test_pipeline_definition_rejects_dependency_cycles():
         assert "dependency cycle" in str(exc)
     else:
         raise AssertionError("Cycle validation should fail.")
+
+
+def test_pipeline_ready_stages_run_in_parallel_and_finish_in_delay_order(monkeypatch):
+    async def run():
+        definition = PipelineDefinition(
+            pipeline_id="parallel-test",
+            version="1",
+            task_type="parallel.test",
+            max_parallelism=2,
+            final_artifact_type="final",
+            stages=(
+                StageDefinition("slow", "Slow", "deterministic", service_handler="unused"),
+                StageDefinition("fast", "Fast", "deterministic", service_handler="unused"),
+                StageDefinition(
+                    "finalize",
+                    "Finalize",
+                    "finalizer",
+                    depends_on=("slow", "fast"),
+                    artifact_type="final",
+                    service_handler="unused",
+                ),
+            ),
+        )
+        executor = PipelineExecutor(SimpleNamespace())
+        completion_order = []
+
+        async def fake_stream_stage(self, *, stage, artifacts, **kwargs):
+            await asyncio.sleep({"slow": 0.16, "fast": 0.06, "finalize": 0.01}[stage.stage_id])
+            completion_order.append(stage.stage_id)
+            artifacts[stage.stage_id] = SimpleNamespace(
+                id=f"artifact-{stage.stage_id}",
+                artifact_type="final" if stage.stage_id == "finalize" else stage.stage_id,
+                content_json={"stage": stage.stage_id},
+            )
+            yield TaskHandlerEvent(
+                event_type="stage_completed",
+                stage=stage.stage_id,
+                message="done",
+            )
+
+        async def no_stage_runs(_run_id):
+            return []
+
+        async def no_artifacts(_run_id):
+            return {}
+
+        async def no_cancel(_run_id):
+            return None
+
+        async def no_sink(*args, **kwargs):
+            return None
+
+        executor._stream_stage = MethodType(fake_stream_stage, executor)
+        monkeypatch.setattr(pipeline_executor_mod, "list_stage_runs", no_stage_runs)
+        monkeypatch.setattr(pipeline_executor_mod, "_artifacts_by_stage", no_artifacts)
+        monkeypatch.setattr(pipeline_executor_mod, "_raise_if_cancelled", no_cancel)
+        monkeypatch.setattr(pipeline_executor_mod, "deliver_task_result", no_sink)
+        context = SimpleNamespace(
+            task=SimpleNamespace(id="task", input_payload_json={}),
+            task_type=SimpleNamespace(result_sink_url=None),
+        )
+        pipeline_run = SimpleNamespace(id="run", metadata_json={})
+
+        started = time.perf_counter()
+        events = [event async for event in executor.stream(
+            context=context,
+            run=pipeline_run,
+            definition=definition,
+        )]
+        duration = time.perf_counter() - started
+
+        assert duration < 0.23
+        assert completion_order == ["fast", "slow", "finalize"]
+        assert events[-1].event_type == "result_snapshot"
+
+    asyncio.run(run())
+
+
+def test_direct_model_stage_uses_skill_and_llm_runtime_without_react(monkeypatch):
+    async def run():
+        class SessionContext:
+            async def __aenter__(self):
+                return object()
+
+            async def __aexit__(self, *args):
+                return None
+
+        profile = SimpleNamespace(
+            enabled=True,
+            agent_id="summary-agent",
+            model_id="summary-model",
+            system_prompt="PROFILE SYSTEM",
+            default_tools=[],
+            default_datasets=[],
+        )
+        captured = {}
+
+        async def ensure_profiles(_session):
+            return None
+
+        async def get_profile(_session, agent_id):
+            assert agent_id == "summary-agent"
+            return profile
+
+        class FakeSkillManager:
+            def __init__(self, tenant_id):
+                assert tenant_id == "tenant"
+
+            async def create_context(self, package):
+                assert package == "summary-package"
+                return SimpleNamespace(task_prompt="SKILL RULES")
+
+        class FakeLlmRuntime:
+            def __init__(self, tenant_id):
+                assert tenant_id == "tenant"
+
+            async def complete(self, *, messages, model_id, system_prompt):
+                captured.update(
+                    messages=messages,
+                    model_id=model_id,
+                    system_prompt=system_prompt,
+                )
+                return '{"plain_summary":"ok"}'
+
+        class ForbiddenReact:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("ReactAgent must not be constructed by direct_model")
+
+        monkeypatch.setattr(pipeline_executor_mod, "create_db_session", lambda: SessionContext())
+        monkeypatch.setattr(pipeline_executor_mod, "ensure_default_agent_profiles", ensure_profiles)
+        monkeypatch.setattr(pipeline_executor_mod, "get_agent_profile", get_profile)
+        monkeypatch.setattr(pipeline_executor_mod, "SkillManager", FakeSkillManager)
+        monkeypatch.setattr(pipeline_executor_mod, "LlmRuntime", FakeLlmRuntime)
+        monkeypatch.setattr(runner_mod, "ReactAgent", ForbiddenReact)
+
+        executor = PipelineExecutor(SimpleNamespace())
+        stage = StageDefinition(
+            stage_id="summary",
+            name="Summary",
+            stage_type="direct_model",
+            agent_config=AgentStageConfig(
+                agent_id="summary-agent",
+                skill_package="summary-package",
+            ),
+        )
+        events = [event async for event in executor._stream_direct_model_stage(
+            context=SimpleNamespace(),
+            task=SimpleNamespace(tenant_id="tenant", task_type="proof.audit.run"),
+            stage=stage,
+            stage_run_id="stage-run",
+            stage_input={"summary_chunks": [{"id": "chunk-1", "text": "正文"}]},
+        )]
+
+        assert events[-1].structured_output == {"plain_summary": "ok"}
+        assert captured["model_id"] == "summary-model"
+        assert captured["system_prompt"] == "PROFILE SYSTEM\n\nSKILL RULES"
+        assert "chunk-1" in captured["messages"][0]["content"]
+
+    asyncio.run(run())
 
 
 def test_pipeline_run_retry_replay_and_human_review(tmp_path, monkeypatch):

@@ -7,7 +7,13 @@ from typing import Annotated
 from fastapi import Body, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from proof.api.schemas import CategoryCreate, PolicySqlRequest, RetrievalFetchRequest, RetrievalSearchRequest
+from proof.api.schemas import (
+    CategoryCreate,
+    ConflictRetrievalRequest,
+    PolicySqlRequest,
+    RetrievalFetchRequest,
+    RetrievalSearchRequest,
+)
 from proof.application.service import ProofService
 from proof.config import Settings, get_settings
 from proof.errors import ProofError
@@ -15,7 +21,7 @@ from proof.errors import ProofError
 
 DATASET_PAGE = Path(__file__).with_name("static") / "dataset.html"
 WORKBENCH_PAGE = Path(__file__).with_name("static") / "workbench.html"
-EXAMPLE_POLICY = Path(__file__).parents[3] / "examples" / "policy-structure-errors.txt"
+EXAMPLE_POLICY = Path(__file__).parents[3] / "examples" / "采购管理制度（试行）.txt"
 
 
 def create_app(settings: Settings | None = None, service: ProofService | None = None) -> FastAPI:
@@ -49,12 +55,12 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
     async def workbench_page():
         return HTMLResponse(WORKBENCH_PAGE.read_text("utf-8"))
 
-    @app.get("/examples/policy-structure-errors.txt", include_in_schema=False)
+    @app.get("/examples/policy-semantic-conflict-test.txt", include_in_schema=False)
     async def example_policy_file():
         return FileResponse(
             EXAMPLE_POLICY,
             media_type="text/plain; charset=utf-8",
-            filename="policy-structure-errors.txt",
+            filename="采购管理制度（试行）.txt",
         )
 
     @app.post("/v1/policies")
@@ -105,14 +111,24 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
         data = await asyncio.to_thread(_service(request).list_clauses, policy_id, include_text=include_text)
         return {"success": True, "data": data}
 
-    @app.get("/v1/policies/{policy_id}/quality-report")
-    async def get_quality_report(policy_id: str, request: Request):
-        data = await asyncio.to_thread(_service(request).get_quality_report, policy_id)
+    @app.get("/v1/policies/{policy_id}/audit-status")
+    async def get_audit_status(policy_id: str, request: Request):
+        data = await asyncio.to_thread(_service(request).get_audit_status, policy_id)
         return {"success": True, "data": data}
 
-    @app.post("/v1/policies/{policy_id}/semantic-audit")
-    async def retry_semantic_audit(policy_id: str, request: Request):
-        data = await asyncio.to_thread(_service(request).retry_semantic_audit, policy_id)
+    @app.get("/v1/policies/{policy_id}/policy-summary")
+    async def get_policy_summary(policy_id: str, request: Request):
+        data = await asyncio.to_thread(_service(request).get_policy_summary, policy_id)
+        return {"success": True, "data": data}
+
+    @app.get("/v1/policies/{policy_id}/semantic-findings")
+    async def get_semantic_findings(policy_id: str, request: Request):
+        data = await asyncio.to_thread(_service(request).get_semantic_findings, policy_id)
+        return {"success": True, "data": data}
+
+    @app.get("/v1/policies/{policy_id}/conflict-findings")
+    async def get_conflict_findings(policy_id: str, request: Request):
+        data = await asyncio.to_thread(_service(request).get_conflict_findings, policy_id)
         return {"success": True, "data": data}
 
     @app.post("/v1/policies/{policy_id}/confirm")
@@ -128,6 +144,11 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
     @app.post("/v1/internal/semantic-audits/result", include_in_schema=False)
     async def semantic_audit_result(request: Request, payload: dict = Body(...)):
         data = await asyncio.to_thread(_service(request).accept_semantic_audit_result, payload)
+        return {"success": True, "data": data}
+
+    @app.post("/v1/internal/conflict-audits/result", include_in_schema=False)
+    async def conflict_audit_result(request: Request, payload: dict = Body(...)):
+        data = await asyncio.to_thread(_service(request).accept_conflict_audit_result, payload)
         return {"success": True, "data": data}
 
     @app.get("/v1/ingestion-runs/{run_id}")
@@ -188,6 +209,15 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
         data = await asyncio.to_thread(_service(request).fetch_units, payload.unit_ids)
         return {"success": True, "data": data}
 
+    @app.post("/v1/internal/conflict-retrieval", include_in_schema=False)
+    async def retrieve_conflict_candidates(payload: ConflictRetrievalRequest, request: Request):
+        data = await asyncio.to_thread(
+            _service(request).retrieve_conflict_candidates,
+            payload.unit_id,
+            top_k=payload.top_k,
+        )
+        return {"success": True, "data": _conflict_agent_view(data)}
+
     @app.post("/v1/query/sql")
     async def execute_sql(payload: PolicySqlRequest, request: Request):
         data = await asyncio.to_thread(
@@ -206,6 +236,63 @@ def _service(request: Request) -> ProofService:
         service = ProofService(request.app.state.settings)
         request.app.state.proof_service = service
     return service
+
+
+def _conflict_agent_view(data: dict, *, limit: int | None = None) -> dict:
+    """Give the Judge a compact view without changing the retrieval service's order."""
+
+    source = data.get("source") or {}
+    results = list(data.get("results") or [])
+
+    def compact(item: dict, *, result: bool = False) -> dict:
+        payload = {
+            "id": item.get("id"),
+            "text": item.get("text"),
+            "policy_id": item.get("policy_id"),
+            "policy_title": item.get("policy_title"),
+            "policy_version": item.get("policy_version"),
+            "level_code": item.get("level_code"),
+            "category_code": item.get("category_code"),
+            "clause_no_raw": item.get("clause_no_raw"),
+            "clause_ordinal": item.get("clause_ordinal"),
+            "citation": {"label": (item.get("citation") or {}).get("label")},
+        }
+        if result:
+            payload.update(
+                {
+                    "retrieval_sources": item.get("retrieval_sources") or [],
+                    "branch_ranks": item.get("branch_ranks") or {},
+                }
+            )
+            if item.get("rerank_rank") is not None:
+                payload["rerank_rank"] = item["rerank_rank"]
+                payload["rerank_score"] = item.get("rerank_score")
+        else:
+            payload.update(
+                {
+                    "requested_unit_id": item.get("requested_unit_id"),
+                    "unit_id_corrected": bool(item.get("unit_id_corrected")),
+                }
+            )
+        return payload
+
+    compact_results = [compact(item, result=True) for item in results]
+    if limit is not None:
+        compact_results = compact_results[: max(1, limit)]
+    candidate_counts = dict(data.get("candidate_counts") or {})
+    candidate_counts["judge_returned"] = len(compact_results)
+    return {
+        "source": compact(source),
+        "results": compact_results,
+        "candidate_counts": candidate_counts,
+        "branch_metadata": data.get("branch_metadata") or {},
+        "reranker_used": bool(data.get("reranker_used")),
+        "degraded": bool(data.get("degraded")),
+        "degradation_reasons": data.get("degradation_reasons") or [],
+        "skipped_branches": data.get("skipped_branches") or [],
+        "judge_order": "service_evidence_order",
+        "judge_candidate_limit": len(compact_results),
+    }
 
 
 app = create_app()

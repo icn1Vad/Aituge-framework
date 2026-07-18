@@ -69,11 +69,17 @@ class FakeAuditRepository:
         self.run["status"] = "failed"
         self.run["error_message"] = message
 
+    def mark_audit_summary_failed(self, audit_id, message):
+        self.run["summary_status"] = "failed"
+
+    def mark_conflict_audit_failed(self, audit_id, message):
+        self.run["conflict_status"] = "failed"
+
     def list_audit_findings(self, audit_id):
         return self.saved_findings or []
 
 
-def callback_payload(*, quote: str = "相关部门应及时处理") -> dict:
+def callback_payload() -> dict:
     return {
         "audit_id": "audit-1",
         "task_id": "task-1",
@@ -94,7 +100,7 @@ def callback_payload(*, quote: str = "相关部门应及时处理") -> dict:
                             "findings": [
                                 {
                                     "id": "unit-1",
-                                    "quote": quote,
+                                    "category": "semantic_ambiguity",
                                     "problem": "责任主体和完成时限不明确。",
                                     "suggestion": "明确责任部门和处理时限。",
                                 }
@@ -117,49 +123,21 @@ def test_semantic_callback_validates_and_atomically_completes() -> None:
     assert repository.saved_findings == [
         {
             "id": "unit-1",
-            "quote": "相关部门应及时处理",
+            "category": "semantic_ambiguity",
             "problem": "责任主体和完成时限不明确。",
             "suggestion": "明确责任部门和处理时限。",
         }
     ]
 
 
-def test_semantic_callback_rejects_untraceable_quote_without_partial_results() -> None:
+def test_semantic_callback_rejects_unknown_chunk_id_without_partial_results() -> None:
     repository = FakeAuditRepository()
     service = SemanticAuditService(Settings(semantic_audit_enabled=True), repository)
+    payload = callback_payload()
+    payload["output"]["items"][0]["result"]["result"]["findings"][0]["id"] = "missing-unit"
 
     with pytest.raises(ProofError) as exc_info:
-        service.accept_result(callback_payload(quote="模型编造的原文"))
-
-    assert exc_info.value.code == "invalid_audit_result"
-    assert repository.run["status"] == "failed"
-    assert repository.saved_findings is None
-
-
-def test_semantic_callback_recovers_exact_quote_across_layout_whitespace() -> None:
-    repository = FakeAuditRepository()
-    repository.units[0]["text"] = (
-        "第十九条 重要担保业务合同的订立，\n"
-        " 应当征询法律顾问或专家的意见。"
-    )
-    service = SemanticAuditService(Settings(semantic_audit_enabled=True), repository)
-
-    service.accept_result(
-        callback_payload(quote="重要担保业务合同的订立，应当征询法律顾问或专家的意见")
-    )
-
-    assert repository.saved_findings[0]["quote"] == (
-        "重要担保业务合同的订立，\n 应当征询法律顾问或专家的意见"
-    )
-
-
-def test_semantic_callback_rejects_ambiguous_whitespace_normalized_quote() -> None:
-    repository = FakeAuditRepository()
-    repository.units[0]["text"] = "相关 部门应处理；相关\n部门应处理。"
-    service = SemanticAuditService(Settings(semantic_audit_enabled=True), repository)
-
-    with pytest.raises(ProofError) as exc_info:
-        service.accept_result(callback_payload(quote="相关部门应处理"))
+        service.accept_result(payload)
 
     assert exc_info.value.code == "invalid_audit_result"
     assert repository.run["status"] == "failed"
@@ -182,6 +160,17 @@ def test_batching_preserves_order_and_places_oversized_normal_batch_alone() -> N
         ["unit-1"],
         ["unit-2"],
     ]
+
+
+def test_conflict_items_cover_each_chunk_exactly_once() -> None:
+    repository = FakeAuditRepository()
+    service = SemanticAuditService(Settings(semantic_audit_enabled=True), repository)
+
+    items = service._build_conflict_items("audit-1", repository.units)
+
+    assert [item["targets"][0]["id"] for item in items] == ["unit-1", "unit-2"]
+    assert all(len(item["targets"]) == 1 for item in items)
+    assert all(item["targets"][0]["id"] == item["targets"][0]["unit_id"] for item in items)
 
 
 def test_disabled_audit_has_no_run_and_is_confirmable_by_caller() -> None:

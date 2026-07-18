@@ -1,0 +1,4 @@
+interface:
+  display_name: "Proof 制度冲突审校"
+  short_description: "Audit four policy conflict types with Proof conflict RAG"
+  default_prompt: "Use $proof-policy-conflict-audit to audit policy units for evidence-grounded conflicts."

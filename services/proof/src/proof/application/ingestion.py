@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from proof.application.structure import STRUCTURE_ENGINE_VERSION, extract_policy_structure
+from proof.application.conflict_retrieval.title_normalizer import normalize_policy_title
 from proof.config import Settings
 from proof.domain import DocumentBlock, ParsedDocument, StructureExtractionResult
 from proof.domain.policy_grouping import infer_policy_category
@@ -152,6 +153,7 @@ class PolicyIngestionPipeline:
             stage = "persist"
             self.repository.update_ingestion_run(run_id, stage=stage)
             policy_title = (title or Path(original_name).stem).strip()
+            normalized_title = normalize_policy_title(policy_title)
             requested_category = (category_code or "auto").strip()
             resolved_category = (
                 infer_policy_category(policy_title)
@@ -162,6 +164,7 @@ class PolicyIngestionPipeline:
                 policy_id=policy_id,
                 document_id=document_id,
                 title=policy_title,
+                normalized_title=normalized_title,
                 version=(version or "1.0").strip(),
                 level_code=(level_code or "").strip() or None,
                 category_code=resolved_category,

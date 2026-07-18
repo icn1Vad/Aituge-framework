@@ -135,7 +135,11 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
                             "output_schema": stage.output_schema,
                             "artifact_type": stage.artifact_type,
                             "failure_policy": stage.failure_policy,
-                            "agent_id": stage.agent_config.agent_id if stage.agent_config else None,
+                            "agent_id": (
+                                stage.agent_config.agent_id
+                                if stage.agent_config
+                                else stage.batch_config.agent_id if stage.batch_config else None
+                            ),
                         }
                         for stage in item.ordered_stages()
                     ],

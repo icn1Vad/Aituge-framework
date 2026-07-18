@@ -9,11 +9,17 @@ from typing import Any
 from db.db_context import create_db_session
 from scheduling.agent_registry import ensure_default_agent_profiles, get_agent_profile
 from scheduling.scheduler import SchedulingChatRequest, SchedulingRuntimeOptions, SchedulingService
+from service.conversation import LlmRuntime
+from skill import SkillManager
 
+from task_manager.handlers.batch_item_scheduler import BatchItemSchedulerHandler
 from task_manager.handlers.base import TaskExecutionContext, TaskHandlerEvent
+from task_manager import item_store
 from task_manager.models import TaskArtifactEntity, TaskEntity, TaskRunEntity, utc_now
 from task_manager.output_parser import parse_json_output
 from task_manager.payload_schemas import validate_stage_payload
+from task_manager.registry import TaskType
+from task_manager.result_sink import deliver_task_result
 
 from .errors import PipelineCancelled, StageExecutionError
 from .models import PipelineDefinition, StageDefinition
@@ -51,7 +57,6 @@ class PipelineExecutor:
                 existing.attempt,
             )
         resume_from = str((run.metadata_json or {}).get("resume_from_stage") or "")
-        resume_reached = not resume_from
 
         yield _event(
             "pipeline_started",
@@ -60,214 +65,75 @@ class PipelineExecutor:
             payload={"pipeline_id": definition.pipeline_id, "version": definition.version},
         )
 
-        for stage_index, stage in enumerate(ordered, start=1):
-            await _raise_if_cancelled(run.id)
-            if not resume_reached:
+        stage_positions = {stage.stage_id: index for index, stage in enumerate(ordered, start=1)}
+        pending = {stage.stage_id: stage for stage in ordered if stage.stage_id not in artifacts}
+        resolved = set(artifacts)
+        if resume_from:
+            before_resume = True
+            for stage in ordered:
                 if stage.stage_id == resume_from:
-                    resume_reached = True
-                elif stage.stage_id in artifacts:
-                    continue
-            await update_run(run.id, current_stage_id=stage.stage_id, status="running")
+                    before_resume = False
+                elif before_resume:
+                    pending.pop(stage.stage_id, None)
+                    resolved.add(stage.stage_id)
 
-            stage_input, input_artifacts = _build_stage_input(task, stage, artifacts)
-            try:
-                stage_input = validate_stage_payload(stage.input_schema, stage_input)
-            except ValueError as exc:
-                raise StageExecutionError(str(exc), code="invalid_stage_input") from exc
+        while pending:
+            await _raise_if_cancelled(run.id)
+            ready = [
+                stage for stage in ordered
+                if stage.stage_id in pending and set(stage.depends_on) <= resolved
+            ]
+            if not ready:
+                raise StageExecutionError("Pipeline has no runnable stage.", code="pipeline_stalled")
+            wave = ready[: definition.max_parallelism]
+            queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
 
-            result: StageServiceResult | None = None
-            last_error: StageExecutionError | None = None
-            for local_attempt in range(1, stage.retry_policy.max_attempts + 1):
-                attempt = attempt_offsets.get(stage.stage_id, 0) + local_attempt
-                result = None
-                await _raise_if_cancelled(run.id)
-                stage_run = await create_stage_run(
-                    task_id=task.id,
-                    run_id=run.id,
-                    stage_id=stage.stage_id,
-                    stage_type=stage.stage_type,
-                    attempt=attempt,
-                    agent_id=stage.agent_config.agent_id if stage.agent_config else None,
-                    input_artifact_ids=[item.id for item in input_artifacts],
-                )
-                yield _event(
-                    "stage_started",
-                    stage.stage_id,
-                    f"Stage '{stage.name}' started.",
-                    stage_run_id=stage_run.id,
-                    agent_id=stage_run.agent_id,
-                    payload={"stage_type": stage.stage_type, "attempt": attempt, "stage_index": stage_index},
-                )
-                started = time.perf_counter()
+            async def pump(stage: StageDefinition) -> None:
+                paused = False
                 try:
-                    async with asyncio.timeout(stage.timeout_seconds):
-                        if stage.stage_type == "agent":
-                            async for item in self._stream_agent_stage(
-                                context=context,
-                                task=task,
-                                run=run,
-                                stage=stage,
-                                stage_run_id=stage_run.id,
-                                attempt=attempt,
-                                stage_input=stage_input,
-                            ):
-                                await _raise_if_cancelled(run.id)
-                                if item.structured_output is not None:
-                                    result = StageServiceResult(output=item.structured_output)
-                                yield item
-                        else:
-                            handler = get_stage_handler(stage.service_handler or "")
-                            result = await handler(
-                                StageExecutionContext(
-                                    task=task,
-                                    run=(await get_run(run.id)) or run,
-                                    stage=stage,
-                                    stage_run=stage_run,
-                                    stage_input=stage_input,
-                                    artifacts=artifacts,
-                                )
-                            )
-                    if result is None:
-                        raise StageExecutionError("Stage produced no result.", code="empty_stage_output")
-                    validated = validate_stage_payload(stage.output_schema, result.output)
-                    result.output = validated
+                    async for event in self._stream_stage(
+                        context=context,
+                        run=run,
+                        definition=definition,
+                        stage=stage,
+                        stage_index=stage_positions[stage.stage_id],
+                        artifacts=artifacts,
+                        attempt_offsets=attempt_offsets,
+                    ):
+                        paused = paused or event.terminal_status == "waiting_human"
+                        await queue.put(("event", event))
+                    await queue.put(("done", (stage.stage_id, paused)))
+                except BaseException as exc:
+                    await queue.put(("error", (stage.stage_id, exc)))
+
+            workers = [asyncio.create_task(pump(stage)) for stage in wave]
+            finished = 0
+            wave_error: BaseException | None = None
+            paused = False
+            while finished < len(workers):
+                kind, value = await queue.get()
+                if kind == "event":
+                    yield value
+                elif kind == "done":
+                    stage_id, stage_paused = value
+                    pending.pop(stage_id, None)
+                    resolved.add(stage_id)
+                    paused = paused or stage_paused
+                    finished += 1
+                else:
+                    stage_id, wave_error = value
+                    pending.pop(stage_id, None)
+                    finished += 1
                     break
-                except TimeoutError as exc:
-                    last_error = StageExecutionError("Stage timed out.", code="timeout", retryable=True)
-                    result = None
-                    await _mark_stage_failed(stage_run.id, started, last_error)
-                except StageExecutionError as exc:
-                    last_error = exc
-                    result = None
-                    await _mark_stage_failed(stage_run.id, started, exc)
-                except ValueError as exc:
-                    last_error = StageExecutionError(str(exc), code="invalid_output", retryable=True)
-                    result = None
-                    await _mark_stage_failed(stage_run.id, started, last_error)
-                except PipelineCancelled:
-                    await update_stage_run(
-                        stage_run.id,
-                        status="cancelled",
-                        finished_at=utc_now(),
-                        duration_ms=_duration_ms(started),
-                    )
-                    raise
-                except Exception as exc:
-                    last_error = StageExecutionError(str(exc), code=exc.__class__.__name__, retryable=False)
-                    result = None
-                    await _mark_stage_failed(stage_run.id, started, last_error)
-
-                yield _event(
-                    "stage_failed",
-                    stage.stage_id,
-                    str(last_error),
-                    level="error",
-                    stage_run_id=stage_run.id,
-                    agent_id=stage_run.agent_id,
-                    payload={"attempt": attempt, "error_code": last_error.code},
-                )
-                if local_attempt < stage.retry_policy.max_attempts and _can_retry(stage, last_error):
-                    yield _event(
-                        "stage_retrying",
-                        stage.stage_id,
-                        f"Retrying stage '{stage.name}'.",
-                        stage_run_id=stage_run.id,
-                        payload={"next_attempt": attempt + 1, "backoff_seconds": stage.retry_policy.backoff_seconds},
-                    )
-                    if stage.retry_policy.backoff_seconds:
-                        await asyncio.sleep(stage.retry_policy.backoff_seconds)
-                    continue
-                break
-
-            if result is None:
-                assert last_error is not None
-                if stage.failure_policy in {"continue_with_warning", "skip_stage"}:
-                    yield _event(
-                        "stage_skipped",
-                        stage.stage_id,
-                        f"Stage skipped after failure: {last_error}",
-                        level="warning",
-                        payload={"failure_policy": stage.failure_policy},
-                    )
-                    continue
-                if stage.failure_policy == "require_human":
-                    yield _event(
-                        "pipeline_paused",
-                        stage.stage_id,
-                        "Pipeline paused after a stage failure.",
-                        level="warning",
-                        payload={"reason": str(last_error)},
-                    )
-                    yield _human_review_event(stage, None, str(last_error), terminal=True)
-                    return
-                raise last_error
-
-            latest_run = (await get_run(run.id)) or run
-            review = dict(latest_run.metadata_json or {}).get("human_review") or {}
-            approved_stage = (
-                review.get("action") == "approve"
-                and (review.get("resume_from_stage") or latest_run.current_stage_id) == stage.stage_id
-            )
-            if stage.requires_human_review and not approved_stage:
-                result.pause = True
-                result.pause_reason = result.pause_reason or f"Stage '{stage.name}' requires human approval."
-                result.pause_payload = {
-                    "reason_codes": ["stage_requires_human_review"],
-                    "allowed_actions": ["approve", "reject", "revise_input", "rerun_stage"],
-                    **result.pause_payload,
-                }
-
-            artifact = await create_artifact(
-                task_id=task.id,
-                run_id=run.id,
-                stage_run_id=stage_run.id,
-                artifact_type=stage.artifact_type or f"{stage.stage_id}_result",
-                schema_name=stage.output_schema or "",
-                content=result.output,
-                parent_artifact_ids=[item.id for item in input_artifacts],
-                summary=result.summary,
-                metadata=result.metadata,
-            )
-            artifacts[stage.stage_id] = artifact
-            await update_stage_run(
-                stage_run.id,
-                status="waiting_human" if result.pause else "succeeded",
-                output_artifact_id=artifact.id,
-                finished_at=utc_now(),
-                duration_ms=_duration_ms(started),
-            )
-            yield _event(
-                "artifact_created",
-                stage.stage_id,
-                f"Artifact '{artifact.artifact_type}' created.",
-                stage_run_id=stage_run.id,
-                agent_id=stage_run.agent_id,
-                semantics="reference",
-                payload={
-                    "artifact_id": artifact.id,
-                    "artifact_type": artifact.artifact_type,
-                    "artifact_version": artifact.artifact_version,
-                    "checksum": artifact.checksum,
-                },
-            )
-            if result.pause:
-                yield _event(
-                    "pipeline_paused",
-                    stage.stage_id,
-                    result.pause_reason or "Pipeline paused for human review.",
-                    payload=result.pause_payload,
-                )
-                yield _human_review_event(stage, artifact, result.pause_reason, result.pause_payload, terminal=True)
+            if wave_error is not None or paused:
+                for worker in workers:
+                    if not worker.done():
+                        worker.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
+                if wave_error is not None:
+                    raise wave_error
                 return
-            yield _event(
-                "stage_completed",
-                stage.stage_id,
-                f"Stage '{stage.name}' completed.",
-                stage_run_id=stage_run.id,
-                agent_id=stage_run.agent_id,
-                semantics="snapshot",
-                payload={"artifact_id": artifact.id, "artifact_type": artifact.artifact_type},
-            )
+            await asyncio.gather(*workers)
 
         final_artifact = next(
             (item for item in reversed(list(artifacts.values())) if item.artifact_type == definition.final_artifact_type),
@@ -275,6 +141,7 @@ class PipelineExecutor:
         )
         if final_artifact is None or final_artifact.content_json is None:
             raise StageExecutionError("Pipeline did not create its final artifact.", code="missing_final_artifact")
+        await deliver_task_result(context.task, context.task_type, final_artifact.content_json)
         yield _event(
             "pipeline_completed",
             "pipeline",
@@ -293,6 +160,373 @@ class PipelineExecutor:
             final_content=json.dumps(final_artifact.content_json, ensure_ascii=False),
             terminal_status="succeeded",
             outcome="success",
+        )
+
+    async def _stream_stage(
+        self,
+        *,
+        context: TaskExecutionContext,
+        run: TaskRunEntity,
+        definition: PipelineDefinition,
+        stage: StageDefinition,
+        stage_index: int,
+        artifacts: dict[str, TaskArtifactEntity],
+        attempt_offsets: dict[str, int],
+    ) -> AsyncIterator[TaskHandlerEvent]:
+        task = context.task
+        await update_run(run.id, current_stage_id=stage.stage_id, status="running")
+        stage_input, input_artifacts = _build_stage_input(task, stage, artifacts)
+        try:
+            stage_input = validate_stage_payload(stage.input_schema, stage_input)
+        except ValueError as exc:
+            raise StageExecutionError(str(exc), code="invalid_stage_input") from exc
+
+        result: StageServiceResult | None = None
+        last_error: StageExecutionError | None = None
+        stage_run = None
+        started = time.perf_counter()
+        for local_attempt in range(1, stage.retry_policy.max_attempts + 1):
+            attempt = attempt_offsets.get(stage.stage_id, 0) + local_attempt
+            result = None
+            await _raise_if_cancelled(run.id)
+            agent_id = (
+                stage.agent_config.agent_id if stage.agent_config
+                else stage.batch_config.agent_id if stage.batch_config
+                else None
+            )
+            stage_run = await create_stage_run(
+                task_id=task.id,
+                run_id=run.id,
+                stage_id=stage.stage_id,
+                stage_type=stage.stage_type,
+                attempt=attempt,
+                agent_id=agent_id,
+                input_artifact_ids=[item.id for item in input_artifacts],
+            )
+            yield _event(
+                "stage_started",
+                stage.stage_id,
+                f"Stage '{stage.name}' started.",
+                stage_run_id=stage_run.id,
+                agent_id=stage_run.agent_id,
+                payload={"stage_type": stage.stage_type, "attempt": attempt, "stage_index": stage_index},
+            )
+            started = time.perf_counter()
+            try:
+                async with asyncio.timeout(stage.timeout_seconds):
+                    if stage.stage_type == "agent":
+                        stage_events = self._stream_agent_stage(
+                            context=context, task=task, run=run, stage=stage,
+                            stage_run_id=stage_run.id, attempt=attempt, stage_input=stage_input,
+                        )
+                    elif stage.stage_type == "direct_model":
+                        stage_events = self._stream_direct_model_stage(
+                            context=context, task=task, stage=stage,
+                            stage_run_id=stage_run.id, stage_input=stage_input,
+                        )
+                    elif stage.stage_type == "batch":
+                        stage_events = self._stream_batch_stage(
+                            context=context,
+                            stage=stage,
+                            stage_run_id=stage_run.id,
+                            stage_input=stage_input,
+                        )
+                    else:
+                        stage_events = None
+
+                    if stage_events is not None:
+                        async for item in stage_events:
+                            await _raise_if_cancelled(run.id)
+                            if item.structured_output is not None:
+                                result = StageServiceResult(output=item.structured_output)
+                            yield item
+                    else:
+                        handler = get_stage_handler(stage.service_handler or "")
+                        result = await handler(
+                            StageExecutionContext(
+                                task=task,
+                                run=(await get_run(run.id)) or run,
+                                stage=stage,
+                                stage_run=stage_run,
+                                stage_input=stage_input,
+                                artifacts=artifacts,
+                            )
+                        )
+                if result is None:
+                    raise StageExecutionError("Stage produced no result.", code="empty_stage_output")
+                result.output = validate_stage_payload(stage.output_schema, result.output)
+                break
+            except TimeoutError:
+                last_error = StageExecutionError("Stage timed out.", code="timeout", retryable=True)
+            except StageExecutionError as exc:
+                last_error = exc
+            except ValueError as exc:
+                last_error = StageExecutionError(str(exc), code="invalid_output", retryable=True)
+            except PipelineCancelled:
+                await update_stage_run(
+                    stage_run.id, status="cancelled", finished_at=utc_now(), duration_ms=_duration_ms(started)
+                )
+                raise
+            except Exception as exc:
+                last_error = StageExecutionError(str(exc), code=exc.__class__.__name__, retryable=False)
+            result = None
+            await _mark_stage_failed(stage_run.id, started, last_error)
+            yield _event(
+                "stage_failed", stage.stage_id, str(last_error), level="error",
+                stage_run_id=stage_run.id, agent_id=stage_run.agent_id,
+                payload={"attempt": attempt, "error_code": last_error.code},
+            )
+            if local_attempt < stage.retry_policy.max_attempts and _can_retry(stage, last_error):
+                yield _event(
+                    "stage_retrying", stage.stage_id, f"Retrying stage '{stage.name}'.",
+                    stage_run_id=stage_run.id,
+                    payload={"next_attempt": attempt + 1, "backoff_seconds": stage.retry_policy.backoff_seconds},
+                )
+                if stage.retry_policy.backoff_seconds:
+                    await asyncio.sleep(stage.retry_policy.backoff_seconds)
+                continue
+            break
+
+        if result is None:
+            assert last_error is not None
+            try:
+                await deliver_task_result(
+                    task,
+                    context.task_type,
+                    None,
+                    stage_id=stage.stage_id,
+                    status="failed",
+                    error_message=str(last_error),
+                )
+            except Exception as sink_error:
+                yield _event(
+                    "stage_result_sink_failed",
+                    stage.stage_id,
+                    str(sink_error),
+                    level="warning",
+                )
+            if stage.failure_policy in {"continue_with_warning", "skip_stage"}:
+                yield _event(
+                    "stage_skipped", stage.stage_id, f"Stage skipped after failure: {last_error}",
+                    level="warning",
+                    payload={"failure_policy": stage.failure_policy, "error_message": str(last_error)},
+                )
+                return
+            if stage.failure_policy == "require_human":
+                yield _event(
+                    "pipeline_paused", stage.stage_id, "Pipeline paused after a stage failure.",
+                    level="warning", payload={"reason": str(last_error)},
+                )
+                yield _human_review_event(stage, None, str(last_error), terminal=True)
+                return
+            raise last_error
+
+        assert stage_run is not None
+        latest_run = (await get_run(run.id)) or run
+        review = dict(latest_run.metadata_json or {}).get("human_review") or {}
+        approved_stage = (
+            review.get("action") == "approve"
+            and (review.get("resume_from_stage") or latest_run.current_stage_id) == stage.stage_id
+        )
+        if stage.requires_human_review and not approved_stage:
+            result.pause = True
+            result.pause_reason = result.pause_reason or f"Stage '{stage.name}' requires human approval."
+            result.pause_payload = {
+                "reason_codes": ["stage_requires_human_review"],
+                "allowed_actions": ["approve", "reject", "revise_input", "rerun_stage"],
+                **result.pause_payload,
+            }
+
+        artifact = await create_artifact(
+            task_id=task.id,
+            run_id=run.id,
+            stage_run_id=stage_run.id,
+            artifact_type=stage.artifact_type or f"{stage.stage_id}_result",
+            schema_name=stage.output_schema or "",
+            content=result.output,
+            parent_artifact_ids=[item.id for item in input_artifacts],
+            summary=result.summary,
+            metadata=result.metadata,
+        )
+        artifacts[stage.stage_id] = artifact
+        await update_stage_run(
+            stage_run.id,
+            status="waiting_human" if result.pause else "succeeded",
+            output_artifact_id=artifact.id,
+            finished_at=utc_now(),
+            duration_ms=_duration_ms(started),
+        )
+        try:
+            await deliver_task_result(
+                task,
+                context.task_type,
+                result.output,
+                stage_id=stage.stage_id,
+            )
+        except Exception as sink_error:
+            yield _event(
+                "stage_result_sink_failed",
+                stage.stage_id,
+                str(sink_error),
+                level="warning",
+                stage_run_id=stage_run.id,
+            )
+        yield _event(
+            "artifact_created", stage.stage_id, f"Artifact '{artifact.artifact_type}' created.",
+            stage_run_id=stage_run.id, agent_id=stage_run.agent_id, semantics="reference",
+            payload={
+                "artifact_id": artifact.id,
+                "artifact_type": artifact.artifact_type,
+                "artifact_version": artifact.artifact_version,
+                "checksum": artifact.checksum,
+            },
+        )
+        if result.pause:
+            yield _event(
+                "pipeline_paused", stage.stage_id,
+                result.pause_reason or "Pipeline paused for human review.", payload=result.pause_payload,
+            )
+            yield _human_review_event(stage, artifact, result.pause_reason, result.pause_payload, terminal=True)
+            return
+        yield _event(
+            "stage_completed", stage.stage_id, f"Stage '{stage.name}' completed.",
+            stage_run_id=stage_run.id, agent_id=stage_run.agent_id, semantics="snapshot",
+            payload={"artifact_id": artifact.id, "artifact_type": artifact.artifact_type},
+        )
+
+    async def _stream_direct_model_stage(
+        self,
+        *,
+        context: TaskExecutionContext,
+        task: TaskEntity,
+        stage: StageDefinition,
+        stage_run_id: str,
+        stage_input: dict[str, Any],
+    ) -> AsyncIterator[TaskHandlerEvent]:
+        config = stage.agent_config
+        assert config is not None
+        async with create_db_session() as session:
+            await ensure_default_agent_profiles(session)
+            profile = await get_agent_profile(session, config.agent_id)
+        if profile is None or not profile.enabled:
+            raise StageExecutionError(f"Agent profile '{config.agent_id}' is unavailable.", code="agent_unavailable")
+        if profile.default_tools or profile.default_datasets or config.tools or config.datasets:
+            raise StageExecutionError(
+                f"Direct model profile '{profile.agent_id}' must not use tools or datasets.",
+                code="direct_model_tool_policy_violation",
+            )
+        skill_context = await SkillManager(tenant_id=task.tenant_id).create_context(config.skill_package)
+        system_prompt = "\n\n".join(
+            item for item in (profile.system_prompt, skill_context.task_prompt) if item
+        )
+        yield _event(
+            "direct_model_started",
+            stage.stage_id,
+            f"Direct model '{profile.agent_id}' started.",
+            stage_run_id=stage_run_id,
+            agent_id=profile.agent_id,
+            payload={"model_id": profile.model_id, "skill_package": config.skill_package},
+            source={"type": "agent", "id": profile.agent_id},
+        )
+        content = await LlmRuntime(tenant_id=task.tenant_id).complete(
+            messages=[{"role": "user", "content": _stage_message(task, stage, stage_input)}],
+            model_id=profile.model_id,
+            system_prompt=system_prompt,
+        )
+        parsed = parse_json_output(content)
+        if not parsed.ok or not isinstance(parsed.structured, dict):
+            raise StageExecutionError(
+                f"Direct model output is not valid JSON: {parsed.error}",
+                code="invalid_output",
+                retryable=config.output_policy == "repair_once",
+            )
+        yield TaskHandlerEvent(
+            event_type="direct_model_completed",
+            stage=stage.stage_id,
+            message=f"Direct model '{profile.agent_id}' completed.",
+            stage_run_id=stage_run_id,
+            agent_id=profile.agent_id,
+            source={"type": "agent", "id": profile.agent_id},
+            structured_output=parsed.structured,
+        )
+
+    async def _stream_batch_stage(
+        self,
+        *,
+        context: TaskExecutionContext,
+        stage: StageDefinition,
+        stage_run_id: str,
+        stage_input: dict[str, Any],
+    ) -> AsyncIterator[TaskHandlerEvent]:
+        config = stage.batch_config
+        assert config is not None
+        raw_items = (context.task.input_payload_json or {}).get(config.item_source)
+        if not isinstance(raw_items, list):
+            raise StageExecutionError(
+                f"Batch stage '{stage.stage_id}' item source '{config.item_source}' is missing.",
+                code="invalid_stage_items",
+            )
+        if not all(isinstance(item, dict) for item in raw_items):
+            raise StageExecutionError(
+                f"Batch stage '{stage.stage_id}' items must be objects.",
+                code="invalid_stage_items",
+            )
+        stage_item_type = f"pipeline:{stage.stage_id}"
+        await item_store.ensure_stage_items(
+            context.task.id,
+            item_type=stage_item_type,
+            raw_items=raw_items,
+        )
+        # SQLModel table instances cannot be safely mutated after model_copy():
+        # SQLAlchemy's copied attribute state still points at the original owner.
+        # Build a fresh transient task view for this stage instead.
+        stage_task = TaskEntity(**context.task.model_dump())
+        stage_task.agent_id = config.agent_id
+        stage_task.input_payload_json = {
+            key: value
+            for key, value in (context.task.input_payload_json or {}).items()
+            if not key.endswith("_items")
+        }
+        stage_task.input_payload_json["items"] = raw_items
+        batch_definition = TaskType(
+            task_type=context.task.task_type,
+            name=stage.name,
+            handler="batch_item_scheduler",
+            default_agent_id=config.agent_id,
+            default_skill_package=config.skill_package,
+            default_tools=list(config.tools),
+            default_datasets=list(config.datasets),
+            output_schema_name=stage.output_schema,
+            item_output_schema_name=config.item_output_schema,
+        )
+        batch_context = TaskExecutionContext(
+            task=stage_task,
+            task_type=batch_definition,
+            memory_view=context.memory_view,
+            runtime_context=context.runtime_context,
+        )
+        structured: dict[str, Any] | None = None
+        async for event in BatchItemSchedulerHandler(self.options).stream(
+            context=batch_context,
+            item_type=stage_item_type,
+        ):
+            if event.final_content:
+                parsed = parse_json_output(event.final_content)
+                if parsed.ok and isinstance(parsed.structured, dict):
+                    structured = parsed.structured
+            event.stage = stage.stage_id
+            event.stage_run_id = event.stage_run_id or stage_run_id
+            yield event
+        if structured is None:
+            raise StageExecutionError("Batch stage produced no structured output.", code="empty_stage_output")
+        yield TaskHandlerEvent(
+            event_type="batch_stage_completed",
+            stage=stage.stage_id,
+            message=f"Batch stage '{stage.name}' completed.",
+            stage_run_id=stage_run_id,
+            agent_id=config.agent_id,
+            source={"type": "agent", "id": config.agent_id},
+            structured_output=structured,
         )
 
     async def _stream_agent_stage(
@@ -432,7 +666,7 @@ def _build_stage_input(
     artifacts: dict[str, TaskArtifactEntity],
 ) -> tuple[dict[str, Any], list[TaskArtifactEntity]]:
     dependencies = [artifacts[item] for item in stage.depends_on if item in artifacts]
-    if len(dependencies) != len(stage.depends_on):
+    if len(dependencies) != len(stage.depends_on) and stage.stage_type != "finalizer":
         missing = [item for item in stage.depends_on if item not in artifacts]
         raise StageExecutionError(
             f"Stage '{stage.stage_id}' is missing dependency artifacts: {missing}.",
