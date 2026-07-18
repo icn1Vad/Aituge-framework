@@ -1304,9 +1304,13 @@ class ProofRepository:
                     "SELECT set_config('statement_timeout', %s, true)",
                     (str(statement_timeout_ms),),
                 )
+                # Do not bind the trusted, integer row limit as a separate
+                # parameter here. Psycopg otherwise parses percent signs in
+                # the validated user SELECT (for example ILIKE '%采购%') as
+                # placeholders before PostgreSQL sees the query.
+                result_limit = int(row_limit) + 1
                 cursor = conn.execute(
-                    f"SELECT * FROM ({sql}) AS proof_user_query LIMIT %s",
-                    (row_limit + 1,),
+                    f"SELECT * FROM ({sql}) AS proof_user_query LIMIT {result_limit}"
                 )
                 rows = [dict(row) for row in cursor.fetchall()]
                 columns = [column.name for column in cursor.description or []]

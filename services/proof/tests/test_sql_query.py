@@ -5,6 +5,7 @@ import pytest
 from proof.application.sql_query import PolicySqlQueryService
 from proof.config import Settings
 from proof.errors import ProofError
+from proof.infrastructure.postgres.repository import ProofRepository
 
 
 class FakeExecutor:
@@ -15,6 +16,30 @@ class FakeExecutor:
     def execute_read_query(self, sql, *, statement_timeout_ms, row_limit):
         self.call = (sql, statement_timeout_ms, row_limit)
         return {"columns": list(self.rows[0]), "rows": self.rows, "execution_ms": 2.5}
+
+
+class FakeReadCursor:
+    description = [type("Column", (), {"name": "policy_title"})()]
+
+    def fetchall(self):
+        return [{"policy_title": "采购管理办法"}]
+
+
+class FakeReadConnection:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+    def execute(self, query, params=None):
+        self.calls.append((query, params))
+        if "proof_user_query" in query:
+            return FakeReadCursor()
+        return self
 
 
 def test_sql_query_service_normalizes_and_executes_read_query() -> None:
@@ -57,3 +82,21 @@ def test_sql_query_service_marks_character_truncation() -> None:
     result = service.execute(question="全文", sql="SELECT text FROM proof_sql_clause_v")
     assert result["rows"] == []
     assert result["truncated"] is True
+
+
+def test_postgres_read_query_preserves_percent_patterns() -> None:
+    connection = FakeReadConnection()
+    repository = object.__new__(ProofRepository)
+    repository.connect = lambda: connection
+
+    result = repository.execute_read_query(
+        "SELECT policy_title FROM proof_sql_policy_v WHERE policy_title ILIKE '%采购%'",
+        statement_timeout_ms=5000,
+        row_limit=5,
+    )
+
+    wrapped_query, wrapped_params = connection.calls[-1]
+    assert "ILIKE '%采购%'" in wrapped_query
+    assert wrapped_query.endswith("LIMIT 6")
+    assert wrapped_params is None
+    assert result["rows"] == [{"policy_title": "采购管理办法"}]
