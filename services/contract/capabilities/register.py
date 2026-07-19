@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from pathlib import Path
 from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from task_manager.pipeline.errors import StageExecutionError
 from task_manager.pipeline.stage_registry import StageExecutionContext, StageServiceResult
 from task_manager.result_sink import ResultSinkDelivery, ResultSinkRejectedError
 
@@ -31,6 +33,16 @@ STAGE_SEQUENCE = {
     "relation_extraction": 80,
     "verify_evidence": 90,
     "finalize_review": 100,
+}
+
+FROZEN_ASYNC_ERROR_CODES = {
+    "CONTRACT_PARSE_FAILED",
+    "PARTY_UNRESOLVED",
+    "FRAMEWORK_RUN_FAILED",
+    "FRAMEWORK_RUN_ORPHANED",
+    "FRAMEWORK_RECOVERY_FAILED",
+    "RESULT_INVALID",
+    "EVIDENCE_INVALID",
 }
 
 
@@ -433,12 +445,40 @@ def _callback_envelope(delivery: ResultSinkDelivery) -> tuple[str, dict[str, Any
         stage_id = delivery.stage_id
         sequence = STAGE_SEQUENCE.get(stage_id or "", 900) + 1
         result = None
+        framework_error_code = delivery.error_code or "FRAMEWORK_RUN_FAILED"
+        if stage_id == "resolve_parties" and framework_error_code in {
+            "invalid_output",
+            "required_result_sink_failed",
+            "PARTY_UNRESOLVED",
+        }:
+            error_code = "PARTY_UNRESOLVED"
+            retryable = False
+            user_action_required = True
+        elif stage_id == "verify_evidence" and framework_error_code in {
+            "required_result_sink_failed",
+            "EVIDENCE_INVALID",
+        }:
+            error_code = "EVIDENCE_INVALID"
+            retryable = False
+            user_action_required = False
+        elif framework_error_code in FROZEN_ASYNC_ERROR_CODES:
+            error_code = framework_error_code
+            retryable = delivery.retryable
+            user_action_required = error_code == "PARTY_UNRESOLVED"
+        else:
+            error_code = "FRAMEWORK_RUN_FAILED"
+            retryable = delivery.retryable
+            user_action_required = False
         error = {
-            "code": "FRAMEWORK_RUN_FAILED",
+            "code": error_code,
             "message": (delivery.error_message or "Framework contract stage failed")[:2000],
-            "retryable": False,
-            "user_action_required": False,
-            "details": {"stage_id": stage_id} if stage_id else None,
+            "retryable": retryable,
+            "user_action_required": user_action_required,
+            "details": (
+                {"stage_id": stage_id, "framework_error_code": framework_error_code}
+                if stage_id
+                else None
+            ),
         }
     elif delivery.stage_id is not None:
         if delivery.stage_id not in STAGE_SEQUENCE:
@@ -523,27 +563,57 @@ def _stage_gateway_handler(base_url: str, token: str):
             "task_input": task_input.model_dump(mode="json"),
             "artifacts": context.stage_input.get("artifacts", {}),
         }
-        async with httpx.AsyncClient(base_url=base_url, timeout=30) as client:
-            response = await client.post(
-                f"/v1/internal/contract-reviews/{task_input.review_id}/stages/execute",
-                headers={
-                    "X-Internal-Service": "aituge-framework",
-                    "X-Internal-Token": token,
-                    "X-Request-Id": f"stage:{context.run.id}:{context.stage.stage_id}",
-                },
-                json=payload,
-            )
-            try:
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=30) as client:
+                response = await client.post(
+                    f"/v1/internal/contract-reviews/{task_input.review_id}/stages/execute",
+                    headers={
+                        "X-Internal-Service": "aituge-framework",
+                        "X-Internal-Token": token,
+                        "X-Request-Id": f"stage:{context.run.id}:{context.stage.stage_id}",
+                    },
+                    json=payload,
+                )
                 response.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                detail = exc.response.text[:1000].strip()
-                suffix = f": {detail}" if detail else ""
-                raise RuntimeError(
-                    f"Contract stage gateway returned HTTP {exc.response.status_code}{suffix}"
-                ) from exc
-            body = response.json()
+                body = response.json()
+        except httpx.HTTPStatusError as exc:
+            try:
+                error = exc.response.json().get("error", {})
+            except (AttributeError, ValueError):
+                try:
+                    error = json.loads(exc.response.text).get("error", {})
+                except (AttributeError, TypeError, ValueError):
+                    error = {}
+            code = str(error.get("code") or "FRAMEWORK_RUN_FAILED")
+            if code not in FROZEN_ASYNC_ERROR_CODES:
+                code = "FRAMEWORK_RUN_FAILED"
+            message = str(
+                error.get("message")
+                or f"Contract stage gateway returned HTTP {exc.response.status_code}"
+            )[:2000]
+            raise StageExecutionError(
+                message,
+                code=code,
+                retryable=bool(error.get("retryable", exc.response.status_code >= 500)),
+            ) from exc
+        except httpx.RequestError as exc:
+            raise StageExecutionError(
+                f"Contract stage gateway request failed: {exc}",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=True,
+            ) from exc
+        except ValueError as exc:
+            raise StageExecutionError(
+                "Contract stage gateway returned invalid JSON",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=False,
+            ) from exc
         if body.get("success") is not True or not isinstance(body.get("data"), dict):
-            raise RuntimeError("Contract stage gateway returned an invalid response")
+            raise StageExecutionError(
+                "Contract stage gateway returned an invalid response",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=False,
+            )
         return StageServiceResult(output=body["data"])
 
     return execute

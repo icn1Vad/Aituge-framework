@@ -6,6 +6,7 @@ import pytest
 
 from capability_mount import CapabilitySettings
 from services.contract.capabilities import register as capability
+from task_manager.pipeline.errors import StageExecutionError
 from task_manager.result_sink import ResultSinkDelivery
 
 
@@ -252,6 +253,64 @@ def test_contract_result_sink_emits_three_frozen_callback_shapes(monkeypatch) ->
     assert all(item[1]["X-Internal-Token"] == "secret" for item in calls)
 
 
+def test_contract_failed_callback_maps_stable_business_errors() -> None:
+    task = SimpleNamespace(
+        id="task-1",
+        current_run_id="run-1",
+        input_payload_json={
+            "schema_version": "1.0",
+            "review_id": "review-1",
+            "attempt_no": 1,
+            "business_task_id": "business-1",
+            "contract_version_id": "version-1",
+            "document_id": "document-1",
+            "perspective": "PARTY_B",
+            "our_party_name": "Beta Company",
+            "contract_type": "AUTO",
+            "review_attitude": "NEUTRAL",
+        },
+    )
+    definition = SimpleNamespace(result_sink_url=None)
+
+    _, party = capability._callback_envelope(
+        ResultSinkDelivery(
+            task,
+            definition,
+            None,
+            "resolve_parties",
+            "failed",
+            "party result rejected",
+            "required_result_sink_failed",
+            True,
+        )
+    )
+    _, evidence = capability._callback_envelope(
+        ResultSinkDelivery(
+            task,
+            definition,
+            None,
+            "verify_evidence",
+            "failed",
+            "evidence rejected",
+            "EVIDENCE_INVALID",
+            False,
+        )
+    )
+
+    assert party["error"] == {
+        "code": "PARTY_UNRESOLVED",
+        "message": "party result rejected",
+        "retryable": False,
+        "user_action_required": True,
+        "details": {
+            "stage_id": "resolve_parties",
+            "framework_error_code": "required_result_sink_failed",
+        },
+    }
+    assert evidence["error"]["code"] == "EVIDENCE_INVALID"
+    assert evidence["error"]["retryable"] is False
+
+
 def test_contract_result_sink_preserves_safe_rejection_detail(monkeypatch) -> None:
     class Response:
         status_code = 422
@@ -350,5 +409,7 @@ def test_contract_stage_gateway_preserves_safe_rejection_detail(monkeypatch) -> 
         stage_input={"artifacts": {}},
     )
 
-    with pytest.raises(RuntimeError, match="duplicate finding id"):
+    with pytest.raises(StageExecutionError, match="duplicate finding id") as caught:
         asyncio.run(handler(context))
+    assert caught.value.code == "RESULT_INVALID"
+    assert caught.value.retryable is False

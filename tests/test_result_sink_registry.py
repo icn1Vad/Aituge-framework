@@ -41,14 +41,21 @@ def test_capability_result_sink_receives_typed_delivery() -> None:
             definition,
             {"result_type": "STAGE_V1"},
             stage_id="stage-1",
+            status="failed",
+            error_message="stage failed",
+            error_code="RESULT_INVALID",
+            retryable=True,
         )
     )
 
     assert len(deliveries) == 1
     assert deliveries[0].task is task
     assert deliveries[0].stage_id == "stage-1"
-    assert deliveries[0].status == "completed"
+    assert deliveries[0].status == "failed"
     assert deliveries[0].output == {"result_type": "STAGE_V1"}
+    assert deliveries[0].error_message == "stage failed"
+    assert deliveries[0].error_code == "RESULT_INVALID"
+    assert deliveries[0].retryable is True
 
 
 def test_required_capability_result_sink_failure_is_not_downgraded() -> None:

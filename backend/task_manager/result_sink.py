@@ -18,6 +18,8 @@ class ResultSinkDelivery:
     stage_id: str | None
     status: str
     error_message: str | None
+    error_code: str | None = None
+    retryable: bool = False
 
 
 ResultSinkHandler = Callable[[ResultSinkDelivery], Awaitable[None]]
@@ -80,6 +82,8 @@ async def deliver_task_result(
     stage_id: str | None = None,
     status: str = "completed",
     error_message: str | None = None,
+    error_code: str | None = None,
+    retryable: bool = False,
 ) -> None:
     registered = _RESULT_SINKS.get(task.task_type)
     if registered is not None:
@@ -90,6 +94,8 @@ async def deliver_task_result(
             stage_id=stage_id,
             status=status,
             error_message=error_message,
+            error_code=error_code,
+            retryable=retryable,
         )
         try:
             await registered.handler(delivery)
@@ -115,6 +121,10 @@ async def deliver_task_result(
         payload["stage_id"] = stage_id
     if error_message:
         payload["error_message"] = error_message
+    if error_code:
+        payload["error_code"] = error_code
+    if retryable:
+        payload["retryable"] = True
     last_error: Exception | None = None
     for _attempt in range(3):
         try:

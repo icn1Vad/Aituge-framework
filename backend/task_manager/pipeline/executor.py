@@ -321,6 +321,8 @@ class PipelineExecutor:
                     stage_id=stage.stage_id,
                     status="failed",
                     error_message=str(last_error),
+                    error_code=last_error.code,
+                    retryable=last_error.retryable,
                 )
             except Exception as sink_error:
                 yield _event(

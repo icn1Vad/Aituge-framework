@@ -98,7 +98,31 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
                 created.review_id,
                 _stage_callback(created, 2, "resolve_parties", invented_party_result),
             )
-        assert invalid_party.value.code == "RESULT_INVALID"
+        assert invalid_party.value.code == "PARTY_UNRESOLVED"
+        assert invalid_party.value.user_action_required is True
+
+        mismatched_user_party = PartyResolutionStageResult(
+            result_type="PARTY_RESOLUTION_STAGE_V1",
+            contract_type="SERVICE",
+            party_a={"name": "Beta Company"},
+            party_b={"name": "Acme Company"},
+            perspective="PARTY_B",
+            our_party="Acme Company",
+            counterparty="Beta Company",
+        )
+        with pytest.raises(ContractError) as unresolved_party:
+            callbacks.accept(
+                created.review_id,
+                _stage_callback(created, 2, "resolve_parties", mismatched_user_party),
+            )
+        assert unresolved_party.value.code == "PARTY_UNRESOLVED"
+        assert unresolved_party.value.retryable is False
+        assert unresolved_party.value.user_action_required is True
+        assert unresolved_party.value.details == {
+            "perspective": "PARTY_B",
+            "candidate_parties": ["Beta Company", "Acme Company"],
+            "requested_our_party_name": "Beta Company",
+        }
 
         party_result = PartyResolutionStageResult(
             result_type="PARTY_RESOLUTION_STAGE_V1",

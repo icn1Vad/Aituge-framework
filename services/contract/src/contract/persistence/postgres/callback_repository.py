@@ -11,7 +11,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from contract.api.models import ReviewResultData
-from contract.application.idempotency import canonical_json
+from contract.application.idempotency import canonical_json, normalize_party_name
 from contract.application.result_hash import compute_result_hash
 from contract.callback.models import FrameworkCallback
 from contract.config import Settings
@@ -432,8 +432,10 @@ class FrameworkCallbackRepository:
             return
         if stage_id == "resolve_parties":
             if result["perspective"] != review["perspective"]:
-                raise FrameworkCallbackRepository._mismatch(
-                    "Resolved party perspective does not match the review"
+                raise FrameworkCallbackRepository._party_unresolved(
+                    review,
+                    result,
+                    "Resolved party perspective does not match the review",
                 )
             FrameworkCallbackRepository._validate_party_sources(conn, review, result)
             return
@@ -595,18 +597,33 @@ class FrameworkCallbackRepository:
         if FrameworkCallbackRepository._normalized_text(party_a) == FrameworkCallbackRepository._normalized_text(
             party_b
         ):
-            raise ContractError("RESULT_INVALID", "Resolved contract parties must be distinct", status_code=422)
+            raise FrameworkCallbackRepository._party_unresolved(
+                review,
+                result,
+                "Resolved contract parties must be distinct",
+            )
         missing = [
             name
             for name in (party_a, party_b)
             if not any(name in row["text"] for row in rows)
         ]
         if missing:
-            raise ContractError(
-                "RESULT_INVALID",
+            raise FrameworkCallbackRepository._party_unresolved(
+                review,
+                result,
                 "Resolved party names must come from the current contract",
-                status_code=422,
-                details={"missing_party_names": missing},
+                extra_details={"missing_party_names": missing},
+            )
+        requested_our_party = normalize_party_name(review["our_party_name"])
+        resolved_our_party = party_a if review["perspective"] == "PARTY_A" else party_b
+        if requested_our_party is not None and FrameworkCallbackRepository._normalized_text(
+            requested_our_party
+        ) != FrameworkCallbackRepository._normalized_text(resolved_our_party):
+            raise FrameworkCallbackRepository._party_unresolved(
+                review,
+                result,
+                "Resolved party does not match the user-provided party name",
+                extra_details={"requested_our_party_name": requested_our_party},
             )
 
     @staticmethod
@@ -794,4 +811,27 @@ class FrameworkCallbackRepository:
             message,
             status_code=409,
             retryable=False,
+        )
+
+    @staticmethod
+    def _party_unresolved(
+        review: dict[str, Any],
+        result: dict[str, Any],
+        message: str,
+        *,
+        extra_details: dict[str, Any] | None = None,
+    ) -> ContractError:
+        details = {
+            "perspective": review["perspective"],
+            "candidate_parties": [result["party_a"]["name"], result["party_b"]["name"]],
+        }
+        if extra_details:
+            details.update(extra_details)
+        return ContractError(
+            "PARTY_UNRESOLVED",
+            message,
+            status_code=422,
+            retryable=False,
+            user_action_required=True,
+            details=details,
         )
