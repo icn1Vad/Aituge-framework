@@ -57,10 +57,24 @@ class FakeFrameworkGateway:
             self.on_create(request)
         return snapshot
 
-    def get_run(self, task_id: str, run_id: str) -> FrameworkRunSnapshot:
+    def get_run(
+        self,
+        task_id: str,
+        run_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> FrameworkRunSnapshot:
         return next(value for value in self.executions.values() if value.run_id == run_id)
 
-    def cancel_run(self, task_id: str, run_id: str) -> FrameworkRunSnapshot:
+    def cancel_run(
+        self,
+        task_id: str,
+        run_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> FrameworkRunSnapshot:
         self.cancelled_run_ids.append(run_id)
         key, current = next(
             (item for item in self.executions.items() if item[1].run_id == run_id),

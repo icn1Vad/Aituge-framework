@@ -26,6 +26,7 @@ from contract.api.models import (
 )
 from contract.application.mock_service import InMemoryContractReviewService
 from contract.application.ports import ContractReviewService, InternalRequestContext, UploadedContract
+from contract.application.runtime_service import build_runtime_contract_review_service
 from contract.config import Settings, get_settings
 from contract.errors import ContractError
 
@@ -225,14 +226,11 @@ def _service(request: Request) -> ContractReviewService:
     if service is not None:
         return service
     settings: Settings = request.app.state.settings
-    if not settings.mock_mode:
-        raise ContractError(
-            "INTERNAL_ERROR",
-            "Runtime ContractReviewService is not configured",
-            status_code=503,
-            retryable=True,
-        )
-    service = InMemoryContractReviewService()
+    service = (
+        InMemoryContractReviewService()
+        if settings.mock_mode
+        else build_runtime_contract_review_service(settings)
+    )
     request.app.state.contract_service = service
     return service
 

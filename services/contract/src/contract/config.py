@@ -32,6 +32,21 @@ class Settings(BaseSettings):
         default="http://framework:8894",
         validation_alias="FRAMEWORK_BASE_URL",
     )
+    framework_connect_timeout_seconds: float = Field(
+        default=5,
+        gt=0,
+        validation_alias="FRAMEWORK_CONNECT_TIMEOUT_SECONDS",
+    )
+    framework_read_timeout_seconds: float = Field(
+        default=30,
+        gt=0,
+        validation_alias="FRAMEWORK_READ_TIMEOUT_SECONDS",
+    )
+    framework_cancel_wait_seconds: float = Field(
+        default=5,
+        ge=0,
+        validation_alias="FRAMEWORK_CANCEL_WAIT_SECONDS",
+    )
     framework_stage_timeout_seconds: int = Field(
         default=1800,
         gt=0,

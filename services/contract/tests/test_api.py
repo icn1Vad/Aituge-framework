@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 
 from fastapi.testclient import TestClient
@@ -85,6 +86,38 @@ def test_health_does_not_require_internal_auth() -> None:
         },
         "request_id": "req-health",
     }
+
+
+def test_non_mock_mode_lazily_builds_runtime_service(monkeypatch) -> None:
+    app_module = importlib.import_module("contract.api.app")
+
+    class RuntimeStub:
+        def health(self):
+            return {
+                "status": "UP",
+                "service": "contract",
+                "schema_version": "1.0",
+                "mode": "runtime",
+            }
+
+    built = []
+    monkeypatch.setattr(
+        app_module,
+        "build_runtime_contract_review_service",
+        lambda settings: built.append(settings) or RuntimeStub(),
+    )
+    client = TestClient(
+        create_app(Settings(mock_mode=False, database_url="postgresql://not-opened")),
+        raise_server_exceptions=False,
+    )
+
+    first = client.get("/health", headers={"X-Request-Id": "req-runtime-health"})
+    second = client.get("/health", headers={"X-Request-Id": "req-runtime-health-2"})
+
+    assert first.status_code == 200
+    assert first.json()["data"]["mode"] == "runtime"
+    assert second.status_code == 200
+    assert len(built) == 1
 
 
 def test_create_status_result_not_ready_and_cancel_flow() -> None:

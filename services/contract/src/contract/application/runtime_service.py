@@ -212,7 +212,14 @@ class RuntimeContractReviewService:
         first_error: FrameworkGatewayError | None = None
         for mapping in plan.mappings:
             try:
-                snapshots.append(self.framework_gateway.cancel_run(mapping.task_id, mapping.run_id))
+                snapshots.append(
+                    self.framework_gateway.cancel_run(
+                        mapping.task_id,
+                        mapping.run_id,
+                        tenant_id=context.tenant_id,
+                        user_id=context.user_id,
+                    )
+                )
             except FrameworkGatewayError as exc:
                 if first_error is None:
                     first_error = exc
@@ -260,6 +267,8 @@ class RuntimeContractReviewService:
             snapshot = self.framework_gateway.get_run(
                 attempt["framework_task_id"],
                 attempt["framework_run_id"],
+                tenant_id=context.tenant_id,
+                user_id=context.user_id,
             )
         except FrameworkGatewayError:
             return state
@@ -308,6 +317,8 @@ class RuntimeContractReviewService:
                 self.framework_gateway.cancel_run(
                     reservation.previous_task_id,
                     reservation.previous_run_id,
+                    tenant_id=reservation.tenant_id,
+                    user_id=reservation.user_id,
                 )
             except FrameworkGatewayError:
                 logger.warning(
@@ -351,7 +362,12 @@ class RuntimeContractReviewService:
         activated = self.state_repository.activate_attempt(reservation, snapshot)
         if not activated:
             try:
-                self.framework_gateway.cancel_run(snapshot.task_id, snapshot.run_id)
+                self.framework_gateway.cancel_run(
+                    snapshot.task_id,
+                    snapshot.run_id,
+                    tenant_id=reservation.tenant_id,
+                    user_id=reservation.user_id,
+                )
             except FrameworkGatewayError:
                 logger.warning("Unable to cancel superseded Framework Run %s", snapshot.run_id)
         return activated
@@ -414,20 +430,26 @@ class RuntimeContractReviewService:
 
     @staticmethod
     def _gateway_error(exc: FrameworkGatewayError) -> ContractError:
-        if exc.retryable:
-            return ContractError(
-                "FRAMEWORK_UNAVAILABLE",
-                str(exc),
-                status_code=503,
-                retryable=True,
-            )
         return ContractError(
-            "FRAMEWORK_PROTOCOL_ERROR",
+            exc.code,
             str(exc),
-            status_code=502,
-            retryable=False,
+            status_code=exc.status_code,
+            retryable=exc.retryable,
         )
 
     @staticmethod
     def _id(prefix: str) -> str:
         return f"{prefix}-{uuid.uuid4().hex}"
+
+
+def build_runtime_contract_review_service(settings: Settings) -> RuntimeContractReviewService:
+    from contract.application.framework_http_gateway import FrameworkHttpGateway
+
+    repository = ContractRepository(settings)
+    return RuntimeContractReviewService(
+        settings,
+        repository,
+        ReviewStateRepository(settings),
+        ContractDocumentProcessor(settings, repository),
+        FrameworkHttpGateway(settings),
+    )
