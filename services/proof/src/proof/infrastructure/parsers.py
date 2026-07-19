@@ -45,10 +45,13 @@ def parse_document_bytes(content: bytes, filename: str) -> ParsedDocument:
             status_code=415,
             details={"supported": sorted(SUPPORTED_EXTENSIONS)},
         )
-    with tempfile.NamedTemporaryFile(suffix=suffix) as handle:
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as handle:
         handle.write(content)
-        handle.flush()
-        return parse_document(Path(handle.name))
+        temporary_path = Path(handle.name)
+    try:
+        return parse_document(temporary_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 class _BlockBuilder:

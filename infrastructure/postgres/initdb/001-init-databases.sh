@@ -1,4 +1,5 @@
 #!/bin/sh
+# This script is mounted into a Linux container and must retain LF line endings.
 set -eu
 
 create_database() {
