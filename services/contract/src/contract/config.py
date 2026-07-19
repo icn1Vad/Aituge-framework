@@ -14,6 +14,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         env_prefix="CONTRACT_",
         extra="ignore",
+        populate_by_name=True,
     )
 
     database_url: str = ""
@@ -30,6 +31,16 @@ class Settings(BaseSettings):
     framework_base_url: str = Field(
         default="http://framework:8894",
         validation_alias="FRAMEWORK_BASE_URL",
+    )
+    framework_stage_timeout_seconds: int = Field(
+        default=1800,
+        gt=0,
+        validation_alias="FRAMEWORK_STAGE_TIMEOUT_SECONDS",
+    )
+    framework_recovery_grace_seconds: int = Field(
+        default=120,
+        ge=0,
+        validation_alias="FRAMEWORK_RECOVERY_GRACE_SECONDS",
     )
 
     mock_mode: bool = True
