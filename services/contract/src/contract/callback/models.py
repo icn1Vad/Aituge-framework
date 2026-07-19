@@ -15,7 +15,7 @@ from contract.api.models import (
     ReviewSummary,
     StrictModel,
 )
-from contract.ir.models import ContractIR
+from contract.ir.models import IRDefinition, IRSemanticItem
 
 
 StageId = Literal[
@@ -71,22 +71,26 @@ class PartyResolutionStageResult(StrictModel):
         return self
 
 
+class ContractIrSemanticDelta(StrictModel):
+    definitions: list[IRDefinition] = Field(default_factory=list)
+    rights: list[IRSemanticItem] = Field(default_factory=list)
+    obligations: list[IRSemanticItem] = Field(default_factory=list)
+    prohibitions: list[IRSemanticItem] = Field(default_factory=list)
+    payment_terms: list[IRSemanticItem] = Field(default_factory=list)
+    delivery_terms: list[IRSemanticItem] = Field(default_factory=list)
+    acceptance_terms: list[IRSemanticItem] = Field(default_factory=list)
+    liabilities: list[IRSemanticItem] = Field(default_factory=list)
+    termination_terms: list[IRSemanticItem] = Field(default_factory=list)
+    confidentiality_terms: list[IRSemanticItem] = Field(default_factory=list)
+    intellectual_property_terms: list[IRSemanticItem] = Field(default_factory=list)
+    dispute_resolution: list[IRSemanticItem] = Field(default_factory=list)
+    dates: list[IRSemanticItem] = Field(default_factory=list)
+    amounts: list[IRSemanticItem] = Field(default_factory=list)
+
+
 class ExtractContractIrStageResult(StrictModel):
     result_type: Literal["CONTRACT_IR_STAGE_V1"]
-    contract_ir: ContractIR
-
-    @model_validator(mode="after")
-    def validate_resolved_parties(self) -> "ExtractContractIrStageResult":
-        parties = {party.role: party.name for party in self.contract_ir.parties}
-        if "PARTY_A" not in parties or "PARTY_B" not in parties:
-            raise ValueError("Contract IR requires resolved PARTY_A and PARTY_B")
-        if self.contract_ir.our_party not in {parties["PARTY_A"], parties["PARTY_B"]}:
-            raise ValueError("Contract IR our_party must match a resolved party")
-        if self.contract_ir.counterparty not in {parties["PARTY_A"], parties["PARTY_B"]}:
-            raise ValueError("Contract IR counterparty must match a resolved party")
-        if self.contract_ir.our_party == self.contract_ir.counterparty:
-            raise ValueError("Contract IR parties cannot map to the same side")
-        return self
+    semantic_ir: ContractIrSemanticDelta
 
 
 class EvidenceCandidate(StrictModel):

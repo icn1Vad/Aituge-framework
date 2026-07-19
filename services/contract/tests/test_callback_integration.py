@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import os
 import uuid
 from pathlib import Path
@@ -122,50 +121,23 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
                 document_id=created.document_id,
             )
         ).contract_ir
-        contract_ir_value = contract_ir.model_dump(mode="json")
-        anchor = contract_ir_value["source_anchors"][0]
-        contract_ir_value.update(
-            {
-                "parties": [
-                    {"role": "PARTY_A", "name": "Acme Company", "source_anchors": [anchor]},
-                    {"role": "PARTY_B", "name": "Beta Company", "source_anchors": [anchor]},
-                ],
-                "our_party": "Beta Company",
-                "counterparty": "Acme Company",
-                "contract_type": "SERVICE",
-            }
-        )
+        anchor = contract_ir.model_dump(mode="json")["source_anchors"][0]
         extract_result = ExtractContractIrStageResult(
             result_type="CONTRACT_IR_STAGE_V1",
-            contract_ir=contract_ir_value,
+            semantic_ir={
+                "rights": [
+                    {
+                        "item_id": "right-payment",
+                        "subject": "Acme Company",
+                        "predicate": "receives payment",
+                        "object": "services supplied",
+                        "source_anchors": [anchor],
+                    }
+                ]
+            },
         )
-        changed_structure = copy.deepcopy(contract_ir_value)
-        changed_structure["clauses"][0]["text"] += " invented"
-        with pytest.raises(ContractError) as invalid_structure:
-            callbacks.accept(
-                created.review_id,
-                _stage_callback(
-                    created,
-                    3,
-                    "extract_contract_ir",
-                    ExtractContractIrStageResult(
-                        result_type="CONTRACT_IR_STAGE_V1",
-                        contract_ir=changed_structure,
-                    ),
-                ),
-            )
-        assert invalid_structure.value.code == "RESULT_INVALID"
-
-        invented_anchor = copy.deepcopy(contract_ir_value)
-        invented_anchor["rights"] = [
-            {
-                "item_id": "right-invented",
-                "subject": "Beta Company",
-                "predicate": "has an invented source range",
-                "object": None,
-                "source_anchors": [{**anchor, "char_end": 100_000}],
-            }
-        ]
+        invented_anchor = extract_result.model_dump(mode="json")["semantic_ir"]
+        invented_anchor["rights"][0]["source_anchors"][0]["char_end"] = 100_000
         with pytest.raises(ContractError) as invalid_anchor:
             callbacks.accept(
                 created.review_id,
@@ -175,7 +147,7 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
                     "extract_contract_ir",
                     ExtractContractIrStageResult(
                         result_type="CONTRACT_IR_STAGE_V1",
-                        contract_ir=invented_anchor,
+                        semantic_ir=invented_anchor,
                     ),
                 ),
             )
@@ -188,6 +160,22 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
         )
         active_generation = repository.get_active_generation(created.document_id, tenant_id=tenant_id)
         assert active_generation is not None
+        persisted_ir = active_generation["contract_ir_json"]
+        assert persisted_ir["our_party"] is None
+        assert persisted_ir["counterparty"] is None
+        assert {item["role"]: item["name"] for item in persisted_ir["parties"]} == {
+            "PARTY_A": "Acme Company",
+            "PARTY_B": "Beta Company",
+        }
+        assert persisted_ir["rights"][0]["item_id"] == "right-payment"
+        perspective_ir = internal.get_ir(
+            ContractIrToolRequest(
+                review_id=created.review_id,
+                document_id=created.document_id,
+            )
+        ).contract_ir
+        assert perspective_ir.our_party == "Beta Company"
+        assert perspective_ir.counterparty == "Acme Company"
         block = repository.list_blocks(active_generation["id"], tenant_id=tenant_id)[0]
         quoted_text = "Party B pays."
         char_start = block["text"].index(quoted_text)
@@ -278,8 +266,12 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
         result = runtime.get_result(created.review_id, context=context)
         assert result.review_id == created.review_id
         assert result.result_hash.startswith("sha256:")
-        assert [item.finding_id for item in result.findings] == ["finding-payment"]
-        assert [item.evidence_id for item in result.evidences] == ["evidence-payment"]
+        assert len(result.findings) == 1
+        assert len(result.evidences) == 1
+        assert result.findings[0].finding_id.startswith("finding-")
+        assert result.evidences[0].evidence_id.startswith("evidence-")
+        assert result.findings[0].evidence_ids == [result.evidences[0].evidence_id]
+        assert result.evidences[0].finding_id == result.findings[0].finding_id
         assert result.summary.medium_count == 1
 
         conflict = callbacks.accept(
@@ -319,6 +311,66 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
         assert rows[-1] == ("RUN_FAILED", "REJECTED", "FRAMEWORK_PROTOCOL_ERROR")
         assert result_count == 1
         assert len(gateway.executions) == 1
+
+        second_context = InternalRequestContext(
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            request_id=f"request-second-{uuid.uuid4().hex}",
+            idempotency_key=f"idempotency-second-{uuid.uuid4().hex}",
+        )
+        second_request = request.model_copy(
+            update={
+                "business_task_id": f"business-second-{uuid.uuid4().hex}",
+                "perspective": Perspective.PARTY_A,
+                "our_party_name": "Acme Company",
+            }
+        )
+        second = runtime.create_review(upload=upload, request=second_request, context=second_context)
+        assert second.document_id == created.document_id
+        second_task_input = FrameworkTaskInput(
+            schema_version="1.0",
+            review_id=second.review_id,
+            attempt_no=1,
+            business_task_id=second_request.business_task_id,
+            contract_version_id=second_request.contract_version_id,
+            document_id=second.document_id,
+            perspective="PARTY_A",
+            our_party_name="Acme Company",
+            contract_type="AUTO",
+            review_attitude="NEUTRAL",
+        )
+        second_parse = internal.execute_stage(
+            _stage_request(second, second_task_input, "parse_contract", {})
+        )
+        callbacks.accept(second.review_id, _stage_callback(second, 1, "parse_contract", second_parse))
+        second_party = PartyResolutionStageResult(
+            result_type="PARTY_RESOLUTION_STAGE_V1",
+            contract_type="SERVICE",
+            party_a={"name": "Acme Company"},
+            party_b={"name": "Beta Company"},
+            perspective="PARTY_A",
+            our_party="Acme Company",
+            counterparty="Beta Company",
+        )
+        callbacks.accept(second.review_id, _stage_callback(second, 2, "resolve_parties", second_party))
+        second_extract = ExtractContractIrStageResult(
+            result_type="CONTRACT_IR_STAGE_V1",
+            semantic_ir={},
+        )
+        callbacks.accept(
+            second.review_id,
+            _stage_callback(second, 3, "extract_contract_ir", second_extract),
+        )
+        reused_generation = repository.get_active_generation(second.document_id, tenant_id=tenant_id)
+        assert reused_generation is not None
+        assert reused_generation["ir_hash"] == active_generation["ir_hash"]
+        assert reused_generation["contract_ir_json"]["our_party"] is None
+        second_ir = internal.get_ir(
+            ContractIrToolRequest(review_id=second.review_id, document_id=second.document_id)
+        ).contract_ir
+        assert second_ir.our_party == "Acme Company"
+        assert second_ir.counterparty == "Beta Company"
+        assert len(gateway.executions) == 2
     finally:
         _cleanup(tenant_id)
 

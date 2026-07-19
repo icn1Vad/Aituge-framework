@@ -11,7 +11,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from task_manager.pipeline.stage_registry import StageExecutionContext, StageServiceResult
-from task_manager.result_sink import ResultSinkDelivery
+from task_manager.result_sink import ResultSinkDelivery, ResultSinkRejectedError
 
 
 CAPABILITY_ID = "contract-review"
@@ -288,22 +288,26 @@ class PartyResolutionStageResult(StrictModel):
         return self
 
 
+class ContractIrSemanticDelta(StrictModel):
+    definitions: list[IrDefinition] = Field(default_factory=list)
+    rights: list[IrSemanticItem] = Field(default_factory=list)
+    obligations: list[IrSemanticItem] = Field(default_factory=list)
+    prohibitions: list[IrSemanticItem] = Field(default_factory=list)
+    payment_terms: list[IrSemanticItem] = Field(default_factory=list)
+    delivery_terms: list[IrSemanticItem] = Field(default_factory=list)
+    acceptance_terms: list[IrSemanticItem] = Field(default_factory=list)
+    liabilities: list[IrSemanticItem] = Field(default_factory=list)
+    termination_terms: list[IrSemanticItem] = Field(default_factory=list)
+    confidentiality_terms: list[IrSemanticItem] = Field(default_factory=list)
+    intellectual_property_terms: list[IrSemanticItem] = Field(default_factory=list)
+    dispute_resolution: list[IrSemanticItem] = Field(default_factory=list)
+    dates: list[IrSemanticItem] = Field(default_factory=list)
+    amounts: list[IrSemanticItem] = Field(default_factory=list)
+
+
 class ExtractContractIrStageResult(StrictModel):
     result_type: Literal["CONTRACT_IR_STAGE_V1"]
-    contract_ir: ContractIr
-
-    @model_validator(mode="after")
-    def validate_resolved_parties(self) -> "ExtractContractIrStageResult":
-        parties = {party.role: party.name for party in self.contract_ir.parties}
-        if "PARTY_A" not in parties or "PARTY_B" not in parties:
-            raise ValueError("Contract IR requires resolved PARTY_A and PARTY_B")
-        if self.contract_ir.our_party not in {parties["PARTY_A"], parties["PARTY_B"]}:
-            raise ValueError("Contract IR our_party must match a resolved party")
-        if self.contract_ir.counterparty not in {parties["PARTY_A"], parties["PARTY_B"]}:
-            raise ValueError("Contract IR counterparty must match a resolved party")
-        if self.contract_ir.our_party == self.contract_ir.counterparty:
-            raise ValueError("Contract IR parties cannot map to the same side")
-        return self
+    semantic_ir: ContractIrSemanticDelta
 
 
 class EvidenceCandidate(StrictModel):
@@ -431,7 +435,7 @@ def _callback_envelope(delivery: ResultSinkDelivery) -> tuple[str, dict[str, Any
         result = None
         error = {
             "code": "FRAMEWORK_RUN_FAILED",
-            "message": delivery.error_message or "Framework contract stage failed",
+            "message": (delivery.error_message or "Framework contract stage failed")[:2000],
             "retryable": False,
             "user_action_required": False,
             "details": {"stage_id": stage_id} if stage_id else None,
@@ -486,7 +490,18 @@ def _result_sink_handler(base_url: str, token: str):
                     response.raise_for_status()
                     SinkResponse.model_validate(response.json())
                 return
-            except (httpx.HTTPError, ValueError) as exc:
+            except httpx.HTTPStatusError as exc:
+                detail = exc.response.text[:1000].strip()
+                suffix = f": {detail}" if detail else ""
+                error = RuntimeError(
+                    f"Contract Result Sink returned HTTP {exc.response.status_code}{suffix}"
+                )
+                if exc.response.status_code == 422:
+                    raise ResultSinkRejectedError(str(error)) from exc
+                last_error = error
+                if attempt < 2:
+                    await asyncio.sleep(0.1)
+            except (httpx.RequestError, ValueError) as exc:
                 last_error = exc
                 if attempt < 2:
                     await asyncio.sleep(0.1)
@@ -518,7 +533,14 @@ def _stage_gateway_handler(base_url: str, token: str):
                 },
                 json=payload,
             )
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = exc.response.text[:1000].strip()
+                suffix = f": {detail}" if detail else ""
+                raise RuntimeError(
+                    f"Contract stage gateway returned HTTP {exc.response.status_code}{suffix}"
+                ) from exc
             body = response.json()
         if body.get("success") is not True or not isinstance(body.get("data"), dict):
             raise RuntimeError("Contract stage gateway returned an invalid response")
@@ -556,6 +578,7 @@ async def register(registry, settings) -> None:
             path=path,
             input_model=model,
             headers=internal_headers,
+            request_id_header="X-Request-Id",
             timeout_seconds=30,
             max_response_chars=500_000,
         )
@@ -589,7 +612,12 @@ async def register(registry, settings) -> None:
             "perspective, use only current-contract tools and artifacts, and return exactly the "
             "registered JSON shape. Never invent source text, block IDs, evidence offsets, or "
             "cryptographic hashes. For review stages, return source coordinates as Evidence "
-            "Candidates and let Contract Python materialize the exact quote and SHA-256."
+            "Candidates and let Contract Python materialize the exact quote and SHA-256. "
+            "For ABSENCE evidence, every positioning and quoted-text field must be null; only "
+            "checked_scope and verification_note describe the verified absence. In each review "
+            "stage return at most four highest-materiality findings, keep free-text fields concise, "
+            "and merge findings that have the same cause. Do not narrate analysis in the final "
+            "answer: its first character must be '{' and its last character must be '}'."
         ),
         default_tools=[
             "contract_get_document",
@@ -670,7 +698,10 @@ async def register(registry, settings) -> None:
             "tools": review_tools,
             "output_policy": "repair_once",
             "timeout_seconds": 180,
-            "retry_policy": {"max_attempts": 2, "retry_on": ["invalid_output", "timeout"]},
+            "retry_policy": {
+                "max_attempts": 2,
+                "retry_on": ["invalid_output", "timeout", "required_result_sink_failed"],
+            },
         },
         {
             "stage_id": "extract_contract_ir",
@@ -686,7 +717,10 @@ async def register(registry, settings) -> None:
             "tools": review_tools,
             "output_policy": "repair_once",
             "timeout_seconds": 300,
-            "retry_policy": {"max_attempts": 2, "retry_on": ["invalid_output", "timeout"]},
+            "retry_policy": {
+                "max_attempts": 2,
+                "retry_on": ["invalid_output", "timeout", "required_result_sink_failed"],
+            },
         },
     ]
     for stage_id, name, output_model, package, skill in parallel_stages:
@@ -710,7 +744,10 @@ async def register(registry, settings) -> None:
                 "tools": review_tools,
                 "output_policy": "repair_once",
                 "timeout_seconds": 300,
-                "retry_policy": {"max_attempts": 2, "retry_on": ["invalid_output", "timeout"]},
+                "retry_policy": {
+                    "max_attempts": 2,
+                    "retry_on": ["invalid_output", "timeout", "required_result_sink_failed"],
+                },
             }
         )
     stages.extend(

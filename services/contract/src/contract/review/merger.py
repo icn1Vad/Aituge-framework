@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import unicodedata
 from collections.abc import Sequence
@@ -11,6 +12,35 @@ from contract.errors import ContractError
 
 
 _RISK_RANK = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3}
+
+
+def namespace_review_stage_result(
+    stage_namespace: str,
+    stage: ReviewStageResult,
+) -> ReviewStageResult:
+    """Make model-local IDs globally stable before parallel stage aggregation."""
+    payload = stage.model_dump(mode="json")
+    finding_ids = {
+        item["finding_id"]: _namespaced_id("finding", stage_namespace, item["finding_id"])
+        for item in payload["findings"]
+    }
+    evidence_ids = {
+        item["evidence_id"]: _namespaced_id("evidence", stage_namespace, item["evidence_id"])
+        for item in payload["evidences"]
+    }
+    for finding in payload["findings"]:
+        finding["finding_id"] = finding_ids[finding["finding_id"]]
+        finding["evidence_ids"] = [
+            evidence_ids.get(value, _namespaced_id("evidence", stage_namespace, value))
+            for value in finding["evidence_ids"]
+        ]
+    for evidence in payload["evidences"]:
+        evidence["evidence_id"] = evidence_ids[evidence["evidence_id"]]
+        evidence["finding_id"] = finding_ids.get(
+            evidence["finding_id"],
+            _namespaced_id("finding", stage_namespace, evidence["finding_id"]),
+        )
+    return type(stage).model_validate(payload)
 
 
 def merge_review_stage_results(
@@ -114,6 +144,11 @@ def _evidence_key(value: dict[str, Any]) -> tuple[Any, ...]:
 
 def _normalized_text(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
+
+
+def _namespaced_id(kind: str, stage_namespace: str, source_id: str) -> str:
+    digest = hashlib.sha256(f"{stage_namespace}\0{source_id}".encode("utf-8")).hexdigest()[:32]
+    return f"{kind}-{digest}"
 
 
 def _invalid(message: str) -> ContractError:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from collections import Counter
 from typing import Any
 
@@ -34,7 +35,7 @@ from contract.internal.models import (
 )
 from contract.persistence.postgres.callback_repository import FrameworkCallbackRepository
 from contract.persistence.postgres.repository import ContractRepository
-from contract.review import merge_review_stage_results
+from contract.review import merge_review_stage_results, namespace_review_stage_result
 
 
 REVIEW_ARTIFACT_MODELS = {
@@ -142,12 +143,22 @@ class ContractInternalService:
         generation = self._generation(review)
         if not isinstance(generation["contract_ir_json"], dict):
             raise ContractError("RESULT_INVALID", "Contract IR is not available", status_code=422)
+        contract_ir = copy.deepcopy(generation["contract_ir_json"])
+        attempt_no = review.get("active_attempt_no")
+        if attempt_no is not None:
+            party = self.callback_repository.get_validated_stage_result(
+                review["id"], attempt_no, "resolve_parties"
+            )
+            if party is not None:
+                contract_ir["contract_type"] = party["contract_type"]
+                contract_ir["our_party"] = party["our_party"]
+                contract_ir["counterparty"] = party["counterparty"]
         return ContractIrToolData(
             review_id=review["id"],
             document_id=review["document_id"],
             generation_id=generation["id"],
             generation_status=generation["status"],
-            contract_ir=generation["contract_ir_json"],
+            contract_ir=contract_ir,
         )
 
     def validate_final_result(self, value: FinalizeReviewStageResult) -> ReviewResultData:
@@ -290,7 +301,7 @@ class ContractInternalService:
                     f"Required review artifact '{artifact_type}' is missing",
                     status_code=422,
                 )
-            stages.append(model.model_validate(raw))
+            stages.append(namespace_review_stage_result(artifact_type, model.model_validate(raw)))
         return merge_review_stage_results(stages)
 
     def _validate_evidence(

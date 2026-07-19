@@ -28,3 +28,8 @@ Unicode code points, cite the complete real anchor range instead of guessing. Fo
 `CONTEXT`, the model may omit `quoted_text` and `quoted_text_hash`; Contract Python derives both from the
 validated Block. Never invent a hash. Keep Finding and Evidence IDs unique and make every
 `finding.evidence_ids` entry point to a returned candidate.
+
+Return at most four highest-materiality findings and merge findings with the same cause. Keep each
+free-text field to one or two concise sentences. For `ABSENCE`, set `block_id`, `page_number`,
+`char_start`, `char_end`, `quoted_text`, and `quoted_text_hash` to null. Start the final answer immediately
+with `{`; do not narrate analysis or use a Markdown fence.

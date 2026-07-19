@@ -11,7 +11,7 @@ from contract.callback.models import (
     RightsObligationsStageResult,
 )
 from contract.errors import ContractError
-from contract.review import merge_review_stage_results
+from contract.review import merge_review_stage_results, namespace_review_stage_result
 
 
 def test_merges_semantic_duplicate_findings_and_source_evidence_deterministically() -> None:
@@ -78,6 +78,35 @@ def test_rejects_evidence_id_reused_for_different_content() -> None:
 
     with pytest.raises(ContractError, match="Evidence ID is duplicated"):
         merge_review_stage_results(stages)
+
+
+def test_namespaces_model_local_ids_before_parallel_stage_merge() -> None:
+    first_finding = _finding("finding-001", "HIGH", "Payment risk", "Payment is late")
+    second_finding = _finding("finding-001", "LOW", "Delivery risk", "Delivery is unclear")
+    first = namespace_review_stage_result(
+        "commercial_terms_review_result",
+        CommercialTermsStageResult(
+            result_type="COMMERCIAL_TERMS_STAGE_V1",
+            findings=[first_finding],
+            evidences=[_quote("evidence-001", first_finding.finding_id, "Payment")],
+        ),
+    )
+    second = namespace_review_stage_result(
+        "rights_obligations_review_result",
+        RightsObligationsStageResult(
+            result_type="RIGHTS_OBLIGATIONS_STAGE_V1",
+            findings=[second_finding],
+            evidences=[_quote("evidence-001", second_finding.finding_id, "Delivery")],
+        ),
+    )
+
+    findings, evidences = merge_review_stage_results([first, second])
+
+    assert len(findings) == 2
+    assert len({item.finding_id for item in findings}) == 2
+    assert len({item.evidence_id for item in evidences}) == 2
+    assert all(item.finding_id.startswith("finding-") for item in findings)
+    assert all(item.evidence_id.startswith("evidence-") for item in evidences)
 
 
 def _finding(finding_id: str, risk_level: str, title: str, issue: str) -> Finding:

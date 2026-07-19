@@ -21,3 +21,9 @@ must use the real Block ID and exact `[char_start,char_end)` Unicode code-point 
 range to a guessed substring. The model may omit `quoted_text` and `quoted_text_hash`; Contract Python reads
 the Block and generates both. Never fabricate a hash, page, clause, or quote. Keep all IDs unique and all
 Finding–Evidence references consistent. Return empty arrays when no material issue exists.
+
+Return at most four highest-materiality findings and merge findings with the same cause. Keep each
+free-text field to one or two concise sentences. For `ABSENCE`, set `block_id`, `page_number`,
+`char_start`, `char_end`, `quoted_text`, and `quoted_text_hash` to null; use only `checked_scope` and
+`verification_note` to describe the verified search. Start the final answer immediately with `{`; do not
+narrate analysis or use a Markdown fence.

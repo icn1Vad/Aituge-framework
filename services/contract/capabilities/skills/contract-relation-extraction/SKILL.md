@@ -26,3 +26,8 @@ Return a Finding only when the relationship creates a material risk for the sele
 support it. Copy exact IR anchors and their Block-relative `[char_start,char_end)` ranges; prefer full
 anchors over guessed substrings. The model may omit `quoted_text` and `quoted_text_hash`, which Contract
 Python derives deterministically. Keep IDs unique and Finding–Evidence references complete. Stay neutral.
+
+Return at most four highest-materiality findings and merge findings with the same cause. Keep each
+free-text field to one or two concise sentences. If an `ABSENCE` candidate is necessary, set `block_id`,
+`page_number`, `char_start`, `char_end`, `quoted_text`, and `quoted_text_hash` to null. Start the final
+answer immediately with `{`; do not narrate analysis or use a Markdown fence.

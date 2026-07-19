@@ -6,7 +6,9 @@ import pytest
 from task_manager.pipeline.stage_registry import register_stage_handler
 from task_manager.result_sink import (
     RequiredResultSinkError,
+    ResultSinkRejectedError,
     deliver_task_result,
+    is_required_result_sink,
     register_result_sink_handler,
 )
 
@@ -23,6 +25,8 @@ def test_capability_result_sink_receives_typed_delivery() -> None:
         source="test-contract",
         required=True,
     )
+    assert is_required_result_sink("test.contract.sink") is True
+    assert is_required_result_sink("test.contract.missing") is False
     task = SimpleNamespace(
         id="task-1",
         current_run_id="run-1",
@@ -66,6 +70,28 @@ def test_required_capability_result_sink_failure_is_not_downgraded() -> None:
 
     with pytest.raises(RequiredResultSinkError, match="sink unavailable"):
         asyncio.run(deliver_task_result(task, SimpleNamespace(result_sink_url=None), None))
+
+
+def test_required_sink_preserves_a_durable_rejection_as_its_cause() -> None:
+    async def handler(_delivery):
+        raise ResultSinkRejectedError("result rejected")
+
+    register_result_sink_handler(
+        "test.contract.rejected-sink",
+        handler,
+        source="test-contract-rejected",
+        required=True,
+    )
+    task = SimpleNamespace(
+        id="task-rejected",
+        current_run_id="run-rejected",
+        task_type="test.contract.rejected-sink",
+        input_payload_json={},
+    )
+
+    with pytest.raises(RequiredResultSinkError) as caught:
+        asyncio.run(deliver_task_result(task, SimpleNamespace(result_sink_url=None), None))
+    assert isinstance(caught.value.__cause__, ResultSinkRejectedError)
 
 
 def test_result_sink_registration_rejects_foreign_owner() -> None:

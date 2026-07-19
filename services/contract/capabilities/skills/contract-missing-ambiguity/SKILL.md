@@ -28,3 +28,8 @@ For ambiguity or conflict, use real `TEXT_QUOTE` or `CONTEXT` candidates. Copy e
 their exact Block-relative `[char_start,char_end)` ranges. The model may omit `quoted_text` and
 `quoted_text_hash`; Contract Python derives them. Keep IDs unique and references complete. Return empty
 arrays if no material issue is supported.
+
+Return at most four highest-materiality findings and merge missing protections that have the same cause.
+Keep each free-text field to one or two concise sentences. In every `ABSENCE` candidate, explicitly set
+`block_id`, `page_number`, `char_start`, `char_end`, `quoted_text`, and `quoted_text_hash` to null. Start
+the final answer immediately with `{`; do not narrate analysis or use a Markdown fence.

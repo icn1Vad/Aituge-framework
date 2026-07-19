@@ -578,6 +578,111 @@
         "title": "ContractIR",
         "type": "object"
       },
+      "ContractIrSemanticDelta": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Acceptance Terms",
+            "type": "array"
+          },
+          "amounts": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Amounts",
+            "type": "array"
+          },
+          "confidentiality_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Confidentiality Terms",
+            "type": "array"
+          },
+          "dates": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Dates",
+            "type": "array"
+          },
+          "definitions": {
+            "items": {
+              "$ref": "#/components/schemas/IRDefinition"
+            },
+            "title": "Definitions",
+            "type": "array"
+          },
+          "delivery_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Delivery Terms",
+            "type": "array"
+          },
+          "dispute_resolution": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Dispute Resolution",
+            "type": "array"
+          },
+          "intellectual_property_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Intellectual Property Terms",
+            "type": "array"
+          },
+          "liabilities": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Liabilities",
+            "type": "array"
+          },
+          "obligations": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Obligations",
+            "type": "array"
+          },
+          "payment_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Payment Terms",
+            "type": "array"
+          },
+          "prohibitions": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Prohibitions",
+            "type": "array"
+          },
+          "rights": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Rights",
+            "type": "array"
+          },
+          "termination_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Termination Terms",
+            "type": "array"
+          }
+        },
+        "title": "ContractIrSemanticDelta",
+        "type": "object"
+      },
       "ContractIrToolData": {
         "additionalProperties": false,
         "properties": {
@@ -1176,18 +1281,18 @@
       "ExtractContractIrStageResult": {
         "additionalProperties": false,
         "properties": {
-          "contract_ir": {
-            "$ref": "#/components/schemas/ContractIR"
-          },
           "result_type": {
             "const": "CONTRACT_IR_STAGE_V1",
             "title": "Result Type",
             "type": "string"
+          },
+          "semantic_ir": {
+            "$ref": "#/components/schemas/ContractIrSemanticDelta"
           }
         },
         "required": [
           "result_type",
-          "contract_ir"
+          "semantic_ir"
         ],
         "title": "ExtractContractIrStageResult",
         "type": "object"

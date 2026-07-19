@@ -25,3 +25,8 @@ Use `ABSENCE` only for a genuine missing commercial protection after checking th
 `checked_scope` to `ENTIRE_CONTRACT` or a precise commercial-term scope and explain the deterministic search
 in `verification_note`. Keep IDs unique and keep Finding–Evidence references complete. Return empty arrays
 when there is no material issue.
+
+Return at most four highest-materiality findings and merge findings with the same cause. Keep each
+free-text field to one or two concise sentences. For every `ABSENCE` candidate, explicitly set
+`block_id`, `page_number`, `char_start`, `char_end`, `quoted_text`, and `quoted_text_hash` to null. Start
+the final answer immediately with `{`; do not narrate analysis or use a Markdown fence.

@@ -27,6 +27,10 @@ class RequiredResultSinkError(RuntimeError):
     """A required capability sink did not durably accept a result."""
 
 
+class ResultSinkRejectedError(RuntimeError):
+    """The sink durably rejected a result that may be corrected and resubmitted."""
+
+
 @dataclass(frozen=True, slots=True)
 class _RegisteredResultSink:
     handler: ResultSinkHandler
@@ -35,6 +39,11 @@ class _RegisteredResultSink:
 
 
 _RESULT_SINKS: dict[str, _RegisteredResultSink] = {}
+
+
+def is_required_result_sink(task_type: str) -> bool:
+    registered = _RESULT_SINKS.get(task_type.strip())
+    return registered is not None and registered.required
 
 
 def register_result_sink_handler(

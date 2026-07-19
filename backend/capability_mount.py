@@ -8,6 +8,7 @@ import inspect
 import json
 import os
 import sys
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -105,6 +106,7 @@ class _HttpToolRegistration:
     method: str
     input_model: type[BaseModel]
     headers: Mapping[str, str]
+    request_id_header: str | None
     timeout_seconds: float
     max_response_chars: int
 
@@ -466,6 +468,7 @@ class CapabilityRegistry:
         input_model: type[BaseModel],
         method: str = "POST",
         headers: Mapping[str, str] | None = None,
+        request_id_header: str | None = None,
         timeout_seconds: float = 30.0,
         max_response_chars: int = 100_000,
     ) -> None:
@@ -494,6 +497,16 @@ class CapabilityRegistry:
         }
         if any(not value or "\r" in value or "\n" in value for value in normalized_headers.values()):
             raise ValueError("HTTP tool header values must be non-empty single-line strings.")
+        normalized_request_id_header = str(request_id_header or "").strip() or None
+        if normalized_request_id_header is not None:
+            if not normalized_request_id_header.replace("-", "").isalnum():
+                raise ValueError("HTTP tool request_id_header must be a valid HTTP header name.")
+            if normalized_request_id_header.lower() in {
+                name.lower() for name in normalized_headers
+            }:
+                raise ValueError(
+                    "HTTP tool request_id_header cannot also be declared as a static header."
+                )
 
         registration = _HttpToolRegistration(
             tool_name=normalized_name,
@@ -505,6 +518,7 @@ class CapabilityRegistry:
             method=normalized_method,
             input_model=input_model,
             headers=normalized_headers,
+            request_id_header=normalized_request_id_header,
             timeout_seconds=float(timeout_seconds),
             max_response_chars=int(max_response_chars),
         )
@@ -841,6 +855,9 @@ def _http_tool_factory(registration: _HttpToolRegistration):
         )
 
         async def invoke_http_tool(**payload: Any) -> str:
+            headers = dict(registration.headers)
+            if registration.request_id_header is not None:
+                headers[registration.request_id_header] = f"tool-{uuid.uuid4().hex}"
             try:
                 async with httpx.AsyncClient(
                     base_url=base_url,
@@ -849,7 +866,7 @@ def _http_tool_factory(registration: _HttpToolRegistration):
                     response = await client.request(
                         method,
                         path,
-                        headers=dict(registration.headers),
+                        headers=headers,
                         json=payload,
                     )
                     response.raise_for_status()

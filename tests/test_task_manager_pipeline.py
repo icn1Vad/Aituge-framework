@@ -18,9 +18,12 @@ from task_manager.pipeline.executor import PipelineExecutor
 from task_manager.pipeline.models import (
     AgentStageConfig,
     PipelineDefinition,
+    RetryPolicy,
     StageDefinition,
     validate_pipeline_definition,
 )
+from task_manager.pipeline.stage_registry import StageServiceResult
+from task_manager.result_sink import RequiredResultSinkError, ResultSinkRejectedError
 from task_manager.runtime.broker import reset_event_broker_for_test
 from task_manager.runtime.execution import executor_lock
 
@@ -211,6 +214,117 @@ def test_pipeline_ready_stages_run_in_parallel_and_finish_in_delay_order(monkeyp
         assert events[-1].event_type == "result_snapshot"
 
     asyncio.run(run())
+
+
+def test_required_stage_sink_rejection_retries_before_artifact_commit(monkeypatch):
+    async def run():
+        executor = PipelineExecutor(SimpleNamespace())
+        task = SimpleNamespace(
+            id="task-required-sink",
+            task_type="contract.review.run",
+            input_payload_json={"review_id": "review-1"},
+        )
+        context = SimpleNamespace(task=task, task_type=SimpleNamespace(result_sink_url=None))
+        pipeline_run = SimpleNamespace(
+            id="run-required-sink",
+            metadata_json={},
+            cancel_requested=False,
+        )
+        stage = StageDefinition(
+            stage_id="validated-stage",
+            name="Validated stage",
+            stage_type="gateway",
+            service_handler="validated-stage-handler",
+            artifact_type="validated-result",
+            retry_policy=RetryPolicy(
+                max_attempts=2,
+                retry_on=("required_result_sink_failed",),
+            ),
+        )
+        handler_calls = 0
+        sink_calls = 0
+        artifact_calls = 0
+
+        async def handler(_context):
+            nonlocal handler_calls
+            handler_calls += 1
+            return StageServiceResult(output={"attempt": handler_calls})
+
+        async def deliver(*_args, **_kwargs):
+            nonlocal sink_calls
+            sink_calls += 1
+            if sink_calls == 1:
+                try:
+                    raise ResultSinkRejectedError("source anchor rejected")
+                except ResultSinkRejectedError as exc:
+                    raise RequiredResultSinkError("source anchor rejected") from exc
+
+        async def create_stage_run(**kwargs):
+            return SimpleNamespace(id=f"stage-run-{kwargs['attempt']}", agent_id=None)
+
+        async def create_artifact(**kwargs):
+            nonlocal artifact_calls
+            artifact_calls += 1
+            return SimpleNamespace(
+                id="artifact-accepted",
+                artifact_type=kwargs["artifact_type"],
+                artifact_version=1,
+                checksum="checksum",
+                content_json=kwargs["content"],
+            )
+
+        async def no_update(*_args, **_kwargs):
+            return None
+
+        async def current_run(_run_id):
+            return pipeline_run
+
+        monkeypatch.setattr(pipeline_executor_mod, "is_required_result_sink", lambda _task_type: True)
+        monkeypatch.setattr(pipeline_executor_mod, "deliver_task_result", deliver)
+        monkeypatch.setattr(pipeline_executor_mod, "get_stage_handler", lambda _name: handler)
+        monkeypatch.setattr(pipeline_executor_mod, "create_stage_run", create_stage_run)
+        monkeypatch.setattr(pipeline_executor_mod, "create_artifact", create_artifact)
+        monkeypatch.setattr(pipeline_executor_mod, "update_run", no_update)
+        monkeypatch.setattr(pipeline_executor_mod, "update_stage_run", no_update)
+        monkeypatch.setattr(pipeline_executor_mod, "get_run", current_run)
+
+        artifacts = {}
+        events = [event async for event in executor._stream_stage(
+            context=context,
+            run=pipeline_run,
+            definition=SimpleNamespace(),
+            stage=stage,
+            stage_index=1,
+            artifacts=artifacts,
+            attempt_offsets={},
+        )]
+
+        assert handler_calls == 2
+        assert sink_calls == 2
+        assert artifact_calls == 1
+        assert artifacts[stage.stage_id].content_json == {"attempt": 2}
+        assert "stage_retrying" in {event.event_type for event in events}
+
+    asyncio.run(run())
+
+
+def test_stage_retry_feedback_is_bounded_and_visible_to_next_model_attempt():
+    message = pipeline_executor_mod._stage_message(
+        SimpleNamespace(task_type="contract.review.run"),
+        StageDefinition(
+            stage_id="extract_contract_ir",
+            name="Extract Contract IR",
+            stage_type="agent",
+            agent_config=AgentStageConfig(agent_id="contract-agent"),
+        ),
+        {"task_input": {"review_id": "review-1"}},
+        retry_feedback="source anchor rejected" + ("x" * 3000),
+    )
+
+    assert "Previous attempt rejection:" in message
+    assert "source anchor rejected" in message
+    assert "must start with '{'" in message
+    assert len(message.rsplit("Correct that rejection", 1)[0]) < 5000
 
 
 def test_direct_model_stage_uses_skill_and_llm_runtime_without_react(monkeypatch):
