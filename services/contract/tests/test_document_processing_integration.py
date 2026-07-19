@@ -52,8 +52,15 @@ def test_document_processing_persists_parse_draft_then_activates_atomically(tmp_
         assert first.document_reused is False
         assert first.generation_reused is False
         assert first.parse_completed is False
-        assert first.block_count == 3
+        assert first.block_count == 5
         assert first.structural_ir is not None
+        assert [
+            (party["role"], party["name"])
+            for party in first.structural_ir["parties"]
+        ] == [
+            ("PARTY_A", "某某采购单位"),
+            ("PARTY_B", "某某服务单位"),
+        ]
         generation = repository.get_parse_generation(
             first.generation_id,
             document_id=first.document_id,
@@ -129,6 +136,8 @@ def _docx_bytes() -> bytes:
     buffer = io.BytesIO()
     document = Document()
     document.add_heading("第一章 服务", level=1)
+    document.add_paragraph("甲方（采购方）：某某采购单位")
+    document.add_paragraph("乙方（服务方）：某某服务单位")
     document.add_paragraph("第一条 乙方提供技术服务。")
     document.add_paragraph("第二条 甲方于验收后付款。")
     document.save(buffer)

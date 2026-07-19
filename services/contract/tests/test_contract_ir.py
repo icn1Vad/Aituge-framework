@@ -29,7 +29,9 @@ def test_structural_ir_has_all_frozen_sections_and_relative_anchors() -> None:
         page_count=1,
         blocks=[
             _block(1, "第一章 总则", "heading"),
-            _block(2, "第一条 甲方应付款。", "article"),
+            _block(2, "甲方：某某单位", "paragraph"),
+            _block(3, "乙方：另一单位", "paragraph"),
+            _block(4, "第一条 甲方应付款。", "article"),
         ],
     )
 
@@ -42,10 +44,14 @@ def test_structural_ir_has_all_frozen_sections_and_relative_anchors() -> None:
     )
     payload = result.model_dump(mode="json")
 
-    assert result.clauses[1].clause_no == "第一条"
-    assert result.clauses[1].source_anchors[0].char_start == 0
-    assert result.clauses[1].source_anchors[0].char_end == len("第一条 甲方应付款。")
-    assert result.document.block_count == 2
+    assert result.clauses[3].clause_no == "第一条"
+    assert result.clauses[3].source_anchors[0].char_start == 0
+    assert result.clauses[3].source_anchors[0].char_end == len("第一条 甲方应付款。")
+    assert result.document.block_count == 4
+    assert [(item.role, item.name) for item in result.parties] == [
+        ("PARTY_A", "某某单位"),
+        ("PARTY_B", "另一单位"),
+    ]
     for field in (
         "parties",
         "definitions",

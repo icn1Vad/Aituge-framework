@@ -18,6 +18,10 @@ def build_structural_contract_ir(
     content_hash: str,
     parser_version: str,
 ) -> ContractIR:
+    # Keep party extraction behind the build boundary so contract.ir models can
+    # also be imported independently by the party package without a cycle.
+    from contract.party import extract_party_candidates
+
     anchors = [_anchor_for(block) for block in parsed.blocks if block.block_type != "footer"]
     clauses = [
         IRClause(
@@ -44,6 +48,7 @@ def build_structural_contract_ir(
             parser_version=parser_version,
             warnings=list(parsed.warnings),
         ),
+        parties=extract_party_candidates(parsed.blocks),
         clauses=clauses,
         source_anchors=anchors,
     )

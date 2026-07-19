@@ -10,7 +10,7 @@ from contract.errors import ContractError
 from contract.parser.models import ParsedContract, ParsedContractBlock
 
 
-PARSER_VERSION = "contract-parser-v1"
+PARSER_VERSION = "contract-parser-v1.1"
 SUPPORTED_EXTENSIONS = frozenset({".pdf", ".docx"})
 _OLE_COMPOUND_SIGNATURE = bytes.fromhex("D0CF11E0A1B11AE1")
 _CHINESE_DIGITS = "〇零一二三四五六七八九十百千万两"
