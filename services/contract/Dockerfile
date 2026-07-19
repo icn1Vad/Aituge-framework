@@ -13,6 +13,8 @@ RUN python -c "import subprocess, sys, tomllib; data = tomllib.load(open('pyproj
 
 FROM dependencies AS runtime
 
+ENV CONTRACT_MOCK_MODE=false
+
 COPY services/contract/src/ ./src/
 RUN pip install --no-cache-dir --no-deps --no-build-isolation .
 

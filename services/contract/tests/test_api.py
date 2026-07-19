@@ -6,7 +6,9 @@ import json
 from fastapi.testclient import TestClient
 
 from contract.api.app import create_app
+from contract.callback.models import FrameworkCallbackData
 from contract.config import Settings
+from contract.internal.models import ContractDocumentToolData
 
 
 TOKEN = "contract-test-token"
@@ -118,6 +120,127 @@ def test_non_mock_mode_lazily_builds_runtime_service(monkeypatch) -> None:
     assert first.json()["data"]["mode"] == "runtime"
     assert second.status_code == 200
     assert len(built) == 1
+
+
+def test_framework_callback_requires_its_own_token_and_strict_terminal_shape() -> None:
+    class CallbackStub:
+        def accept(self, path_review_id, callback):
+            assert path_review_id == callback.review_id == "review-1"
+            return FrameworkCallbackData(accepted=True, duplicate=False)
+
+    client = TestClient(
+        create_app(
+            Settings(
+                mock_mode=True,
+                internal_token=TOKEN,
+                framework_result_sink_internal_token="framework-token",
+            ),
+            internal_service=object(),
+            callback_service=CallbackStub(),
+        ),
+        raise_server_exceptions=False,
+    )
+    payload = {
+        "schema_version": "1.0",
+        "review_id": "review-1",
+        "attempt_no": 1,
+        "framework_task_id": "task-1",
+        "framework_run_id": "run-1",
+        "stage_id": None,
+        "event_sequence": 1000,
+        "callback_id": "callback-run-1-success",
+        "callback_type": "RUN_SUCCEEDED",
+        "result": None,
+        "error": None,
+    }
+    headers = {
+        "X-Internal-Service": "aituge-framework",
+        "X-Internal-Token": "framework-token",
+        "X-Request-Id": "req-framework-callback",
+    }
+
+    accepted = client.post(
+        "/v1/internal/contract-reviews/review-1/framework-result",
+        headers=headers,
+        json=payload,
+    )
+    unauthorized = client.post(
+        "/v1/internal/contract-reviews/review-1/framework-result",
+        headers={**headers, "X-Internal-Token": TOKEN},
+        json=payload,
+    )
+    invalid = client.post(
+        "/v1/internal/contract-reviews/review-1/framework-result",
+        headers=headers,
+        json={**payload, "stage_id": "finalize_review"},
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.json()["data"] == {
+        "accepted": True,
+        "duplicate": False,
+        "ignored_reason": None,
+    }
+    assert unauthorized.status_code == 401
+    assert unauthorized.json()["error"]["code"] == "UNAUTHORIZED_INTERNAL_CALL"
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == "REQUEST_SCHEMA_INVALID"
+
+
+def test_framework_tool_endpoint_uses_callback_credential_and_typed_response() -> None:
+    class InternalStub:
+        def get_document(self, payload):
+            assert payload.review_id == "review-1"
+            assert payload.document_id == "document-1"
+            return ContractDocumentToolData(
+                review_id="review-1",
+                document_id="document-1",
+                contract_version_id="version-1",
+                original_name="contract.pdf",
+                content_type="application/pdf",
+                file_type="pdf",
+                file_size=128,
+                content_hash="sha256:" + "1" * 64,
+                generation_id="generation-1",
+                generation_status="RUNNING",
+                block_count=1,
+            )
+
+    client = TestClient(
+        create_app(
+            Settings(
+                mock_mode=True,
+                internal_token=TOKEN,
+                framework_result_sink_internal_token="framework-token",
+            ),
+            internal_service=InternalStub(),
+            callback_service=object(),
+        ),
+        raise_server_exceptions=False,
+    )
+    headers = {
+        "X-Internal-Service": "aituge-framework",
+        "X-Internal-Token": "framework-token",
+        "X-Request-Id": "req-framework-tool",
+    }
+    payload = {"review_id": "review-1", "document_id": "document-1"}
+
+    accepted = client.post(
+        "/v1/internal/contract-tools/document",
+        headers=headers,
+        json=payload,
+    )
+    unauthorized = client.post(
+        "/v1/internal/contract-tools/document",
+        headers={**headers, "X-Internal-Token": TOKEN},
+        json=payload,
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.json()["data"]["generation_status"] == "RUNNING"
+    assert accepted.json()["data"]["block_count"] == 1
+    assert unauthorized.status_code == 401
+    assert unauthorized.json()["error"]["code"] == "UNAUTHORIZED_INTERNAL_CALL"
 
 
 def test_create_status_result_not_ready_and_cancel_flow() -> None:

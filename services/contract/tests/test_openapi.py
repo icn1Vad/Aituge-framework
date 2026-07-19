@@ -47,3 +47,18 @@ def test_protocol_v1_reserved_arrays_have_zero_max_items() -> None:
 
     assert components["ReviewResultData"]["properties"]["relationships"]["maxItems"] == 0
     assert components["Evidence"]["properties"]["bounding_boxes"]["maxItems"] == 0
+
+
+def test_framework_callback_openapi_exposes_both_discriminators() -> None:
+    schema = create_app(Settings(internal_auth_enabled=False)).openapi()
+    callback_schema = schema["paths"][
+        "/v1/internal/contract-reviews/{review_id}/framework-result"
+    ]["post"]["requestBody"]["content"]["application/json"]["schema"]
+    stage_result_schema = schema["components"]["schemas"]["StageResultCallback"]["properties"][
+        "result"
+    ]
+
+    assert callback_schema["discriminator"]["propertyName"] == "callback_type"
+    assert len(callback_schema["oneOf"]) == 3
+    assert stage_result_schema["discriminator"]["propertyName"] == "result_type"
+    assert len(stage_result_schema["oneOf"]) == 10

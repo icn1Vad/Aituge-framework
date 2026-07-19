@@ -479,6 +479,30 @@ class ContractRepository:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_current_generation(
+        self,
+        document_id: str,
+        *,
+        tenant_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT generation.*
+                FROM contract_parse_generation generation
+                JOIN contract_document document ON document.id = generation.document_id
+                WHERE generation.document_id = %s
+                  AND generation.tenant_id = %s
+                  AND generation.status IN ('RUNNING', 'SUCCEEDED')
+                ORDER BY
+                  CASE WHEN document.active_generation_id = generation.id THEN 0 ELSE 1 END,
+                  generation.generation_no DESC
+                LIMIT 1
+                """,
+                (document_id, tenant_id),
+            ).fetchone()
+        return dict(row) if row else None
+
     def list_blocks(
         self,
         generation_id: str,

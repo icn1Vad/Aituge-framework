@@ -20,7 +20,7 @@ from task_manager.models import TaskArtifactEntity, TaskEntity, TaskRunEntity, u
 from task_manager.output_parser import parse_json_output
 from task_manager.payload_schemas import validate_stage_payload
 from task_manager.registry import TaskType
-from task_manager.result_sink import deliver_task_result
+from task_manager.result_sink import RequiredResultSinkError, deliver_task_result
 from tool.artifacts import extract_artifacts
 
 from .errors import PipelineCancelled, StageExecutionError
@@ -365,6 +365,20 @@ class PipelineExecutor:
                 result.output,
                 stage_id=stage.stage_id,
             )
+        except RequiredResultSinkError as sink_error:
+            await update_stage_run(
+                stage_run.id,
+                status="failed",
+                finished_at=utc_now(),
+                duration_ms=_duration_ms(started),
+                error_code="required_result_sink_failed",
+                error_message=str(sink_error),
+            )
+            raise StageExecutionError(
+                str(sink_error),
+                code="required_result_sink_failed",
+                retryable=True,
+            ) from sink_error
         except Exception as sink_error:
             yield _event(
                 "stage_result_sink_failed",

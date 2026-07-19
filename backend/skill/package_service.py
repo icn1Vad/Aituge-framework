@@ -248,6 +248,15 @@ async def get_skill_packages_by_names(
     result = await session.exec(statement)
     found = {item.package_name: item for item in result.all()}
     missing = [name for name in names if name not in found]
+    if missing and tenant_id != DEFAULT_TENANT_ID:
+        fallback = await session.exec(
+            select(SkillPackageEntity).where(
+                SkillPackageEntity.tenant_id == DEFAULT_TENANT_ID,
+                SkillPackageEntity.package_name.in_(missing),
+            )
+        )
+        found.update({item.package_name: item for item in fallback.all()})
+        missing = [name for name in names if name not in found]
     if missing:
         raise ValueError(f"Skill package not found: {', '.join(missing)}")
     return [found[name] for name in names]

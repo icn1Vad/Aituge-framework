@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, Form, Header, Request, UploadFile, status
+from fastapi import Body, Depends, FastAPI, File, Form, Header, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
@@ -27,8 +27,28 @@ from contract.api.models import (
 from contract.application.mock_service import InMemoryContractReviewService
 from contract.application.ports import ContractReviewService, InternalRequestContext, UploadedContract
 from contract.application.runtime_service import build_runtime_contract_review_service
+from contract.callback.models import (
+    FrameworkCallback,
+    FrameworkCallbackData,
+    GatewayStageResult,
+    StageExecuteRequest,
+)
+from contract.callback.service import FrameworkCallbackService
 from contract.config import Settings, get_settings
 from contract.errors import ContractError
+from contract.internal.models import (
+    ContractBlocksToolData,
+    ContractBlocksToolRequest,
+    ContractClauseContextToolData,
+    ContractClauseContextToolRequest,
+    ContractDocumentToolData,
+    ContractDocumentToolRequest,
+    ContractIrToolData,
+    ContractIrToolRequest,
+)
+from contract.internal.service import ContractInternalService
+from contract.persistence.postgres.callback_repository import FrameworkCallbackRepository
+from contract.persistence.postgres.repository import ContractRepository
 
 
 ALLOWED_FILE_TYPES = {
@@ -55,10 +75,14 @@ ERROR_RESPONSES = {
 def create_app(
     settings: Settings | None = None,
     service: ContractReviewService | None = None,
+    internal_service: ContractInternalService | None = None,
+    callback_service: FrameworkCallbackService | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Contract Agent", version="1.0.0")
     app.state.settings = settings or get_settings()
     app.state.contract_service = service
+    app.state.contract_internal_service = internal_service
+    app.state.framework_callback_service = callback_service
 
     @app.exception_handler(ContractError)
     async def handle_contract_error(request: Request, exc: ContractError) -> JSONResponse:
@@ -155,6 +179,96 @@ def create_app(
         )
         return SuccessResponse(data=data, request_id=context.request_id)
 
+    @app.post(
+        "/v1/internal/contract-reviews/{review_id}/framework-result",
+        response_model=SuccessResponse[FrameworkCallbackData],
+        responses=ERROR_RESPONSES,
+    )
+    async def accept_framework_result(
+        review_id: str,
+        http_request: Request,
+        callback: Annotated[FrameworkCallback, Body(discriminator="callback_type")],
+        request_id: Annotated[str, Depends(_framework_request_id)],
+    ) -> SuccessResponse[FrameworkCallbackData]:
+        data = await asyncio.to_thread(
+            _callback_service(http_request).accept,
+            review_id,
+            callback,
+        )
+        return SuccessResponse(data=data, request_id=request_id)
+
+    @app.post(
+        "/v1/internal/contract-reviews/{review_id}/stages/execute",
+        response_model=SuccessResponse[GatewayStageResult],
+        responses=ERROR_RESPONSES,
+    )
+    async def execute_framework_stage(
+        review_id: str,
+        http_request: Request,
+        payload: StageExecuteRequest,
+        request_id: Annotated[str, Depends(_framework_request_id)],
+    ) -> SuccessResponse[GatewayStageResult]:
+        if payload.review_id != review_id:
+            raise ContractError(
+                "FRAMEWORK_CALLBACK_MISMATCH",
+                "Stage review_id does not match the request path",
+                status_code=409,
+            )
+        data = await asyncio.to_thread(_internal_service(http_request).execute_stage, payload)
+        return SuccessResponse(data=data, request_id=request_id)
+
+    @app.post(
+        "/v1/internal/contract-tools/document",
+        response_model=SuccessResponse[ContractDocumentToolData],
+        responses=ERROR_RESPONSES,
+    )
+    async def contract_get_document(
+        payload: ContractDocumentToolRequest,
+        http_request: Request,
+        request_id: Annotated[str, Depends(_framework_request_id)],
+    ) -> SuccessResponse[ContractDocumentToolData]:
+        data = await asyncio.to_thread(_internal_service(http_request).get_document, payload)
+        return SuccessResponse(data=data, request_id=request_id)
+
+    @app.post(
+        "/v1/internal/contract-tools/blocks",
+        response_model=SuccessResponse[ContractBlocksToolData],
+        responses=ERROR_RESPONSES,
+    )
+    async def contract_get_blocks(
+        payload: ContractBlocksToolRequest,
+        http_request: Request,
+        request_id: Annotated[str, Depends(_framework_request_id)],
+    ) -> SuccessResponse[ContractBlocksToolData]:
+        data = await asyncio.to_thread(_internal_service(http_request).get_blocks, payload)
+        return SuccessResponse(data=data, request_id=request_id)
+
+    @app.post(
+        "/v1/internal/contract-tools/clause-context",
+        response_model=SuccessResponse[ContractClauseContextToolData],
+        responses=ERROR_RESPONSES,
+    )
+    async def contract_get_clause_context(
+        payload: ContractClauseContextToolRequest,
+        http_request: Request,
+        request_id: Annotated[str, Depends(_framework_request_id)],
+    ) -> SuccessResponse[ContractClauseContextToolData]:
+        data = await asyncio.to_thread(_internal_service(http_request).get_clause_context, payload)
+        return SuccessResponse(data=data, request_id=request_id)
+
+    @app.post(
+        "/v1/internal/contract-tools/ir",
+        response_model=SuccessResponse[ContractIrToolData],
+        responses=ERROR_RESPONSES,
+    )
+    async def contract_get_ir(
+        payload: ContractIrToolRequest,
+        http_request: Request,
+        request_id: Annotated[str, Depends(_framework_request_id)],
+    ) -> SuccessResponse[ContractIrToolData]:
+        data = await asyncio.to_thread(_internal_service(http_request).get_ir, payload)
+        return SuccessResponse(data=data, request_id=request_id)
+
     @app.get(
         "/v1/contract-reviews/{review_id}",
         response_model=SuccessResponse[ReviewStatusData],
@@ -235,6 +349,33 @@ def _service(request: Request) -> ContractReviewService:
     return service
 
 
+def _internal_service(request: Request) -> ContractInternalService:
+    _ensure_internal_components(request)
+    return request.app.state.contract_internal_service
+
+
+def _callback_service(request: Request) -> FrameworkCallbackService:
+    _ensure_internal_components(request)
+    return request.app.state.framework_callback_service
+
+
+def _ensure_internal_components(request: Request) -> None:
+    if (
+        request.app.state.contract_internal_service is not None
+        and request.app.state.framework_callback_service is not None
+    ):
+        return
+    settings: Settings = request.app.state.settings
+    repository = ContractRepository(settings)
+    callback_repository = FrameworkCallbackRepository(settings)
+    internal_service = ContractInternalService(repository, callback_repository)
+    request.app.state.contract_internal_service = internal_service
+    request.app.state.framework_callback_service = FrameworkCallbackService(
+        callback_repository,
+        internal_service,
+    )
+
+
 def _internal_context(
     request: Request,
     internal_service: Annotated[str, Header(alias="X-Internal-Service")],
@@ -264,6 +405,31 @@ def _internal_context(
         request_id=_required_header("X-Request-Id", request_id),
         idempotency_key=_optional_header(idempotency_key),
     )
+
+
+def _framework_request_id(
+    request: Request,
+    internal_service: Annotated[str, Header(alias="X-Internal-Service")],
+    internal_token: Annotated[str, Header(alias="X-Internal-Token")],
+    request_id: Annotated[str, Header(alias="X-Request-Id")],
+) -> str:
+    settings: Settings = request.app.state.settings
+    if internal_service != "aituge-framework":
+        raise ContractError(
+            "UNAUTHORIZED_INTERNAL_CALL",
+            "Internal caller is not allowed",
+            status_code=401,
+        )
+    expected = settings.framework_result_sink_internal_token
+    if settings.internal_auth_enabled and (
+        not expected or not hmac.compare_digest(internal_token, expected)
+    ):
+        raise ContractError(
+            "UNAUTHORIZED_INTERNAL_CALL",
+            "Framework callback credential is invalid",
+            status_code=401,
+        )
+    return _required_header("X-Request-Id", request_id)
 
 
 def _required_header(name: str, value: str) -> str:
