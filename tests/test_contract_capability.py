@@ -89,6 +89,8 @@ def test_contract_capability_registers_frozen_pipeline_and_internal_tools() -> N
         "relation_extraction",
     }
     assert all(stages[item]["depends_on"] == ["extract_contract_ir"] for item in parallel)
+    assert all(stages[item]["input_model"] is capability.ContractTaskInput for item in parallel)
+    assert all(stages[item]["input_adapter"] == "task_input" for item in parallel)
     assert all(
         set(stages[item]["tools"]) == {
             "contract_get_document",

@@ -651,7 +651,12 @@ async def register(registry, settings) -> None:
                 "name": name,
                 "stage_type": "agent",
                 "depends_on": ["extract_contract_ir"],
-                "input_model": PipelineContextInput,
+                # The complete semantic IR can be very large for 30-100 page contracts.
+                # It is already persisted by Contract Python when extract_contract_ir is
+                # accepted, so review agents receive only stable task identity here and
+                # fetch the IR or selected blocks through the frozen Contract tools.
+                "input_model": ContractTaskInput,
+                "input_adapter": "task_input",
                 "output_model": output_model,
                 "artifact_type": f"{stage_id}_result",
                 "agent_id": AGENT_ID,

@@ -18,7 +18,7 @@ from task_manager.artifact_service import TaskArtifactPublisher
 from task_manager import item_store
 from task_manager.models import TaskArtifactEntity, TaskEntity, TaskRunEntity, utc_now
 from task_manager.output_parser import parse_json_output
-from task_manager.payload_schemas import validate_stage_payload
+from task_manager.payload_schemas import get_stage_json_schema, validate_stage_payload
 from task_manager.registry import TaskType
 from task_manager.result_sink import RequiredResultSinkError, deliver_task_result
 from tool.artifacts import extract_artifacts
@@ -724,13 +724,20 @@ async def _artifacts_by_stage(run_id: str) -> dict[str, TaskArtifactEntity]:
 
 
 def _stage_message(task: TaskEntity, stage: StageDefinition, stage_input: dict[str, Any]) -> str:
+    output_schema = get_stage_json_schema(stage.output_schema)
     return "\n".join(
         [
             "Execute one isolated TaskManager Pipeline stage.",
             f"Task type: {task.task_type}",
             f"Stage id: {stage.stage_id}",
             f"Stage name: {stage.name}",
-            f"Required output schema: {stage.output_schema or 'JSON object'}",
+            f"Required output schema name: {stage.output_schema or 'JSON object'}",
+            "Required output JSON Schema:",
+            json.dumps(
+                output_schema or {"type": "object"},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
             "Return exactly one valid JSON object and no Markdown outside it.",
             "Stage input:",
             json.dumps(stage_input, ensure_ascii=False, indent=2),
