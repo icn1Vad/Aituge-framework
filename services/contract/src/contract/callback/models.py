@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue, model_validator
@@ -8,6 +9,7 @@ from contract.api.models import (
     ContractProfile,
     ErrorData,
     Evidence,
+    EvidenceType,
     Finding,
     PartyProfile,
     ReviewSummary,
@@ -87,9 +89,50 @@ class ExtractContractIrStageResult(StrictModel):
         return self
 
 
+class EvidenceCandidate(StrictModel):
+    evidence_id: str = Field(min_length=1, max_length=160)
+    finding_id: str = Field(min_length=1, max_length=160)
+    evidence_type: EvidenceType
+    block_id: str | None = Field(default=None, min_length=1, max_length=160)
+    page_number: int | None = Field(default=None, ge=1)
+    char_start: int | None = Field(default=None, ge=0)
+    char_end: int | None = Field(default=None, ge=1)
+    quoted_text: str | None = None
+    quoted_text_hash: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    checked_scope: str | None = Field(default=None, min_length=1, max_length=500)
+    verification_note: str | None = Field(default=None, min_length=1, max_length=5000)
+    bounding_boxes: list[None] = Field(default_factory=list, max_length=0)
+
+    @model_validator(mode="after")
+    def validate_candidate_shape(self) -> "EvidenceCandidate":
+        positions = (self.block_id, self.char_start, self.char_end)
+        if self.evidence_type in {EvidenceType.TEXT_QUOTE, EvidenceType.CONTEXT}:
+            if any(value is None for value in positions):
+                raise ValueError("Text evidence candidate requires block_id, char_start, and char_end")
+            assert self.char_start is not None and self.char_end is not None
+            if self.char_end <= self.char_start:
+                raise ValueError("char_end must be greater than char_start")
+            if (self.quoted_text is None) != (self.quoted_text_hash is None):
+                raise ValueError("quoted_text and quoted_text_hash must be supplied together")
+            if self.quoted_text is not None and self.quoted_text_hash is not None:
+                if self.char_end - self.char_start != len(self.quoted_text):
+                    raise ValueError("Candidate range length must match quoted_text")
+                expected = "sha256:" + hashlib.sha256(self.quoted_text.encode("utf-8")).hexdigest()
+                if self.quoted_text_hash != expected:
+                    raise ValueError("quoted_text_hash does not match quoted_text")
+        else:
+            if self.checked_scope is None or self.verification_note is None:
+                raise ValueError("ABSENCE evidence requires checked_scope and verification_note")
+            if any(value is not None for value in positions):
+                raise ValueError("ABSENCE evidence cannot contain text positioning fields")
+            if self.page_number is not None or self.quoted_text is not None or self.quoted_text_hash is not None:
+                raise ValueError("ABSENCE evidence cannot contain quoted text fields")
+        return self
+
+
 class ReviewStageResult(StrictModel):
     findings: list[Finding] = Field(default_factory=list)
-    evidences: list[Evidence] = Field(default_factory=list)
+    evidences: list[EvidenceCandidate] = Field(default_factory=list)
 
 
 class RightsObligationsStageResult(ReviewStageResult):
@@ -120,10 +163,12 @@ class RelationExtractionStageResult(ReviewStageResult):
     internal_relationships: list[InternalRelationship] = Field(default_factory=list)
 
 
-class EvidenceVerificationStageResult(ReviewStageResult):
+class EvidenceVerificationStageResult(StrictModel):
     result_type: Literal["EVIDENCE_VERIFICATION_STAGE_V1"]
     contract_profile: ContractProfile
     overview: str = Field(min_length=1, max_length=10_000)
+    findings: list[Finding] = Field(default_factory=list)
+    evidences: list[Evidence] = Field(default_factory=list)
     relationships: list[None] = Field(default_factory=list, max_length=0)
 
 

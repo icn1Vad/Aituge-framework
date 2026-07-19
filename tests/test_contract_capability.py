@@ -104,6 +104,36 @@ def test_contract_capability_registers_frozen_pipeline_and_internal_tools() -> N
     assert stages["finalize_review"]["depends_on"] == ["verify_evidence"]
 
 
+def test_review_stages_use_source_candidates_and_stage_specific_contract_rules() -> None:
+    registry = _registered()
+    assert "Never invent" in registry.agents[0]["system_prompt"]
+    assert "Evidence Candidates" in registry.agents[0]["system_prompt"]
+
+    review_skills = {
+        "contract-rights-obligations": "RIGHTS_OBLIGATIONS_IMBALANCE",
+        "contract-commercial-terms": "PAYMENT",
+        "contract-liability-termination": "LIABILITY",
+        "contract-missing-ambiguity": "ABSENCE",
+        "contract-relation-extraction": "internal_relationships",
+    }
+    for skill_name, domain_rule in review_skills.items():
+        content = (
+            capability.CAPABILITY_DIR / "skills" / skill_name / "SKILL.md"
+        ).read_text("utf-8")
+        normalized = " ".join(content.split())
+        assert "contract_get_ir" in content
+        assert "review_id" in content and "document_id" in content
+        assert "quoted_text_hash" in content
+        assert "Contract Python" in normalized
+        assert domain_rule in content
+
+    candidate_schema = capability.RightsObligationsStageResult.model_json_schema()["$defs"][
+        "EvidenceCandidate"
+    ]
+    assert "block_id" in candidate_schema["properties"]
+    assert "quoted_text_hash" not in candidate_schema["required"]
+
+
 def test_contract_result_sink_emits_three_frozen_callback_shapes(monkeypatch) -> None:
     calls = []
 

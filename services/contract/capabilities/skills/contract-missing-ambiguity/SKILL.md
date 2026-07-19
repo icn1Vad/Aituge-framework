@@ -6,6 +6,25 @@ tags: [contract, missing-clause, ambiguity]
 
 # Missing and ambiguous clause review
 
-Distinguish absent language from vague or contradictory language. For absence, use `ABSENCE` evidence with
-an explicit checked scope and deterministic verification note; never manufacture a quote. For ambiguity or
-conflict, cite the real blocks that create the uncertainty. Suppress stylistic observations without risk.
+The stage input contains task identity only. Call `contract_get_ir` for the exact `review_id` and
+`document_id`; use `contract_get_blocks` and `contract_get_clause_context` to check the whole relevant
+scope. Never infer absence from a partial excerpt.
+
+Separate three cases:
+
+- `MISSING_CLAUSE`: a material protection or obligation is absent from the checked scope;
+- `AMBIGUITY`: real wording permits materially different interpretations;
+- `INTERNAL_CONFLICT`: two or more real clauses impose inconsistent outcomes.
+
+Suppress grammar, style, formatting, and harmless incompleteness. Apply the selected party perspective and
+fixed `NEUTRAL` attitude to explain the concrete effect and balanced correction.
+
+For `MISSING_CLAUSE`, use an `ABSENCE` Evidence Candidate. Do not provide Block, page, character range,
+quote, or hash. Set `checked_scope` to `ENTIRE_CONTRACT` or a precise clause category and make
+`verification_note` state what categories and IR fields were checked and what was not found. Never
+manufacture a quote for missing text.
+
+For ambiguity or conflict, use real `TEXT_QUOTE` or `CONTEXT` candidates. Copy existing IR anchors and use
+their exact Block-relative `[char_start,char_end)` ranges. The model may omit `quoted_text` and
+`quoted_text_hash`; Contract Python derives them. Keep IDs unique and references complete. Return empty
+arrays if no material issue is supported.

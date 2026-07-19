@@ -52,7 +52,7 @@
         "properties": {
           "evidences": {
             "items": {
-              "$ref": "#/components/schemas/Evidence"
+              "$ref": "#/components/schemas/EvidenceCandidate"
             },
             "title": "Evidences",
             "type": "array"
@@ -983,6 +983,139 @@
         "title": "Evidence",
         "type": "object"
       },
+      "EvidenceCandidate": {
+        "additionalProperties": false,
+        "properties": {
+          "block_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Block Id"
+          },
+          "bounding_boxes": {
+            "items": {
+              "type": "null"
+            },
+            "maxItems": 0,
+            "title": "Bounding Boxes",
+            "type": "array"
+          },
+          "char_end": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Char End"
+          },
+          "char_start": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Char Start"
+          },
+          "checked_scope": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked Scope"
+          },
+          "evidence_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "evidence_type": {
+            "$ref": "#/components/schemas/EvidenceType"
+          },
+          "finding_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "page_number": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Number"
+          },
+          "quoted_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quoted Text"
+          },
+          "quoted_text_hash": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quoted Text Hash"
+          },
+          "verification_note": {
+            "anyOf": [
+              {
+                "maxLength": 5000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification Note"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "finding_id",
+          "evidence_type"
+        ],
+        "title": "EvidenceCandidate",
+        "type": "object"
+      },
       "EvidenceType": {
         "enum": [
           "TEXT_QUOTE",
@@ -1668,7 +1801,7 @@
         "properties": {
           "evidences": {
             "items": {
-              "$ref": "#/components/schemas/Evidence"
+              "$ref": "#/components/schemas/EvidenceCandidate"
             },
             "title": "Evidences",
             "type": "array"
@@ -1697,7 +1830,7 @@
         "properties": {
           "evidences": {
             "items": {
-              "$ref": "#/components/schemas/Evidence"
+              "$ref": "#/components/schemas/EvidenceCandidate"
             },
             "title": "Evidences",
             "type": "array"
@@ -1844,7 +1977,7 @@
         "properties": {
           "evidences": {
             "items": {
-              "$ref": "#/components/schemas/Evidence"
+              "$ref": "#/components/schemas/EvidenceCandidate"
             },
             "title": "Evidences",
             "type": "array"
@@ -2129,7 +2262,7 @@
         "properties": {
           "evidences": {
             "items": {
-              "$ref": "#/components/schemas/Evidence"
+              "$ref": "#/components/schemas/EvidenceCandidate"
             },
             "title": "Evidences",
             "type": "array"

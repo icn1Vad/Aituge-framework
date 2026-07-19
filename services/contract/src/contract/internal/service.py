@@ -7,6 +7,7 @@ from contract.api.models import ContractProfile, Evidence, Finding, ReviewResult
 from contract.application.result_hash import compute_result_hash
 from contract.callback.models import (
     CommercialTermsStageResult,
+    EvidenceCandidate,
     EvidenceVerificationStageResult,
     FinalizeReviewStageResult,
     FrameworkTaskInput,
@@ -18,7 +19,7 @@ from contract.callback.models import (
     RightsObligationsStageResult,
     StageExecuteRequest,
 )
-from contract.evidence import validate_evidence_set
+from contract.evidence import materialize_evidence_set, validate_evidence_set
 from contract.errors import ContractError
 from contract.internal.models import (
     ContractBlockData,
@@ -214,7 +215,7 @@ class ContractInternalService:
         if party_value is None:
             raise ContractError("RESULT_INVALID", "Party resolution artifact is missing", status_code=422)
         party = PartyResolutionStageResult.model_validate(party_value)
-        findings, evidences = self._merge_review_artifacts(request.artifacts)
+        findings, evidence_candidates = self._merge_review_artifacts(request.artifacts)
         profile = ContractProfile(
             contract_type=party.contract_type,
             party_a=party.party_a,
@@ -226,7 +227,13 @@ class ContractInternalService:
         )
         if profile.perspective.value != review["perspective"]:
             raise ContractError("RESULT_INVALID", "Review perspective changed during execution", status_code=422)
-        self._validate_evidence(review, findings, evidences, profile)
+        blocks = self._attempt_blocks(review)
+        evidences = materialize_evidence_set(
+            findings,
+            evidence_candidates,
+            blocks,
+            profile,
+        )
         overview = (
             f"发现{len(findings)}项需要人工复核的合同事项。"
             if findings
@@ -273,7 +280,7 @@ class ContractInternalService:
     @staticmethod
     def _merge_review_artifacts(
         artifacts: dict[str, dict[str, Any]],
-    ) -> tuple[list[Finding], list[Evidence]]:
+    ) -> tuple[list[Finding], list[EvidenceCandidate]]:
         stages = []
         for artifact_type, model in REVIEW_ARTIFACT_MODELS.items():
             raw = artifacts.get(artifact_type)
@@ -293,6 +300,9 @@ class ContractInternalService:
         evidences: list[Evidence],
         profile: ContractProfile,
     ) -> None:
+        validate_evidence_set(findings, evidences, self._attempt_blocks(review), profile)
+
+    def _attempt_blocks(self, review: dict[str, Any]) -> list[dict[str, Any]]:
         attempt_no = review.get("active_attempt_no")
         if not isinstance(attempt_no, int):
             raise ContractError("EVIDENCE_INVALID", "Review Attempt is unavailable", status_code=422)
@@ -306,8 +316,7 @@ class ContractInternalService:
                 "Validated parse Generation is unavailable for this Attempt",
                 status_code=422,
             )
-        blocks = self.repository.list_blocks(generation["id"], tenant_id=review["tenant_id"])
-        validate_evidence_set(findings, evidences, blocks, profile)
+        return self.repository.list_blocks(generation["id"], tenant_id=review["tenant_id"])
 
     def _tool_context(self, review_id: str, document_id: str) -> dict[str, Any]:
         review = self.callback_repository.get_review_context(review_id)

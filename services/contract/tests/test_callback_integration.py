@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import os
 import uuid
 from pathlib import Path
@@ -11,12 +10,13 @@ import psycopg
 import pytest
 from pydantic import TypeAdapter
 
-from contract.api.models import CreateReviewRequest, Evidence, Finding, Perspective, ReviewStatus
+from contract.api.models import CreateReviewRequest, Finding, Perspective, ReviewStatus
 from contract.application.document_processing import ContractDocumentProcessor
 from contract.application.ports import InternalRequestContext, UploadedContract
 from contract.application.runtime_service import RuntimeContractReviewService
 from contract.callback.models import (
     CommercialTermsStageResult,
+    EvidenceCandidate,
     ExtractContractIrStageResult,
     FrameworkCallback,
     FrameworkTaskInput,
@@ -191,7 +191,7 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
         block = repository.list_blocks(active_generation["id"], tenant_id=tenant_id)[0]
         quoted_text = "Party B pays."
         char_start = block["text"].index(quoted_text)
-        evidence = Evidence(
+        evidence = EvidenceCandidate(
             evidence_id="evidence-payment",
             finding_id="finding-payment",
             evidence_type="TEXT_QUOTE",
@@ -199,8 +199,6 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
             page_number=block["page_number"],
             char_start=char_start,
             char_end=char_start + len(quoted_text),
-            quoted_text=quoted_text,
-            quoted_text_hash="sha256:" + hashlib.sha256(quoted_text.encode("utf-8")).hexdigest(),
         )
         finding = Finding(
             finding_id="finding-payment",

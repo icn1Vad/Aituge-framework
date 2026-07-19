@@ -42,6 +42,33 @@ def test_stage_result_callback_uses_nested_result_discriminator() -> None:
     assert value.result.result_type == "PARSE_CONTRACT_STAGE_V1"
 
 
+def test_review_stage_accepts_a_text_evidence_candidate_without_a_model_generated_hash() -> None:
+    value = ADAPTER.validate_python(
+        {
+            **_base(),
+            "callback_type": "STAGE_RESULT",
+            "stage_id": "rights_obligations_review",
+            "result": {
+                "result_type": "RIGHTS_OBLIGATIONS_STAGE_V1",
+                "findings": [],
+                "evidences": [
+                    {
+                        "evidence_id": "evidence-1",
+                        "finding_id": "finding-1",
+                        "evidence_type": "TEXT_QUOTE",
+                        "block_id": "block-1",
+                        "char_start": 0,
+                        "char_end": 8,
+                    }
+                ],
+            },
+            "error": None,
+        }
+    )
+
+    assert value.result.evidences[0].quoted_text_hash is None
+
+
 def test_stage_and_result_type_must_match() -> None:
     with pytest.raises(ValidationError, match="requires result_type"):
         ADAPTER.validate_python(

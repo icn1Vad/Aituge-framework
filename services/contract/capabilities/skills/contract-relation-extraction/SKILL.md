@@ -6,6 +6,23 @@ tags: [contract, relation, conflict]
 
 # Contract relationship extraction
 
-Relate only existing clause IDs using SUPPORTS, CONFLICTS, DEPENDS_ON, or OVERRIDES. Relationships are an
-internal aid for detecting contradictions and do not enter schema version 1.0's public relationships array.
-If a relationship creates a material risk, return a source-grounded finding and evidence as well.
+The stage input contains task identity only. Call `contract_get_ir` with the exact `review_id` and
+`document_id`. Use only `clause_id` values present in that IR; use clause context when the relationship is
+not clear from the clause alone.
+
+Create only these internal relationship types:
+
+- `SUPPORTS`: one clause supplies a condition or detail for another;
+- `CONFLICTS`: clauses prescribe incompatible outcomes;
+- `DEPENDS_ON`: performance or effect depends on another clause;
+- `OVERRIDES`: the text expressly gives one clause priority over another.
+
+Do not infer a relationship merely because clauses share a topic. Explain the textual basis. These
+`internal_relationships` are Python-internal aids and never populate the schema 1.0 public
+`relationships` array.
+
+Return a Finding only when the relationship creates a material risk for the selected party, normally
+`INTERNAL_CONFLICT` or `AMBIGUITY`. Such a Finding must cite real candidates for every clause needed to
+support it. Copy exact IR anchors and their Block-relative `[char_start,char_end)` ranges; prefer full
+anchors over guessed substrings. The model may omit `quoted_text` and `quoted_text_hash`, which Contract
+Python derives deterministically. Keep IDs unique and Finding–Evidence references complete. Stay neutral.

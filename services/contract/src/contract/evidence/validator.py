@@ -5,7 +5,43 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from contract.api.models import ContractProfile, Evidence, Finding
+from contract.callback.models import EvidenceCandidate
 from contract.errors import ContractError
+
+
+def materialize_evidence_set(
+    findings: Sequence[Finding],
+    candidates: Sequence[EvidenceCandidate],
+    blocks: Sequence[Mapping[str, Any]],
+    profile: ContractProfile,
+) -> list[Evidence]:
+    block_by_id = {str(block["block_id"]): block for block in blocks}
+    evidence_values: list[Evidence] = []
+    for candidate in candidates:
+        payload = candidate.model_dump(mode="json")
+        if candidate.evidence_type.value != "ABSENCE":
+            block = block_by_id.get(candidate.block_id or "")
+            if block is None:
+                raise _invalid("Evidence block is outside this contract generation")
+            assert candidate.char_start is not None and candidate.char_end is not None
+            if candidate.char_end > len(block["text"]) or candidate.char_start >= candidate.char_end:
+                raise _invalid("Evidence character range is outside its block")
+            quoted_text = block["text"][candidate.char_start : candidate.char_end]
+            quoted_text_hash = "sha256:" + hashlib.sha256(quoted_text.encode("utf-8")).hexdigest()
+            if candidate.quoted_text is not None and candidate.quoted_text != quoted_text:
+                raise _invalid("Evidence candidate text does not match its block")
+            if candidate.quoted_text_hash is not None and candidate.quoted_text_hash != quoted_text_hash:
+                raise _invalid("Evidence candidate hash does not match its block")
+            if candidate.page_number is not None and candidate.page_number != block["page_number"]:
+                raise _invalid("Evidence candidate page does not match its block")
+            payload.update(
+                page_number=block["page_number"],
+                quoted_text=quoted_text,
+                quoted_text_hash=quoted_text_hash,
+            )
+        evidence_values.append(Evidence.model_validate(payload))
+    validate_evidence_set(findings, evidence_values, blocks, profile)
+    return evidence_values
 
 
 def validate_evidence_set(

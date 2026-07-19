@@ -47,6 +47,7 @@ def test_protocol_v1_reserved_arrays_have_zero_max_items() -> None:
 
     assert components["ReviewResultData"]["properties"]["relationships"]["maxItems"] == 0
     assert components["Evidence"]["properties"]["bounding_boxes"]["maxItems"] == 0
+    assert "quoted_text_hash" not in components["EvidenceCandidate"]["required"]
 
 
 def test_framework_callback_openapi_exposes_both_discriminators() -> None:

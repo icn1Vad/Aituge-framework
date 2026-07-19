@@ -5,8 +5,9 @@ import hashlib
 import pytest
 
 from contract.api.models import ContractProfile, Evidence, Finding
+from contract.callback.models import EvidenceCandidate
 from contract.errors import ContractError
-from contract.evidence import validate_evidence_set
+from contract.evidence import materialize_evidence_set, validate_evidence_set
 
 
 BLOCK_TEXT = "Payment is due in 30 days."
@@ -17,6 +18,38 @@ def test_validates_exact_text_evidence_against_its_contract_block() -> None:
     evidence = _quote()
 
     validate_evidence_set([finding], [evidence], [_block()], _profile())
+
+
+def test_materializes_quote_and_hash_from_a_block_range() -> None:
+    candidate = EvidenceCandidate(
+        evidence_id="evidence-1",
+        finding_id="finding-1",
+        evidence_type="TEXT_QUOTE",
+        block_id="block-1",
+        char_start=0,
+        char_end=len(BLOCK_TEXT),
+    )
+
+    evidences = materialize_evidence_set([_finding()], [candidate], [_block()], _profile())
+
+    assert evidences == [_quote()]
+
+
+def test_rejects_optional_candidate_quote_that_does_not_match_the_block() -> None:
+    wrong_text = "Payment is due in 60 days."
+    candidate = EvidenceCandidate(
+        evidence_id="evidence-1",
+        finding_id="finding-1",
+        evidence_type="TEXT_QUOTE",
+        block_id="block-1",
+        char_start=0,
+        char_end=len(wrong_text),
+        quoted_text=wrong_text,
+        quoted_text_hash=_hash(wrong_text),
+    )
+
+    with pytest.raises(ContractError, match="candidate text"):
+        materialize_evidence_set([_finding()], [candidate], [_block()], _profile())
 
 
 @pytest.mark.parametrize(

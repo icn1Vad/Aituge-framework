@@ -4,8 +4,12 @@ import hashlib
 
 import pytest
 
-from contract.api.models import Evidence, Finding
-from contract.callback.models import CommercialTermsStageResult, RightsObligationsStageResult
+from contract.api.models import Finding
+from contract.callback.models import (
+    CommercialTermsStageResult,
+    EvidenceCandidate,
+    RightsObligationsStageResult,
+)
 from contract.errors import ContractError
 from contract.review import merge_review_stage_results
 
@@ -21,7 +25,7 @@ def test_merges_semantic_duplicate_findings_and_source_evidence_deterministicall
     second = CommercialTermsStageResult(
         result_type="COMMERCIAL_TERMS_STAGE_V1",
         findings=[high],
-        evidences=[_quote("evidence-b", high.finding_id, "Payment")],
+        evidences=[_quote("evidence-b", high.finding_id, "Payment", include_quote=True)],
     )
 
     findings, evidences = merge_review_stage_results([first, second])
@@ -92,8 +96,18 @@ def _finding(finding_id: str, risk_level: str, title: str, issue: str) -> Findin
     )
 
 
-def _quote(evidence_id: str, finding_id: str, text: str) -> Evidence:
-    return Evidence(
+def _quote(
+    evidence_id: str,
+    finding_id: str,
+    text: str,
+    *,
+    include_quote: bool = False,
+) -> EvidenceCandidate:
+    values = {
+        "quoted_text": text,
+        "quoted_text_hash": "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    } if include_quote else {}
+    return EvidenceCandidate(
         evidence_id=evidence_id,
         finding_id=finding_id,
         evidence_type="TEXT_QUOTE",
@@ -101,6 +115,5 @@ def _quote(evidence_id: str, finding_id: str, text: str) -> Evidence:
         page_number=1,
         char_start=0,
         char_end=len(text),
-        quoted_text=text,
-        quoted_text_hash="sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        **values,
     )

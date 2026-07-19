@@ -5,8 +5,8 @@ import unicodedata
 from collections.abc import Sequence
 from typing import Any
 
-from contract.api.models import Evidence, Finding
-from contract.callback.models import ReviewStageResult
+from contract.api.models import Finding
+from contract.callback.models import EvidenceCandidate, ReviewStageResult
 from contract.errors import ContractError
 
 
@@ -15,7 +15,7 @@ _RISK_RANK = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3}
 
 def merge_review_stage_results(
     stages: Sequence[ReviewStageResult],
-) -> tuple[list[Finding], list[Evidence]]:
+) -> tuple[list[Finding], list[EvidenceCandidate]]:
     finding_payloads: list[dict[str, Any]] = []
     evidence_payloads: list[dict[str, Any]] = []
     finding_id_payload: dict[str, dict[str, Any]] = {}
@@ -70,7 +70,7 @@ def merge_review_stage_results(
         for _, value in sorted(selected_findings.items(), key=lambda item: item[0])
     ]
     evidences = [
-        Evidence.model_validate(value)
+        EvidenceCandidate.model_validate(value)
         for _, value in sorted(selected_evidences.items(), key=lambda item: item[0])
     ]
     return findings, evidences
@@ -96,15 +96,17 @@ def _finding_preference(value: dict[str, Any]) -> tuple[int, int, str, str]:
 
 
 def _evidence_key(value: dict[str, Any]) -> tuple[Any, ...]:
+    if value["evidence_type"] != "ABSENCE":
+        return (
+            value["finding_id"],
+            value["evidence_type"],
+            value["block_id"],
+            value["char_start"],
+            value["char_end"],
+        )
     return (
         value["finding_id"],
         value["evidence_type"],
-        value["block_id"],
-        value["page_number"],
-        value["char_start"],
-        value["char_end"],
-        value["quoted_text"],
-        value["quoted_text_hash"],
         _normalized_text(value["checked_scope"] or ""),
         _normalized_text(value["verification_note"] or ""),
     )

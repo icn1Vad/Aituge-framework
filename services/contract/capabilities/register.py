@@ -306,9 +306,50 @@ class ExtractContractIrStageResult(StrictModel):
         return self
 
 
+class EvidenceCandidate(StrictModel):
+    evidence_id: str = Field(min_length=1, max_length=160)
+    finding_id: str = Field(min_length=1, max_length=160)
+    evidence_type: Literal["TEXT_QUOTE", "CONTEXT", "ABSENCE"]
+    block_id: str | None = Field(default=None, min_length=1, max_length=160)
+    page_number: int | None = Field(default=None, ge=1)
+    char_start: int | None = Field(default=None, ge=0)
+    char_end: int | None = Field(default=None, ge=1)
+    quoted_text: str | None = None
+    quoted_text_hash: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    checked_scope: str | None = Field(default=None, min_length=1, max_length=500)
+    verification_note: str | None = Field(default=None, min_length=1, max_length=5000)
+    bounding_boxes: list[None] = Field(default_factory=list, max_length=0)
+
+    @model_validator(mode="after")
+    def validate_candidate_shape(self) -> "EvidenceCandidate":
+        positions = (self.block_id, self.char_start, self.char_end)
+        if self.evidence_type in {"TEXT_QUOTE", "CONTEXT"}:
+            if any(value is None for value in positions):
+                raise ValueError("Text evidence candidate requires block_id, char_start, and char_end")
+            assert self.char_start is not None and self.char_end is not None
+            if self.char_end <= self.char_start:
+                raise ValueError("char_end must be greater than char_start")
+            if (self.quoted_text is None) != (self.quoted_text_hash is None):
+                raise ValueError("quoted_text and quoted_text_hash must be supplied together")
+            if self.quoted_text is not None and self.quoted_text_hash is not None:
+                if self.char_end - self.char_start != len(self.quoted_text):
+                    raise ValueError("Candidate range length must match quoted_text")
+                expected = "sha256:" + hashlib.sha256(self.quoted_text.encode("utf-8")).hexdigest()
+                if self.quoted_text_hash != expected:
+                    raise ValueError("quoted_text_hash does not match quoted_text")
+        else:
+            if self.checked_scope is None or self.verification_note is None:
+                raise ValueError("ABSENCE evidence requires checked_scope and verification_note")
+            if any(value is not None for value in positions):
+                raise ValueError("ABSENCE evidence cannot contain text positioning fields")
+            if self.page_number is not None or self.quoted_text is not None or self.quoted_text_hash is not None:
+                raise ValueError("ABSENCE evidence cannot contain quoted text fields")
+        return self
+
+
 class ReviewStageResult(StrictModel):
     findings: list[Finding] = Field(default_factory=list)
-    evidences: list[Evidence] = Field(default_factory=list)
+    evidences: list[EvidenceCandidate] = Field(default_factory=list)
 
 
 class RightsObligationsStageResult(ReviewStageResult):
@@ -339,10 +380,12 @@ class RelationExtractionStageResult(ReviewStageResult):
     internal_relationships: list[InternalRelationship] = Field(default_factory=list)
 
 
-class EvidenceVerificationStageResult(ReviewStageResult):
+class EvidenceVerificationStageResult(StrictModel):
     result_type: Literal["EVIDENCE_VERIFICATION_STAGE_V1"]
     contract_profile: ContractProfile
     overview: str = Field(min_length=1, max_length=10_000)
+    findings: list[Finding] = Field(default_factory=list)
+    evidences: list[Evidence] = Field(default_factory=list)
     relationships: list[None] = Field(default_factory=list, max_length=0)
 
 
@@ -543,8 +586,10 @@ async def register(registry, settings) -> None:
         model_id=model_id or "deepseek-v4-pro",
         system_prompt=(
             "You are the neutral contract-review agent. Stay on the selected PARTY_A or PARTY_B "
-            "perspective, use only current-contract tools and artifacts, return strict JSON, and "
-            "never invent source text, block IDs, or evidence offsets."
+            "perspective, use only current-contract tools and artifacts, and return exactly the "
+            "registered JSON shape. Never invent source text, block IDs, evidence offsets, or "
+            "cryptographic hashes. For review stages, return source coordinates as Evidence "
+            "Candidates and let Contract Python materialize the exact quote and SHA-256."
         ),
         default_tools=[
             "contract_get_document",
