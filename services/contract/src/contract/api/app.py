@@ -34,6 +34,7 @@ ALLOWED_FILE_TYPES = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
+OLE_COMPOUND_SIGNATURE = bytes.fromhex("D0CF11E0A1B11AE1")
 ERROR_RESPONSES = {
     400: {"model": ErrorResponse},
     401: {"model": ErrorResponse},
@@ -330,13 +331,21 @@ def _validate_upload(
             status_code=422,
             user_action_required=True,
         )
-    if extension == ".docx" and not content.startswith(b"PK"):
-        raise ContractError(
-            "FILE_CORRUPTED",
-            "DOCX文件签名无效",
-            status_code=422,
-            user_action_required=True,
-        )
+    if extension == ".docx":
+        if content.startswith(OLE_COMPOUND_SIGNATURE):
+            raise ContractError(
+                "FILE_ENCRYPTED",
+                "第一阶段不支持加密DOCX合同",
+                status_code=422,
+                user_action_required=True,
+            )
+        if not content.startswith(b"PK"):
+            raise ContractError(
+                "FILE_CORRUPTED",
+                "DOCX文件签名无效",
+                status_code=422,
+                user_action_required=True,
+            )
     return UploadedContract(filename=filename, content_type=content_type, content=content)
 
 

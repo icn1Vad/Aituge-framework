@@ -238,6 +238,30 @@ def test_review_idempotency_and_parse_generation_transaction() -> None:
             tenant_id=tenant_id,
             parser_version="contract-parser-v2",
         )
+        failed_blocks = [
+            DocumentBlockCreate(
+                block_id=f"failed-{block.block_id}",
+                block_no=block.block_no,
+                block_type=block.block_type,
+                text=block.text,
+                page_number=block.page_number,
+                paragraph_no=block.paragraph_no,
+                char_start=block.char_start,
+                char_end=block.char_end,
+                heading_path=block.heading_path,
+                metadata=block.metadata,
+            )
+            for block in blocks
+        ]
+        staged, reused = repository.stage_parse_generation(
+            generation_id=failed.generation_id,
+            document_id=document_id,
+            tenant_id=tenant_id,
+            blocks=failed_blocks,
+            structural_ir={"document": {"id": document_id}, "draft": True},
+        )
+        assert reused is False
+        assert staged["block_count"] == 2
         assert not repository.fail_parse_generation(
             failed.generation_id,
             tenant_id="another-tenant",
@@ -248,6 +272,14 @@ def test_review_idempotency_and_parse_generation_transaction() -> None:
             tenant_id=tenant_id,
             error_code="CONTRACT_PARSE_FAILED",
         )
+        failed_generation = repository.get_parse_generation(
+            failed.generation_id,
+            document_id=document_id,
+            tenant_id=tenant_id,
+        )
+        assert failed_generation["block_count"] == 0
+        assert failed_generation["contract_ir_json"] is None
+        assert repository.list_blocks(failed.generation_id, tenant_id=tenant_id) == []
         assert repository.get_active_generation(document_id, tenant_id=tenant_id)["id"] == generation.generation_id
 
         retried = repository.reserve_parse_generation(

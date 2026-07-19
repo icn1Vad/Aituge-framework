@@ -21,6 +21,9 @@ python -m pytest -q
 python -m uvicorn contract.api.app:app --host 127.0.0.1 --port 18200
 ```
 
-The protocol skeleton starts with an in-memory adapter. PostgreSQL persistence and
-Framework execution are added in later implementation stages without changing the
-public HTTP contract.
+The public HTTP endpoints still use the protocol-faithful in-memory adapter while the
+runtime orchestration is under construction. The module already contains PostgreSQL
+migrations and repositories, content-addressed technical file storage, deterministic
+PDF/DOCX parsing, Parse Generation drafts, and the typed structural Contract IR.
+Framework dispatch and result callbacks are added in later implementation stages
+without changing the frozen public HTTP contract.

@@ -96,6 +96,24 @@ class ContractRepository:
             conn.commit()
         return dict(row), reused
 
+    def get_document(
+        self,
+        document_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM contract_document
+                WHERE id = %s AND tenant_id = %s AND user_id = %s
+                """,
+                (document_id, tenant_id, user_id),
+            ).fetchone()
+        return dict(row) if row else None
+
     def create_review(self, value: ReviewCreate) -> tuple[dict[str, Any], bool]:
         with self.connect() as conn:
             row = conn.execute(
@@ -259,6 +277,89 @@ class ContractRepository:
             completed=False,
         )
 
+    def get_parse_generation(
+        self,
+        generation_id: str,
+        *,
+        document_id: str,
+        tenant_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM contract_parse_generation
+                WHERE id = %s AND document_id = %s AND tenant_id = %s
+                """,
+                (generation_id, document_id, tenant_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def stage_parse_generation(
+        self,
+        *,
+        generation_id: str,
+        document_id: str,
+        tenant_id: str,
+        blocks: Iterable[DocumentBlockCreate],
+        structural_ir: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        block_values = list(blocks)
+        self._validate_blocks(block_values)
+        if not structural_ir:
+            raise ValueError("structural_ir must be a non-empty object")
+        ir_hash = "sha256:" + hashlib.sha256(canonical_json(structural_ir).encode("utf-8")).hexdigest()
+
+        with self.connect() as conn:
+            generation = conn.execute(
+                """
+                SELECT *
+                FROM contract_parse_generation
+                WHERE id = %s AND document_id = %s AND tenant_id = %s
+                FOR UPDATE
+                """,
+                (generation_id, document_id, tenant_id),
+            ).fetchone()
+            if generation is None:
+                raise ContractError("REVIEW_NOT_FOUND", "解析Generation不存在", status_code=404)
+            if generation["status"] == "SUCCEEDED":
+                return dict(generation), True
+            if generation["status"] not in {"CREATED", "RUNNING"}:
+                raise ContractError(
+                    "IDEMPOTENCY_CONFLICT",
+                    "失败的解析Generation不能写入解析草稿",
+                    status_code=409,
+                )
+            if generation["ir_hash"] == ir_hash and generation["block_count"] == len(block_values):
+                saved_count = conn.execute(
+                    "SELECT COUNT(*) AS count FROM contract_document_block WHERE generation_id = %s",
+                    (generation_id,),
+                ).fetchone()["count"]
+                if saved_count == len(block_values):
+                    conn.commit()
+                    return dict(generation), True
+
+            self._replace_blocks(
+                conn,
+                tenant_id=tenant_id,
+                generation_id=generation_id,
+                blocks=block_values,
+            )
+            staged = conn.execute(
+                """
+                UPDATE contract_parse_generation
+                SET status = 'RUNNING', block_count = %s,
+                    contract_ir_json = %s, ir_hash = %s,
+                    started_at = COALESCE(started_at, now()),
+                    completed_at = NULL, error_code = NULL
+                WHERE id = %s
+                RETURNING *
+                """,
+                (len(block_values), Jsonb(structural_ir), ir_hash, generation_id),
+            ).fetchone()
+            conn.commit()
+        return dict(staged), False
+
     def complete_parse_generation(
         self,
         *,
@@ -306,37 +407,12 @@ class ContractRepository:
                     status_code=409,
                 )
 
-            conn.execute(
-                "DELETE FROM contract_document_block WHERE generation_id = %s",
-                (generation_id,),
+            self._replace_blocks(
+                conn,
+                tenant_id=tenant_id,
+                generation_id=generation_id,
+                blocks=block_values,
             )
-            with conn.cursor() as cursor:
-                cursor.executemany(
-                    """
-                    INSERT INTO contract_document_block (
-                      block_id, tenant_id, generation_id, block_no, block_type,
-                      page_number, paragraph_no, char_start, char_end, text,
-                      heading_path, metadata_json
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    [
-                        (
-                            block.block_id,
-                            tenant_id,
-                            generation_id,
-                            block.block_no,
-                            block.block_type,
-                            block.page_number,
-                            block.paragraph_no,
-                            block.char_start,
-                            block.char_end,
-                            block.text,
-                            Jsonb(block.heading_path),
-                            Jsonb(block.metadata),
-                        )
-                        for block in block_values
-                    ],
-                )
             completed = conn.execute(
                 """
                 UPDATE contract_parse_generation
@@ -366,7 +442,9 @@ class ContractRepository:
             row = conn.execute(
                 """
                 UPDATE contract_parse_generation
-                SET status = 'FAILED', error_code = %s, completed_at = now()
+                SET status = 'FAILED', block_count = 0,
+                    contract_ir_json = NULL, ir_hash = NULL,
+                    error_code = %s, completed_at = now()
                 WHERE id = %s AND tenant_id = %s
                   AND status IN ('CREATED', 'RUNNING')
                 RETURNING id
@@ -436,6 +514,46 @@ class ContractRepository:
                 raise ValueError("Block character range is invalid")
             if block.char_end - block.char_start != len(block.text):
                 raise ValueError("Block range length must match its normalized text")
+
+    @staticmethod
+    def _replace_blocks(
+        conn,
+        *,
+        tenant_id: str,
+        generation_id: str,
+        blocks: list[DocumentBlockCreate],
+    ) -> None:
+        conn.execute(
+            "DELETE FROM contract_document_block WHERE generation_id = %s",
+            (generation_id,),
+        )
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO contract_document_block (
+                  block_id, tenant_id, generation_id, block_no, block_type,
+                  page_number, paragraph_no, char_start, char_end, text,
+                  heading_path, metadata_json
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                [
+                    (
+                        block.block_id,
+                        tenant_id,
+                        generation_id,
+                        block.block_no,
+                        block.block_type,
+                        block.page_number,
+                        block.paragraph_no,
+                        block.char_start,
+                        block.char_end,
+                        block.text,
+                        Jsonb(block.heading_path),
+                        Jsonb(block.metadata),
+                    )
+                    for block in blocks
+                ],
+            )
 
     @staticmethod
     def _idempotency_conflict(review_id: str | None = None) -> ContractError:

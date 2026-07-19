@@ -221,6 +221,18 @@ def test_docx_upload_is_accepted_by_protocol_skeleton() -> None:
     assert response.status_code == 201
 
 
+def test_encrypted_docx_signature_is_rejected() -> None:
+    response = _create_review(
+        _client(),
+        filename="contract.docx",
+        content=bytes.fromhex("D0CF11E0A1B11AE1") + b"encrypted-package",
+        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "FILE_ENCRYPTED"
+
+
 def test_configured_file_size_limit_returns_413() -> None:
     client = TestClient(
         create_app(
