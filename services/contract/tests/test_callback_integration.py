@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import os
 import uuid
 from pathlib import Path
@@ -83,14 +84,30 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
         with pytest.raises(ContractError, match="callback_id was reused"):
             callbacks.accept(created.review_id, changed_replay)
 
+        invented_party_result = PartyResolutionStageResult(
+            result_type="PARTY_RESOLUTION_STAGE_V1",
+            contract_type="SERVICE",
+            party_a={"name": "Invented Party A"},
+            party_b={"name": "Invented Party B"},
+            perspective="PARTY_B",
+            our_party="Invented Party B",
+            counterparty="Invented Party A",
+        )
+        with pytest.raises(ContractError) as invalid_party:
+            callbacks.accept(
+                created.review_id,
+                _stage_callback(created, 2, "resolve_parties", invented_party_result),
+            )
+        assert invalid_party.value.code == "RESULT_INVALID"
+
         party_result = PartyResolutionStageResult(
             result_type="PARTY_RESOLUTION_STAGE_V1",
             contract_type="SERVICE",
-            party_a={"name": "甲方公司"},
-            party_b={"name": "乙方公司"},
+            party_a={"name": "Acme Company"},
+            party_b={"name": "Beta Company"},
             perspective="PARTY_B",
-            our_party="乙方公司",
-            counterparty="甲方公司",
+            our_party="Beta Company",
+            counterparty="Acme Company",
         )
         artifacts["contract_party_resolution"] = party_result.model_dump(mode="json")
         callbacks.accept(
@@ -109,11 +126,11 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
         contract_ir_value.update(
             {
                 "parties": [
-                    {"role": "PARTY_A", "name": "甲方公司", "source_anchors": [anchor]},
-                    {"role": "PARTY_B", "name": "乙方公司", "source_anchors": [anchor]},
+                    {"role": "PARTY_A", "name": "Acme Company", "source_anchors": [anchor]},
+                    {"role": "PARTY_B", "name": "Beta Company", "source_anchors": [anchor]},
                 ],
-                "our_party": "乙方公司",
-                "counterparty": "甲方公司",
+                "our_party": "Beta Company",
+                "counterparty": "Acme Company",
                 "contract_type": "SERVICE",
             }
         )
@@ -121,6 +138,48 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
             result_type="CONTRACT_IR_STAGE_V1",
             contract_ir=contract_ir_value,
         )
+        changed_structure = copy.deepcopy(contract_ir_value)
+        changed_structure["clauses"][0]["text"] += " invented"
+        with pytest.raises(ContractError) as invalid_structure:
+            callbacks.accept(
+                created.review_id,
+                _stage_callback(
+                    created,
+                    3,
+                    "extract_contract_ir",
+                    ExtractContractIrStageResult(
+                        result_type="CONTRACT_IR_STAGE_V1",
+                        contract_ir=changed_structure,
+                    ),
+                ),
+            )
+        assert invalid_structure.value.code == "RESULT_INVALID"
+
+        invented_anchor = copy.deepcopy(contract_ir_value)
+        invented_anchor["rights"] = [
+            {
+                "item_id": "right-invented",
+                "subject": "Beta Company",
+                "predicate": "has an invented source range",
+                "object": None,
+                "source_anchors": [{**anchor, "char_end": 100_000}],
+            }
+        ]
+        with pytest.raises(ContractError) as invalid_anchor:
+            callbacks.accept(
+                created.review_id,
+                _stage_callback(
+                    created,
+                    3,
+                    "extract_contract_ir",
+                    ExtractContractIrStageResult(
+                        result_type="CONTRACT_IR_STAGE_V1",
+                        contract_ir=invented_anchor,
+                    ),
+                ),
+            )
+        assert invalid_anchor.value.code == "RESULT_INVALID"
+
         artifacts["contract_ir"] = extract_result.model_dump(mode="json")
         callbacks.accept(
             created.review_id,
@@ -255,7 +314,7 @@ def _runtime(tmp_path: Path):
         business_task_id=f"business-{marker}",
         contract_version_id=f"version-{marker}",
         perspective=Perspective.PARTY_B,
-        our_party_name="乙方公司",
+        our_party_name="Beta Company",
         contract_type="AUTO",
         review_attitude="NEUTRAL",
         schema_version="1.0",
@@ -263,7 +322,9 @@ def _runtime(tmp_path: Path):
     upload = UploadedContract(
         filename="contract.pdf",
         content_type="application/pdf",
-        content=text_pdf_bytes("Party A supplies services. Party B pays."),
+        content=text_pdf_bytes(
+            "Party A: Acme Company; Party B: Beta Company. Party A supplies services. Party B pays."
+        ),
     )
     return runtime, gateway, context, upload, request, tenant_id
 

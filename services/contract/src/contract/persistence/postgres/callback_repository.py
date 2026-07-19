@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
@@ -368,6 +369,7 @@ class FrameworkCallbackRepository:
                 raise FrameworkCallbackRepository._mismatch(
                     "Resolved party perspective does not match the review"
                 )
+            FrameworkCallbackRepository._validate_party_sources(conn, review, result)
             return
         if stage_id != "extract_contract_ir":
             return
@@ -418,6 +420,9 @@ class FrameworkCallbackRepository:
         ).fetchone()
         if generation is None:
             raise FrameworkCallbackRepository._mismatch("Contract IR generation does not exist")
+        structural_ir = generation["contract_ir_json"]
+        if not isinstance(structural_ir, dict):
+            raise ContractError("RESULT_INVALID", "Structural Contract IR is unavailable", status_code=422)
         if (
             document["content_hash"] != generation["content_hash"]
             or document["parser_version"] != generation["parser_version"]
@@ -425,12 +430,28 @@ class FrameworkCallbackRepository:
             raise FrameworkCallbackRepository._mismatch(
                 "Contract IR document metadata does not match its parse generation"
             )
+        for field in ("document", "clauses", "source_anchors"):
+            if contract_ir[field] != structural_ir.get(field):
+                raise ContractError(
+                    "RESULT_INVALID",
+                    f"Contract IR must preserve structural field '{field}'",
+                    status_code=422,
+                )
         block_count = conn.execute(
             "SELECT COUNT(*) AS count FROM contract_document_block WHERE generation_id = %s",
             (generation["id"],),
         ).fetchone()["count"]
         if block_count <= 0 or block_count != document["block_count"]:
             raise ContractError("RESULT_INVALID", "Contract IR block count is invalid", status_code=422)
+        blocks = conn.execute(
+            """
+            SELECT block_id, page_number, text
+            FROM contract_document_block
+            WHERE generation_id = %s AND tenant_id = %s
+            """,
+            (generation["id"], review["tenant_id"]),
+        ).fetchall()
+        FrameworkCallbackRepository._validate_ir_sources(contract_ir, blocks)
         ir_hash = "sha256:" + hashlib.sha256(canonical_json(contract_ir).encode("utf-8")).hexdigest()
         if generation["status"] == "SUCCEEDED" and generation["ir_hash"] != ir_hash:
             raise FrameworkCallbackRepository._mismatch(
@@ -451,6 +472,115 @@ class FrameworkCallbackRepository:
             "UPDATE contract_document SET active_generation_id = %s WHERE id = %s",
             (generation["id"], review["document_id"]),
         )
+
+    @staticmethod
+    def _validate_party_sources(conn, review, result: dict[str, Any]) -> None:
+        generation = conn.execute(
+            """
+            SELECT (stage.result_json ->> 'generation_id') AS generation_id
+            FROM contract_review_stage_result stage
+            WHERE stage.review_id = %s AND stage.attempt_no = %s
+              AND stage.callback_type = 'STAGE_RESULT' AND stage.stage_id = 'parse_contract'
+              AND stage.validation_status = 'VALIDATED'
+            ORDER BY stage.event_sequence DESC, stage.received_at DESC
+            LIMIT 1
+            """,
+            (review["id"], review["active_attempt_no"]),
+        ).fetchone()
+        if generation is None:
+            raise ContractError("RESULT_INVALID", "Party resolution requires a parsed contract", status_code=422)
+        rows = conn.execute(
+            """
+            SELECT text FROM contract_document_block
+            WHERE generation_id = %s AND tenant_id = %s
+            """,
+            (generation["generation_id"], review["tenant_id"]),
+        ).fetchall()
+        document_text = "\n".join(row["text"] for row in rows)
+        party_a = result["party_a"]["name"]
+        party_b = result["party_b"]["name"]
+        if FrameworkCallbackRepository._normalized_text(party_a) == FrameworkCallbackRepository._normalized_text(
+            party_b
+        ):
+            raise ContractError("RESULT_INVALID", "Resolved contract parties must be distinct", status_code=422)
+        normalized_document = FrameworkCallbackRepository._normalized_text(document_text)
+        missing = [
+            name
+            for name in (party_a, party_b)
+            if FrameworkCallbackRepository._normalized_text(name) not in normalized_document
+        ]
+        if missing:
+            raise ContractError(
+                "RESULT_INVALID",
+                "Resolved party names must come from the current contract",
+                status_code=422,
+                details={"missing_party_names": missing},
+            )
+
+    @staticmethod
+    def _validate_ir_sources(contract_ir: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+        blocks = {row["block_id"]: row for row in rows}
+        for anchor in FrameworkCallbackRepository._iter_source_anchors(contract_ir):
+            block = blocks.get(anchor["block_id"])
+            if block is None:
+                raise ContractError(
+                    "RESULT_INVALID",
+                    "Contract IR source anchor references another document",
+                    status_code=422,
+                )
+            start = anchor["char_start"]
+            end = anchor["char_end"]
+            if end > len(block["text"]) or start >= end:
+                raise ContractError(
+                    "RESULT_INVALID",
+                    "Contract IR source anchor range is outside its block",
+                    status_code=422,
+                )
+            if anchor.get("page_number") != block["page_number"]:
+                raise ContractError(
+                    "RESULT_INVALID",
+                    "Contract IR source anchor page does not match its block",
+                    status_code=422,
+                )
+        role_counts = {
+            role: sum(1 for party in contract_ir["parties"] if party["role"] == role)
+            for role in ("PARTY_A", "PARTY_B")
+        }
+        if role_counts != {"PARTY_A": 1, "PARTY_B": 1}:
+            raise ContractError(
+                "RESULT_INVALID",
+                "Semantic Contract IR requires exactly one PARTY_A and one PARTY_B",
+                status_code=422,
+            )
+        for party in contract_ir["parties"]:
+            anchored_text = "\n".join(
+                blocks[anchor["block_id"]]["text"][anchor["char_start"] : anchor["char_end"]]
+                for anchor in party["source_anchors"]
+            )
+            if FrameworkCallbackRepository._normalized_text(party["name"]) not in (
+                FrameworkCallbackRepository._normalized_text(anchored_text)
+            ):
+                raise ContractError(
+                    "RESULT_INVALID",
+                    "Contract IR party name is not supported by its source anchors",
+                    status_code=422,
+                )
+
+    @staticmethod
+    def _iter_source_anchors(value: Any):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "source_anchors" and isinstance(item, list):
+                    yield from item
+                else:
+                    yield from FrameworkCallbackRepository._iter_source_anchors(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from FrameworkCallbackRepository._iter_source_anchors(item)
+
+    @staticmethod
+    def _normalized_text(value: str) -> str:
+        return " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
 
     @staticmethod
     def _finish_if_ready(conn, review, attempt_no: int) -> bool:
