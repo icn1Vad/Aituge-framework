@@ -149,33 +149,23 @@ class ProofAuditOutput(BaseModel):
     items: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class ProofSourcedText(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    text: str = Field(min_length=1, max_length=2000)
-    source_ids: list[str] = Field(min_length=1, max_length=100)
-
-
 class ProofConcernedRole(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     role: str = Field(min_length=1, max_length=200)
-    source_ids: list[str] = Field(min_length=1, max_length=100)
-    responsibilities: list[ProofSourcedText] = Field(default_factory=list, max_length=30)
-    rights: list[ProofSourcedText] = Field(default_factory=list, max_length=30)
-    obligations: list[ProofSourcedText] = Field(default_factory=list, max_length=30)
+    summary: str = Field(min_length=1, max_length=4000)
 
 
 class ProofPolicySummaryOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     plain_summary: str = Field(min_length=1, max_length=6000)
-    purpose: ProofSourcedText | None = None
-    scope: list[ProofSourcedText] = Field(default_factory=list, max_length=30)
-    concerned_roles: list[ProofConcernedRole] = Field(default_factory=list, max_length=100)
-    key_process: list[ProofSourcedText] = Field(default_factory=list, max_length=50)
-    key_rules: list[ProofSourcedText] = Field(default_factory=list, max_length=100)
-    exceptions: list[ProofSourcedText] = Field(default_factory=list, max_length=50)
+    purpose: str | None = Field(default=None, min_length=1, max_length=2000)
+    scope: list[str] = Field(default_factory=list)
+    concerned_roles: list[ProofConcernedRole] = Field(default_factory=list)
+    key_process: list[str] = Field(default_factory=list)
+    key_rules: list[str] = Field(default_factory=list)
+    exceptions: list[str] = Field(default_factory=list)
 
 
 class ProofAuditPipelineOutput(BaseModel):

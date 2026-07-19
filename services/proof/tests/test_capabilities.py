@@ -210,6 +210,48 @@ def test_sql_auxiliary_skill_has_complete_schema_and_business_mappings():
     assert "SUM(matching_clause_count) OVER ()" in content
 
 
+def test_policy_summary_skill_uses_compact_identifier_free_output():
+    content = (
+        Path(proof_capability.__file__).resolve().parent
+        / "skills"
+        / "proof-policy-summary"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "do not copy chunk IDs" in content
+    assert '"summary"' in content
+    assert '"source_ids"' not in content
+    assert '"responsibilities"' not in content
+    assert "There is no\nrequired item count" in content
+
+
+def test_policy_summary_output_contract_accepts_compact_semantic_outline():
+    output = proof_capability.ProofPolicySummaryOutput.model_validate(
+        {
+            "plain_summary": "一、制度定位与总体框架\n制度用于规范投资事项。",
+            "purpose": "规范投资决策和执行。",
+            "scope": ["公司及其子公司的对外投资。"],
+            "concerned_roles": [
+                {
+                    "role": "董事会",
+                    "summary": "审议权限范围内的投资事项，并监督执行情况。",
+                }
+            ],
+            "key_process": ["项目论证后，按权限提交决策机构审议并组织实施。"],
+            "key_rules": ["达到规定标准的事项应提交股东大会审议。"],
+            "exceptions": [],
+        }
+    ).model_dump()
+
+    assert output["concerned_roles"] == [
+        {
+            "role": "董事会",
+            "summary": "审议权限范围内的投资事项，并监督执行情况。",
+        }
+    ]
+    assert "source_ids" not in str(output)
+
+
 def test_audit_skill_defines_production_clarity_and_executability_rules():
     content = (
         Path(proof_capability.__file__).resolve().parent

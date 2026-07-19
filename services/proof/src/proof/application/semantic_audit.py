@@ -460,52 +460,23 @@ class SemanticAuditService:
         for field in ("scope", "concerned_roles", "key_process", "key_rules", "exceptions"):
             if not isinstance(output.get(field), list):
                 raise ValueError(f"Policy summary {field} must be an array.")
-        expected_ids = {item["id"] for item in self.repository.get_document_units(run["document_id"])}
-        if not expected_ids:
-            raise ValueError("The summarized document has no chunks.")
-
-        def walk(value: Any, path: str = "summary") -> None:
-            if isinstance(value, dict):
-                for key, child in value.items():
-                    if key == "source_ids":
-                        if not isinstance(child, list) or not child:
-                            raise ValueError(f"{path}.source_ids must be a non-empty array.")
-                        ids = [str(item) for item in child]
-                        if len(ids) != len(set(ids)):
-                            raise ValueError(f"{path}.source_ids contains duplicates.")
-                        invalid = set(ids) - expected_ids
-                        if invalid:
-                            raise ValueError(f"Policy summary contains invalid source_ids: {sorted(invalid)}")
-                    else:
-                        walk(child, f"{path}.{key}")
-            elif isinstance(value, list):
-                for index, child in enumerate(value):
-                    walk(child, f"{path}[{index}]")
-
-        def sourced_text(value: Any, path: str) -> None:
-            if not isinstance(value, dict) or set(value) != {"text", "source_ids"}:
-                raise ValueError(f"{path} must contain exactly text and source_ids.")
-            if not isinstance(value["text"], str) or not value["text"].strip():
-                raise ValueError(f"{path}.text must not be blank.")
-
-        walk(output)
-        if output.get("purpose") is not None:
-            sourced_text(output["purpose"], "summary.purpose")
+        if output.get("purpose") is not None and (
+            not isinstance(output["purpose"], str) or not output["purpose"].strip()
+        ):
+            raise ValueError("Policy summary purpose must be null or a non-blank string.")
         for field in ("scope", "key_process", "key_rules", "exceptions"):
             for index, item in enumerate(output[field]):
-                sourced_text(item, f"summary.{field}[{index}]")
+                if not isinstance(item, str) or not item.strip():
+                    raise ValueError(f"Policy summary {field}[{index}] must be a non-blank string.")
         for index, role in enumerate(output["concerned_roles"]):
             path = f"summary.concerned_roles[{index}]"
-            expected = {"role", "source_ids", "responsibilities", "rights", "obligations"}
+            expected = {"role", "summary"}
             if not isinstance(role, dict) or set(role) != expected:
                 raise ValueError(f"{path} has an invalid structure.")
             if not isinstance(role["role"], str) or not role["role"].strip():
                 raise ValueError(f"{path}.role must not be blank.")
-            for field in ("responsibilities", "rights", "obligations"):
-                if not isinstance(role[field], list):
-                    raise ValueError(f"{path}.{field} must be an array.")
-                for item_index, item in enumerate(role[field]):
-                    sourced_text(item, f"{path}.{field}[{item_index}]")
+            if not isinstance(role["summary"], str) or not role["summary"].strip():
+                raise ValueError(f"{path}.summary must not be blank.")
         return output
 
     def _reconcile_framework_status(self, run: dict[str, Any]) -> None:

@@ -173,6 +173,41 @@ def test_conflict_items_cover_each_chunk_exactly_once() -> None:
     assert all(item["targets"][0]["id"] == item["targets"][0]["unit_id"] for item in items)
 
 
+def test_policy_summary_accepts_compact_identifier_free_outline() -> None:
+    repository = FakeAuditRepository()
+    service = SemanticAuditService(Settings(semantic_audit_enabled=True), repository)
+    output = {
+        "plain_summary": "一、制度定位与总体框架\n制度用于规范事项处理。",
+        "purpose": "明确管理要求。",
+        "scope": ["公司相关业务。"],
+        "concerned_roles": [
+            {"role": "财务部", "summary": "负责复核相关事项并记录处理结果。"}
+        ],
+        "key_process": ["事项提交后完成复核并形成记录。"],
+        "key_rules": ["复核应在三个工作日内完成。"],
+        "exceptions": [],
+    }
+
+    assert service._validate_summary(repository.run, output) == output
+
+
+def test_policy_summary_rejects_legacy_chunk_identifier_shape() -> None:
+    repository = FakeAuditRepository()
+    service = SemanticAuditService(Settings(semantic_audit_enabled=True), repository)
+    output = {
+        "plain_summary": "制度概览",
+        "purpose": {"text": "明确管理要求。", "source_ids": ["unit-1"]},
+        "scope": [],
+        "concerned_roles": [],
+        "key_process": [],
+        "key_rules": [],
+        "exceptions": [],
+    }
+
+    with pytest.raises(ValueError, match="purpose must be null or a non-blank string"):
+        service._validate_summary(repository.run, output)
+
+
 def test_disabled_audit_has_no_run_and_is_confirmable_by_caller() -> None:
     repository = FakeAuditRepository()
     repository.run = None
