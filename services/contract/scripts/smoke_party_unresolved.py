@@ -103,7 +103,7 @@ def main() -> None:
         "X-Internal-Service": "continew-java",
         "X-Internal-Token": token,
         "X-User-Id": f"e2e-user-{marker}",
-        "X-Tenant-Id": f"e2e-tenant-{marker}",
+        "X-Tenant-Id": "0",
         "X-Request-Id": f"e2e-request-{marker}",
         "Idempotency-Key": f"e2e-idempotency-{marker}",
     }
@@ -147,9 +147,15 @@ def main() -> None:
     assert error["code"] == "PARTY_UNRESOLVED", status
     assert error["retryable"] is False, status
     assert error["user_action_required"] is True, status
+    details = error["details"]
+    assert details["perspective"] == "PARTY_B", status
+    assert set(details["candidate_parties"]) == {"Acme Company", "Beta Company"}, status
+    assert details["requested_our_party_name"] == "Gamma Company", status
+    assert details["stage_id"] == "resolve_parties", status
+    assert details["framework_error_code"] == "required_result_sink_failed", status
     print(f"REVIEW_ID={review_id}")
     print("STATUS=FAILED/PARTY_RESOLUTION")
-    print("ERROR=PARTY_UNRESOLVED/USER_ACTION_REQUIRED")
+    print("ERROR=PARTY_UNRESOLVED/USER_ACTION_REQUIRED/DETAILS_PRESERVED")
 
 
 if __name__ == "__main__":

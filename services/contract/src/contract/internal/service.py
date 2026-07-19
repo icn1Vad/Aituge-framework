@@ -346,15 +346,19 @@ class ContractInternalService:
 
     @staticmethod
     def _block(value: dict[str, Any]) -> ContractBlockData:
+        text = value["text"]
         return ContractBlockData(
             block_id=value["block_id"],
             block_no=value["block_no"],
             block_type=value["block_type"],
             page_number=value["page_number"],
             paragraph_no=value["paragraph_no"],
-            char_start=value["char_start"],
-            char_end=value["char_end"],
-            text=value["text"],
+            # Contract tools expose Evidence coordinates, which are always
+            # relative to this Block. Database offsets remain document-relative
+            # technical metadata and must not leak into the model contract.
+            char_start=0,
+            char_end=len(text),
+            text=text,
             heading_path=value["heading_path"],
             metadata=value["metadata_json"],
         )

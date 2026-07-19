@@ -274,26 +274,57 @@ def test_contract_failed_callback_maps_stable_business_errors() -> None:
 
     _, party = capability._callback_envelope(
         ResultSinkDelivery(
-            task,
-            definition,
-            None,
-            "resolve_parties",
-            "failed",
-            "party result rejected",
-            "required_result_sink_failed",
-            True,
+            task=task,
+            definition=definition,
+            output=None,
+            stage_id="resolve_parties",
+            status="failed",
+            error_message="party result rejected",
+            error_code="required_result_sink_failed",
+            retryable=True,
+            domain_error_code="PARTY_UNRESOLVED",
+            domain_retryable=False,
+            user_action_required=True,
+            error_details={
+                "candidate_parties": ["Acme Company", "Beta Company"],
+                "requested_our_party_name": "Gamma Company",
+            },
         )
     )
     _, evidence = capability._callback_envelope(
         ResultSinkDelivery(
-            task,
-            definition,
-            None,
-            "verify_evidence",
-            "failed",
-            "evidence rejected",
-            "EVIDENCE_INVALID",
-            False,
+            task=task,
+            definition=definition,
+            output=None,
+            stage_id="verify_evidence",
+            status="failed",
+            error_message="evidence rejected",
+            error_code="EVIDENCE_INVALID",
+            retryable=False,
+        )
+    )
+    _, model_failure = capability._callback_envelope(
+        ResultSinkDelivery(
+            task=task,
+            definition=definition,
+            output=None,
+            stage_id="resolve_parties",
+            status="failed",
+            error_message="LLM model is unavailable",
+            error_code="invalid_output",
+            retryable=True,
+        )
+    )
+    _, review_evidence = capability._callback_envelope(
+        ResultSinkDelivery(
+            task=task,
+            definition=definition,
+            output=None,
+            stage_id="relation_extraction",
+            status="failed",
+            error_message="evidence range rejected",
+            error_code="required_result_sink_failed",
+            retryable=True,
         )
     )
 
@@ -303,12 +334,18 @@ def test_contract_failed_callback_maps_stable_business_errors() -> None:
         "retryable": False,
         "user_action_required": True,
         "details": {
+            "candidate_parties": ["Acme Company", "Beta Company"],
+            "requested_our_party_name": "Gamma Company",
             "stage_id": "resolve_parties",
             "framework_error_code": "required_result_sink_failed",
         },
     }
     assert evidence["error"]["code"] == "EVIDENCE_INVALID"
     assert evidence["error"]["retryable"] is False
+    assert model_failure["error"]["code"] == "FRAMEWORK_RUN_FAILED"
+    assert model_failure["error"]["retryable"] is True
+    assert review_evidence["error"]["code"] == "EVIDENCE_INVALID"
+    assert review_evidence["error"]["retryable"] is False
 
 
 def test_contract_result_sink_preserves_safe_rejection_detail(monkeypatch) -> None:
@@ -361,8 +398,9 @@ def test_contract_result_sink_preserves_safe_rejection_detail(monkeypatch) -> No
         None,
     )
 
-    with pytest.raises(capability.ResultSinkRejectedError, match="source anchor rejected"):
+    with pytest.raises(capability.ResultSinkRejectedError, match="source anchor rejected") as caught:
         asyncio.run(handler(delivery))
+    assert caught.value.code == "RESULT_INVALID"
 
 
 def test_contract_stage_gateway_preserves_safe_rejection_detail(monkeypatch) -> None:

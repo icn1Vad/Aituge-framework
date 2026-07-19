@@ -32,6 +32,15 @@ STAGE_TO_REVIEW_STAGE = {
     "finalize_review": "FINALIZING",
 }
 REQUIRED_STAGE_IDS = frozenset(STAGE_TO_REVIEW_STAGE)
+MODEL_REVIEW_STAGE_IDS = frozenset(
+    {
+        "rights_obligations_review",
+        "commercial_terms_review",
+        "liability_termination_review",
+        "missing_ambiguous_clauses",
+        "relation_extraction",
+    }
+)
 SEMANTIC_IR_FIELDS = (
     "definitions",
     "rights",
@@ -439,6 +448,13 @@ class FrameworkCallbackRepository:
                 )
             FrameworkCallbackRepository._validate_party_sources(conn, review, result)
             return
+        if stage_id in MODEL_REVIEW_STAGE_IDS:
+            FrameworkCallbackRepository._validate_review_candidate_sources(
+                conn,
+                review,
+                result,
+            )
+            return
         if stage_id != "extract_contract_ir":
             return
         party_row = conn.execute(
@@ -625,6 +641,129 @@ class FrameworkCallbackRepository:
                 "Resolved party does not match the user-provided party name",
                 extra_details={"requested_our_party_name": requested_our_party},
             )
+
+    @staticmethod
+    def _validate_review_candidate_sources(conn, review, result: dict[str, Any]) -> None:
+        generation = conn.execute(
+            """
+            SELECT (stage.result_json ->> 'generation_id') AS generation_id
+            FROM contract_review_stage_result stage
+            WHERE stage.review_id = %s AND stage.attempt_no = %s
+              AND stage.callback_type = 'STAGE_RESULT' AND stage.stage_id = 'parse_contract'
+              AND stage.validation_status = 'VALIDATED'
+            ORDER BY stage.event_sequence DESC, stage.received_at DESC
+            LIMIT 1
+            """,
+            (review["id"], review["active_attempt_no"]),
+        ).fetchone()
+        if generation is None:
+            raise ContractError(
+                "EVIDENCE_INVALID",
+                "Review evidence requires a validated parse Generation",
+                status_code=422,
+            )
+        rows = conn.execute(
+            """
+            SELECT block_id, page_number, text
+            FROM contract_document_block
+            WHERE generation_id = %s AND tenant_id = %s
+            """,
+            (generation["generation_id"], review["tenant_id"]),
+        ).fetchall()
+        blocks = {row["block_id"]: row for row in rows}
+        findings = result["findings"]
+        evidences = result["evidences"]
+        finding_ids = {item["finding_id"] for item in findings}
+        evidence_ids = {item["evidence_id"] for item in evidences}
+        evidences_by_id = {item["evidence_id"]: item for item in evidences}
+        evidence_ids_by_finding: dict[str, set[str]] = {}
+        if len(finding_ids) != len(findings) or len(evidence_ids) != len(evidences):
+            raise ContractError(
+                "EVIDENCE_INVALID",
+                "Review Stage Finding and Evidence IDs must be unique",
+                status_code=422,
+            )
+        for finding in findings:
+            if finding["perspective"] != review["perspective"]:
+                raise ContractError(
+                    "EVIDENCE_INVALID",
+                    "Review Stage Finding perspective does not match the review",
+                    status_code=422,
+                )
+            finding_evidence_ids = finding["evidence_ids"]
+            if (
+                not finding_evidence_ids
+                or len(set(finding_evidence_ids)) != len(finding_evidence_ids)
+                or any(evidence_id not in evidence_ids for evidence_id in finding_evidence_ids)
+            ):
+                raise ContractError(
+                    "EVIDENCE_INVALID",
+                    "Review Stage Finding evidence links are incomplete",
+                    status_code=422,
+                )
+            evidence_ids_by_finding[finding["finding_id"]] = set(finding_evidence_ids)
+            for evidence_id in finding_evidence_ids:
+                evidence = evidences_by_id[evidence_id]
+                if evidence["finding_id"] != finding["finding_id"]:
+                    raise FrameworkCallbackRepository._invalid_evidence_candidate(
+                        evidence_id,
+                        "Finding and Evidence links are inconsistent",
+                        finding_id=finding["finding_id"],
+                        evidence_finding_id=evidence["finding_id"],
+                    )
+        for evidence in evidences:
+            evidence_id = evidence["evidence_id"]
+            if evidence["finding_id"] not in finding_ids:
+                raise FrameworkCallbackRepository._invalid_evidence_candidate(
+                    evidence_id,
+                    "Evidence references an unknown Finding",
+                )
+            if evidence_id not in evidence_ids_by_finding[evidence["finding_id"]]:
+                raise FrameworkCallbackRepository._invalid_evidence_candidate(
+                    evidence_id,
+                    "Evidence is not linked by its Finding",
+                    evidence_finding_id=evidence["finding_id"],
+                )
+            if evidence["evidence_type"] == "ABSENCE":
+                continue
+            block = blocks.get(evidence["block_id"])
+            if block is None:
+                raise FrameworkCallbackRepository._invalid_evidence_candidate(
+                    evidence_id,
+                    "Evidence block is outside this contract Generation",
+                )
+            start = evidence["char_start"]
+            end = evidence["char_end"]
+            if start is None or end is None or start >= end or end > len(block["text"]):
+                raise FrameworkCallbackRepository._invalid_evidence_candidate(
+                    evidence_id,
+                    "Evidence character range is outside its Block",
+                    block_id=evidence["block_id"],
+                    block_length=len(block["text"]),
+                )
+            quoted_text = block["text"][start:end]
+            expected_hash = "sha256:" + hashlib.sha256(quoted_text.encode("utf-8")).hexdigest()
+            if evidence["quoted_text"] is not None and evidence["quoted_text"] != quoted_text:
+                raise FrameworkCallbackRepository._invalid_evidence_candidate(
+                    evidence_id,
+                    "Evidence quoted text does not match its Block",
+                    block_id=evidence["block_id"],
+                )
+            if (
+                evidence["quoted_text_hash"] is not None
+                and evidence["quoted_text_hash"] != expected_hash
+            ):
+                raise FrameworkCallbackRepository._invalid_evidence_candidate(
+                    evidence_id,
+                    "Evidence text hash does not match its Block",
+                    block_id=evidence["block_id"],
+                )
+            if evidence["page_number"] is not None and evidence["page_number"] != block["page_number"]:
+                raise FrameworkCallbackRepository._invalid_evidence_candidate(
+                    evidence_id,
+                    "Evidence page does not match its Block",
+                    block_id=evidence["block_id"],
+                )
 
     @staticmethod
     def _materialize_party(
@@ -833,5 +972,32 @@ class FrameworkCallbackRepository:
             status_code=422,
             retryable=False,
             user_action_required=True,
+            details=details,
+        )
+
+    @staticmethod
+    def _invalid_evidence_candidate(
+        evidence_id: str,
+        message: str,
+        *,
+        block_id: str | None = None,
+        block_length: int | None = None,
+        finding_id: str | None = None,
+        evidence_finding_id: str | None = None,
+    ) -> ContractError:
+        details: dict[str, Any] = {"evidence_id": evidence_id}
+        if block_id is not None:
+            details["block_id"] = block_id
+        if block_length is not None:
+            details["block_length"] = block_length
+        if finding_id is not None:
+            details["finding_id"] = finding_id
+        if evidence_finding_id is not None:
+            details["evidence_finding_id"] = evidence_finding_id
+        return ContractError(
+            "EVIDENCE_INVALID",
+            message,
+            status_code=422,
+            retryable=False,
             details=details,
         )

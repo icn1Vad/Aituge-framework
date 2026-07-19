@@ -30,7 +30,7 @@ from contract.callback.service import FrameworkCallbackService
 from contract.config import Settings
 from contract.errors import ContractError
 from contract.internal.service import ContractInternalService
-from contract.internal.models import ContractIrToolRequest
+from contract.internal.models import ContractBlocksToolRequest, ContractIrToolRequest
 from contract.persistence.postgres.callback_repository import FrameworkCallbackRepository
 from contract.persistence.postgres.migrate import run_migrations
 from contract.persistence.postgres.repository import ContractRepository
@@ -201,6 +201,14 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
         assert perspective_ir.our_party == "Beta Company"
         assert perspective_ir.counterparty == "Acme Company"
         block = repository.list_blocks(active_generation["id"], tenant_id=tenant_id)[0]
+        tool_blocks = internal.get_blocks(
+            ContractBlocksToolRequest(
+                review_id=created.review_id,
+                document_id=created.document_id,
+                limit=200,
+            )
+        ).blocks
+        assert all(item.char_start == 0 and item.char_end == len(item.text) for item in tool_blocks)
         quoted_text = "Party B pays."
         char_start = block["text"].index(quoted_text)
         evidence = EvidenceCandidate(
@@ -225,6 +233,58 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
             suggestion="Add a payment deadline and late-payment consequences.",
             evidence_ids=[evidence.evidence_id],
         )
+
+        invalid_stage_evidence = evidence.model_copy(
+            update={"char_start": len(block["text"]), "char_end": len(block["text"]) + 10},
+        )
+        with pytest.raises(ContractError) as invalid_stage_result:
+            callbacks.accept(
+                created.review_id,
+                _stage_callback(
+                    created,
+                    4,
+                    "rights_obligations_review",
+                    RightsObligationsStageResult(
+                        result_type="RIGHTS_OBLIGATIONS_STAGE_V1",
+                        findings=[finding],
+                        evidences=[invalid_stage_evidence],
+                    ),
+                ),
+            )
+        assert invalid_stage_result.value.code == "EVIDENCE_INVALID"
+        assert invalid_stage_result.value.details == {
+            "evidence_id": "evidence-payment",
+            "block_id": block["block_id"],
+            "block_length": len(block["text"]),
+        }
+
+        mismatched_finding = finding.model_copy(
+            update={
+                "finding_id": "finding-mismatched",
+                "title": "Mismatched evidence ownership",
+                "evidence_ids": [evidence.evidence_id],
+            }
+        )
+        with pytest.raises(ContractError) as mismatched_links:
+            callbacks.accept(
+                created.review_id,
+                _stage_callback(
+                    created,
+                    4,
+                    "rights_obligations_review",
+                    RightsObligationsStageResult(
+                        result_type="RIGHTS_OBLIGATIONS_STAGE_V1",
+                        findings=[finding, mismatched_finding],
+                        evidences=[evidence],
+                    ),
+                ),
+            )
+        assert mismatched_links.value.code == "EVIDENCE_INVALID"
+        assert mismatched_links.value.details == {
+            "evidence_id": "evidence-payment",
+            "finding_id": "finding-mismatched",
+            "evidence_finding_id": "finding-payment",
+        }
 
         review_stages = [
             (

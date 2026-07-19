@@ -35,6 +35,14 @@ STAGE_SEQUENCE = {
     "finalize_review": 100,
 }
 
+MODEL_REVIEW_STAGE_IDS = {
+    "rights_obligations_review",
+    "commercial_terms_review",
+    "liability_termination_review",
+    "missing_ambiguous_clauses",
+    "relation_extraction",
+}
+
 FROZEN_ASYNC_ERROR_CODES = {
     "CONTRACT_PARSE_FAILED",
     "PARTY_UNRESOLVED",
@@ -446,15 +454,19 @@ def _callback_envelope(delivery: ResultSinkDelivery) -> tuple[str, dict[str, Any
         sequence = STAGE_SEQUENCE.get(stage_id or "", 900) + 1
         result = None
         framework_error_code = delivery.error_code or "FRAMEWORK_RUN_FAILED"
-        if stage_id == "resolve_parties" and framework_error_code in {
-            "invalid_output",
+        domain_error_code = delivery.domain_error_code
+        if domain_error_code in FROZEN_ASYNC_ERROR_CODES:
+            error_code = domain_error_code
+            retryable = delivery.domain_retryable
+            user_action_required = delivery.user_action_required
+        elif stage_id == "resolve_parties" and framework_error_code in {
             "required_result_sink_failed",
             "PARTY_UNRESOLVED",
         }:
             error_code = "PARTY_UNRESOLVED"
             retryable = False
             user_action_required = True
-        elif stage_id == "verify_evidence" and framework_error_code in {
+        elif stage_id in {*MODEL_REVIEW_STAGE_IDS, "verify_evidence"} and framework_error_code in {
             "required_result_sink_failed",
             "EVIDENCE_INVALID",
         }:
@@ -469,16 +481,16 @@ def _callback_envelope(delivery: ResultSinkDelivery) -> tuple[str, dict[str, Any
             error_code = "FRAMEWORK_RUN_FAILED"
             retryable = delivery.retryable
             user_action_required = False
+        details = dict(delivery.error_details or {})
+        if stage_id:
+            details["stage_id"] = stage_id
+            details["framework_error_code"] = framework_error_code
         error = {
             "code": error_code,
             "message": (delivery.error_message or "Framework contract stage failed")[:2000],
             "retryable": retryable,
             "user_action_required": user_action_required,
-            "details": (
-                {"stage_id": stage_id, "framework_error_code": framework_error_code}
-                if stage_id
-                else None
-            ),
+            "details": details or None,
         }
     elif delivery.stage_id is not None:
         if delivery.stage_id not in STAGE_SEQUENCE:
@@ -537,7 +549,26 @@ def _result_sink_handler(base_url: str, token: str):
                     f"Contract Result Sink returned HTTP {exc.response.status_code}{suffix}"
                 )
                 if exc.response.status_code == 422:
-                    raise ResultSinkRejectedError(str(error)) from exc
+                    try:
+                        response_error = exc.response.json().get("error", {})
+                    except (AttributeError, ValueError):
+                        try:
+                            response_error = json.loads(exc.response.text).get("error", {})
+                        except (AttributeError, TypeError, ValueError):
+                            response_error = {}
+                    raise ResultSinkRejectedError(
+                        str(error),
+                        code=response_error.get("code"),
+                        retryable=bool(response_error.get("retryable", False)),
+                        user_action_required=bool(
+                            response_error.get("user_action_required", False)
+                        ),
+                        details=(
+                            response_error.get("details")
+                            if isinstance(response_error.get("details"), dict)
+                            else None
+                        ),
+                    ) from exc
                 last_error = error
                 if attempt < 2:
                     await asyncio.sleep(0.1)

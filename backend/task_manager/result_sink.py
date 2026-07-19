@@ -20,6 +20,10 @@ class ResultSinkDelivery:
     error_message: str | None
     error_code: str | None = None
     retryable: bool = False
+    domain_error_code: str | None = None
+    domain_retryable: bool = False
+    user_action_required: bool = False
+    error_details: dict[str, Any] | None = None
 
 
 ResultSinkHandler = Callable[[ResultSinkDelivery], Awaitable[None]]
@@ -31,6 +35,21 @@ class RequiredResultSinkError(RuntimeError):
 
 class ResultSinkRejectedError(RuntimeError):
     """The sink durably rejected a result that may be corrected and resubmitted."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        retryable: bool = False,
+        user_action_required: bool = False,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+        self.user_action_required = user_action_required
+        self.details = details
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +103,10 @@ async def deliver_task_result(
     error_message: str | None = None,
     error_code: str | None = None,
     retryable: bool = False,
+    domain_error_code: str | None = None,
+    domain_retryable: bool = False,
+    user_action_required: bool = False,
+    error_details: dict[str, Any] | None = None,
 ) -> None:
     registered = _RESULT_SINKS.get(task.task_type)
     if registered is not None:
@@ -96,6 +119,10 @@ async def deliver_task_result(
             error_message=error_message,
             error_code=error_code,
             retryable=retryable,
+            domain_error_code=domain_error_code,
+            domain_retryable=domain_retryable,
+            user_action_required=user_action_required,
+            error_details=error_details,
         )
         try:
             await registered.handler(delivery)
@@ -125,6 +152,14 @@ async def deliver_task_result(
         payload["error_code"] = error_code
     if retryable:
         payload["retryable"] = True
+    if domain_error_code:
+        payload["domain_error_code"] = domain_error_code
+    if domain_retryable:
+        payload["domain_retryable"] = True
+    if user_action_required:
+        payload["user_action_required"] = True
+    if error_details is not None:
+        payload["error_details"] = error_details
     last_error: Exception | None = None
     for _attempt in range(3):
         try:

@@ -273,11 +273,22 @@ class PipelineExecutor:
                             stage_id=stage.stage_id,
                         )
                     except RequiredResultSinkError as exc:
-                        retryable = isinstance(exc.__cause__, ResultSinkRejectedError)
+                        rejection = (
+                            exc.__cause__ if isinstance(exc.__cause__, ResultSinkRejectedError) else None
+                        )
+                        retryable = rejection is not None
                         raise StageExecutionError(
                             str(exc),
                             code="required_result_sink_failed",
                             retryable=retryable,
+                            domain_error_code=rejection.code if rejection is not None else None,
+                            domain_retryable=(
+                                rejection.retryable if rejection is not None else False
+                            ),
+                            user_action_required=(
+                                rejection.user_action_required if rejection is not None else False
+                            ),
+                            details=rejection.details if rejection is not None else None,
                         ) from exc
                 break
             except TimeoutError:
@@ -323,6 +334,10 @@ class PipelineExecutor:
                     error_message=str(last_error),
                     error_code=last_error.code,
                     retryable=last_error.retryable,
+                    domain_error_code=last_error.domain_error_code,
+                    domain_retryable=last_error.domain_retryable,
+                    user_action_required=last_error.user_action_required,
+                    error_details=last_error.details,
                 )
             except Exception as sink_error:
                 yield _event(

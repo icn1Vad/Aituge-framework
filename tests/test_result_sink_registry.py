@@ -45,6 +45,10 @@ def test_capability_result_sink_receives_typed_delivery() -> None:
             error_message="stage failed",
             error_code="RESULT_INVALID",
             retryable=True,
+            domain_error_code="EVIDENCE_INVALID",
+            domain_retryable=False,
+            user_action_required=True,
+            error_details={"evidence_id": "evidence-1"},
         )
     )
 
@@ -56,6 +60,10 @@ def test_capability_result_sink_receives_typed_delivery() -> None:
     assert deliveries[0].error_message == "stage failed"
     assert deliveries[0].error_code == "RESULT_INVALID"
     assert deliveries[0].retryable is True
+    assert deliveries[0].domain_error_code == "EVIDENCE_INVALID"
+    assert deliveries[0].domain_retryable is False
+    assert deliveries[0].user_action_required is True
+    assert deliveries[0].error_details == {"evidence_id": "evidence-1"}
 
 
 def test_required_capability_result_sink_failure_is_not_downgraded() -> None:
