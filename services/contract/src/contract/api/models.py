@@ -1,0 +1,324 @@
+from __future__ import annotations
+
+import hashlib
+from enum import Enum
+from typing import Annotated, Generic, Literal, TypeVar
+
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StringConstraints,
+    model_validator,
+)
+
+
+SCHEMA_VERSION = "1.0"
+Identifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
+HashValue = Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
+
+
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class Perspective(str, Enum):
+    PARTY_A = "PARTY_A"
+    PARTY_B = "PARTY_B"
+
+
+class ReviewStatus(str, Enum):
+    CREATED = "CREATED"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class ReviewStage(str, Enum):
+    PARSING = "PARSING"
+    PARTY_RESOLUTION = "PARTY_RESOLUTION"
+    IR_EXTRACTION = "IR_EXTRACTION"
+    RIGHTS_OBLIGATIONS = "RIGHTS_OBLIGATIONS"
+    RISK_REVIEW = "RISK_REVIEW"
+    EVIDENCE_VERIFICATION = "EVIDENCE_VERIFICATION"
+    FINALIZING = "FINALIZING"
+
+
+class RiskLevel(str, Enum):
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+    INFO = "INFO"
+
+
+class FindingCategory(str, Enum):
+    PARTY_IDENTIFICATION = "PARTY_IDENTIFICATION"
+    RIGHTS_OBLIGATIONS_IMBALANCE = "RIGHTS_OBLIGATIONS_IMBALANCE"
+    PAYMENT = "PAYMENT"
+    DELIVERY = "DELIVERY"
+    ACCEPTANCE = "ACCEPTANCE"
+    BREACH = "BREACH"
+    LIABILITY = "LIABILITY"
+    TERMINATION = "TERMINATION"
+    CONFIDENTIALITY = "CONFIDENTIALITY"
+    INTELLECTUAL_PROPERTY = "INTELLECTUAL_PROPERTY"
+    DISPUTE_RESOLUTION = "DISPUTE_RESOLUTION"
+    MISSING_CLAUSE = "MISSING_CLAUSE"
+    AMBIGUITY = "AMBIGUITY"
+    INTERNAL_CONFLICT = "INTERNAL_CONFLICT"
+    OTHER = "OTHER"
+
+
+class EvidenceType(str, Enum):
+    TEXT_QUOTE = "TEXT_QUOTE"
+    CONTEXT = "CONTEXT"
+    ABSENCE = "ABSENCE"
+
+
+class ErrorData(StrictModel):
+    code: Identifier
+    message: Annotated[str, StringConstraints(min_length=1, max_length=2000)]
+    retryable: bool
+    user_action_required: bool
+    details: dict[str, JsonValue] | None = None
+
+
+class ErrorResponse(StrictModel):
+    success: Literal[False] = False
+    error: ErrorData
+    request_id: Identifier
+
+
+DataT = TypeVar("DataT")
+
+
+class SuccessResponse(StrictModel, Generic[DataT]):
+    success: Literal[True] = True
+    data: DataT
+    request_id: Identifier
+
+
+class HealthData(StrictModel):
+    status: Literal["UP"] = "UP"
+    service: Literal["contract"] = "contract"
+    schema_version: Literal["1.0"] = "1.0"
+    mode: Literal["mock", "runtime"]
+
+
+class CreateReviewRequest(StrictModel):
+    business_task_id: Identifier
+    contract_version_id: Identifier
+    perspective: Perspective
+    our_party_name: Annotated[str, StringConstraints(max_length=500)] | None = None
+    contract_type: Literal["AUTO"]
+    review_attitude: Literal["NEUTRAL"]
+    schema_version: Literal["1.0"]
+
+
+class FrameworkMappingModel(StrictModel):
+    current_stage: ReviewStage | None = None
+    framework_task_id: Identifier | None = None
+    framework_run_id: Identifier | None = None
+    framework_attempt_no: int | None = Field(default=None, ge=1)
+
+    def mapping_values(self) -> tuple[object, ...]:
+        return (
+            self.current_stage,
+            self.framework_attempt_no,
+            self.framework_task_id,
+            self.framework_run_id,
+        )
+
+
+class CreateReviewData(FrameworkMappingModel):
+    review_id: Identifier
+    document_id: Identifier
+    status: Literal[ReviewStatus.CREATED, ReviewStatus.RUNNING]
+    reused: bool
+    schema_version: Literal["1.0"] = "1.0"
+
+    @model_validator(mode="after")
+    def validate_mapping(self) -> "CreateReviewData":
+        values = self.mapping_values()
+        if self.status == ReviewStatus.CREATED and any(value is not None for value in values):
+            raise ValueError("CREATED reviews cannot have a Framework mapping")
+        if self.status == ReviewStatus.RUNNING and any(value is None for value in values):
+            raise ValueError("RUNNING reviews require a complete Framework mapping")
+        return self
+
+
+class ReviewStatusData(FrameworkMappingModel):
+    review_id: Identifier
+    business_task_id: Identifier
+    contract_version_id: Identifier
+    status: ReviewStatus
+    document_id: Identifier
+    error: ErrorData | None = None
+    schema_version: Literal["1.0"] = "1.0"
+    updated_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def validate_status_shape(self) -> "ReviewStatusData":
+        values = self.mapping_values()
+        if self.status == ReviewStatus.CREATED and any(value is not None for value in values):
+            raise ValueError("CREATED reviews cannot have a Framework mapping")
+        if self.status == ReviewStatus.RUNNING and any(value is None for value in values):
+            raise ValueError("RUNNING reviews require a complete Framework mapping")
+        if self.status == ReviewStatus.FAILED and self.error is None:
+            raise ValueError("FAILED reviews require error details")
+        if self.status != ReviewStatus.FAILED and self.error is not None:
+            raise ValueError("Only FAILED reviews can expose an error")
+        return self
+
+
+class CancelReviewData(StrictModel):
+    review_id: Identifier
+    status: Literal[ReviewStatus.CANCELLED]
+    already_terminal: bool
+
+
+class PartyProfile(StrictModel):
+    name: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+
+
+class ContractProfile(StrictModel):
+    contract_type: Annotated[str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=80)]
+    party_a: PartyProfile
+    party_b: PartyProfile
+    perspective: Perspective
+    our_party: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    counterparty: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    review_attitude: Literal["NEUTRAL"] = "NEUTRAL"
+
+    @model_validator(mode="after")
+    def validate_perspective(self) -> "ContractProfile":
+        expected_our_party = self.party_a.name if self.perspective == Perspective.PARTY_A else self.party_b.name
+        expected_counterparty = self.party_b.name if self.perspective == Perspective.PARTY_A else self.party_a.name
+        if self.our_party != expected_our_party or self.counterparty != expected_counterparty:
+            raise ValueError("our_party and counterparty must match the selected perspective")
+        return self
+
+
+class ReviewSummary(StrictModel):
+    overview: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
+    high_count: int = Field(ge=0)
+    medium_count: int = Field(ge=0)
+    low_count: int = Field(ge=0)
+    info_count: int = Field(ge=0)
+
+
+class Finding(StrictModel):
+    finding_id: Identifier
+    category: FindingCategory
+    risk_level: RiskLevel
+    title: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    perspective: Perspective
+    our_party: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    counterparty: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    issue: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
+    impact_to_our_party: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
+    suggestion: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
+    evidence_ids: list[Identifier] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_unique_evidence_ids(self) -> "Finding":
+        if len(self.evidence_ids) != len(set(self.evidence_ids)):
+            raise ValueError("evidence_ids must be unique")
+        return self
+
+
+class Evidence(StrictModel):
+    evidence_id: Identifier
+    finding_id: Identifier
+    evidence_type: EvidenceType
+    block_id: Identifier | None = None
+    page_number: int | None = Field(default=None, ge=1)
+    char_start: int | None = Field(default=None, ge=0)
+    char_end: int | None = Field(default=None, ge=1)
+    quoted_text: str | None = None
+    quoted_text_hash: HashValue | None = None
+    checked_scope: Annotated[str, StringConstraints(min_length=1, max_length=500)] | None = None
+    verification_note: Annotated[str, StringConstraints(min_length=1, max_length=5000)] | None = None
+    bounding_boxes: list[None] = Field(default_factory=list, max_length=0)
+
+    @model_validator(mode="after")
+    def validate_evidence_shape(self) -> "Evidence":
+        text_fields = (
+            self.block_id,
+            self.char_start,
+            self.char_end,
+            self.quoted_text,
+            self.quoted_text_hash,
+        )
+        if self.evidence_type in {EvidenceType.TEXT_QUOTE, EvidenceType.CONTEXT}:
+            if any(value is None for value in text_fields):
+                raise ValueError("Text evidence requires block, range, text, and hash")
+            assert self.char_start is not None and self.char_end is not None
+            assert self.quoted_text is not None and self.quoted_text_hash is not None
+            if self.char_end <= self.char_start:
+                raise ValueError("char_end must be greater than char_start")
+            if self.char_end - self.char_start != len(self.quoted_text):
+                raise ValueError("Text evidence range length must match quoted_text")
+            expected_hash = "sha256:" + hashlib.sha256(self.quoted_text.encode("utf-8")).hexdigest()
+            if self.quoted_text_hash != expected_hash:
+                raise ValueError("quoted_text_hash does not match quoted_text")
+        else:
+            if self.checked_scope is None or self.verification_note is None:
+                raise ValueError("ABSENCE evidence requires checked_scope and verification_note")
+            if any(value is not None for value in text_fields) or self.page_number is not None:
+                raise ValueError("ABSENCE evidence cannot contain text positioning fields")
+        return self
+
+
+class ReviewResultData(StrictModel):
+    schema_version: Literal["1.0"] = "1.0"
+    review_id: Identifier
+    business_task_id: Identifier
+    contract_version_id: Identifier
+    contract_profile: ContractProfile
+    summary: ReviewSummary
+    findings: list[Finding]
+    evidences: list[Evidence]
+    relationships: list[None] = Field(default_factory=list, max_length=0)
+    result_hash: HashValue
+
+    @model_validator(mode="after")
+    def validate_result_links_and_counts(self) -> "ReviewResultData":
+        finding_by_id = {finding.finding_id: finding for finding in self.findings}
+        evidence_by_id = {evidence.evidence_id: evidence for evidence in self.evidences}
+        if len(finding_by_id) != len(self.findings):
+            raise ValueError("finding_id values must be unique")
+        if len(evidence_by_id) != len(self.evidences):
+            raise ValueError("evidence_id values must be unique")
+
+        for finding in self.findings:
+            for evidence_id in finding.evidence_ids:
+                evidence = evidence_by_id.get(evidence_id)
+                if evidence is None or evidence.finding_id != finding.finding_id:
+                    raise ValueError("Every finding evidence reference must resolve to the same finding")
+        for evidence in self.evidences:
+            finding = finding_by_id.get(evidence.finding_id)
+            if finding is None or evidence.evidence_id not in finding.evidence_ids:
+                raise ValueError("Every evidence must be referenced by its finding")
+
+        expected_counts = {
+            RiskLevel.HIGH: self.summary.high_count,
+            RiskLevel.MEDIUM: self.summary.medium_count,
+            RiskLevel.LOW: self.summary.low_count,
+            RiskLevel.INFO: self.summary.info_count,
+        }
+        actual_counts = {level: 0 for level in RiskLevel}
+        for finding in self.findings:
+            actual_counts[finding.risk_level] += 1
+            if finding.perspective != self.contract_profile.perspective:
+                raise ValueError("Finding perspective must match contract_profile")
+            if finding.our_party != self.contract_profile.our_party:
+                raise ValueError("Finding our_party must match contract_profile")
+            if finding.counterparty != self.contract_profile.counterparty:
+                raise ValueError("Finding counterparty must match contract_profile")
+        if actual_counts != expected_counts:
+            raise ValueError("Summary counts must match findings")
+        return self
