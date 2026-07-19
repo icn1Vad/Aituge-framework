@@ -22,10 +22,9 @@ FROM dependencies AS runtime
 
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
-COPY localdata/ ./localdata/
 COPY scripts/ ./scripts/
 
-RUN mkdir -p /app/runtime /app/backend/tool/local_runtime/artifacts
+RUN mkdir -p /app/localdata /app/runtime /app/backend/tool/local_runtime/artifacts
 
 EXPOSE 8894
 
