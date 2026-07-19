@@ -72,6 +72,11 @@ curl --fail --silent --show-error "$FRAMEWORK_URL/registry/capabilities"
 curl --fail --silent --show-error "$FRAMEWORK_URL/single-agent/skill-packages"
 curl --fail --silent --show-error "$PROOF_URL/v1/files"
 curl --fail --silent --show-error "$PROOF_URL/v1/policies?limit=1"
+```
+
+仅当 `PROOF_DATASET_ROOT` 已配置时才执行数据集目录审计；未配置时该接口按契约返回 `503 dataset_unconfigured`，不代表应用健康检查失败。
+
+```bash
 curl --fail --silent --show-error "$PROOF_URL/v1/dataset/audit"
 ```
 
@@ -104,7 +109,7 @@ curl --fail --silent --show-error \
 
 1. Framework、Proof、Smoke 和依赖服务健康。
 2. 能力清单同时包含 Proof 和 Smoke，Proof 的主 Skill 与 SQL 辅助 Skill 可见。
-3. 文件可上传、解析、列出、在线读取和查看分块。
+3. 文件可上传、解析、列出、在线读取和查看分块；配置了 `PROOF_DATASET_ROOT` 时，数据集目录审计也通过。
 4. 审校状态及语义/冲突结果接口正常；启用模型审校时完成一次真实审校。
 5. `LIKE '%金额%'`、`ILIKE '%审批%'`、普通 SQL 均返回 200。
 6. 非只读 SQL、未授权表、超时查询和超出最大行数仍被拒绝或截断。
