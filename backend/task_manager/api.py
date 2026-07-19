@@ -4,11 +4,12 @@ import asyncio
 import json
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from scheduling.scheduler import SchedulingRuntimeOptions
 
 from .access import TaskAccessContext, assert_can_access_task, task_access_context
+from .artifact_service import resolve_artifact_path
 from .conversation_service import TaskConversationService
 from .memory import TaskMemoryMaterial, TaskMemoryService
 from .registry import list_task_definitions
@@ -459,6 +460,34 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
             raise HTTPException(status_code=404, detail=f"Task '{row.task_id}' not found.")
         assert_can_access_task(task_row, context)
         return {"artifact": TaskArtifactRead.model_validate(row)}
+
+    @router.get("/artifacts/{artifact_id}/content")
+    async def artifact_content(
+        artifact_id: str,
+        context: TaskAccessContext = Depends(task_access_context),
+    ):
+        service = TaskManagerService(options)
+        row = await service.get_artifact(artifact_id)
+        if row is None or not row.content_uri:
+            raise HTTPException(status_code=404, detail=f"Artifact '{artifact_id}' content was not found.")
+        task_row = await service.get_task(row.task_id)
+        if task_row is None:
+            raise HTTPException(status_code=404, detail=f"Task '{row.task_id}' not found.")
+        assert_can_access_task(task_row, context)
+        try:
+            path = resolve_artifact_path(options.local_python_artifact_dir, row.content_uri)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail=f"Artifact '{artifact_id}' content was not found.")
+        metadata = row.metadata_json or {}
+        return FileResponse(
+            path,
+            media_type=str(metadata.get("mime") or "application/octet-stream"),
+            filename=str(metadata.get("name") or path.name),
+            content_disposition_type="inline",
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
 
     @router.post("/runs/{run_id}/cancel")
     async def cancel_run(

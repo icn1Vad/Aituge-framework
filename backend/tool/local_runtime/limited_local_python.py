@@ -13,29 +13,21 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import sys
 import tempfile
 import textwrap
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional, Union
+
+from tool.artifacts import ArtifactPublisher, ArtifactRef
 
 
 TRIPLE_QUOTE_PATTERN = re.compile(r"```[^\n]*\n(.+?)```", re.DOTALL)
 XML_CODE_PATTERN = re.compile(r"<code>(.*?)</code>", re.DOTALL)
-ARTIFACT_START = "__TUGE_ARTIFACTS__"
-ARTIFACT_END = "__END_TUGE_ARTIFACTS__"
-ARTIFACT_EXTENSIONS = {
-    ".html": "html",
-    ".htm": "html",
-    ".png": "image",
-    ".jpg": "image",
-    ".jpeg": "image",
-    ".gif": "image",
-    ".svg": "image",
-    ".webp": "image",
-}
+ARTIFACT_EXTENSIONS = {".html", ".htm", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
 
 
 @dataclass(slots=True)
@@ -47,10 +39,23 @@ class LimitedLocalPythonConfig:
     timeout_seconds: int = 20
     max_output_chars: int = 50_000
     work_dir: Optional[Path] = None
-    artifact_base_url: str = ""
+    artifact_publisher: ArtifactPublisher | None = None
     max_artifact_files: int = 20
     env: dict[str, str] = field(default_factory=dict)
     keep_work_dir: bool = False
+    cleanup_run_dir: bool = False
+
+
+@dataclass(slots=True)
+class LocalPythonResult:
+    exit_code: int | None
+    stdout: str = ""
+    stderr: str = ""
+    error: str | None = None
+    artifacts: list[dict[str, str]] = field(default_factory=list)
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self), ensure_ascii=False, separators=(",", ":"))
 
 
 class LimitedLocalPythonTool:
@@ -110,88 +115,79 @@ class LimitedLocalPythonTool:
         run_dir.mkdir(parents=True, exist_ok=True)
         return run_id, run_dir
 
-    def _collect_artifacts(self, run_id: str, run_dir: Path) -> list[dict[str, str]]:
-        if not self.config.artifact_base_url:
-            return []
+    async def _collect_artifacts(self, run_dir: Path) -> tuple[list[dict[str, str]], str | None]:
+        publisher = self.config.artifact_publisher
+        if publisher is None:
+            return [], None
 
         artifacts: list[dict[str, str]] = []
-        base_url = self.config.artifact_base_url.rstrip("/")
-        for path in sorted(run_dir.rglob("*")):
+        for path in sorted(run_dir.iterdir()):
             if len(artifacts) >= self.config.max_artifact_files:
                 break
             if not path.is_file() or path.name == "main.py":
                 continue
-
-            artifact_type = ARTIFACT_EXTENSIONS.get(path.suffix.lower())
-            if not artifact_type:
+            if path.suffix.lower() not in ARTIFACT_EXTENSIONS:
                 continue
-
-            relative_path = path.relative_to(run_dir).as_posix()
             mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-            artifacts.append(
-                {
-                    "type": artifact_type,
-                    "name": path.name,
-                    "path": relative_path,
-                    "mime": mime_type,
-                    "url": f"{base_url}/{run_id}/{relative_path}",
-                }
-            )
-
-        return artifacts
-
-    def _format_artifacts(self, artifacts: list[dict[str, str]]) -> str:
-        if not artifacts:
-            return ""
-        payload = json.dumps({"artifacts": artifacts}, ensure_ascii=False)
-        return f"\n{ARTIFACT_START}{payload}{ARTIFACT_END}"
+            try:
+                ref: ArtifactRef = await publisher.publish(
+                    path,
+                    sequence=len(artifacts) + 1,
+                    mime=mime_type,
+                )
+            except Exception as exc:
+                return artifacts, f"Artifact publishing failed: {exc}"
+            artifacts.append(ref.to_dict())
+        return artifacts, None
 
     async def aexecute(self, code: Union[str, dict]) -> str:
         if not self.config.enabled:
-            return "LimitedLocalPythonInterpreter is disabled."
+            return LocalPythonResult(exit_code=None, error="LimitedLocalPythonInterpreter is disabled.").to_json()
 
         code_text = self._extract_code(code)
         if not code_text:
-            return "No Python code was provided."
+            return LocalPythonResult(exit_code=None, error="No Python code was provided.").to_json()
 
-        run_id, run_dir = self._create_run_dir()
+        _, run_dir = self._create_run_dir()
         script_path = run_dir / "main.py"
         script_path.write_text(code_text, encoding="utf-8")
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                self.config.python_executable,
-                str(script_path),
-                cwd=str(run_dir),
-                env=self._build_env(),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(),
-                timeout=self.config.timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            if "proc" in locals() and proc.returncode is None:
-                proc.kill()
-                await proc.communicate()
-            return f"timeout:\nExecution exceeded {self.config.timeout_seconds} seconds."
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    self.config.python_executable,
+                    str(script_path),
+                    cwd=str(run_dir),
+                    env=self._build_env(),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=self.config.timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                if "proc" in locals() and proc.returncode is None:
+                    proc.kill()
+                    await proc.communicate()
+                return LocalPythonResult(
+                    exit_code=None,
+                    error=f"Execution exceeded {self.config.timeout_seconds} seconds.",
+                ).to_json()
 
-        stdout = stdout_bytes.decode("utf-8", errors="replace").rstrip()
-        stderr = stderr_bytes.decode("utf-8", errors="replace").rstrip()
-        artifacts = self._collect_artifacts(run_id, run_dir)
-
-        parts = [f"exit_code: {proc.returncode}"]
-        if stdout:
-            parts.append("stdout:\n" + stdout)
-        if stderr:
-            parts.append("stderr:\n" + stderr)
-        if not stdout and not stderr:
-            parts.append("Finished execution, but no output was printed.")
-        if artifacts:
-            parts.append(f"artifacts: {len(artifacts)} file(s)")
-
-        return self._truncate("\n".join(parts)) + self._format_artifacts(artifacts)
+            stdout = stdout_bytes.decode("utf-8", errors="replace").rstrip()
+            stderr = stderr_bytes.decode("utf-8", errors="replace").rstrip()
+            artifacts, publish_error = await self._collect_artifacts(run_dir)
+            return LocalPythonResult(
+                exit_code=proc.returncode,
+                stdout=self._truncate(stdout),
+                stderr=self._truncate(stderr),
+                error=publish_error,
+                artifacts=artifacts,
+            ).to_json()
+        finally:
+            if self.config.cleanup_run_dir:
+                shutil.rmtree(run_dir, ignore_errors=True)
 
     async def acleanup(self) -> None:
         if self.config.keep_work_dir:

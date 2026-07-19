@@ -11,6 +11,7 @@ from llama_index.core.tools.function_tool import FunctionTool
 from service.agent import SingleAgentRunner, SingleAgentStreamEvent
 from skill import SkillManager
 from tool import ToolBundle
+from tool.artifacts import ArtifactPublisher
 from tool.registry import ToolManager
 
 from ..agent_registry.models import AgentProfileEntity
@@ -60,8 +61,14 @@ class SchedulingService:
         request: SchedulingChatRequest,
         *,
         runtime_context: SchedulingRuntimeContext | None = None,
+        artifact_publisher: ArtifactPublisher | None = None,
     ):
-        context = await self._build_context(profile, request, runtime_context=runtime_context)
+        context = await self._build_context(
+            profile,
+            request,
+            runtime_context=runtime_context,
+            artifact_publisher=artifact_publisher,
+        )
         model_id = request.model or profile.model_id
         runner = SingleAgentRunner(
             tenant_id=self.tenant_id,
@@ -92,8 +99,14 @@ class SchedulingService:
         request: SchedulingChatRequest,
         *,
         runtime_context: SchedulingRuntimeContext | None = None,
+        artifact_publisher: ArtifactPublisher | None = None,
     ) -> AsyncIterator[SingleAgentStreamEvent]:
-        context = await self._build_context(profile, request, runtime_context=runtime_context)
+        context = await self._build_context(
+            profile,
+            request,
+            runtime_context=runtime_context,
+            artifact_publisher=artifact_publisher,
+        )
         model_id = request.model or profile.model_id
         runner = SingleAgentRunner(
             tenant_id=self.tenant_id,
@@ -129,10 +142,15 @@ class SchedulingService:
         request: SchedulingChatRequest,
         *,
         runtime_context: SchedulingRuntimeContext | None = None,
+        artifact_publisher: ArtifactPublisher | None = None,
     ) -> SchedulingToolContext:
         tool_names = _dedupe(profile.default_tools + request.extra_tools)
         dataset_names = _dedupe(profile.default_datasets + request.extra_datasets)
-        bundle = await self._build_tool_bundle(tool_names, dataset_names)
+        bundle = await self._build_tool_bundle(
+            tool_names,
+            dataset_names,
+            artifact_publisher=artifact_publisher,
+        )
         skill_context = await SkillManager(tenant_id=self.tenant_id).create_context(
             request.skill_package
         )
@@ -154,6 +172,8 @@ class SchedulingService:
         self,
         tool_names: list[str],
         dataset_names: list[str],
+        *,
+        artifact_publisher: ArtifactPublisher | None = None,
     ) -> ToolBundle:
         bundles: list[ToolBundle] = []
         wants_rag = "rag_retrieval" in tool_names or "local_rag" in dataset_names
@@ -161,8 +181,11 @@ class SchedulingService:
 
         bundles.append(
             await ToolManager(
-                local_python_artifact_dir=self.options.local_python_artifact_dir,
-                artifact_base_url=self.options.artifact_base_url,
+                local_python_work_dir=(
+                    self.options.local_python_work_dir
+                    or self.options.local_python_artifact_dir.parent / "code-runs"
+                ),
+                artifact_publisher=artifact_publisher,
                 tenant_id=self.tenant_id,
             ).create_bundle(non_rag_tool_names)
         )

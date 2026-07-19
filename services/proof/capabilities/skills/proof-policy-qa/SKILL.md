@@ -1,74 +1,75 @@
 ---
 name: proof-policy-qa
-description: Answer policy questions with hybrid clause retrieval, structured SQL, and exact Chunk citations.
-version: 2
-tags: [proof, policy, qa, rag, sql]
+description: Answer policy questions by combining semantic clause evidence, structured policy data, and exact Chunk citations while loading detailed SQL knowledge only when needed.
 ---
 
 # Proof Policy Q&A
 
-Answer the user's policy question from Proof's indexed policies. Choose the smallest useful tool path.
+Answer from Proof's indexed policies. Plan around the kind of evidence the question requires, then use the smallest set of tools that can produce that evidence.
 
-## Tool routing
+Do not answer from memory. Every policy fact must come from the evidence layer that can support it.
 
-- Policy meaning, requirements, procedures, duties, prohibitions, or evidence: call `proof_search`.
-- Counts, policy lists, grouping, metadata, exact filters, or aggregate comparisons: write SQL and call `proof_sql`.
-- Mixed question: use `proof_sql` to identify the relevant `policy_id` values, then pass those IDs to `proof_search`.
-- Arithmetic or small post-processing only: use `code_interpreter` after retrieving the source data.
+## Evidence roles
 
-Do not call every tool by default. Never use `proof_sql` as a substitute for semantic evidence when the answer depends on clause meaning.
+Treat the tools as complementary evidence layers:
 
-## Search workflow
+- `proof_search` retrieves clauses by meaning and supplies the original evidence for requirements, procedures, duties, prohibitions, interpretations, and other policy-content claims.
+- `proof_sql` computes over the published semantic views. Use it for counts, complete lists, grouping, metadata, exact filters, literal occurrence checks, and structured comparisons.
+- `code_interpreter` transforms already retrieved data through calculation, tabular processing, or visualization. It is not a policy data source.
 
-1. Call `proof_search` once with `retrieval_mode: hybrid` before making a policy-content claim.
-2. Use the Task's `top_k` when supplied; otherwise use 8. Forward policy, level, and category filters.
-3. If the first result set is genuinely insufficient, make at most one supplemental search with a materially different query or a narrower filter.
-4. Treat every result as one complete clause Chunk. Never rewrite or splice clause text in a way that changes its meaning.
-5. Answer only what the returned text supports. State when evidence is missing, weak, or conflicting.
-6. Prefer the 3–6 clauses that directly answer the question. Do not expand into every remotely related procedure merely because more results are available.
+A literal text match establishes that words occur in a clause; it does not by itself establish what the clause means. A semantic search result can support meaning, but it does not establish a complete database-wide count. Match each conclusion to the evidence layer capable of supporting it.
 
-The search response reports keyword/vector candidate counts, reranker use, and degradation reasons. These are diagnostics, not policy evidence.
+## Plan the answer
 
-## SQL workflow
+Decompose the request into any combination of:
 
-For one user question, combine all requested counts, lists, and aggregates into one PostgreSQL query and make exactly one `proof_sql` tool call. Generate one `SELECT` or `WITH ... SELECT` statement without comments. A second `proof_sql` call is allowed only to correct a failed first query; never split a successful request into parallel SQL calls. Prefer these stable views:
+1. **Semantic claims** — what a policy requires or means. Retrieve clause evidence with `proof_search`.
+2. **Structured claims** — how many, which records, how they group, or whether an exact phrase occurs. Load `proof-policy-sql` with `ReadSkill` before generating SQL, then call `proof_sql`.
+3. **Derived presentation** — arithmetic, reshaping, or charts over retrieved facts. Use `code_interpreter` only after obtaining the source data.
 
-`proof_sql_policy_v`
+For a mixed request, combine the layers according to dependency. SQL may first identify a complete policy scope for focused retrieval; search may first reveal the relevant terminology for a structured comparison. Do not force a fixed tool order when the evidence dependency points another way.
 
-- IDs and names: `policy_id`, `policy_title`, `document_id`, `original_name`
-- Classification: `level_code`, `level_name`, `category_code`, `category_name`
-- Metadata: `policy_version`, `policy_status`, `document_status`, `structure_profile`
-- Counts: `warning_count`, `clause_count`
+## Retrieval principles
 
-`proof_sql_clause_v`
+- Start policy-content investigation with `proof_search` using `retrieval_mode: hybrid`. Use the Task's `top_k` when supplied; otherwise use 8, and forward relevant policy, level, and category filters.
+- Treat each result as one complete clause Chunk. Preserve its meaning and source boundary.
+- Judge sufficiency against the user's actual claim: the result should directly address the question, not merely share vocabulary.
+- Search again only when the current evidence has an identifiable gap and a changed query or filter is likely to address that gap. Do not repeat equivalent searches or broaden indefinitely.
+- Stop when the evidence supports a concise answer, or when further calls have no credible path to new evidence. If no direct rule is found, say so and distinguish nearby provisions from the missing rule.
+- Prefer the few clauses that directly answer the question over a large collection of remotely related text.
 
-- IDs: `retrieval_unit_id`, `document_id`, `policy_id`
-- Policy metadata: `policy_title`, `policy_version`, `policy_status`, level/category fields
-- Clause location: `clause_no_raw`, `clause_ordinal`, `unit_type`, `heading_path`, page and paragraph ranges
-- Content and state: `text`, `text_hash`, `embedding_status`, `citation_label`
+Retrieval diagnostics such as keyword/vector candidate counts, reranker use, and degradation reasons describe search quality; they are not policy evidence.
 
-Use explicit columns instead of `SELECT *`. Add deterministic `ORDER BY` for lists. If SQL execution fails, inspect the returned error and correct the SQL at most once.
+## Structured-query principles
 
-## Citation format
+Before every `proof_sql` call, load `proof-policy-sql` with `ReadSkill` and follow its authoritative schema, value mappings, row-grain rules, and execution contract.
 
-For content answers, put a citation immediately after every material conclusion and copy the returned `citation.label` exactly:
+Plan the structured result before executing it. Prefer one SQL statement that returns all requested rows, totals, and groupings together. Use another SQL call when it represents a genuinely new structured subquestion or when correcting an execution failure—not to rediscover schema already documented by the SQL skill.
+
+SQL clause text can help locate exact occurrences or define a complete candidate set. When the answer makes a claim about the meaning of those clauses, retrieve and cite the corresponding semantic evidence rather than treating substring presence as interpretation.
+
+## Citation integrity
+
+For policy-content claims, copy the returned `citation.label` immediately after the supported conclusion:
 
 ```text
 [制度名称｜条款编号｜Chunk #序号]
 ```
 
-Never abbreviate a repeated policy title, never merge several labels into a shortened source list, and never emit forms such as `[第十一条｜Chunk #11]`. Each citation must independently contain all three parts exactly as returned. Do not reconstruct, translate, or invent a citation. For purely statistical/list answers from `proof_sql_policy_v`, cite the queried view and describe the filter instead of inventing a Chunk citation. When SQL returns `citation_label`, copy it exactly.
+Every citation must independently include the complete policy title, clause number, and Chunk number exactly as returned. Do not abbreviate, merge, translate, reconstruct, or invent citations. Never emit shortened forms such as `[第十一条｜Chunk #11]`.
 
-## Sandbox boundary
+For purely structured answers, name the queried semantic view and describe the material filters instead of inventing a Chunk citation. When SQL returns `citation_label`, copy it exactly.
 
-Use `code_interpreter` only when arithmetic, comparison, sorting, or small tabular calculations materially improve the answer. It is not a policy data source and must not perform network access.
+## Code and chart workflow
 
-## Failure behavior
+Use `code_interpreter` only when calculation, sorting, reshaping, or a requested visualization materially improves the answer. Retrieve every policy fact first. Never invent missing rows to complete a table or chart. Save requested figures according to the tool contract and briefly explain them in the answer.
 
-- No relevant results: state that the current indexed policies do not provide enough evidence.
-- Search service error with no usable recall path: explain that policy retrieval is temporarily unavailable; do not answer from memory.
-- Degraded search with usable results: answer from the returned evidence and briefly disclose the unavailable stage only when it affects confidence.
-- SQL error after one correction: explain that the structured query could not be completed; do not guess the result.
-- Conflicting clauses: show both citations and describe the conflict without choosing silently.
+## Failure and uncertainty
+
+- No direct evidence: state what the indexed policies do and do not establish. Do not silently turn a nearby rule into a direct answer.
+- Tool degradation with usable evidence: answer within the supported scope and disclose the limitation when it affects confidence.
+- Tool failure without a credible alternative: explain which evidence layer is unavailable and avoid unsupported conclusions.
+- Conflicting clauses: present both exact citations and describe the conflict without choosing silently.
+- Truncated structured results: disclose that the list is partial; do not present `row_count` as a full business total unless the query returned that total explicitly.
 
 Return a concise natural-language answer. Do not expose internal reasoning or raw tool payloads.

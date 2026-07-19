@@ -11,6 +11,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from common.system_constants import DEFAULT_TENANT_ID
 from db.db_context import create_db_session
 from tool.bundle import ToolBundle
+from tool.artifacts import ArtifactPublisher
 
 from .config import ToolProviderConfig
 from .models import ToolConfigEntity
@@ -25,13 +26,13 @@ class ToolManager:
     def __init__(
         self,
         *,
-        local_python_artifact_dir: Path,
-        artifact_base_url: str,
+        local_python_work_dir: Path,
+        artifact_publisher: ArtifactPublisher | None = None,
         tenant_id: str = DEFAULT_TENANT_ID,
         tool_list: ToolList | None = None,
     ) -> None:
-        self.local_python_artifact_dir = local_python_artifact_dir
-        self.artifact_base_url = artifact_base_url
+        self.local_python_work_dir = local_python_work_dir
+        self.artifact_publisher = artifact_publisher
         self.tenant_id = tenant_id
         self.tool_list = tool_list or get_default_tool_list()
 
@@ -83,9 +84,10 @@ class ToolManager:
                 config={
                     "timeout_seconds": 20,
                     "max_output_chars": 50_000,
-                    "work_dir": self.local_python_artifact_dir,
-                    "artifact_base_url": self.artifact_base_url,
+                    "work_dir": self.local_python_work_dir,
+                    "artifact_publisher": self.artifact_publisher,
                     "keep_work_dir": True,
+                    "cleanup_run_dir": True,
                 },
             )
         )

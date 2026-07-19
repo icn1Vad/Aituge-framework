@@ -14,12 +14,14 @@ from skill import SkillManager
 
 from task_manager.handlers.batch_item_scheduler import BatchItemSchedulerHandler
 from task_manager.handlers.base import TaskExecutionContext, TaskHandlerEvent
+from task_manager.artifact_service import TaskArtifactPublisher
 from task_manager import item_store
 from task_manager.models import TaskArtifactEntity, TaskEntity, TaskRunEntity, utc_now
 from task_manager.output_parser import parse_json_output
 from task_manager.payload_schemas import validate_stage_payload
 from task_manager.registry import TaskType
 from task_manager.result_sink import deliver_task_result
+from tool.artifacts import extract_artifacts
 
 from .errors import PipelineCancelled, StageExecutionError
 from .models import PipelineDefinition, StageDefinition
@@ -568,10 +570,17 @@ class PipelineExecutor:
         )
         final_content = ""
         service = SchedulingService(self.options, tenant_id=task.tenant_id)
+        artifact_publisher = TaskArtifactPublisher(
+            root=self.options.local_python_artifact_dir,
+            task_id=task.id,
+            run_id=run.id,
+            stage_run_id=stage_run_id,
+        )
         async for event in service.stream_chat(
             profile,
             request,
             runtime_context=context.runtime_context,
+            artifact_publisher=artifact_publisher,
         ):
             payload = event.model_dump(exclude_none=True)
             if event.event == "metadata":
@@ -642,7 +651,11 @@ class PipelineExecutor:
                     stage_run_id=stage_run_id,
                     agent_id=profile.agent_id,
                     tool_call_id=call_id,
-                    payload={"error": str(error or ""), "has_result": observation.get("result") is not None},
+                    payload={
+                        "error": str(error or ""),
+                        "has_result": observation.get("result") is not None,
+                        "artifacts": extract_artifacts(observation.get("result")),
+                    },
                     source={"type": "tool", "id": call_id or "tool"},
                 )
             delta = _extract_delta(data)

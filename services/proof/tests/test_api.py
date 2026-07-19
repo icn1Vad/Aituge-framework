@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from proof.api.app import _conflict_agent_view, create_app
@@ -128,6 +130,45 @@ class FakeService:
             raise ProofError("dataset_file_not_found", "Dataset file not found.", status_code=404)
         return {"id": file_id, "clauses": [{"clause_no_raw": "第一条"}]}
 
+    def list_files(self):
+        return {
+            "items": [
+                {
+                    "id": "document-1",
+                    "name": "policy.pdf",
+                    "file_type": "pdf",
+                    "chunk_count": 12,
+                }
+            ],
+            "total": 1,
+        }
+
+    def get_file_content(self, file_id: str):
+        if file_id != "document-1":
+            raise ProofError("file_not_found", "File not found.", status_code=404)
+        return {"path": Path(__file__), "name": "policy.pdf", "media_type": "application/pdf"}
+
+    def list_file_chunks(self, file_id: str, *, limit: int = 10, offset: int = 0):
+        if file_id != "document-1":
+            raise ProofError("file_not_found", "File not found.", status_code=404)
+        remaining = max(0, 12 - offset)
+        count = min(limit, remaining)
+        return {
+            "file_id": file_id,
+            "items": [
+                {
+                    "id": f"unit-{offset + index + 1}",
+                    "clause_ordinal": offset + index + 1,
+                    "content": f"Chunk {offset + index + 1}",
+                }
+                for index in range(count)
+            ],
+            "limit": limit,
+            "offset": offset,
+            "total": 12,
+            "has_more": offset + count < 12,
+        }
+
     def index_document(self, document_id: str):
         raise ProofError("embedding_unconfigured", "Embedding API is not configured.", status_code=503)
 
@@ -247,6 +288,38 @@ def test_dataset_page_and_audit_endpoints() -> None:
     missing = client.get("/v1/dataset/files/missing")
     assert missing.status_code == 404
     assert missing.json()["error"] == "dataset_file_not_found"
+
+
+def test_file_list_pdf_content_and_limited_chunks() -> None:
+    client = TestClient(create_app(Settings(), FakeService()))
+
+    listed = client.get("/v1/files")
+    assert listed.status_code == 200
+    assert listed.json()["data"] == {
+        "items": [
+            {
+                "id": "document-1",
+                "name": "policy.pdf",
+                "file_type": "pdf",
+                "chunk_count": 12,
+            }
+        ],
+        "total": 1,
+    }
+
+    content = client.get("/v1/files/document-1/content")
+    assert content.status_code == 200
+    assert content.headers["content-type"] == "application/pdf"
+    assert content.headers["content-disposition"].startswith("inline;")
+
+    chunks = client.get("/v1/files/document-1/chunks?offset=10")
+    assert chunks.status_code == 200
+    assert [item["id"] for item in chunks.json()["data"]["items"]] == ["unit-11", "unit-12"]
+    assert chunks.json()["data"]["has_more"] is False
+
+    assert client.get("/v1/files/document-1/chunks?limit=11").status_code == 422
+    assert client.get("/v1/files/missing/content").status_code == 404
+    assert client.get("/v1/files/missing/chunks").status_code == 404
 
 
 def test_workbench_and_experiment_policy_are_available() -> None:

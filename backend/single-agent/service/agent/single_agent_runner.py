@@ -14,6 +14,7 @@ from llama_index.core.tools.function_tool import FunctionTool
 from loguru import logger
 from pydantic import BaseModel
 from service.conversation import ConversationManager, LlmRuntime, create_llm
+from tool.artifacts import extract_artifacts
 
 
 class SingleAgentChatResult(BaseModel):
@@ -272,6 +273,8 @@ class SingleAgentRunner:
         response_gen = await agent.run_async(agent_state)
 
         assistant_content = ""
+        assistant_attachments: list[dict[str, str]] = []
+        artifact_ids: set[str] = set()
         token_usage = None
         async for chunk_json in convert_gen_to_stream_chat_completions(
             model=model_id,
@@ -286,6 +289,13 @@ class SingleAgentRunner:
             if choices:
                 delta = choices[0].get("delta") or {}
                 assistant_content += delta.get("content") or ""
+            observation = chunk_data.get("observation")
+            if isinstance(observation, dict):
+                for artifact in extract_artifacts(observation.get("result")):
+                    if artifact["id"] in artifact_ids:
+                        continue
+                    artifact_ids.add(artifact["id"])
+                    assistant_attachments.append(artifact)
 
             yield SingleAgentStreamEvent(
                 event="chunk",
@@ -301,6 +311,7 @@ class SingleAgentRunner:
                 thread_id=thread_id,
                 content=assistant_content,
                 token_usage=token_usage,
+                attachments=assistant_attachments,
             )
 
         yield SingleAgentStreamEvent(
@@ -312,5 +323,6 @@ class SingleAgentRunner:
             data={
                 "content": assistant_content,
                 "usage": token_usage,
+                "artifacts": assistant_attachments,
             },
         )

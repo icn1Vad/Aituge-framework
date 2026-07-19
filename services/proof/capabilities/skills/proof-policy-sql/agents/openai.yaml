@@ -1,0 +1,4 @@
+interface:
+  display_name: "Proof Policy SQL"
+  short_description: "Generate safe SQL over Proof semantic views"
+  default_prompt: "Use $proof-policy-sql before querying Proof policy metadata or clause statistics."

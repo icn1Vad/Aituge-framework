@@ -132,6 +132,66 @@ class ProofService:
         item["ingestion"] = _dataset_ingestion(item, documents.get(item["content_hash"]))
         return item
 
+    def list_files(self) -> dict[str, Any]:
+        items = self.repository.list_files()
+        return {"items": items, "total": len(items)}
+
+    def get_file_content(self, file_id: str) -> dict[str, Any]:
+        item = self._get_file(file_id)
+        if str(item.get("file_type") or "").lower().lstrip(".") != "pdf":
+            raise ProofError(
+                "file_content_unsupported",
+                "Only PDF files can be read through this endpoint.",
+                status_code=415,
+                details={"file_id": file_id, "file_type": item.get("file_type")},
+            )
+
+        path = (self.storage_root / Path(str(item["storage_path"]))).resolve()
+        if not path.is_relative_to(self.storage_root):
+            raise ProofError(
+                "invalid_file_storage_path",
+                "The stored file path is outside the Proof storage root.",
+                status_code=500,
+                details={"file_id": file_id},
+            )
+        if not path.is_file():
+            raise ProofError(
+                "file_content_not_found",
+                "The PDF file content could not be found.",
+                status_code=404,
+                details={"file_id": file_id},
+            )
+        return {"path": path, "name": item["name"], "media_type": "application/pdf"}
+
+    def list_file_chunks(self, file_id: str, *, limit: int = 10, offset: int = 0) -> dict[str, Any]:
+        if limit < 1 or limit > 10:
+            raise ProofError(
+                "invalid_chunk_limit",
+                "Chunk limit must be between 1 and 10.",
+                status_code=422,
+                details={"max_limit": 10},
+            )
+        if offset < 0:
+            raise ProofError("invalid_chunk_offset", "Chunk offset must not be negative.", status_code=422)
+
+        item = self._get_file(file_id)
+        chunks = self.repository.list_file_chunks(file_id, limit=limit, offset=offset)
+        total = int(item.get("chunk_count") or 0)
+        return {
+            "file_id": file_id,
+            "items": chunks,
+            "limit": limit,
+            "offset": offset,
+            "total": total,
+            "has_more": offset + len(chunks) < total,
+        }
+
+    def _get_file(self, file_id: str) -> dict[str, Any]:
+        item = self.repository.get_file(file_id)
+        if item is None:
+            raise ProofError("file_not_found", "File not found.", status_code=404)
+        return item
+
     def _dataset_auditor(self) -> DatasetAuditor:
         if self.dataset_auditor is None:
             raise ProofError(

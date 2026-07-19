@@ -44,12 +44,35 @@ Runtime secrets are stored only in `deploy/appliance/.env` and
 that path unchanged between releases so PostgreSQL, Redis, uploaded documents,
 and Framework conversation history survive an application upgrade.
 
+`AITUGE_TMP_ROOT` points to the host directory used for generated-code workspaces
+and chat image artifacts. Keep it outside the Git checkout; the Framework creates
+`code-runs` and date-partitioned `chat-artifacts` directories below it.
+
+## Multiple service capabilities
+
+Framework accepts an explicit JSON list of trusted service entry files through
+`AITUGE_CAPABILITY_ENTRIES`. The appliance mounts Proof and the deterministic
+Smoke service independently:
+
+```yaml
+environment:
+  AITUGE_CAPABILITY_ENTRIES: '["/opt/proof-capabilities/register.py","/opt/smoke-capabilities/register.py"]'
+volumes:
+  - ../../services/proof/capabilities:/opt/proof-capabilities:ro
+  - ../../services/smoke/capabilities:/opt/smoke-capabilities:ro
+```
+
+To add another service, create `services/<name>/capabilities/register.py`, mount
+that capability directory read-only, and append its in-container path to the JSON
+array. The legacy `AITUGE_CAPABILITY_ENTRY` remains supported when the plural
+variable is not configured.
+
 ```bash
 git fetch origin proof
 git switch proof
 ```
 
-The host endpoints are Framework `:8894` and Proof `:18100`. Containers on the
+The host endpoints are Framework `:8894`, Proof `:18100`, and Smoke `:18200`. Containers on the
 existing `proofspace-network` can use `http://ai-framework:8894` and
 `http://ai-proof:18100`. PostgreSQL and Redis remain host-local on ports 15432
 and 16379.

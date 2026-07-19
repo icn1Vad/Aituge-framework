@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, AsyncIterator
 
 from db.db_context import create_db_session
@@ -13,8 +14,11 @@ from scheduling.scheduler import (
 )
 
 from task_manager.handlers.base import TaskExecutionContext, TaskHandlerEvent
-from task_manager.models import TaskEntity
+from task_manager.artifact_service import TaskArtifactPublisher
+from task_manager.models import TaskEntity, utc_now
+from task_manager.pipeline.store import create_stage_run, update_stage_run
 from task_manager.registry import TaskType
+from tool.artifacts import extract_artifacts
 
 
 TOOL_ARGUMENT_MAX_CHARS = 4_000
@@ -62,6 +66,26 @@ class SchedulerTaskHandler:
             extra_datasets=definition.default_datasets,
         )
 
+        run_id = task.current_run_id
+        if not run_id:
+            raise ValueError("Scheduler Task has no active Run.")
+        stage_run = await create_stage_run(
+            task_id=task.id,
+            run_id=run_id,
+            stage_id="agent",
+            stage_type="agent",
+            attempt=max(task.attempt_count, 1),
+            agent_id=profile.agent_id,
+            input_artifact_ids=[],
+        )
+        artifact_publisher = TaskArtifactPublisher(
+            root=self.options.local_python_artifact_dir,
+            task_id=task.id,
+            run_id=run_id,
+            stage_run_id=stage_run.id,
+        )
+        started = time.perf_counter()
+
         yield TaskHandlerEvent(
             event_type="scheduler_request_built",
             stage="scheduler_request_build",
@@ -77,52 +101,85 @@ class SchedulerTaskHandler:
                 "extra_datasets": request.extra_datasets,
                 "task_memory_version": context.memory_view.version,
             },
+            stage_run_id=stage_run.id,
+            agent_id=profile.agent_id,
         )
 
         service = SchedulingService(self.options)
-        async for event in service.stream_chat(
-            profile,
-            request,
-            runtime_context=runtime_context,
-        ):
-            if event.event == "metadata":
-                yield TaskHandlerEvent(
-                    event_type="agent_metadata",
-                    stage="agent_stream",
-                    message="Agent stream metadata received.",
-                    step_id="agent_metadata",
-                    step_index=20,
-                    payload={"source_event": "metadata", "agent_id": profile.agent_id},
-                    thread_id=event.thread_id,
-                    session_id=event.session_id,
-                )
-                continue
+        try:
+            async for event in service.stream_chat(
+                profile,
+                request,
+                runtime_context=runtime_context,
+                artifact_publisher=artifact_publisher,
+            ):
+                if event.event == "metadata":
+                    await update_stage_run(
+                        stage_run.id,
+                        thread_id=event.thread_id,
+                        session_id=event.session_id,
+                    )
+                    yield TaskHandlerEvent(
+                        event_type="agent_metadata",
+                        stage="agent_stream",
+                        message="Agent stream metadata received.",
+                        step_id="agent_metadata",
+                        step_index=20,
+                        payload={"source_event": "metadata", "agent_id": profile.agent_id},
+                        thread_id=event.thread_id,
+                        session_id=event.session_id,
+                        stage_run_id=stage_run.id,
+                        agent_id=profile.agent_id,
+                    )
+                    continue
 
-            if event.event == "final":
-                data = event.data or {}
-                content = str(data.get("content") or "")
-                usage = data.get("usage")
-                yield TaskHandlerEvent(
-                    event_type="agent_final",
-                    stage="agent_stream",
-                    message="Agent stream finished.",
-                    step_id="agent_final",
-                    step_index=40,
-                    payload={
-                        "source_event": "final",
-                        "content_chars": len(content),
-                        "usage": usage or {},
-                    },
-                    thread_id=event.thread_id,
-                    session_id=event.session_id,
-                    final_content=content,
-                    usage=usage,
-                    token_usage=usage,
-                )
-                continue
+                if event.event == "final":
+                    data = event.data or {}
+                    content = str(data.get("content") or "")
+                    usage = data.get("usage")
+                    artifacts = data.get("artifacts") if isinstance(data.get("artifacts"), list) else []
+                    yield TaskHandlerEvent(
+                        event_type="agent_final",
+                        stage="agent_stream",
+                        message="Agent stream finished.",
+                        step_id="agent_final",
+                        step_index=40,
+                        payload={
+                            "source_event": "final",
+                            "content_chars": len(content),
+                            "usage": usage or {},
+                            "artifacts": artifacts[:20],
+                        },
+                        thread_id=event.thread_id,
+                        session_id=event.session_id,
+                        final_content=content,
+                        usage=usage,
+                        token_usage=usage,
+                        stage_run_id=stage_run.id,
+                        agent_id=profile.agent_id,
+                    )
+                    continue
 
-            for translated in _translate_chunk_event(event):
-                yield translated
+                for translated in _translate_chunk_event(event):
+                    translated.stage_run_id = stage_run.id
+                    translated.agent_id = profile.agent_id
+                    yield translated
+        except Exception as exc:
+            await update_stage_run(
+                stage_run.id,
+                status="failed",
+                error_code=exc.__class__.__name__,
+                error_message=str(exc),
+                finished_at=utc_now(),
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+            raise
+        await update_stage_run(
+            stage_run.id,
+            status="completed",
+            finished_at=utc_now(),
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
 
 
 def _build_task_message(task: TaskEntity, definition: TaskType) -> str:
@@ -380,6 +437,7 @@ def _translate_chunk_event(event) -> list[TaskHandlerEvent]:
                     "tool_call_id": tool_call_id,
                     "status": "failed" if error else "completed",
                     "result_chars": len(result) if isinstance(result, str) else 0,
+                    "artifacts": extract_artifacts(result),
                     "error": error[:500],
                 },
                 thread_id=event.thread_id,

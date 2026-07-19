@@ -100,6 +100,28 @@ services:
         aliases:
           - ai-proof
 
+  smoke:
+    image: ai-framework-smoke:local
+    build:
+      context: ../..
+      dockerfile: deploy/appliance/smoke.Dockerfile
+      network: host
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${SMOKE_PORT:-18200}:18200"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18200/health', timeout=3)"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks:
+      - ai_internal
+
   framework:
     image: ai-framework-core:local
     build:
@@ -110,8 +132,10 @@ services:
     environment:
       DB_TYPE: sqlite
       SQLITE_URL: sqlite+aiosqlite:////app/runtime/local.db
-      AITUGE_CAPABILITY_ENTRY: /opt/proof-capabilities/register.py
+      AITUGE_CAPABILITY_ENTRIES: '["/opt/proof-capabilities/register.py","/opt/smoke-capabilities/register.py"]'
       PROOF_SERVICE_BASE_URL: http://proof:18100
+      SMOKE_SERVICE_BASE_URL: http://smoke:18200
+      SMOKE_MODEL_ID: ${SMOKE_MODEL_ID:-deepseek-v4-pro}
       PROOF_QA_MODEL_ID: ${PROOF_QA_MODEL_ID:-deepseek-v4-pro}
       PROOF_AUDIT_MODEL_ID: ${PROOF_AUDIT_MODEL_ID:-deepseek-v4-pro}
       PROOF_CONFLICT_MODEL_ID: ${PROOF_CONFLICT_MODEL_ID:-deepseek-v4-pro}
@@ -120,13 +144,18 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       REDIS_DB: "0"
       PYTHONUNBUFFERED: "1"
+      AITUGE_TMP_ROOT: /app/aituge-tmp
     ports:
       - "${FRAMEWORK_BIND_ADDRESS:-0.0.0.0}:${FRAMEWORK_PORT:-8894}:8894"
     volumes:
       - ${AI_FRAMEWORK_RUNTIME_ROOT:-../../runtime}/framework:/app/runtime
+      - ${AITUGE_TMP_ROOT:-../../../tmp}:/app/aituge-tmp
       - ../../services/proof/capabilities:/opt/proof-capabilities:ro
+      - ../../services/smoke/capabilities:/opt/smoke-capabilities:ro
     depends_on:
       proof:
+        condition: service_healthy
+      smoke:
         condition: service_healthy
       redis:
         condition: service_healthy

@@ -133,6 +133,7 @@ class TaskConversationService:
                     "id": message.id,
                     "role": message.role,
                     "text": message.text,
+                    "attachments": message.attachments,
                     "created_at": _isoformat(message.created_at),
                 }
                 for message in visible_messages

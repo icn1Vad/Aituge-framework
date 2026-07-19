@@ -70,6 +70,14 @@ def test_task_conversation_views_group_filter_and_paginate(tmp_path, monkeypatch
                         tenant_id=DEFAULT_TENANT_ID,
                         role="assistant",
                         content=[{"type": "text", "text": "需要履行审批程序。[制度｜第一条｜Chunk #1]"}],
+                        attachments=[
+                            {
+                                "id": "artifact-1",
+                                "name": "image-001.png",
+                                "mime": "image/png",
+                                "url": "/task-manager/artifacts/artifact-1/content",
+                            }
+                        ],
                         created_at=datetime(2026, 7, 18, 9, 2),
                     ),
                     MessageEntity(
@@ -189,6 +197,7 @@ def test_task_conversation_views_group_filter_and_paginate(tmp_path, monkeypatch
                 "assistant",
             ]
             assert detail.json()["messages"][1]["text"].endswith("Chunk #1]")
+            assert detail.json()["messages"][1]["attachments"][0]["id"] == "artifact-1"
             assert detail.json()["latest_task"]["task_id"] == "task-a-latest"
 
             hidden = await client.get(

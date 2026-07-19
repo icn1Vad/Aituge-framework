@@ -7,7 +7,11 @@ import sys
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 
-from backend.simple_chat_app import create_app as create_simple_chat_app
+from backend.simple_chat_app import (
+    LOCAL_PYTHON_ARTIFACT_DIR,
+    LOCAL_PYTHON_WORK_DIR,
+    create_app as create_simple_chat_app,
+)
 from backend.data.RAG.tool_retrieval import LocalRagStore, ToolRetrievalRAG
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -15,7 +19,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from db.db_context import create_db_session, init_db
-from capability_mount import mount_capability_from_env
+from capability_mount import mount_capabilities_from_env
 from scheduling.agent_registry import ensure_default_agent_profiles
 from scheduling.api import create_scheduling_router
 from scheduling.scheduler import SchedulingRuntimeOptions
@@ -25,9 +29,6 @@ from tool import ToolBundle
 from tool.registry import ToolManager
 
 
-LOCAL_PYTHON_ARTIFACT_DIR = (
-    Path(__file__).resolve().parent / "tool" / "local_runtime" / "artifacts"
-)
 TASK_MEMORY_TEST_DIR = Path(__file__).resolve().parents[1] / "frontend" / "task-memory-test"
 DEFAULT_RAG_PDF_PATH = (
     BACKEND_DIR
@@ -123,8 +124,7 @@ def _create_local_rag_bundle() -> ToolBundle:
 def create_app() -> FastAPI:
     async def tool_provider(_request):
         tool_bundle = await ToolManager(
-            local_python_artifact_dir=LOCAL_PYTHON_ARTIFACT_DIR,
-            artifact_base_url="/tool-artifacts/local-python",
+            local_python_work_dir=LOCAL_PYTHON_WORK_DIR,
         ).create_bundle(["code_interpreter", "enabled_db_tools"])
         rag_bundle = _create_local_rag_bundle()
 
@@ -136,13 +136,13 @@ def create_app() -> FastAPI:
         async with create_db_session() as session:
             await ensure_default_skill_packages(session)
             await ensure_default_agent_profiles(session)
-            await mount_capability_from_env(session=session)
+            await mount_capabilities_from_env(session=session)
         yield
 
     app = create_simple_chat_app(tool_provider=tool_provider, lifespan=lifespan)
     scheduling_options = SchedulingRuntimeOptions(
         local_python_artifact_dir=LOCAL_PYTHON_ARTIFACT_DIR,
-        artifact_base_url="/tool-artifacts/local-python",
+        local_python_work_dir=LOCAL_PYTHON_WORK_DIR,
         rag_store=RAG_STORE,
     )
     app.include_router(create_scheduling_router(scheduling_options))

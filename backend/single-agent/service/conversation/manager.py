@@ -20,6 +20,7 @@ from service.conversation.llm_runner import LlmRuntime
 from service.conversation.window import ConversationWindow
 from service.thread.message_service import MessageService
 from service.thread.thread_service import ThreadService
+from tool.artifacts import extract_step_artifacts
 
 
 @dataclass(slots=True)
@@ -45,6 +46,7 @@ class ConversationMessageSummary:
     id: str
     role: str
     content: list[dict] | None
+    attachments: list[dict]
     text: str
     created_at: datetime
 
@@ -373,6 +375,7 @@ class ConversationManager:
                     id=message.id,
                     role=message.role,
                     content=message.content,
+                    attachments=message.attachments or [],
                     text=stored_content_text(message.content),
                     created_at=message.created_at,
                 )
@@ -403,11 +406,13 @@ class ConversationManager:
         message = choices[0].get("message") or {}
         content = message.get("content") or ""
         usage: Any = response.get("usage")
+        attachments = extract_step_artifacts(response.get("steps"))
 
         return await self.persist_assistant_text(
             thread_id=thread_id,
             content=content,
             token_usage=usage if isinstance(usage, dict) else None,
+            attachments=attachments,
         )
 
     async def persist_assistant_text(
@@ -415,6 +420,7 @@ class ConversationManager:
         thread_id: str,
         content: str,
         token_usage: Optional[dict] = None,
+        attachments: Optional[list[dict]] = None,
     ) -> Optional[str]:
         async with create_db_session() as session:
             stored = await MessageService(session).create_message(
@@ -422,6 +428,7 @@ class ConversationManager:
                     thread_id=thread_id,
                     role="assistant",
                     content=[{"type": "text", "text": content}],
+                    attachments=attachments or [],
                     token_usage=token_usage,
                 ),
                 self.tenant_id,

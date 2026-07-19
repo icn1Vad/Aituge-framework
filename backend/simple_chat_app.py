@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import sys
 from typing import Any
 
@@ -11,7 +12,11 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 BACKEND_DIR = ROOT_DIR / "backend"
 SINGLE_AGENT_DIR = ROOT_DIR / "backend" / "single-agent"
 FRONTEND_DIR = ROOT_DIR / "frontend" / "simple-chat"
-LOCAL_PYTHON_ARTIFACT_DIR = ROOT_DIR / "backend" / "tool" / "local_runtime" / "artifacts"
+AITUGE_TMP_ROOT = Path(
+    os.environ.get("AITUGE_TMP_ROOT", ROOT_DIR.parent / "tmp")
+).expanduser().resolve()
+LOCAL_PYTHON_WORK_DIR = AITUGE_TMP_ROOT / "code-runs"
+LOCAL_PYTHON_ARTIFACT_DIR = AITUGE_TMP_ROOT / "chat-artifacts"
 
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
@@ -26,16 +31,12 @@ def create_app(
     tool_provider: ToolProvider | None = None,
     lifespan: Any = None,
 ) -> FastAPI:
+    LOCAL_PYTHON_WORK_DIR.mkdir(parents=True, exist_ok=True)
+    LOCAL_PYTHON_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     app = FastAPI(title="TUGE Simple Chat", lifespan=lifespan)
     app.include_router(create_router(tool_provider))
     app.include_router(create_capability_router())
     app.mount("/ui", StaticFiles(directory=FRONTEND_DIR, html=True), name="ui")
-    app.mount(
-        "/tool-artifacts/local-python",
-        StaticFiles(directory=LOCAL_PYTHON_ARTIFACT_DIR),
-        name="local-python-artifacts",
-    )
-
     @app.get("/")
     async def index():
         return FileResponse(FRONTEND_DIR / "index.html")

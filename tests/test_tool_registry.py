@@ -153,8 +153,7 @@ def _fake_tool_list() -> ToolList:
 def test_tool_manager_builds_local_python_bundle(tmp_path: Path):
     async def run():
         manager = ToolManager(
-            local_python_artifact_dir=tmp_path,
-            artifact_base_url="/artifacts",
+            local_python_work_dir=tmp_path,
         )
         bundle = await manager.create_bundle(["code_interpreter"])
 
@@ -184,8 +183,7 @@ def test_tool_manager_loads_all_enabled_db_tools(tmp_path: Path, monkeypatch):
             )
             await session.flush()
             manager = ToolManager(
-                local_python_artifact_dir=tmp_path,
-                artifact_base_url="/artifacts",
+                local_python_work_dir=tmp_path,
                 tool_list=_fake_tool_list(),
             )
             bundle = await manager.create_bundle(["enabled_db_tools"], session=session)
@@ -215,8 +213,7 @@ def test_tool_manager_loads_named_db_tool(tmp_path: Path, monkeypatch):
             )
             await session.flush()
             manager = ToolManager(
-                local_python_artifact_dir=tmp_path,
-                artifact_base_url="/artifacts",
+                local_python_work_dir=tmp_path,
                 tool_list=_fake_tool_list(),
             )
             bundle = await manager.create_bundle(["fake_db_tool"], session=session)
@@ -236,8 +233,7 @@ def test_tool_manager_skips_unknown_unconfigured_tool(tmp_path: Path, monkeypatc
         await init_db()
         async with create_db_session() as session:
             manager = ToolManager(
-                local_python_artifact_dir=tmp_path,
-                artifact_base_url="/artifacts",
+                local_python_work_dir=tmp_path,
                 tool_list=_fake_tool_list(),
             )
             bundle = await manager.create_bundle(["not_configured_yet"], session=session)

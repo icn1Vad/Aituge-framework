@@ -111,6 +111,36 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
         data = await asyncio.to_thread(_service(request).list_clauses, policy_id, include_text=include_text)
         return {"success": True, "data": data}
 
+    @app.get("/v1/files")
+    async def list_files(request: Request):
+        data = await asyncio.to_thread(_service(request).list_files)
+        return {"success": True, "data": data}
+
+    @app.get("/v1/files/{file_id}/content")
+    async def get_file_content(file_id: str, request: Request):
+        data = await asyncio.to_thread(_service(request).get_file_content, file_id)
+        return FileResponse(
+            data["path"],
+            media_type=data["media_type"],
+            filename=data["name"],
+            content_disposition_type="inline",
+        )
+
+    @app.get("/v1/files/{file_id}/chunks")
+    async def list_file_chunks(
+        file_id: str,
+        request: Request,
+        limit: int = Query(default=10, ge=1, le=10),
+        offset: int = Query(default=0, ge=0),
+    ):
+        data = await asyncio.to_thread(
+            _service(request).list_file_chunks,
+            file_id,
+            limit=limit,
+            offset=offset,
+        )
+        return {"success": True, "data": data}
+
     @app.get("/v1/policies/{policy_id}/audit-status")
     async def get_audit_status(policy_id: str, request: Request):
         data = await asyncio.to_thread(_service(request).get_audit_status, policy_id)

@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from llama_index.core.tools import FunctionTool
+from loguru import logger
 from pydantic import BaseModel
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -45,6 +46,7 @@ from tool.registry import (
 
 
 CAPABILITY_ENTRY_ENV = "AITUGE_CAPABILITY_ENTRY"
+CAPABILITY_ENTRIES_ENV = "AITUGE_CAPABILITY_ENTRIES"
 _CAPABILITY_MARKER = "_capability_id"
 _TOOL_SOURCES: dict[tuple[str, str], str] = {}
 
@@ -649,6 +651,60 @@ async def mount_capability_from_env(
     return await mount_capability_entry(entry, session=session)
 
 
+async def mount_capabilities_from_env(
+    *,
+    session: AsyncSession | None = None,
+) -> list[dict[str, Any]]:
+    """Mount the explicitly configured capability entries in declaration order."""
+
+    entries = _capability_entries_from_env()
+    summaries: list[dict[str, Any]] = []
+    for entry in entries:
+        summary = await mount_capability_entry(entry, session=session)
+        summaries.append(summary)
+        logger.info(
+            "Mounted capability '{}' from '{}' with tools={} tasks={}.",
+            summary["source_id"],
+            entry,
+            summary["tools"],
+            summary["tasks"],
+        )
+    return summaries
+
+
+def _capability_entries_from_env() -> list[Path]:
+    raw_entries = os.getenv(CAPABILITY_ENTRIES_ENV, "").strip()
+    if raw_entries:
+        try:
+            loaded = json.loads(raw_entries)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"{CAPABILITY_ENTRIES_ENV} must be a JSON array of capability entry paths."
+            ) from exc
+        if not isinstance(loaded, list):
+            raise ValueError(
+                f"{CAPABILITY_ENTRIES_ENV} must be a JSON array of capability entry paths."
+            )
+        raw_paths = loaded
+    else:
+        legacy_entry = os.getenv(CAPABILITY_ENTRY_ENV, "").strip()
+        raw_paths = [legacy_entry] if legacy_entry else []
+
+    entries: list[Path] = []
+    seen: set[Path] = set()
+    for index, value in enumerate(raw_paths):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"{CAPABILITY_ENTRIES_ENV}[{index}] must be a non-empty string path."
+            )
+        entry = Path(value).expanduser().resolve()
+        if entry in seen:
+            continue
+        seen.add(entry)
+        entries.append(entry)
+    return entries
+
+
 def _load_entry_module(entry: Path) -> ModuleType:
     digest = hashlib.sha256(str(entry).encode("utf-8")).hexdigest()[:16]
     module_name = f"_aituge_capability_{digest}"
@@ -767,8 +823,10 @@ def _schema_prefix(source_id: str, task_type: str) -> str:
 
 __all__ = [
     "CAPABILITY_ENTRY_ENV",
+    "CAPABILITY_ENTRIES_ENV",
     "CapabilityRegistry",
     "CapabilitySettings",
+    "mount_capabilities_from_env",
     "mount_capability_entry",
     "mount_capability_from_env",
 ]

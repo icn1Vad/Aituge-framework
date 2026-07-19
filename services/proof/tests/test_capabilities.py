@@ -87,11 +87,13 @@ def test_proof_capability_declares_minimal_qa_runtime():
     assert agent["agent_type"] == "single"
     assert agent["default_tools"] == ["proof_search", "proof_sql", "code_interpreter"]
     assert package["primary_skill"] == "proof-policy-qa"
+    assert package["auxiliary_skills"] == ["proof-policy-sql"]
     assert tool["tool_name"] == "proof_search"
     assert tool["base_url"] == "http://proof:18100"
     assert tool["path"] == "/v1/retrieval/search"
     assert tools["proof_sql"]["path"] == "/v1/query/sql"
     assert (skill_root / "proof-policy-qa" / "SKILL.md").is_file()
+    assert (skill_root / "proof-policy-sql" / "SKILL.md").is_file()
     audit_task = registry.calls["task"][1]
     agents = {item["agent_id"]: item for item in registry.calls["agent"]}
     packages = {item["package_name"]: item for item in registry.calls["skill_package"]}
@@ -178,8 +180,34 @@ def test_primary_skill_requires_search_and_chunk_citations():
     assert "do not answer from memory" in content.lower()
     assert "code_interpreter" in content
     assert "proof_sql" in content
-    assert "proof_sql_policy_v" in content
+    assert "ReadSkill" in content
+    assert "proof-policy-sql" in content
     assert "citation.label" in content
+
+
+def test_sql_auxiliary_skill_has_complete_schema_and_business_mappings():
+    content = (
+        Path(proof_capability.__file__).resolve().parent
+        / "skills"
+        / "proof-policy-sql"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "proof_sql_policy_v" in content
+    assert "proof_sql_clause_v" in content
+    assert "policy_status = 'effective'" in content
+    assert "`upper`" in content
+    assert "`peer`" in content
+    assert "`lower`" in content
+    assert "`file_type`" in content
+    assert "`created_at`" in content
+    assert "`updated_at`" in content
+    assert "`original_name`" in content
+    assert "`document_status`" in content
+    assert "`structure_profile`" in content
+    assert "LIKE '%金额%'" in content
+    assert "ILIKE '%审批%'" in content
+    assert "SUM(matching_clause_count) OVER ()" in content
 
 
 def test_audit_skill_defines_production_clarity_and_executability_rules():

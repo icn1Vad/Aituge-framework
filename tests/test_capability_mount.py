@@ -194,8 +194,7 @@ def test_mounted_capability_registers_and_runs_through_task_scheduler(tmp_path, 
         original_request = httpx.AsyncClient.request
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
         manager = ToolManager(
-            local_python_artifact_dir=tmp_path / "artifacts",
-            artifact_base_url="/artifacts",
+            local_python_work_dir=tmp_path / "code-runs",
         )
         bundle = await manager.create_bundle(["mounted_search"])
         assert [tool.metadata.name for tool in bundle.tools] == ["mounted_search"]

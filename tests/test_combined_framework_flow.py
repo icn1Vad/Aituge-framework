@@ -106,7 +106,7 @@ class _ToolCallingFakeLlm:
             tool_context = "\n".join(str(message.get("content") or "") for message in messages)
             assert "You are a short-video script creator" in tool_context
             assert "drawing artifact ready" in tool_context
-            assert "__TUGE_ARTIFACTS__" in tool_context
+            assert '"artifacts":[]' in tool_context
             assert "Aliyun mocked result" in tool_context
             assert "Internal audit evidence for board reporting" in tool_context
             yield TextChunk(
@@ -187,7 +187,6 @@ def test_combined_skill_artifact_search_and_rag_flow(monkeypatch, tmp_path: Path
         python_bundle = create_limited_local_python_bundle(
             LimitedLocalPythonConfig(
                 work_dir=tmp_path,
-                artifact_base_url="/tool-artifacts/local-python",
                 keep_work_dir=True,
             )
         )
@@ -241,7 +240,7 @@ def test_combined_skill_artifact_search_and_rag_flow(monkeypatch, tmp_path: Path
             if step["tool"]["function"]["name"] == "LimitedLocalPythonInterpreter"
         )
         assert "drawing artifact ready" in python_step["result"]
-        assert "__TUGE_ARTIFACTS__" in python_step["result"]
+        assert json.loads(python_step["result"])["artifacts"] == []
         assert list(tmp_path.glob("*/chart.svg"))
 
         await session_history_manager.clear_history(

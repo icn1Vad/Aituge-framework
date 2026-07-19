@@ -144,6 +144,46 @@ async def create_artifact(
         return artifact
 
 
+async def create_file_artifact(
+    *,
+    artifact_id: str,
+    task_id: str,
+    run_id: str,
+    stage_run_id: str,
+    content_uri: str,
+    checksum: str,
+    summary: str,
+    metadata: dict[str, Any],
+) -> TaskArtifactEntity:
+    """Persist one task-owned file using the existing Artifact model."""
+
+    artifact_type = "tool_file"
+    async with create_db_session() as session:
+        version_result = await session.exec(
+            select(TaskArtifactEntity)
+            .where(TaskArtifactEntity.run_id == run_id)
+            .where(TaskArtifactEntity.artifact_type == artifact_type)
+            .order_by(TaskArtifactEntity.artifact_version.desc())
+        )
+        previous = version_result.first()
+        artifact = TaskArtifactEntity(
+            id=artifact_id,
+            task_id=task_id,
+            run_id=run_id,
+            stage_run_id=stage_run_id,
+            artifact_type=artifact_type,
+            artifact_version=(previous.artifact_version + 1) if previous else 1,
+            content_uri=content_uri,
+            summary=summary,
+            checksum=checksum,
+            metadata_json=metadata,
+        )
+        session.add(artifact)
+        await session.commit()
+        await session.refresh(artifact)
+        return artifact
+
+
 async def get_artifact(artifact_id: str) -> TaskArtifactEntity | None:
     async with create_db_session() as session:
         return await session.get(TaskArtifactEntity, artifact_id)

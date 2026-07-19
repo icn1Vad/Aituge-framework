@@ -66,7 +66,7 @@ def test_local_code_chat_app_injects_local_python_tool(monkeypatch):
     asyncio.run(run())
 
 
-def test_local_code_chat_app_serves_python_artifacts():
+def test_local_code_chat_app_does_not_expose_artifact_directory():
     async def run():
         app = create_app()
         run_dir = LOCAL_PYTHON_ARTIFACT_DIR / "test-run"
@@ -77,11 +77,14 @@ def test_local_code_chat_app_serves_python_artifacts():
             encoding="utf-8",
         )
 
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get("/tool-artifacts/local-python/test-run/chart.svg")
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.get("/tool-artifacts/local-python/test-run/chart.svg")
 
-        assert response.status_code == 200
-        assert "<svg" in response.text
+            assert response.status_code == 404
+        finally:
+            artifact_file.unlink(missing_ok=True)
+            run_dir.rmdir()
 
     asyncio.run(run())

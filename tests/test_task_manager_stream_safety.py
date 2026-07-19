@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 from task_manager.api import _STREAM_DONE, _run_task_to_queue
@@ -45,6 +46,43 @@ def test_tool_events_are_compact_and_do_not_include_results():
     assert completed[0].payload["result_chars"] > 100_000
     assert "result" not in completed[0].payload
     assert len(str(completed[0].payload)) < 500
+
+
+def test_tool_events_forward_only_public_artifact_metadata():
+    action = {
+        "id": "call-chart",
+        "function": {"name": "LimitedLocalPythonInterpreter", "arguments": "{}"},
+    }
+    result = json.dumps(
+        {
+            "exit_code": 0,
+            "stdout": "created",
+            "stderr": "",
+            "error": None,
+            "artifacts": [
+                {
+                    "id": "artifact-1",
+                    "name": "image-001.png",
+                    "mime": "image/png",
+                    "url": "/task-manager/artifacts/artifact-1/content",
+                    "private_path": "must-not-leak",
+                }
+            ],
+        }
+    )
+
+    completed = _translate_chunk_event(
+        _event({"observation": {"tool": action, "result": result, "error": None}})
+    )[0]
+
+    assert completed.payload["artifacts"] == [
+        {
+            "id": "artifact-1",
+            "name": "image-001.png",
+            "mime": "image/png",
+            "url": "/task-manager/artifacts/artifact-1/content",
+        }
+    ]
 
 
 def test_tool_arguments_are_truncated_with_an_explicit_marker():

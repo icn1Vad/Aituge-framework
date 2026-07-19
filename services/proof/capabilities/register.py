@@ -373,12 +373,12 @@ async def register(registry, settings) -> None:
         description="Evidence-grounded question answering over indexed company policies.",
         tags=["proof", "policy", "qa", "rag"],
         primary_skill="proof-policy-qa",
-        auxiliary_skills=[],
+        auxiliary_skills=["proof-policy-sql"],
     )
     registry.register_agent(
         agent_id="proof-qa-agent",
         name="Proof Policy Q&A Agent",
-        description="Answers policy questions with Proof retrieval and optional sandbox calculations.",
+        description="Answers policy questions with Proof retrieval and optional code-generated calculations and charts.",
         agent_type="single",
         model_id=model_id or "deepseek-v4-pro",
         system_prompt=(

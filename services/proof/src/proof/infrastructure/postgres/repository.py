@@ -565,6 +565,60 @@ class ProofRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_files(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT d.id, d.original_name AS name, d.file_type,
+                       d.status AS document_status, d.created_at, d.updated_at,
+                       p.id AS policy_id, p.title AS policy_title,
+                       p.version AS policy_version, p.status AS policy_status,
+                       COUNT(u.id)::integer AS chunk_count
+                FROM proof_document d
+                JOIN proof_policy p ON p.id = d.policy_id
+                LEFT JOIN proof_retrieval_unit u ON u.document_id = d.id
+                GROUP BY d.id, p.id
+                ORDER BY d.created_at DESC, d.id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_file(self, file_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT d.id, d.original_name AS name, d.file_type, d.storage_path,
+                       d.status AS document_status, d.created_at, d.updated_at,
+                       p.id AS policy_id, p.title AS policy_title,
+                       p.version AS policy_version, p.status AS policy_status,
+                       COUNT(u.id)::integer AS chunk_count
+                FROM proof_document d
+                JOIN proof_policy p ON p.id = d.policy_id
+                LEFT JOIN proof_retrieval_unit u ON u.document_id = d.id
+                WHERE d.id = %s
+                GROUP BY d.id, p.id
+                """,
+                (file_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_file_chunks(self, file_id: str, *, limit: int, offset: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, clause_no_raw, clause_ordinal, unit_type, text AS content,
+                       heading_path, page_start, page_end, paragraph_start,
+                       paragraph_end, char_start, char_end, text_hash,
+                       embedding_status
+                FROM proof_retrieval_unit
+                WHERE document_id = %s
+                ORDER BY clause_ordinal
+                LIMIT %s OFFSET %s
+                """,
+                (file_id, limit, offset),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_policy(self, policy_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(

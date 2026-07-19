@@ -10,7 +10,7 @@ class SchedulingRuntimeOptions(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     local_python_artifact_dir: Path
-    artifact_base_url: str = "/tool-artifacts/local-python"
+    local_python_work_dir: Path | None = None
     rag_store: Any = None
 
 

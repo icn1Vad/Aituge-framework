@@ -37,7 +37,11 @@ def create_limited_local_python_tools(
 - This is a convenience local runner, not a hardened security sandbox.
 - The caller config controls timeout, Python executable, working directory, and output length.
 - Always print values that should be visible in the final result.
-- Save user-visible artifacts with relative paths in the current working directory, such as "report.html" or "chart.png"; do not save artifacts to /tmp or absolute paths.
+- The system has already created and selected the current working directory for this run.
+- Work only in the current directory and use relative filenames. Do not create date folders, run-id folders, or absolute output paths.
+- Save user-visible artifacts directly in the current directory, such as "report.html" or "chart.png". The system publishes and renames supported files after execution.
+- Published files are attached by the runtime. Do not reproduce, rewrite, or invent artifact URLs in the final answer.
+- You may install a missing Python package when it is necessary to complete the user's request, but prefer the packages already available.
 
 # Parameters
 - code (required, string): Python code to execute. Raw code, {"code": "..."}, Markdown code fences, and <code>...</code> are accepted.

@@ -797,6 +797,30 @@
         object-fit: contain;
       }
 
+      .answer-artifacts {
+        display: grid;
+        gap: 10px;
+        margin-top: 10px;
+      }
+
+      .answer-artifacts:empty { display: none; }
+
+      .answer-artifacts .tool-artifact {
+        max-width: 820px;
+        padding: 10px;
+        border: 1px solid #e7ebf3;
+        border-radius: 9px;
+        background: #fff;
+      }
+
+      .artifact-actions {
+        display: flex;
+        gap: 12px;
+        font-size: 12px;
+      }
+
+      .artifact-actions a { color: #6941c6; text-decoration: none; }
+
       .tool-artifact iframe {
         width: min(720px, 78vw);
         height: 420px;
@@ -1341,11 +1365,13 @@
         bubble.className = "bubble";
         const tools = document.createElement("div");
         tools.className = "tool-list";
-        wrap.append(actions, tools, bubble);
+        const artifacts = document.createElement("div");
+        artifacts.className = "answer-artifacts";
+        wrap.append(actions, tools, bubble, artifacts);
         turn.appendChild(wrap);
         parent.appendChild(turn);
         turn.scrollIntoView({ behavior: "smooth", block: "end" });
-        return { turn, actions, bubble, token: actions.querySelector(".token-badge"), tools, toolMap: new Map() };
+        return { turn, actions, bubble, token: actions.querySelector(".token-badge"), tools, artifacts, toolMap: new Map() };
       }
 
       function insertSubagentOutputs(outputs, beforeTurn) {
@@ -1390,56 +1416,109 @@
 
       function splitToolResult(value) {
         const raw = String(value || "");
-        const match = raw.match(/__TUGE_ARTIFACTS__(.*?)__END_TUGE_ARTIFACTS__/s);
-        if (!match) return { text: raw, artifacts: [] };
-
-        let artifacts = [];
         try {
-          artifacts = JSON.parse(match[1])?.artifacts || [];
+          const parsed = JSON.parse(raw);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            return { text: raw, artifacts: [] };
+          }
+          const artifacts = Array.isArray(parsed.artifacts) ? parsed.artifacts : [];
+          return { text: JSON.stringify({ ...parsed, artifacts: undefined }, null, 2), artifacts };
         } catch {
-          artifacts = [];
+          return { text: raw, artifacts: [] };
         }
-        return {
-          text: raw.replace(match[0], "").trim(),
-          artifacts,
-        };
       }
 
-      function renderArtifacts(trace, artifacts = []) {
-        const container = trace.querySelector(".tool-artifacts");
-        container.innerHTML = "";
+      const artifactObjectUrls = new Map();
+
+      async function loadArtifactObjectUrl(artifact) {
+        const key = artifact.id || artifact.url;
+        if (artifactObjectUrls.has(key)) return artifactObjectUrls.get(key);
+        const response = await fetch(artifact.url, { headers: taskRequestHeaders() });
+        if (!response.ok) {
+          const detail = await response.text();
+          throw new Error(detail || `HTTP ${response.status}`);
+        }
+        const objectUrl = URL.createObjectURL(await response.blob());
+        artifactObjectUrls.set(key, objectUrl);
+        return objectUrl;
+      }
+
+      async function renderArtifacts(owner, artifacts = [], { append = false } = {}) {
+        const container = owner.matches?.(".tool-artifacts, .answer-artifacts")
+          ? owner
+          : owner.querySelector(".tool-artifacts");
+        if (!container) return;
+        if (!append) container.innerHTML = "";
+        const known = new Set([...container.querySelectorAll("[data-artifact-id]")]
+          .map((item) => item.dataset.artifactId));
         for (const artifact of artifacts) {
-          if (!artifact?.url) continue;
+          const artifactId = artifact?.id || artifact?.url;
+          if (!artifactId || !artifact?.url || known.has(artifactId)) continue;
 
           const item = document.createElement("div");
           item.className = "tool-artifact";
+          item.dataset.artifactId = artifactId;
           const label = document.createElement("div");
           label.className = "tool-label";
           label.textContent = artifact.name || artifact.url;
-
-          if (artifact.type === "image") {
-            const img = document.createElement("img");
-            img.src = artifact.url;
-            img.alt = artifact.name || "artifact image";
-            item.append(label, img);
-          } else if (artifact.type === "html") {
-            const iframe = document.createElement("iframe");
-            iframe.src = artifact.url;
-            iframe.sandbox = "allow-scripts";
-            iframe.title = artifact.name || "artifact html";
-            item.append(label, iframe);
-          } else {
-            const link = document.createElement("a");
-            link.href = artifact.url;
-            link.textContent = artifact.name || artifact.url;
-            link.target = "_blank";
-            link.rel = "noreferrer";
-            item.append(label, link);
-          }
-
+          item.appendChild(label);
           container.appendChild(item);
+          known.add(artifactId);
+
+          try {
+            const objectUrl = await loadArtifactObjectUrl(artifact);
+            const isImage = String(artifact.mime || "").startsWith("image/");
+            const isHtml = artifact.mime === "text/html";
+            if (isImage) {
+              const imageLink = document.createElement("a");
+              imageLink.href = objectUrl;
+              imageLink.target = "_blank";
+              imageLink.rel = "noreferrer";
+              const img = document.createElement("img");
+              img.src = objectUrl;
+              img.alt = artifact.name || "artifact image";
+              imageLink.appendChild(img);
+              const actions = document.createElement("div");
+              actions.className = "artifact-actions";
+              const open = document.createElement("a");
+              open.href = objectUrl;
+              open.target = "_blank";
+              open.rel = "noreferrer";
+              open.textContent = "查看原图";
+              const download = document.createElement("a");
+              download.href = objectUrl;
+              download.download = artifact.name || "artifact";
+              download.textContent = "下载";
+              actions.append(open, download);
+              item.append(imageLink, actions);
+            } else if (isHtml) {
+              const iframe = document.createElement("iframe");
+              iframe.src = objectUrl;
+              iframe.sandbox = "allow-scripts";
+              iframe.title = artifact.name || "artifact html";
+              item.appendChild(iframe);
+            } else {
+              const link = document.createElement("a");
+              link.href = objectUrl;
+              link.textContent = artifact.name || artifact.url;
+              link.target = "_blank";
+              link.rel = "noreferrer";
+              link.download = artifact.name || "artifact";
+              item.appendChild(link);
+            }
+          } catch (error) {
+            const failure = document.createElement("div");
+            failure.className = "tool-error";
+            failure.textContent = `附件加载失败：${error.message || error}`;
+            item.appendChild(failure);
+          }
         }
-        container.hidden = artifacts.length === 0;
+        container.hidden = container.children.length === 0;
+      }
+
+      function renderAnswerArtifacts(nodes, artifacts = []) {
+        if (!nodes?.artifacts) return;
+        renderArtifacts(nodes.artifacts, artifacts, { append: true });
       }
 
       function upsertToolTrace(nodes, toolCall, options = {}) {
@@ -2454,6 +2533,7 @@
         if (taskId) activeProofTaskId = taskId;
         taskStatusEl.textContent = `Proof: ${event}${taskId ? ` / ${taskId.slice(0, 8)}` : ""}`;
         statusEl.textContent = `proof: ${event}${taskId ? ` / ${taskId.slice(0, 8)}` : ""}`;
+        renderAnswerArtifacts(nodes, eventPayload.artifacts || []);
 
         if (event === "tool_started") {
           const toolId = eventPayload.tool_call_id || eventPayload.tool_name || "proof-tool";
@@ -2474,7 +2554,7 @@
             id: toolId,
             result: eventPayload.error
               ? undefined
-              : `完成（返回 ${eventPayload.result_chars || 0} 字符）`,
+              : `${eventPayload.artifacts?.length ? `生成 ${eventPayload.artifacts.length} 个文件` : "完成"}（返回 ${eventPayload.result_chars || 0} 字符）`,
             error: eventPayload.error || undefined,
           });
         }
@@ -2792,6 +2872,7 @@
           if (message.role === "assistant") {
             const assistant = addAssistantText(message.text || "");
             addProofAgentLabel(assistant, "历史");
+            renderAnswerArtifacts(assistant, message.attachments || []);
           }
         }
 
@@ -2827,7 +2908,10 @@
         messagesEl.innerHTML = "";
         for (const message of data.messages || []) {
           if (message.role === "user") addUserMessage(message.text || "");
-          if (message.role === "assistant") addAssistantText(message.text || "");
+          if (message.role === "assistant") {
+            const assistant = addAssistantText(message.text || "");
+            renderAnswerArtifacts(assistant, message.attachments || []);
+          }
         }
         if (!messagesEl.children.length) {
           messagesEl.innerHTML = '<div id="empty" class="empty">开始一轮最小 single-agent 对话</div>';
