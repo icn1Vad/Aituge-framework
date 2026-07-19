@@ -18,6 +18,7 @@ from contract.callback.models import (
     RightsObligationsStageResult,
     StageExecuteRequest,
 )
+from contract.evidence import validate_evidence_set
 from contract.errors import ContractError
 from contract.internal.models import (
     ContractBlockData,
@@ -32,6 +33,7 @@ from contract.internal.models import (
 )
 from contract.persistence.postgres.callback_repository import FrameworkCallbackRepository
 from contract.persistence.postgres.repository import ContractRepository
+from contract.review import merge_review_stage_results
 
 
 REVIEW_ARTIFACT_MODELS = {
@@ -164,7 +166,12 @@ class ContractInternalService:
         result_hash, _canonical = compute_result_hash(raw)
         raw["result_hash"] = result_hash
         validated = ReviewResultData.model_validate(raw)
-        self._validate_evidence(review, validated.findings, validated.evidences)
+        self._validate_evidence(
+            review,
+            validated.findings,
+            validated.evidences,
+            validated.contract_profile,
+        )
         return validated
 
     def _execution_context(self, request: StageExecuteRequest) -> dict[str, Any]:
@@ -208,7 +215,6 @@ class ContractInternalService:
             raise ContractError("RESULT_INVALID", "Party resolution artifact is missing", status_code=422)
         party = PartyResolutionStageResult.model_validate(party_value)
         findings, evidences = self._merge_review_artifacts(request.artifacts)
-        self._validate_evidence(review, findings, evidences)
         profile = ContractProfile(
             contract_type=party.contract_type,
             party_a=party.party_a,
@@ -220,6 +226,7 @@ class ContractInternalService:
         )
         if profile.perspective.value != review["perspective"]:
             raise ContractError("RESULT_INVALID", "Review perspective changed during execution", status_code=422)
+        self._validate_evidence(review, findings, evidences, profile)
         overview = (
             f"发现{len(findings)}项需要人工复核的合同事项。"
             if findings
@@ -267,9 +274,7 @@ class ContractInternalService:
     def _merge_review_artifacts(
         artifacts: dict[str, dict[str, Any]],
     ) -> tuple[list[Finding], list[Evidence]]:
-        chosen: dict[tuple[Any, ...], dict[str, Any]] = {}
-        id_mapping: dict[str, str] = {}
-        evidence_values: list[dict[str, Any]] = []
+        stages = []
         for artifact_type, model in REVIEW_ARTIFACT_MODELS.items():
             raw = artifacts.get(artifact_type)
             if raw is None:
@@ -278,94 +283,31 @@ class ContractInternalService:
                     f"Required review artifact '{artifact_type}' is missing",
                     status_code=422,
                 )
-            stage = model.model_validate(raw)
-            for finding in stage.findings:
-                value = finding.model_dump(mode="json")
-                key = (
-                    value["category"],
-                    value["risk_level"],
-                    value["title"].strip(),
-                    value["issue"].strip(),
-                    value["impact_to_our_party"].strip(),
-                    value["suggestion"].strip(),
-                    value["perspective"],
-                    value["our_party"],
-                    value["counterparty"],
-                )
-                current = chosen.get(key)
-                if current is None:
-                    chosen[key] = value
-                    id_mapping[value["finding_id"]] = value["finding_id"]
-                else:
-                    id_mapping[value["finding_id"]] = current["finding_id"]
-            evidence_values.extend(item.model_dump(mode="json") for item in stage.evidences)
-
-        findings_by_id = {value["finding_id"]: value for value in chosen.values()}
-        for value in findings_by_id.values():
-            value["evidence_ids"] = []
-        evidences_by_id: dict[str, dict[str, Any]] = {}
-        for evidence in evidence_values:
-            mapped = id_mapping.get(evidence["finding_id"])
-            if mapped is None:
-                raise ContractError("RESULT_INVALID", "Evidence references an unknown finding", status_code=422)
-            evidence["finding_id"] = mapped
-            existing = evidences_by_id.get(evidence["evidence_id"])
-            if existing is not None and existing != evidence:
-                raise ContractError(
-                    "RESULT_INVALID",
-                    "Evidence ID is duplicated with different content",
-                    status_code=422,
-                )
-            evidences_by_id[evidence["evidence_id"]] = evidence
-            evidence_ids = findings_by_id[mapped]["evidence_ids"]
-            if evidence["evidence_id"] not in evidence_ids:
-                evidence_ids.append(evidence["evidence_id"])
-        findings = [Finding.model_validate(value) for value in findings_by_id.values()]
-        evidences = [Evidence.model_validate(value) for value in evidences_by_id.values()]
-        return findings, evidences
+            stages.append(model.model_validate(raw))
+        return merge_review_stage_results(stages)
 
     def _validate_evidence(
         self,
         review: dict[str, Any],
         findings: list[Finding],
         evidences: list[Evidence],
+        profile: ContractProfile,
     ) -> None:
-        generation = self.repository.get_active_generation(
-            review["document_id"],
-            tenant_id=review["tenant_id"],
+        attempt_no = review.get("active_attempt_no")
+        if not isinstance(attempt_no, int):
+            raise ContractError("EVIDENCE_INVALID", "Review Attempt is unavailable", status_code=422)
+        generation = self.callback_repository.get_attempt_parse_generation(
+            review["id"],
+            attempt_no,
         )
         if generation is None:
-            raise ContractError("EVIDENCE_INVALID", "Active Contract IR is not available", status_code=422)
-        blocks = {
-            block["block_id"]: block
-            for block in self.repository.list_blocks(generation["id"], tenant_id=review["tenant_id"])
-        }
-        finding_by_id = {finding.finding_id: finding for finding in findings}
-        evidence_by_id = {evidence.evidence_id: evidence for evidence in evidences}
-        for finding in findings:
-            if (
-                finding.perspective.value != review["perspective"]
-                or not finding.evidence_ids
-            ):
-                raise ContractError("EVIDENCE_INVALID", "Finding perspective or evidence is invalid", status_code=422)
-            for evidence_id in finding.evidence_ids:
-                evidence = evidence_by_id.get(evidence_id)
-                if evidence is None or evidence.finding_id != finding.finding_id:
-                    raise ContractError("EVIDENCE_INVALID", "Finding evidence link is invalid", status_code=422)
-        for evidence in evidences:
-            if evidence.finding_id not in finding_by_id:
-                raise ContractError("EVIDENCE_INVALID", "Evidence finding does not exist", status_code=422)
-            if evidence.evidence_type.value == "ABSENCE":
-                continue
-            block = blocks.get(evidence.block_id or "")
-            if block is None:
-                raise ContractError("EVIDENCE_INVALID", "Evidence block is outside this contract", status_code=422)
-            assert evidence.char_start is not None and evidence.char_end is not None
-            assert evidence.quoted_text is not None
-            if block["text"][evidence.char_start : evidence.char_end] != evidence.quoted_text:
-                raise ContractError("EVIDENCE_INVALID", "Evidence text does not match its block", status_code=422)
-            if evidence.page_number is not None and evidence.page_number != block["page_number"]:
-                raise ContractError("EVIDENCE_INVALID", "Evidence page does not match its block", status_code=422)
+            raise ContractError(
+                "EVIDENCE_INVALID",
+                "Validated parse Generation is unavailable for this Attempt",
+                status_code=422,
+            )
+        blocks = self.repository.list_blocks(generation["id"], tenant_id=review["tenant_id"])
+        validate_evidence_set(findings, evidences, blocks, profile)
 
     def _tool_context(self, review_id: str, document_id: str) -> dict[str, Any]:
         review = self.callback_repository.get_review_context(review_id)

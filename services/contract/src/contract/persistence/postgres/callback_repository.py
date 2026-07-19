@@ -85,6 +85,33 @@ class FrameworkCallbackRepository:
         value["generation"] = dict(generation) if generation else None
         return value
 
+    def get_attempt_parse_generation(
+        self,
+        review_id: str,
+        attempt_no: int,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            generation = conn.execute(
+                """
+                SELECT generation.*
+                FROM contract_review_stage_result stage
+                JOIN contract_review_run review ON review.id = stage.review_id
+                JOIN contract_parse_generation generation
+                  ON generation.id = stage.result_json ->> 'generation_id'
+                 AND generation.document_id = review.document_id
+                 AND generation.tenant_id = review.tenant_id
+                WHERE stage.review_id = %s AND stage.attempt_no = %s
+                  AND stage.callback_type = 'STAGE_RESULT'
+                  AND stage.stage_id = 'parse_contract'
+                  AND stage.validation_status = 'VALIDATED'
+                  AND generation.status = 'SUCCEEDED'
+                ORDER BY stage.event_sequence DESC, stage.received_at DESC
+                LIMIT 1
+                """,
+                (review_id, attempt_no),
+            ).fetchone()
+        return dict(generation) if generation else None
+
     def process(self, callback: FrameworkCallback) -> CallbackOutcome:
         payload = callback.model_dump(mode="json")
         with self.connect() as conn:

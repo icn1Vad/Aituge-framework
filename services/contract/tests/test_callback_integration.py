@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import os
 import uuid
 from pathlib import Path
@@ -10,7 +11,7 @@ import psycopg
 import pytest
 from pydantic import TypeAdapter
 
-from contract.api.models import CreateReviewRequest, Perspective, ReviewStatus
+from contract.api.models import CreateReviewRequest, Evidence, Finding, Perspective, ReviewStatus
 from contract.application.document_processing import ContractDocumentProcessor
 from contract.application.ports import InternalRequestContext, UploadedContract
 from contract.application.runtime_service import RuntimeContractReviewService
@@ -185,13 +186,45 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
             created.review_id,
             _stage_callback(created, 3, "extract_contract_ir", extract_result),
         )
-        assert repository.get_active_generation(created.document_id, tenant_id=tenant_id) is not None
+        active_generation = repository.get_active_generation(created.document_id, tenant_id=tenant_id)
+        assert active_generation is not None
+        block = repository.list_blocks(active_generation["id"], tenant_id=tenant_id)[0]
+        quoted_text = "Party B pays."
+        char_start = block["text"].index(quoted_text)
+        evidence = Evidence(
+            evidence_id="evidence-payment",
+            finding_id="finding-payment",
+            evidence_type="TEXT_QUOTE",
+            block_id=block["block_id"],
+            page_number=block["page_number"],
+            char_start=char_start,
+            char_end=char_start + len(quoted_text),
+            quoted_text=quoted_text,
+            quoted_text_hash="sha256:" + hashlib.sha256(quoted_text.encode("utf-8")).hexdigest(),
+        )
+        finding = Finding(
+            finding_id="finding-payment",
+            category="PAYMENT",
+            risk_level="MEDIUM",
+            title="Payment protection is insufficient",
+            perspective="PARTY_B",
+            our_party="Beta Company",
+            counterparty="Acme Company",
+            issue="The payment obligation lacks detailed protection.",
+            impact_to_our_party="Beta Company may face delayed payment.",
+            suggestion="Add a payment deadline and late-payment consequences.",
+            evidence_ids=[evidence.evidence_id],
+        )
 
         review_stages = [
             (
                 "rights_obligations_review",
                 "rights_obligations_review_result",
-                RightsObligationsStageResult(result_type="RIGHTS_OBLIGATIONS_STAGE_V1"),
+                RightsObligationsStageResult(
+                    result_type="RIGHTS_OBLIGATIONS_STAGE_V1",
+                    findings=[finding],
+                    evidences=[evidence],
+                ),
             ),
             (
                 "commercial_terms_review",
@@ -247,7 +280,9 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
         result = runtime.get_result(created.review_id, context=context)
         assert result.review_id == created.review_id
         assert result.result_hash.startswith("sha256:")
-        assert result.findings == [] and result.evidences == []
+        assert [item.finding_id for item in result.findings] == ["finding-payment"]
+        assert [item.evidence_id for item in result.evidences] == ["evidence-payment"]
+        assert result.summary.medium_count == 1
 
         conflict = callbacks.accept(
             created.review_id,
