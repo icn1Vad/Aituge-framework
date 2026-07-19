@@ -20,3 +20,14 @@ class ContractError(RuntimeError):
         self.retryable = retryable
         self.user_action_required = user_action_required
         self.details = details
+
+
+class ConfigurationError(ContractError):
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            "INTERNAL_ERROR",
+            message,
+            status_code=503,
+            retryable=False,
+            user_action_required=False,
+        )

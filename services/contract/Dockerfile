@@ -20,7 +20,7 @@ RUN mkdir -p /app/data/contract
 
 EXPOSE 18200
 
-CMD ["python", "-m", "uvicorn", "contract.api.app:app", "--host", "0.0.0.0", "--port", "18200"]
+CMD ["sh", "-c", "python -m contract.persistence.postgres.migrate && exec python -m uvicorn contract.api.app:app --host 0.0.0.0 --port 18200"]
 
 FROM dependencies AS test
 
