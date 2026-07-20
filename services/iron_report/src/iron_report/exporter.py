@@ -16,6 +16,7 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
+from pydantic import ValidationError
 
 from scheduling.scheduler import SchedulingRuntimeOptions
 from task_manager.artifact_service import resolve_artifact_path
@@ -134,6 +135,35 @@ class IronReportExporter:
                 },
             )
             return {"status": "COMPLETED", "task_id": task_id, "artifact_ids": artifact_ids}
+        except ValidationError as exc:
+            details = {
+                "validationErrors": [
+                    {
+                        "location": [str(part) for part in error.get("loc", ())],
+                        "type": str(error.get("type") or ""),
+                        "message": str(error.get("msg") or ""),
+                    }
+                    for error in exc.errors(include_url=False, include_input=False)[:20]
+                ]
+            }
+            self.state.save(
+                task_id,
+                {
+                    "status": "FAILED",
+                    "stage": "FAILED",
+                    "error_code": "IRON_REPORT_OUTPUT_SCHEMA_INVALID",
+                    "error_message": "Agent 返回的报告不符合铁矿石报告结构约定",
+                    "retryable": True,
+                    "details": details,
+                },
+            )
+            raise IronReportError(
+                "IRON_REPORT_OUTPUT_SCHEMA_INVALID",
+                "Agent 返回的报告不符合铁矿石报告结构约定",
+                status_code=422,
+                retryable=True,
+                details=details,
+            ) from exc
         except IronReportError as exc:
             self.state.save(
                 task_id,

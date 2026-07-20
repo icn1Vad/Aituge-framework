@@ -105,6 +105,41 @@ async def test_missing_chart_artifacts_has_stable_error_and_state(tmp_path: Path
     assert state.get("task-1")["error_code"] == "IRON_REPORT_CHART_ARTIFACT_MISSING"
 
 
+@pytest.mark.asyncio
+async def test_invalid_agent_output_has_stable_schema_error(tmp_path: Path) -> None:
+    task = SimpleNamespace(
+        id="task-1",
+        task_type="iron.report.generate",
+        current_run_id="run-1",
+        input_payload_json={
+            "report_type": "DAILY",
+            "report_date": "2026-07-17",
+            "data_as_of_date": "2026-07-17",
+            "output_formats": ["DOCX", "PDF"],
+            "include_web_research": True,
+            "fallback_news_available": True,
+        },
+    )
+    state = ExportStateStore(tmp_path / "state")
+    exporter = IronReportExporter(_settings(tmp_path), _options(tmp_path), state)
+    exporter.tasks = FakeTasks(task)
+
+    with pytest.raises(IronReportError) as caught:
+        await exporter.accept_task_result(
+            {
+                "task_id": "task-1",
+                "run_id": "run-1",
+                "status": "completed",
+                "output": {"report_type": "DAILY", "content": "wrong contract"},
+            }
+        )
+
+    assert caught.value.code == "IRON_REPORT_OUTPUT_SCHEMA_INVALID"
+    failure = state.get("task-1")
+    assert failure["error_code"] == "IRON_REPORT_OUTPUT_SCHEMA_INVALID"
+    assert failure["details"]["validationErrors"]
+
+
 def test_libreoffice_is_the_configured_pdf_conversion_path(tmp_path: Path, monkeypatch) -> None:
     exporter = IronReportExporter(
         _settings(tmp_path), _options(tmp_path), ExportStateStore(tmp_path / "state")

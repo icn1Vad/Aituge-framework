@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 from urllib.parse import quote
@@ -26,6 +27,11 @@ async def register(registry, settings) -> None:
     service_base_url = settings.require("IRON_REPORT_SERVICE_BASE_URL").rstrip("/")
     model_id = settings.require("IRON_REPORT_MODEL_ID")
     callback_token = quote(settings.require("IRON_REPORT_INTERNAL_TOKEN"), safe="")
+    output_schema = json.dumps(
+        IronReportTaskOutput.model_json_schema(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
     registry.register_skill_root(CAPABILITY_DIR / "skills")
     registry.register_http_tool(
@@ -61,7 +67,10 @@ async def register(registry, settings) -> None:
             "You are the iron ore daily and weekly report Agent. Follow the active Skill exactly. "
             "Use only supplied market data and attributable search/fallback sources. Call the market data tool first, "
             "use code_interpreter to create the required charts, preserve reportDate and dataAsOfDate separately, "
-            "never invent missing fundamentals, and return exactly one valid JSON object."
+            "never invent missing fundamentals, and return exactly one valid JSON object. "
+            "Use code_interpreter only for numeric analysis and the two PNG charts; do not use it to invent a different "
+            "report JSON contract. The final object must validate against this exact JSON Schema, with no extra keys: "
+            f"{output_schema}"
         ),
         default_tools=["iron_market_data", "web_search", "code_interpreter"],
         default_datasets=[],

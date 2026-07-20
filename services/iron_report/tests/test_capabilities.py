@@ -60,6 +60,17 @@ async def test_capability_uses_configured_model_and_existing_react_tools() -> No
     assert registry.tools[0]["tool_name"] == "iron_market_data"
     assert registry.agents[0]["model_id"] == "configured-model"
     assert registry.agents[0]["default_tools"] == ["iron_market_data", "web_search", "code_interpreter"]
+    system_prompt = registry.agents[0]["system_prompt"]
+    for field in (
+        "title",
+        "executive_summary",
+        "metrics",
+        "sections",
+        "sources",
+        "research_status",
+    ):
+        assert f'"{field}"' in system_prompt
+    assert "with no extra keys" in system_prompt
     assert registry.tasks[0]["task_type"] == "iron.report.generate"
     assert registry.tasks[0]["handler"] == "scheduler"
     assert registry.tasks[0]["result_sink_url"].endswith(

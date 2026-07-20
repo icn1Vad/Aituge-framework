@@ -7,6 +7,15 @@ Before starting a new stage, the developer must read this file again, verify tha
 
 No local dependency installation, compilation, test execution, image build, or fat-package creation is allowed. Local work is limited to editing, review, Git commit, and Git push. Builds and tests run only inside Docker on the server.
 
+## Current checkpoint (2026-07-20)
+
+- Stages 1 through 5 are implemented on both feature branches and pushed.
+- Stage 6 is active in the isolated `/home/aituge/workspace/ai-feature-demo` environment.
+- The isolated MySQL, Redis, Python, and Java containers are healthy; Python and Java Docker test suites passed before real E2E execution.
+- The first real DAILY run proved market-data loading, live search, ReAct, and dynamic chart code execution, then safely ended as `FAILED` because the model returned an object outside the registered output schema. Java did not archive files or mark the task `SUCCEEDED`.
+- The active correction injects the exact output JSON Schema into the iron-report Agent and gives schema failures a stable `IRON_REPORT_OUTPUT_SCHEMA_INVALID` code. It must pass server Docker tests and a fresh DAILY run before weekly, download, idempotency, isolation, and restart checks continue.
+- At every remaining feature boundary, reread this file and update this checkpoint before proceeding.
+
 ## Confirmed baselines
 
 - Python repository: `AI-tuge/Aituge-framework`
