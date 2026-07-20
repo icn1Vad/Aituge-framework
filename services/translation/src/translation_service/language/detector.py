@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from translation_service.config import Settings
 from translation_service.domain.models import TranslationLanguage
-from translation_service.errors import TranslationError
+from translation_service.errors import ModelCallError, TranslationError
 from translation_service.model.gateway import BaseModelGateway, parse_json_object
 
 
@@ -61,7 +61,13 @@ class LanguageDetector:
             max_tokens=128,
             temperature=0,
         )
-        payload = parse_json_object(response)
+        try:
+            payload = parse_json_object(response)
+        except ModelCallError as exc:
+            raise TranslationError(
+                "SOURCE_LANGUAGE_UNDETERMINED",
+                "The model did not return a valid language detection result",
+            ) from exc
         try:
             language = TranslationLanguage(str(payload.get("language", "")))
             confidence = float(payload.get("confidence"))

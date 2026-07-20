@@ -120,8 +120,48 @@ def parse_json_object(value: str) -> dict[str, Any]:
         candidate = "\n".join(lines).strip()
     try:
         parsed = json.loads(candidate)
-    except json.JSONDecodeError as exc:
-        raise ModelCallError("Translation model returned invalid structured data") from exc
+    except json.JSONDecodeError as whole_value_error:
+        # OpenAI-compatible reasoning models can prepend a <think> block or
+        # short prose even when instructed to return JSON only. Accept only a
+        # complete, balanced top-level JSON object from that wrapper text.
+        objects = _balanced_json_objects(candidate)
+        for object_candidate in reversed(objects):
+            try:
+                parsed = json.loads(object_candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        raise ModelCallError("Translation model returned invalid structured data") from whole_value_error
     if not isinstance(parsed, dict):
         raise ModelCallError("Translation model did not return a JSON object")
     return parsed
+
+
+def _balanced_json_objects(value: str) -> list[str]:
+    objects: list[str] = []
+    start: int | None = None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(value):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"' and depth > 0:
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start is not None:
+                objects.append(value[start : index + 1])
+                start = None
+    return objects
