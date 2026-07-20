@@ -12,8 +12,9 @@ No local dependency installation, compilation, test execution, image build, or f
 - Stages 1 through 5 are implemented on both feature branches and pushed.
 - Stage 6 is active in the isolated `/home/aituge/workspace/ai-feature-demo` environment.
 - The isolated MySQL, Redis, Python, and Java containers are healthy; Python and Java Docker test suites passed before real E2E execution.
-- The first real DAILY run proved market-data loading, live search, ReAct, and dynamic chart code execution, then safely ended as `FAILED` because the model returned an object outside the registered output schema. Java did not archive files or mark the task `SUCCEEDED`.
-- The active correction injects the exact output JSON Schema into the iron-report Agent and gives schema failures a stable `IRON_REPORT_OUTPUT_SCHEMA_INVALID` code. It must pass server Docker tests and a fresh DAILY run before weekly, download, idempotency, isolation, and restart checks continue.
+- The first real DAILY run safely exposed an Agent output-schema mismatch; the exact JSON Schema is now injected and schema failures use `IRON_REPORT_OUTPUT_SCHEMA_INVALID`.
+- A fresh DAILY run then completed the full Java-to-Python chain with live research, 11 metrics, 5 sections, 7 sources, two dynamic PNG charts, DOCX, LibreOffice PDF, Java SHA-256 verification, private-file archive, and Java-only downloads. All four archived files matched the JSON checksum, download header checksum, and downloaded bytes.
+- The next verification item is idempotency. A new Python task is currently mislabeled `reused=true` because Framework initializes it as `created`, while the business check only treats `pending` as new. Correct that business-layer check, then verify new request, same-key replay, and same-key/different-body conflict before starting WEEKLY.
 - At every remaining feature boundary, reread this file and update this checkpoint before proceeding.
 
 ## Confirmed baselines

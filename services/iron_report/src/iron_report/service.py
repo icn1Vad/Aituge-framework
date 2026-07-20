@@ -119,7 +119,7 @@ class IronReportService:
                 "该幂等键已用于不同的铁矿石报告请求",
                 status_code=409,
             )
-        reused = task.current_run_id is not None or task.status != "pending"
+        reused = task.current_run_id is not None or task.status not in {"created", "pending"}
         try:
             run = await self.tasks.start_task_run(
                 task.id,

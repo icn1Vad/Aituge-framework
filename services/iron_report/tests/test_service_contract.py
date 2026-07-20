@@ -26,7 +26,7 @@ class FakeTasks:
             self.task = SimpleNamespace(
                 id="task-1",
                 current_run_id=None,
-                status="pending",
+                status="created",
                 input_payload_json=request.input_payload,
             )
         return self.task
