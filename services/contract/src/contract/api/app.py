@@ -169,7 +169,7 @@ def create_app(
         http_request: Request,
         file: Annotated[UploadFile, File(...)],
         request_payload: Annotated[str, Form(alias="request")],
-        context: Annotated[InternalRequestContext, Depends(_internal_context)],
+        context: Annotated[InternalRequestContext, Depends(_create_internal_context)],
     ) -> SuccessResponse[CreateReviewData]:
         settings = http_request.app.state.settings
         try:
@@ -394,6 +394,29 @@ def _ensure_internal_components(request: Request) -> None:
     )
 
 
+def _create_internal_context(
+    request: Request,
+    internal_service: Annotated[str, Header(alias="X-Internal-Service")],
+    internal_token: Annotated[str, Header(alias="X-Internal-Token")],
+    user_id: Annotated[str, Header(alias="X-User-Id")],
+    tenant_id: Annotated[str, Header(alias="X-Tenant-Id")],
+    request_id: Annotated[str, Header(alias="X-Request-Id")],
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=1, max_length=200),
+    ],
+) -> InternalRequestContext:
+    return _java_context(
+        request,
+        internal_service=internal_service,
+        internal_token=internal_token,
+        user_id=user_id,
+        tenant_id=tenant_id,
+        request_id=request_id,
+        idempotency_key=_optional_header(idempotency_key),
+    )
+
+
 def _internal_context(
     request: Request,
     internal_service: Annotated[str, Header(alias="X-Internal-Service")],
@@ -401,7 +424,27 @@ def _internal_context(
     user_id: Annotated[str, Header(alias="X-User-Id")],
     tenant_id: Annotated[str, Header(alias="X-Tenant-Id")],
     request_id: Annotated[str, Header(alias="X-Request-Id")],
-    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> InternalRequestContext:
+    return _java_context(
+        request,
+        internal_service=internal_service,
+        internal_token=internal_token,
+        user_id=user_id,
+        tenant_id=tenant_id,
+        request_id=request_id,
+        idempotency_key=None,
+    )
+
+
+def _java_context(
+    request: Request,
+    *,
+    internal_service: str,
+    internal_token: str,
+    user_id: str,
+    tenant_id: str,
+    request_id: str,
+    idempotency_key: str | None,
 ) -> InternalRequestContext:
     settings: Settings = request.app.state.settings
     if internal_service != "continew-java":
@@ -421,7 +464,7 @@ def _internal_context(
         tenant_id=_required_header("X-Tenant-Id", tenant_id),
         user_id=_required_header("X-User-Id", user_id),
         request_id=_required_header("X-Request-Id", request_id),
-        idempotency_key=_optional_header(idempotency_key),
+        idempotency_key=idempotency_key,
     )
 
 

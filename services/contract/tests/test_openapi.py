@@ -41,6 +41,31 @@ def test_multipart_request_part_is_declared_as_json() -> None:
     assert multipart["encoding"]["request"]["contentType"] == "application/json"
 
 
+def test_idempotency_key_is_required_only_for_create() -> None:
+    schema = create_app(Settings(internal_auth_enabled=False)).openapi()
+    paths = schema["paths"]
+    create_parameters = paths["/v1/contract-reviews"]["post"]["parameters"]
+    idempotency = next(
+        parameter
+        for parameter in create_parameters
+        if parameter["name"] == "Idempotency-Key" and parameter["in"] == "header"
+    )
+
+    assert idempotency["required"] is True
+    assert idempotency["schema"]["minLength"] == 1
+    assert idempotency["schema"]["maxLength"] == 200
+
+    for path, method in (
+        ("/v1/contract-reviews/{review_id}", "get"),
+        ("/v1/contract-reviews/{review_id}/result", "get"),
+        ("/v1/contract-reviews/{review_id}/cancel", "post"),
+    ):
+        assert all(
+            parameter["name"] != "Idempotency-Key"
+            for parameter in paths[path][method]["parameters"]
+        )
+
+
 def test_protocol_v1_reserved_arrays_have_zero_max_items() -> None:
     schema = create_app(Settings(internal_auth_enabled=False)).openapi()
     components = schema["components"]["schemas"]

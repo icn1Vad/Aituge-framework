@@ -368,6 +368,26 @@ def test_internal_token_is_required() -> None:
     assert response.json()["error"]["code"] == "UNAUTHORIZED_INTERNAL_CALL"
 
 
+def test_create_requires_idempotency_key_with_standard_error_response() -> None:
+    headers = _headers()
+    headers.pop("Idempotency-Key")
+
+    response = _create_review(_client(), headers=headers)
+
+    assert response.status_code == 422
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == "REQUEST_SCHEMA_INVALID"
+    assert payload["error"]["retryable"] is False
+    assert payload["error"]["user_action_required"] is True
+    assert "detail" not in payload
+    assert any(
+        violation["location"] == ["header", "Idempotency-Key"]
+        and violation["type"] == "missing"
+        for violation in payload["error"]["details"]["violations"]
+    )
+
+
 def test_request_schema_forbids_extra_fields() -> None:
     response = _create_review(_client(), payload=_request_payload(unfrozen_option="value"))
 
