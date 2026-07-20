@@ -1,0 +1,55 @@
+{
+  "retrieved_at": "2026-07-20T03:11:36+00:00",
+  "items": [
+    {
+      "id": "rio-tinto-q2-2026",
+      "published_at": "2026-07-15",
+      "source": "Rio Tinto",
+      "title": "Second quarter 2026 production results",
+      "url": "https://www.riotinto.com/en/news/releases/2026/rio-tinto-releases-second-quarter-2026-production-results",
+      "facts": [
+        "Q2 global iron ore production was 87.1 Mt on a 100% basis.",
+        "Q2 global iron ore sales were 88.8 Mt, up 5% year over year.",
+        "Q2 Pilbara iron ore sales were 85.3 Mt, up 7% year over year."
+      ],
+      "source_type": "company_primary_release"
+    },
+    {
+      "id": "bhp-fy2026-operational-review",
+      "published_at": "2026-07-16",
+      "source": "BHP",
+      "title": "Operational review for the year ended 30 June 2026",
+      "url": "https://www.bhp.com/news/media-centre/releases/2026/07/bhp-operational-review-for-the-year-ended-30-june-2026",
+      "facts": [
+        "BHP reported record iron ore production for the financial year.",
+        "The release described stronger realised iron ore prices year over year."
+      ],
+      "source_type": "company_primary_release"
+    },
+    {
+      "id": "vale-q1-2026-production-sales",
+      "published_at": "2026-04-16",
+      "source": "Vale",
+      "title": "Production and sales in 1Q26",
+      "url": "https://vale.com/check-out-the-production-and-sales-in-1q26-and-2026",
+      "facts": [
+        "Q1 iron ore production was 69.7 Mt, up 3% year over year.",
+        "Q1 iron ore sales were 68.7 Mt, up 4% year over year.",
+        "Average realised iron ore fines price was US$95.8/t."
+      ],
+      "source_type": "company_primary_release"
+    },
+    {
+      "id": "dce-iron-ore-contract-2026",
+      "published_at": "2026-03-13",
+      "source": "Dalian Commodity Exchange",
+      "title": "Amendments to the iron ore futures contract and business rules",
+      "url": "https://www.dce.com.cn/dce/content/2026/ywggytz/18627887.html",
+      "facts": [
+        "The amended rules apply to I2704 and later contracts.",
+        "The source should be monitored when interpreting contract continuity across the change."
+      ],
+      "source_type": "exchange_primary_notice"
+    }
+  ]
+}

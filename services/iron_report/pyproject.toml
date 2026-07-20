@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aituge-iron-report"
+version = "0.1.0"
+description = "Iron ore daily and weekly report demo service"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "pandas>=2.2,<3",
+  "pydantic-settings>=2.4,<3",
+  "python-docx>=1.1,<2",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.23,<1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/iron_report"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "../../backend", "../../backend/single-agent", "../.."]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"

@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-07-20T03:11:36+00:00",
+  "charts": [
+    {
+      "section": "日线粒度足以验证日报和周报图表",
+      "question": "最近 60 个交易日的 I0 收盘价走势是否可用于趋势图回归测试？",
+      "family": "Trend",
+      "type": "line",
+      "fields": [
+        "date",
+        "close_cny_per_ton"
+      ],
+      "takeaway": "保留足够日频点，并附带结算、成交和持仓作为可审计上下文。",
+      "palette_policy": "single-root preferred"
+    },
+    {
+      "section": "全球基准适合做方向校验，不适合互相替代",
+      "question": "两套月度全球基准是否方向一致？",
+      "family": "Trend",
+      "type": "line",
+      "fields": [
+        "month",
+        "series",
+        "price_usd_per_ton"
+      ],
+      "takeaway": "方向高度一致，但口径差异要求分别标注。",
+      "palette_policy": "hard two-root cap"
+    }
+  ]
+}

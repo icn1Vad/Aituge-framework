@@ -1,0 +1,49 @@
+{
+  "generated_at": "2026-07-20T03:11:36+00:00",
+  "sources": [
+    {
+      "source_id": "sina_iron_ore_i0",
+      "name": "Sina Finance iron ore continuous futures daily series (I0)",
+      "url": "https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20_I02021_4_12=/InnerFuturesNewService.getDailyKLine",
+      "retrieved_at": "2026-07-20T03:11:36+00:00",
+      "raw_file": "raw\\sina_iron_ore_i0_daily.jsonp",
+      "sha256": "672f4c946f3d65a50a5c73edff7292b815cd038274ce818be72667661d103f00",
+      "rows": 3099,
+      "date_min": "2013-10-18",
+      "date_max": "2026-07-17",
+      "grain": "one row per trading day for the continuous I0 series",
+      "license_note": "Third-party market-data redistribution terms were not established. Keep this snapshot for internal demo/testing and confirm commercial redistribution rights before external distribution.",
+      "caveat": "The symbol is a continuous series assembled by the data provider. It is not a single deliverable contract and is not a direct DCE API response."
+    },
+    {
+      "source_id": "fred_imf_piorecrusdm",
+      "name": "IMF Global price of Iron Ore, retrieved through FRED (PIORECRUSDM)",
+      "url": "https://fred.stlouisfed.org/series/PIORECRUSDM",
+      "download_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=PIORECRUSDM",
+      "retrieved_at": "2026-07-20T03:11:36+00:00",
+      "raw_file": "raw\\fred_piorecrusdm.csv",
+      "sha256": "22718c917c2495d20a5e1fba2eb059b7e523bc242ed6ee622170d034e719b9f0",
+      "rows": 414,
+      "date_min": "1992-01",
+      "date_max": "2026-06",
+      "grain": "one monthly benchmark observation",
+      "unit": "nominal USD per metric ton",
+      "license_note": "The FRED page identifies IMF copyright and provides a suggested citation. Use with attribution and review IMF/FRED terms before redistribution."
+    },
+    {
+      "source_id": "world_bank_pink_sheet_iron_ore",
+      "name": "World Bank Pink Sheet - Iron ore, CFR spot",
+      "url": "https://thedocs.worldbank.org/en/doc/74e8be41ceb20fa0da750cda2f6b9e4e-0050012026/world-bank-commodities-price-data-the-pink-sheet",
+      "download_url": "https://thedocs.worldbank.org/en/doc/74e8be41ceb20fa0da750cda2f6b9e4e-0050012026/related/CMO-Historical-Data-Monthly.xlsx",
+      "retrieved_at": "2026-07-20T03:11:36+00:00",
+      "raw_file": "raw\\world_bank_cmo_historical_data_monthly.xlsx",
+      "sha256": "8d51e9ac53037684a43cf00075dd3619517563ef17c7327ef9f09074e312ed95",
+      "rows": 798,
+      "date_min": "1960-01",
+      "date_max": "2026-06",
+      "grain": "one monthly CFR spot benchmark observation",
+      "unit": "nominal USD per metric ton",
+      "license_note": "World Bank source file retained with attribution. Review the World Bank Terms of Use before external redistribution."
+    }
+  ]
+}

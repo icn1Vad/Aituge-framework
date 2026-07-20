@@ -1,0 +1,74 @@
+---
+name: iron-report-generator
+description: Generate an evidence-grounded iron ore daily or weekly report with two code-created charts.
+---
+
+# Iron Ore Report Generator
+
+## Mandatory execution order
+
+1. Read `report_type`, `report_date`, `data_as_of_date`, and `include_web_research` from the Task input.
+2. Call `iron_market_data` exactly once with the requested report type and report date.
+3. Treat the tool's `report_date` and `data_as_of_date` as authoritative and keep them separate everywhere.
+4. If `include_web_research` is true and `web_search` is available, make one or two focused searches for attributable market context published no later than the report date.
+5. If search is unavailable, errors, or returns no usable source, use `fallback_news` from `iron_market_data` and set `research_status` to `FALLBACK`. Search failure alone must not fail the report.
+6. Use `code_interpreter` to create exactly two PNG charts from the numeric series returned by `iron_market_data`.
+7. Return exactly one JSON object matching the registered output schema. Do not wrap it in Markdown.
+
+## Chart requirements
+
+Use matplotlib. Save charts as PNG files in the code tool working directory. Do not insert static or downloaded images.
+
+For `DAILY`:
+
+- Chart 1: close and settlement over the returned daily series.
+- Chart 2: volume and open interest over the most recent 20 observations, using separate axes when needed.
+
+For `WEEKLY`:
+
+- Chart 1: close and settlement over the returned daily series, with a 20-session moving average.
+- Chart 2: normalize the domestic close series and the two global monthly benchmark series to 100 at their own first observation, then compare direction. Clearly label that the chart is normalized and is not a cross-currency price spread.
+
+Use English chart titles and axis labels so the server does not depend on an unverified Chinese matplotlib font. Do not make a VLM chart-review call.
+
+If two valid chart Artifacts cannot be created, do not claim success.
+
+## Data grounding
+
+- Every numeric metric must come from the market data tool.
+- Copy `source_id` and `data_as_of_date` into every metric.
+- I0 is a provider-built continuous series, not one deliverable DCE contract.
+- Domestic prices are CNY per metric ton and global benchmarks are USD per metric ton. Without FX data, never calculate a direct price spread or premium.
+- Do not claim measured inventory, steel output, freight, or grade-premium movements because those datasets are absent.
+- Company releases and news are context, not forecasts.
+
+## Research status
+
+- `LIVE`: at least one usable live-search source was used.
+- `FALLBACK`: live research was requested but unavailable/failed, and fixed fallback news was used.
+- `DISABLED`: `include_web_research` is false. Fixed source metadata may still be cited for the market series.
+
+## Daily report content
+
+- Current close and settlement.
+- Daily, 5-session, and 20-session returns.
+- 20-session realized annualized volatility.
+- Volume and open-interest observations.
+- Recent range and key risks.
+- Separate sourced market context and explicit limitations.
+
+## Weekly report content
+
+- Weekly return and week high/low.
+- Current versus previous-week average volume.
+- Open-interest and 20-session comparisons.
+- Domestic trend and normalized global direction comparison.
+- Sourced weekly context, next-period observations, and explicit limitations.
+
+## Output limits
+
+- Two to eight concise sections.
+- No more than 30 metrics.
+- No more than 30 sources.
+- Preserve source URLs exactly as returned.
+- `generated_at` must be an ISO-8601 timestamp.

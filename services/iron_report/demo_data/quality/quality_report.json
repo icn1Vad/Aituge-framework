@@ -1,0 +1,155 @@
+{
+  "generated_at": "2026-07-20T03:11:36+00:00",
+  "purpose": "Internal demo and automated report-pipeline testing",
+  "overall_status": "PASS",
+  "datasets": {
+    "china_futures": {
+      "rows": 3099,
+      "date_min": "2013-10-18",
+      "date_max": "2026-07-17"
+    },
+    "fred_global": {
+      "rows": 414,
+      "date_min": "1992-01",
+      "date_max": "2026-06"
+    },
+    "world_bank_global": {
+      "rows": 798,
+      "date_min": "1960-01",
+      "date_max": "2026-06"
+    }
+  },
+  "checks": [
+    {
+      "id": "futures_unique_date",
+      "status": "PASS",
+      "evidence": {
+        "duplicate_dates": 0,
+        "rows": 3099
+      },
+      "severity_if_failed": "critical"
+    },
+    {
+      "id": "futures_required_fields_complete",
+      "status": "PASS",
+      "evidence": {
+        "open": 0,
+        "high": 0,
+        "low": 0,
+        "close": 0,
+        "settlement": 0,
+        "volume_contracts": 0,
+        "open_interest_contracts": 0
+      },
+      "severity_if_failed": "high"
+    },
+    {
+      "id": "futures_ohlc_valid",
+      "status": "PASS",
+      "evidence": {
+        "invalid_rows": 0
+      },
+      "severity_if_failed": "high"
+    },
+    {
+      "id": "futures_activity_non_negative",
+      "status": "PASS",
+      "evidence": {
+        "invalid_rows": 0
+      },
+      "severity_if_failed": "high"
+    },
+    {
+      "id": "futures_dates_strictly_increasing",
+      "status": "PASS",
+      "evidence": {
+        "strictly_increasing": true
+      },
+      "severity_if_failed": "critical"
+    },
+    {
+      "id": "futures_snapshot_freshness",
+      "status": "PASS",
+      "evidence": {
+        "retrieved_date": "2026-07-20",
+        "latest_trading_date": "2026-07-17",
+        "lag_calendar_days": 3,
+        "threshold_calendar_days": 5
+      },
+      "severity_if_failed": "high",
+      "note": "A weekend or market holiday can legitimately add calendar-day lag."
+    },
+    {
+      "id": "global_cross_source_directional_consistency",
+      "status": "PASS",
+      "evidence": {
+        "months": 60,
+        "pearson_correlation": 0.989405,
+        "median_absolute_difference_pct": 1.6016,
+        "max_absolute_difference_pct": 8.6596
+      },
+      "severity_if_failed": "medium",
+      "note": "The two global series use related but not identical benchmark definitions."
+    }
+  ],
+  "known_limitations": [
+    "The I0 series is provider-constructed continuous futures data, not a single contract.",
+    "The China futures price is CNY per metric ton while global benchmarks are nominal USD per metric ton.",
+    "No FX, port inventory, steel output, freight, or grade-premium series is included yet.",
+    "Corporate source cards are supply-context observations, not independent market forecasts."
+  ],
+  "recommended_automated_tests": [
+    "Unique and strictly increasing trading date",
+    "Required OHLCV and open-interest fields are non-null",
+    "high >= max(open, low, close) and low <= min(open, high, close)",
+    "No negative volume or open interest",
+    "Latest trading date freshness within five calendar days during normal markets",
+    "Every generated report metric includes source_id and observation date"
+  ],
+  "sources": [
+    {
+      "source_id": "sina_iron_ore_i0",
+      "name": "Sina Finance iron ore continuous futures daily series (I0)",
+      "url": "https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20_I02021_4_12=/InnerFuturesNewService.getDailyKLine",
+      "retrieved_at": "2026-07-20T03:11:36+00:00",
+      "raw_file": "raw\\sina_iron_ore_i0_daily.jsonp",
+      "sha256": "672f4c946f3d65a50a5c73edff7292b815cd038274ce818be72667661d103f00",
+      "rows": 3099,
+      "date_min": "2013-10-18",
+      "date_max": "2026-07-17",
+      "grain": "one row per trading day for the continuous I0 series",
+      "license_note": "Third-party market-data redistribution terms were not established. Keep this snapshot for internal demo/testing and confirm commercial redistribution rights before external distribution.",
+      "caveat": "The symbol is a continuous series assembled by the data provider. It is not a single deliverable contract and is not a direct DCE API response."
+    },
+    {
+      "source_id": "fred_imf_piorecrusdm",
+      "name": "IMF Global price of Iron Ore, retrieved through FRED (PIORECRUSDM)",
+      "url": "https://fred.stlouisfed.org/series/PIORECRUSDM",
+      "download_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=PIORECRUSDM",
+      "retrieved_at": "2026-07-20T03:11:36+00:00",
+      "raw_file": "raw\\fred_piorecrusdm.csv",
+      "sha256": "22718c917c2495d20a5e1fba2eb059b7e523bc242ed6ee622170d034e719b9f0",
+      "rows": 414,
+      "date_min": "1992-01",
+      "date_max": "2026-06",
+      "grain": "one monthly benchmark observation",
+      "unit": "nominal USD per metric ton",
+      "license_note": "The FRED page identifies IMF copyright and provides a suggested citation. Use with attribution and review IMF/FRED terms before redistribution."
+    },
+    {
+      "source_id": "world_bank_pink_sheet_iron_ore",
+      "name": "World Bank Pink Sheet - Iron ore, CFR spot",
+      "url": "https://thedocs.worldbank.org/en/doc/74e8be41ceb20fa0da750cda2f6b9e4e-0050012026/world-bank-commodities-price-data-the-pink-sheet",
+      "download_url": "https://thedocs.worldbank.org/en/doc/74e8be41ceb20fa0da750cda2f6b9e4e-0050012026/related/CMO-Historical-Data-Monthly.xlsx",
+      "retrieved_at": "2026-07-20T03:11:36+00:00",
+      "raw_file": "raw\\world_bank_cmo_historical_data_monthly.xlsx",
+      "sha256": "8d51e9ac53037684a43cf00075dd3619517563ef17c7327ef9f09074e312ed95",
+      "rows": 798,
+      "date_min": "1960-01",
+      "date_max": "2026-06",
+      "grain": "one monthly CFR spot benchmark observation",
+      "unit": "nominal USD per metric ton",
+      "license_note": "World Bank source file retained with attribution. Review the World Bank Terms of Use before external redistribution."
+    }
+  ]
+}
