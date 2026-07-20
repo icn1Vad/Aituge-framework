@@ -1,6 +1,6 @@
 # AI-framework appliance deployment
 
-This deployment keeps Framework, Proof, and their data services isolated from
+This deployment keeps Framework, Proof, Contract Python, and their data services isolated from
 the existing appliance workloads.
 
 Remote layout:
@@ -40,6 +40,12 @@ rebuild the lightweight runtime layer.
 Runtime secrets are stored only in `deploy/appliance/.env` and
 `deploy/appliance/proof.env`. Never commit either file.
 
+`CONTRACT_INTERNAL_TOKEN` must equal ContiNew Java's
+`BUSINESS_CONTRACT_AGENT_INTERNAL_TOKEN`. `FRAMEWORK_RESULT_SINK_INTERNAL_TOKEN`
+and `CONTRACT_RESULT_SINK_INTERNAL_TOKEN` must contain the same independent
+callback secret. Contract Python is reachable only as `http://ai-contract:18200`
+on the internal Docker networks; it does not publish a host port.
+
 `AI_FRAMEWORK_RUNTIME_ROOT` points to the persistent host data directory. Keep
 that path unchanged between releases so PostgreSQL, Redis, uploaded documents,
 and Framework conversation history survive an application upgrade.
@@ -52,14 +58,15 @@ and chat image artifacts. Keep it outside the Git checkout; the Framework create
 
 Framework accepts an explicit JSON list of trusted service entry files through
 `AITUGE_CAPABILITY_ENTRIES`. The appliance mounts Proof and the deterministic
-Smoke service independently:
+Smoke and Contract services independently:
 
 ```yaml
 environment:
-  AITUGE_CAPABILITY_ENTRIES: '["/opt/proof-capabilities/register.py","/opt/smoke-capabilities/register.py"]'
+  AITUGE_CAPABILITY_ENTRIES: '["/opt/proof-capabilities/register.py","/opt/smoke-capabilities/register.py","/opt/contract-capabilities/register.py"]'
 volumes:
   - ../../services/proof/capabilities:/opt/proof-capabilities:ro
   - ../../services/smoke/capabilities:/opt/smoke-capabilities:ro
+  - ../../services/contract/capabilities:/opt/contract-capabilities:ro
 ```
 
 To add another service, create `services/<name>/capabilities/register.py`, mount
@@ -74,5 +81,6 @@ git switch proof
 
 The host endpoints are Framework `:8894`, Proof `:18100`, and Smoke `:18200`. Containers on the
 existing `proofspace-network` can use `http://ai-framework:8894` and
-`http://ai-proof:18100`. PostgreSQL and Redis remain host-local on ports 15432
+`http://ai-proof:18100`. Java reaches Contract Python through the shared
+`agent-internal` network. PostgreSQL and Redis remain host-local on ports 15432
 and 16379.
