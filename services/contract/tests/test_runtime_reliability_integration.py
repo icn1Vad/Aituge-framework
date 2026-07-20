@@ -8,7 +8,7 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from contract.api.models import CreateReviewRequest, Perspective, ReviewStatus
+from contract.api.models import CreateReviewRequest, ErrorData, Perspective, ReviewStatus
 from contract.application.document_processing import ContractDocumentProcessor
 from contract.application.framework_gateway import (
     FrameworkExecutionRequest,
@@ -17,7 +17,11 @@ from contract.application.framework_gateway import (
 )
 from contract.application.ports import InternalRequestContext, UploadedContract
 from contract.application.runtime_service import RuntimeContractReviewService
+from contract.callback.models import FrameworkTaskInput, RunFailedCallback, StageExecuteRequest
 from contract.config import Settings
+from contract.errors import ContractError
+from contract.internal.service import ContractInternalService
+from contract.persistence.postgres.callback_repository import FrameworkCallbackRepository
 from contract.persistence.postgres.migrate import run_migrations
 from contract.persistence.postgres.repository import ContractRepository
 from contract.persistence.postgres.review_state import ReviewStateRepository
@@ -123,22 +127,8 @@ def test_transient_dispatch_is_resumed_with_frozen_framework_keys(tmp_path: Path
         assert created.status == ReviewStatus.CREATED
         assert created.framework_attempt_no is None
 
-        first_reservation = service.state_repository.reserve_initial_attempt(
-            created.review_id,
-            tenant_id=context.tenant_id,
-            user_id=context.user_id,
-        )
-        second_reservation = service.state_repository.reserve_initial_attempt(
-            created.review_id,
-            tenant_id=context.tenant_id,
-            user_id=context.user_id,
-        )
-        assert first_reservation is not None
-        assert second_reservation == first_reservation
-
         restarted_service = _recreate_service(service.settings, gateway)
-        assert restarted_service._dispatch(first_reservation)
-        assert restarted_service._dispatch(second_reservation)
+        assert restarted_service.reconcile_nonterminal_reviews() == 1
         assert gateway.cancelled_run_ids == []
 
         resumed = restarted_service.create_review(upload=upload, request=request, context=context)
@@ -194,6 +184,118 @@ def test_orphaned_attempt_is_recovered_once_then_fails_retryably(tmp_path: Path)
         assert failed.error.code == "FRAMEWORK_RUN_ORPHANED"
         assert failed.error.retryable is True
         assert failed.framework_attempt_no == 2
+        with psycopg.connect(DATABASE_URL) as conn:
+            attempt_flags = conn.execute(
+                """
+                SELECT attempt_no, is_active
+                FROM contract_framework_attempt
+                WHERE review_id = %s
+                ORDER BY attempt_no
+                """,
+                (created.review_id,),
+            ).fetchall()
+        assert attempt_flags == [(1, False), (2, False)]
+    finally:
+        _cleanup(tenant_id)
+
+
+@pytest.mark.skipif(not DATABASE_URL, reason="CONTRACT_TEST_DATABASE_URL is not configured")
+def test_recovery_attempt_is_claimed_by_stage_before_create_returns(tmp_path: Path) -> None:
+    service, gateway, context, request, upload, tenant_id = _runtime(tmp_path)
+    internal = ContractInternalService(
+        service.repository,
+        FrameworkCallbackRepository(service.settings),
+    )
+    immediate_results = []
+    try:
+        created = service.create_review(upload=upload, request=request, context=context)
+        _age_attempt(created.review_id, 1)
+        gateway.make_stale(created.review_id, 1)
+
+        def execute_before_create_returns(execution: FrameworkExecutionRequest) -> None:
+            snapshot = gateway.executions[(execution.review_id, execution.attempt_no)]
+            stage_request = _stage_request(execution, snapshot)
+            immediate_results.append(internal.execute_stage(stage_request))
+            # A repeated exact request must observe the same active mapping.
+            immediate_results.append(internal.execute_stage(stage_request))
+
+        gateway.on_create = execute_before_create_returns
+        recovered = service.get_status(created.review_id, context=context)
+
+        assert recovered.status == ReviewStatus.RUNNING
+        assert recovered.framework_attempt_no == 2
+        assert len(immediate_results) == 2
+        assert all(item.result_type == "PARSE_CONTRACT_STAGE_V1" for item in immediate_results)
+        with psycopg.connect(DATABASE_URL) as conn:
+            attempts = conn.execute(
+                """
+                SELECT attempt_no, status, framework_task_id, framework_run_id, is_active
+                FROM contract_framework_attempt
+                WHERE review_id = %s
+                ORDER BY attempt_no
+                """,
+                (created.review_id,),
+            ).fetchall()
+        assert attempts == [
+            (1, "ORPHANED", created.framework_task_id, created.framework_run_id, False),
+            (
+                2,
+                "RUNNING",
+                recovered.framework_task_id,
+                recovered.framework_run_id,
+                True,
+            ),
+        ]
+        stale = FrameworkCallbackRepository(service.settings).process(
+            RunFailedCallback(
+                schema_version="1.0",
+                review_id=created.review_id,
+                attempt_no=1,
+                framework_task_id=created.framework_task_id,
+                framework_run_id=created.framework_run_id,
+                event_sequence=1000,
+                callback_id=f"late-attempt-1-{uuid.uuid4().hex}",
+                callback_type="RUN_FAILED",
+                stage_id="resolve_parties",
+                result=None,
+                error=ErrorData(
+                    code="FRAMEWORK_RUN_FAILED",
+                    message="late callback from orphaned Attempt 1",
+                    retryable=True,
+                    user_action_required=False,
+                    details=None,
+                ),
+            )
+        )
+        assert stale.accepted is False
+        assert stale.ignored_reason == "STALE_ATTEMPT"
+        with psycopg.connect(DATABASE_URL) as conn:
+            current = conn.execute(
+                "SELECT status, active_attempt_no FROM contract_review_run WHERE id = %s",
+                (created.review_id,),
+            ).fetchone()
+        assert current == ("RUNNING", 2)
+    finally:
+        _cleanup(tenant_id)
+
+
+@pytest.mark.skipif(not DATABASE_URL, reason="CONTRACT_TEST_DATABASE_URL is not configured")
+def test_result_query_triggers_orphan_recovery(tmp_path: Path) -> None:
+    service, gateway, context, request, upload, tenant_id = _runtime(tmp_path)
+    try:
+        created = service.create_review(upload=upload, request=request, context=context)
+        _age_attempt(created.review_id, 1)
+        gateway.make_stale(created.review_id, 1)
+
+        with pytest.raises(ContractError) as captured:
+            service.get_result(created.review_id, context=context)
+
+        assert captured.value.code == "REVIEW_NOT_READY"
+        assert captured.value.retryable is True
+        assert captured.value.details == {"current_status": "RUNNING"}
+        recovered = service.get_status(created.review_id, context=context)
+        assert recovered.framework_attempt_no == 2
+        assert recovered.framework_run_id != created.framework_run_id
     finally:
         _cleanup(tenant_id)
 
@@ -218,8 +320,43 @@ def test_cancel_uses_two_transactions_and_is_idempotent(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not DATABASE_URL, reason="CONTRACT_TEST_DATABASE_URL is not configured")
+def test_cancel_after_recovery_waits_only_for_active_attempt(tmp_path: Path) -> None:
+    service, gateway, context, request, upload, tenant_id = _runtime(tmp_path)
+    try:
+        created = service.create_review(upload=upload, request=request, context=context)
+        _age_attempt(created.review_id, 1)
+        gateway.make_stale(created.review_id, 1)
+        recovered = service.get_status(created.review_id, context=context)
+        assert recovered.framework_attempt_no == 2
+
+        gateway.cancelled_run_ids.clear()
+        cancelled = service.cancel_review(created.review_id, context=context)
+
+        assert cancelled.status == ReviewStatus.CANCELLED
+        assert gateway.cancelled_run_ids == [recovered.framework_run_id]
+        with psycopg.connect(DATABASE_URL) as conn:
+            attempts = conn.execute(
+                """
+                SELECT attempt_no, status, is_active
+                FROM contract_framework_attempt
+                WHERE review_id = %s
+                ORDER BY attempt_no
+                """,
+                (created.review_id,),
+            ).fetchall()
+        assert attempts == [(1, "ORPHANED", False), (2, "CANCELLED", False)]
+    finally:
+        _cleanup(tenant_id)
+
+
+@pytest.mark.skipif(not DATABASE_URL, reason="CONTRACT_TEST_DATABASE_URL is not configured")
 def test_cancel_during_framework_create_prevents_attempt_activation(tmp_path: Path) -> None:
     service, gateway, context, request, upload, tenant_id = _runtime(tmp_path)
+    internal = ContractInternalService(
+        service.repository,
+        FrameworkCallbackRepository(service.settings),
+    )
+    stage_errors: list[ContractError] = []
 
     def cancel_while_creating(execution: FrameworkExecutionRequest) -> None:
         plan = service.state_repository.begin_cancel(
@@ -233,6 +370,11 @@ def test_cancel_during_framework_create_prevents_attempt_activation(tmp_path: Pa
             user_id=execution.user_id,
             snapshots=(),
         )
+        snapshot = gateway.executions[(execution.review_id, execution.attempt_no)]
+        try:
+            internal.execute_stage(_stage_request(execution, snapshot))
+        except ContractError as exc:
+            stage_errors.append(exc)
 
     gateway.on_create = cancel_while_creating
     try:
@@ -241,6 +383,7 @@ def test_cancel_during_framework_create_prevents_attempt_activation(tmp_path: Pa
         state = service.get_status(response.review_id, context=context)
         assert state.status == ReviewStatus.CANCELLED
         assert state.framework_attempt_no is None
+        assert [error.code for error in stage_errors] == ["FRAMEWORK_CALLBACK_MISMATCH"]
         assert gateway.cancelled_run_ids == [f"framework-run-{response.review_id}-1"]
         with psycopg.connect(DATABASE_URL) as conn:
             attempt = conn.execute(
@@ -313,6 +456,32 @@ def _age_attempt(review_id: str, attempt_no: int) -> None:
             (review_id, attempt_no),
         )
         conn.commit()
+
+
+def _stage_request(
+    execution: FrameworkExecutionRequest,
+    snapshot: FrameworkRunSnapshot,
+) -> StageExecuteRequest:
+    return StageExecuteRequest(
+        schema_version=execution.schema_version,
+        review_id=execution.review_id,
+        attempt_no=execution.attempt_no,
+        framework_task_id=snapshot.task_id,
+        framework_run_id=snapshot.run_id,
+        stage_id="parse_contract",
+        task_input=FrameworkTaskInput(
+            schema_version=execution.schema_version,
+            review_id=execution.review_id,
+            attempt_no=execution.attempt_no,
+            business_task_id=execution.business_task_id,
+            contract_version_id=execution.contract_version_id,
+            document_id=execution.document_id,
+            perspective=execution.perspective,
+            our_party_name=execution.our_party_name,
+            contract_type=execution.contract_type,
+            review_attitude=execution.review_attitude,
+        ),
+    )
 
 
 def _cleanup(tenant_id: str) -> None:

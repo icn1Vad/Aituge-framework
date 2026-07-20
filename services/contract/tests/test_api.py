@@ -122,6 +122,27 @@ def test_non_mock_mode_lazily_builds_runtime_service(monkeypatch) -> None:
     assert len(built) == 1
 
 
+def test_non_mock_lifespan_runs_startup_reconciliation_once() -> None:
+    class RuntimeStub:
+        def __init__(self) -> None:
+            self.reconcile_calls = 0
+
+        def reconcile_nonterminal_reviews(self) -> int:
+            self.reconcile_calls += 1
+            return 3
+
+    runtime = RuntimeStub()
+    app = create_app(
+        Settings(mock_mode=False, database_url="postgresql://not-opened"),
+        service=runtime,
+    )
+
+    with TestClient(app, raise_server_exceptions=False):
+        pass
+
+    assert runtime.reconcile_calls == 1
+
+
 def test_framework_callback_requires_its_own_token_and_strict_terminal_shape() -> None:
     class CallbackStub:
         def accept(self, path_review_id, callback):

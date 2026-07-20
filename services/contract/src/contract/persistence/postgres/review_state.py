@@ -133,6 +133,19 @@ class ReviewStateRepository:
         state["pending_attempt"] = dict(pending) if pending else None
         return state
 
+    def list_nonterminal_reviews(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, tenant_id, user_id
+                FROM contract_review_run
+                WHERE status IN ('CREATED', 'RUNNING')
+                  AND cancel_requested = false
+                ORDER BY created_at, id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def reserve_initial_attempt(
         self,
         review_id: str,
@@ -527,7 +540,8 @@ class ReviewStateRepository:
                     """
                     UPDATE contract_framework_attempt
                     SET status = 'ORPHANED', orphaned_at = now(),
-                        orphan_reason = 'FRAMEWORK_RUN_ORPHANED', finished_at = now()
+                        orphan_reason = 'FRAMEWORK_RUN_ORPHANED', finished_at = now(),
+                        is_active = false
                     WHERE review_id = %s AND attempt_no = %s
                     """,
                     (review_id, attempt_no),
@@ -549,7 +563,8 @@ class ReviewStateRepository:
                 """
                 UPDATE contract_framework_attempt
                 SET status = 'ORPHANED', orphaned_at = now(),
-                    orphan_reason = 'FRAMEWORK_RUN_ORPHANED', finished_at = now()
+                    orphan_reason = 'FRAMEWORK_RUN_ORPHANED', finished_at = now(),
+                    is_active = false
                 WHERE review_id = %s AND attempt_no = %s
                 """,
                 (review_id, attempt_no),
@@ -605,7 +620,8 @@ class ReviewStateRepository:
                 SELECT attempt_no, framework_task_id, framework_run_id
                 FROM contract_framework_attempt
                 WHERE review_id = %s
-                  AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
+                  AND status = 'RUNNING'
+                  AND is_active = true
                   AND framework_task_id IS NOT NULL
                 ORDER BY attempt_no
                 """,
@@ -642,6 +658,14 @@ class ReviewStateRepository:
             if review["version"] != plan.expected_version or not review["cancel_requested"]:
                 conn.commit()
                 return False
+            conn.execute(
+                """
+                UPDATE contract_framework_attempt
+                SET is_active = false
+                WHERE review_id = %s AND is_active
+                """,
+                (plan.review_id,),
+            )
             conn.execute(
                 """
                 UPDATE contract_framework_attempt

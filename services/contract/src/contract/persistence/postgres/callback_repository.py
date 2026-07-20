@@ -13,7 +13,7 @@ from psycopg.types.json import Jsonb
 from contract.api.models import ReviewResultData
 from contract.application.idempotency import canonical_json, normalize_party_name
 from contract.application.result_hash import compute_result_hash
-from contract.callback.models import FrameworkCallback
+from contract.callback.models import FrameworkCallback, StageExecuteRequest
 from contract.config import Settings
 from contract.errors import ConfigurationError, ContractError
 from contract.ir.models import ContractIR
@@ -111,6 +111,127 @@ class FrameworkCallbackRepository:
         value["active_attempt"] = dict(attempt) if attempt else None
         value["generation"] = dict(generation) if generation else None
         return value
+
+    def get_stage_execution_context(self, request: StageExecuteRequest) -> dict[str, Any]:
+        """Return the active execution context, claiming a matching CREATING Attempt if needed.
+
+        Framework starts a Run before its create response reaches Contract Python.  The
+        first gateway stage can therefore arrive while the new Attempt is still CREATING.
+        Binding the exact Task/Run mapping here closes that race without performing any
+        Framework HTTP request while the review row is locked.
+        """
+        with self.connect() as conn:
+            review = conn.execute(
+                "SELECT * FROM contract_review_run WHERE id = %s FOR UPDATE",
+                (request.review_id,),
+            ).fetchone()
+            if review is None:
+                raise ContractError("REVIEW_NOT_FOUND", "Contract review does not exist", status_code=404)
+            attempt = conn.execute(
+                """
+                SELECT * FROM contract_framework_attempt
+                WHERE review_id = %s AND attempt_no = %s
+                FOR UPDATE
+                """,
+                (request.review_id, request.attempt_no),
+            ).fetchone()
+            if attempt is None:
+                raise self._mismatch("Framework Attempt does not exist")
+            if not self._stage_task_matches_review(review, request):
+                raise self._mismatch("Framework task input does not match the contract review")
+
+            mapping_matches = (
+                attempt["framework_task_id"] == request.framework_task_id
+                and attempt["framework_run_id"] == request.framework_run_id
+            )
+            already_active = (
+                review["status"] == "RUNNING"
+                and review["active_attempt_no"] == request.attempt_no
+                and attempt["status"] in {"RUNNING", "SUCCEEDED"}
+                and bool(attempt["is_active"])
+                and mapping_matches
+            )
+            if not already_active:
+                mapping_available = (
+                    attempt["framework_task_id"] is None
+                    and attempt["framework_run_id"] is None
+                ) or mapping_matches
+                can_claim = (
+                    review["status"] in {"CREATED", "RUNNING"}
+                    and not review["cancel_requested"]
+                    and attempt["status"] == "CREATING"
+                    and not attempt["is_active"]
+                    and mapping_available
+                    and (review["active_attempt_no"] or 0) < request.attempt_no
+                )
+                if not can_claim:
+                    raise self._mismatch(
+                        "Framework stage execution does not match the active Attempt"
+                    )
+                if review["active_attempt_no"] is not None:
+                    previous = conn.execute(
+                        """
+                        SELECT status FROM contract_framework_attempt
+                        WHERE review_id = %s AND attempt_no = %s
+                        FOR UPDATE
+                        """,
+                        (request.review_id, review["active_attempt_no"]),
+                    ).fetchone()
+                    if previous is None or previous["status"] != "ORPHANED":
+                        raise self._mismatch("Previous Framework Attempt is not orphaned")
+
+                stage = STAGE_TO_REVIEW_STAGE[request.stage_id]
+                conn.execute(
+                    """
+                    UPDATE contract_framework_attempt
+                    SET is_active = false
+                    WHERE review_id = %s AND is_active
+                    """,
+                    (request.review_id,),
+                )
+                conn.execute(
+                    """
+                    UPDATE contract_framework_attempt
+                    SET framework_task_id = %s, framework_run_id = %s,
+                        status = 'RUNNING', current_stage = %s,
+                        last_activity_at = now(), started_at = COALESCE(started_at, now()),
+                        is_active = true
+                    WHERE review_id = %s AND attempt_no = %s
+                    """,
+                    (
+                        request.framework_task_id,
+                        request.framework_run_id,
+                        stage,
+                        request.review_id,
+                        request.attempt_no,
+                    ),
+                )
+                conn.execute(
+                    """
+                    UPDATE contract_review_run
+                    SET status = 'RUNNING', current_stage = %s,
+                        active_attempt_no = %s, started_at = COALESCE(started_at, now()),
+                        version = version + 1
+                    WHERE id = %s
+                    """,
+                    (stage, request.attempt_no, request.review_id),
+                )
+            conn.commit()
+        return self.get_review_context(request.review_id)
+
+    @staticmethod
+    def _stage_task_matches_review(review: dict[str, Any], request: StageExecuteRequest) -> bool:
+        task = request.task_input
+        return (
+            task.schema_version == review["schema_version"]
+            and task.business_task_id == review["business_task_id"]
+            and task.contract_version_id == review["contract_version_id"]
+            and task.document_id == review["document_id"]
+            and task.perspective == review["perspective"]
+            and normalize_party_name(task.our_party_name) == review["our_party_name"]
+            and task.contract_type == review["contract_type"]
+            and task.review_attitude == review["review_attitude"]
+        )
 
     def get_attempt_parse_generation(
         self,

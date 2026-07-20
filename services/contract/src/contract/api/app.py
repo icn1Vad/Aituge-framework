@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import logging
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
@@ -70,6 +72,7 @@ ERROR_RESPONSES = {
     503: {"model": ErrorResponse},
     504: {"model": ErrorResponse},
 }
+logger = logging.getLogger(__name__)
 
 
 def create_app(
@@ -78,8 +81,23 @@ def create_app(
     internal_service: ContractInternalService | None = None,
     callback_service: FrameworkCallbackService | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="Contract Agent", version="1.0.0")
-    app.state.settings = settings or get_settings()
+    app_settings = settings or get_settings()
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        if not application.state.settings.mock_mode:
+            runtime_service = application.state.contract_service
+            if runtime_service is None:
+                runtime_service = build_runtime_contract_review_service(application.state.settings)
+                application.state.contract_service = runtime_service
+            reconcile = getattr(runtime_service, "reconcile_nonterminal_reviews", None)
+            if callable(reconcile):
+                count = await asyncio.to_thread(reconcile)
+                logger.info("Reconciled %s nonterminal contract reviews during startup", count)
+        yield
+
+    app = FastAPI(title="Contract Agent", version="1.0.0", lifespan=lifespan)
+    app.state.settings = app_settings
     app.state.contract_service = service
     app.state.contract_internal_service = internal_service
     app.state.framework_callback_service = callback_service

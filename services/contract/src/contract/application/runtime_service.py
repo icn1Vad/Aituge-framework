@@ -148,7 +148,10 @@ class RuntimeContractReviewService:
             user_id=context.user_id,
         )
         pending = state["pending_attempt"]
-        if pending is not None and state["status"] in {"CREATED", "RUNNING"} and not state["cancel_requested"]:
+        needs_dispatch = pending is not None or (
+            state["status"] == "CREATED" and state["active_attempt_no"] is None
+        )
+        if needs_dispatch and state["status"] in {"CREATED", "RUNNING"} and not state["cancel_requested"]:
             reservation = self.state_repository.reserve_initial_attempt(
                 review_id,
                 tenant_id=context.tenant_id,
@@ -171,18 +174,14 @@ class RuntimeContractReviewService:
         return self._status_data(state)
 
     def get_result(self, review_id: str, *, context: InternalRequestContext) -> ReviewResultData:
-        state = self.state_repository.get_state(
-            review_id,
-            tenant_id=context.tenant_id,
-            user_id=context.user_id,
-        )
-        if state["status"] != "SUCCEEDED":
+        status = self.get_status(review_id, context=context)
+        if status.status != ReviewStatus.SUCCEEDED:
             raise ContractError(
                 "REVIEW_NOT_READY",
                 "合同审查结果尚未就绪",
                 status_code=409,
-                retryable=state["status"] in {"CREATED", "RUNNING"},
-                details={"current_status": state["status"]},
+                retryable=status.status in {ReviewStatus.CREATED, ReviewStatus.RUNNING},
+                details={"current_status": status.status.value},
             )
         value = self.state_repository.get_result_json(
             review_id,
@@ -195,6 +194,24 @@ class RuntimeContractReviewService:
             return ReviewResultData.model_validate(value)
         except ValidationError as exc:
             raise ContractError("RESULT_INVALID", "合同审查结果不符合冻结协议", status_code=500) from exc
+
+    def reconcile_nonterminal_reviews(self) -> int:
+        """Resume recoverable reviews after a Contract Python process restart."""
+        reviews = self.state_repository.list_nonterminal_reviews()
+        reconciled = 0
+        for review in reviews:
+            context = InternalRequestContext(
+                tenant_id=review["tenant_id"],
+                user_id=review["user_id"],
+                request_id=f"startup-reconcile-{review['id']}",
+                idempotency_key=None,
+            )
+            try:
+                self.get_status(review["id"], context=context)
+                reconciled += 1
+            except ContractError:
+                logger.exception("Unable to reconcile contract review %s during startup", review["id"])
+        return reconciled
 
     def cancel_review(self, review_id: str, *, context: InternalRequestContext) -> CancelReviewData:
         plan = self.state_repository.begin_cancel(

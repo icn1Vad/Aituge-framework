@@ -187,7 +187,7 @@ class ContractInternalService:
         return validated
 
     def _execution_context(self, request: StageExecuteRequest) -> dict[str, Any]:
-        review = self.callback_repository.get_review_context(request.review_id)
+        review = self.callback_repository.get_stage_execution_context(request)
         attempt = review.get("active_attempt")
         if (
             review["status"] != "RUNNING"
@@ -200,19 +200,6 @@ class ContractInternalService:
             raise ContractError(
                 "FRAMEWORK_CALLBACK_MISMATCH",
                 "Framework stage execution does not match the active Attempt",
-                status_code=409,
-            )
-        task = request.task_input
-        if (
-            task.business_task_id != review["business_task_id"]
-            or task.contract_version_id != review["contract_version_id"]
-            or task.document_id != review["document_id"]
-            or task.perspective != review["perspective"]
-            or task.review_attitude != review["review_attitude"]
-        ):
-            raise ContractError(
-                "FRAMEWORK_CALLBACK_MISMATCH",
-                "Framework task input does not match the contract review",
                 status_code=409,
             )
         return review
