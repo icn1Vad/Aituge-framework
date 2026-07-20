@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from scheduling.scheduler import SchedulingRuntimeOptions
 from task_manager.artifact_service import resolve_artifact_path
 from task_manager.schemas import TaskCreateRequest, TaskRunRequest
 from task_manager.service import TaskManagerService
+from tool.search import AliyunSearchConfig, AliyunSearchTool
 
 from iron_report.config import Settings
 from iron_report.data import IronReportDataRepository
@@ -58,6 +60,44 @@ class IronReportService:
         self.export_state = ExportStateStore(settings.export_state_root / "state")
         self.exporter = IronReportExporter(settings, options, self.export_state)
         self._export_locks: dict[str, asyncio.Lock] = {}
+
+    async def research(self, report_date: date, query: str) -> dict[str, Any]:
+        """Return live research or a fixed, schema-stable fallback snapshot."""
+        fallback = self.data.fallback_news(report_date)
+        endpoint = self.settings.search_endpoint.strip()
+        api_key = self.settings.search_api_key.strip()
+        if not endpoint or not api_key:
+            return _fallback_research(query, report_date, fallback, "NOT_CONFIGURED")
+
+        search = AliyunSearchTool(
+            AliyunSearchConfig(
+                api_key=api_key,
+                endpoint=endpoint,
+                search_count=self.settings.search_count,
+                timeout_seconds=10,
+            )
+        )
+        try:
+            response = await search.aquery(query.strip())
+        except Exception:
+            return _fallback_research(query, report_date, fallback, "SEARCH_FAILED")
+
+        raw_items = response.get("result") if isinstance(response, dict) else None
+        items = (
+            [dict(item) for item in raw_items if _usable_live_research_item(item)]
+            if isinstance(raw_items, list)
+            else []
+        )
+        if not items:
+            return _fallback_research(query, report_date, fallback, "NO_USABLE_RESULTS")
+        return {
+            "research_status": "LIVE",
+            "available": True,
+            "reason": "LIVE_RESULTS",
+            "query": query.strip(),
+            "report_date": report_date.isoformat(),
+            "items": items,
+        }
 
     def verify_internal_token(self, token: str) -> None:
         expected = self.settings.internal_token.encode("utf-8")
@@ -376,7 +416,7 @@ class IronReportService:
             tool_name = str((event.payload_json or {}).get("tool_name") or "").lower()
             if "iron_market_data" in tool_name:
                 stage = "LOADING_DATA"
-            elif "search" in tool_name:
+            elif "search" in tool_name or "research" in tool_name:
                 stage = "RESEARCHING"
             elif "python" in tool_name or "code" in tool_name:
                 stage = "GENERATING_CHARTS"
@@ -439,6 +479,32 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _fallback_research(
+    query: str,
+    report_date: date,
+    fallback: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "research_status": "FALLBACK",
+        "available": False,
+        "reason": reason,
+        "query": query.strip(),
+        "report_date": report_date.isoformat(),
+        "retrieved_at": fallback.get("retrieved_at"),
+        "items": list(fallback.get("items") or []),
+    }
+
+
+def _usable_live_research_item(item: Any) -> bool:
+    return (
+        isinstance(item, dict)
+        and bool(str(item.get("title") or "").strip())
+        and bool(str(item.get("url") or "").strip())
+        and bool(str(item.get("content") or "").strip())
+    )
 
 
 def _artifact_kind(mime: str, name: str) -> str:

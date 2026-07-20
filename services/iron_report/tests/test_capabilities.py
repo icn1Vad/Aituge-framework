@@ -57,9 +57,16 @@ async def test_capability_uses_configured_model_and_existing_react_tools() -> No
 
     await _module().register(registry, FakeSettings())
 
-    assert registry.tools[0]["tool_name"] == "iron_market_data"
+    assert [tool["tool_name"] for tool in registry.tools] == [
+        "iron_market_data",
+        "iron_report_research",
+    ]
     assert registry.agents[0]["model_id"] == "configured-model"
-    assert registry.agents[0]["default_tools"] == ["iron_market_data", "web_search", "code_interpreter"]
+    assert registry.agents[0]["default_tools"] == [
+        "iron_market_data",
+        "iron_report_research",
+        "code_interpreter",
+    ]
     system_prompt = registry.agents[0]["system_prompt"]
     for field in (
         "title",

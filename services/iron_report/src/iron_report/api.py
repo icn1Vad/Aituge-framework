@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Body, Header, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from iron_report.schemas import IronReportCreateRequest, ReportType
 from iron_report.service import IronReportService, RequestContext
@@ -16,6 +16,13 @@ class MarketDataToolInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     report_type: ReportType
+    report_date: str
+
+
+class ResearchToolInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1, max_length=400)
     report_date: str
 
 
@@ -131,15 +138,13 @@ def create_router(service: IronReportService) -> APIRouter:
 
     @router.post("/v1/internal/iron-report/data", include_in_schema=False)
     async def market_data(payload: MarketDataToolInput):
-        try:
-            report_date = date.fromisoformat(payload.report_date)
-        except ValueError as exc:
-            from iron_report.errors import IronReportError
-
-            raise IronReportError(
-                "IRON_REPORT_DATE_INVALID", "report_date 必须为 ISO 日期", status_code=422
-            ) from exc
+        report_date = _parse_tool_date(payload.report_date)
         return {"success": True, "data": service.data.build_agent_snapshot(payload.report_type, report_date)}
+
+    @router.post("/v1/internal/iron-report/research", include_in_schema=False)
+    async def research(payload: ResearchToolInput):
+        report_date = _parse_tool_date(payload.report_date)
+        return {"success": True, "data": await service.research(report_date, payload.query)}
 
     @router.post("/v1/internal/iron-report/task-result", include_in_schema=False)
     async def accept_task_result(
@@ -169,6 +174,17 @@ def _context(request: Request, user_id: str, tenant_id: str, dept_id: str) -> Re
         dept_id=dept_id.strip(),
         request_id=_request_id(request),
     )
+
+
+def _parse_tool_date(value: str) -> date:
+    from iron_report.errors import IronReportError
+
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise IronReportError(
+            "IRON_REPORT_DATE_INVALID", "report_date 必须为 ISO 日期", status_code=422
+        ) from exc
 
 
 def _request_id(request: Request) -> str:

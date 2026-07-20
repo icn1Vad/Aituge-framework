@@ -185,3 +185,72 @@ async def test_get_status_preserves_specific_export_failure(tmp_path: Path) -> N
 
     assert status.error_code == "IRON_REPORT_OUTPUT_SCHEMA_INVALID"
     assert status.error_message == "invalid output"
+
+
+@pytest.mark.asyncio
+async def test_research_uses_live_structured_results(tmp_path: Path, monkeypatch) -> None:
+    service = _service(tmp_path)
+    service.settings.search_endpoint = "https://search.example.test"
+    service.settings.search_api_key = "configured-search-key"
+    monkeypatch.setattr(
+        "iron_report.service.AliyunSearchTool.aquery",
+        AsyncMock(
+            return_value={
+                "result": [
+                    {
+                        "title": "Market update",
+                        "url": "https://example.test",
+                        "content": "Iron ore market context",
+                    }
+                ]
+            }
+        ),
+    )
+
+    result = await service.research(date(2026, 7, 17), "iron ore market")
+
+    assert result["research_status"] == "LIVE"
+    assert result["available"] is True
+    assert result["items"][0]["title"] == "Market update"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "search_result, expected_reason",
+    [
+        ({"result": "Error occurred during Aliyun search"}, "NO_USABLE_RESULTS"),
+        ({"result": []}, "NO_USABLE_RESULTS"),
+    ],
+)
+async def test_research_failure_uses_fixed_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+    search_result,
+    expected_reason: str,
+) -> None:
+    service = _service(tmp_path)
+    service.settings.search_endpoint = "http://127.0.0.1:9/unreachable"
+    service.settings.search_api_key = "configured-search-key"
+    monkeypatch.setattr(
+        "iron_report.service.AliyunSearchTool.aquery",
+        AsyncMock(return_value=search_result),
+    )
+
+    result = await service.research(date(2026, 7, 17), "iron ore market")
+
+    assert result["research_status"] == "FALLBACK"
+    assert result["available"] is False
+    assert result["reason"] == expected_reason
+    assert result["items"]
+    assert all(item["published_at"] <= "2026-07-17" for item in result["items"])
+
+
+@pytest.mark.asyncio
+async def test_research_without_configuration_uses_fixed_snapshot(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    result = await service.research(date(2026, 7, 17), "iron ore market")
+
+    assert result["research_status"] == "FALLBACK"
+    assert result["reason"] == "NOT_CONFIGURED"
+    assert result["items"]

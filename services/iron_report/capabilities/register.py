@@ -7,7 +7,7 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import quote
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from iron_report.schemas import IronReportTaskOutput, IronReportTaskPayload, ReportType
 
@@ -20,6 +20,13 @@ class IronMarketDataInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     report_type: ReportType
+    report_date: date
+
+
+class IronReportResearchInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1, max_length=400)
     report_date: date
 
 
@@ -49,6 +56,22 @@ async def register(registry, settings) -> None:
         timeout_seconds=15,
         max_response_chars=180_000,
     )
+    registry.register_http_tool(
+        tool_name="iron_report_research",
+        provider="iron_report_http",
+        display_name="Iron Ore Safe Market Research",
+        description=(
+            "Search attributable iron ore market context for one report date. "
+            "This tool always returns a stable structure and automatically returns the fixed "
+            "news snapshot with research_status FALLBACK when live search is unavailable or empty."
+        ),
+        base_url=service_base_url,
+        path="/v1/internal/iron-report/research",
+        method="POST",
+        input_model=IronReportResearchInput,
+        timeout_seconds=15,
+        max_response_chars=80_000,
+    )
     registry.register_skill_package(
         package_name="iron-report-package",
         display_name="Iron Ore Daily and Weekly Report",
@@ -65,14 +88,15 @@ async def register(registry, settings) -> None:
         model_id=model_id,
         system_prompt=(
             "You are the iron ore daily and weekly report Agent. Follow the active Skill exactly. "
-            "Use only supplied market data and attributable search/fallback sources. Call the market data tool first, "
+            "Use only supplied market data and attributable research/fallback sources. Call the market data tool first, "
+            "use iron_report_research instead of web_search when research is requested, "
             "use code_interpreter to create the required charts, preserve reportDate and dataAsOfDate separately, "
             "never invent missing fundamentals, and return exactly one valid JSON object. "
             "Use code_interpreter only for numeric analysis and the two PNG charts; do not use it to invent a different "
             "report JSON contract. The final object must validate against this exact JSON Schema, with no extra keys: "
             f"{output_schema}"
         ),
-        default_tools=["iron_market_data", "web_search", "code_interpreter"],
+        default_tools=["iron_market_data", "iron_report_research", "code_interpreter"],
         default_datasets=[],
     )
     registry.register_task(
@@ -83,7 +107,7 @@ async def register(registry, settings) -> None:
         default_agent_id="iron-report-agent",
         default_skill_package="iron-report-package",
         default_primary_skill="iron-report-generator",
-        default_tools=["iron_market_data", "web_search", "code_interpreter"],
+        default_tools=["iron_market_data", "iron_report_research", "code_interpreter"],
         default_datasets=[],
         input_model=IronReportTaskPayload,
         output_model=IronReportTaskOutput,
