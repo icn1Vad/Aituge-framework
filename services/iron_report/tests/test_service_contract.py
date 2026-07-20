@@ -1,6 +1,7 @@
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -128,3 +129,59 @@ def test_internal_create_route_actually_returns_http_202(tmp_path: Path) -> None
 
     assert response.status_code == 202
     assert response.json()["success"] is True
+
+
+def test_structured_result_extracts_one_strict_json_fence(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    task = SimpleNamespace(
+        result_payload_json={
+            "content": "Report follows.\n```json\n{\"report_type\":\"DAILY\",\"title\":\"demo\"}\n```\nEnd."
+        }
+    )
+
+    assert service._structured_result(task) == {"report_type": "DAILY", "title": "demo"}
+
+
+@pytest.mark.asyncio
+async def test_get_status_preserves_specific_export_failure(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    task = SimpleNamespace(
+        id="task-1",
+        task_type="iron.report.generate",
+        user_id="7",
+        tenant_id="11",
+        status="succeeded",
+        current_run_id="run-1",
+        input_payload_json={
+            "report_type": "DAILY",
+            "report_date": "2026-07-17",
+            "data_as_of_date": "2026-07-17",
+            "output_formats": ["DOCX"],
+            "include_web_research": False,
+        },
+        result_payload_json={"structured": {}},
+        error_payload_json=None,
+        created_at=datetime(2026, 7, 20, 12, 0, 0),
+        started_at=None,
+        finished_at=None,
+    )
+    service.tasks = SimpleNamespace(
+        get_task=AsyncMock(return_value=task),
+        list_task_artifacts=AsyncMock(return_value=[]),
+    )
+    service._ensure_export = AsyncMock()
+    service.export_state.save(
+        task.id,
+        {
+            "status": "FAILED",
+            "stage": "FAILED",
+            "error_code": "IRON_REPORT_OUTPUT_SCHEMA_INVALID",
+            "error_message": "invalid output",
+            "retryable": True,
+        },
+    )
+
+    status = await service.get_status(RequestContext("7", "11", "13", "request-1"), task.id)
+
+    assert status.error_code == "IRON_REPORT_OUTPUT_SCHEMA_INVALID"
+    assert status.error_message == "invalid output"

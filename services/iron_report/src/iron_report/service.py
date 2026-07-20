@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import hmac
 import hashlib
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,8 @@ from iron_report.schemas import (
 
 
 TASK_TYPE = "iron.report.generate"
+MAX_STRUCTURED_RESULT_CHARS = 200_000
+JSON_FENCE_PATTERN = re.compile(r"```json\s*(\{.*?\})\s*```", re.IGNORECASE | re.DOTALL)
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,7 +160,7 @@ class IronReportService:
         artifacts = await self._artifacts(task.id)
         export_state = self.export_state.get(task.id)
         runtime_stage = await self._runtime_stage(task.id) if task.status == "running" else None
-        if task.status == "succeeded" and export_state.get("status") != "COMPLETED":
+        if task.status == "succeeded" and not export_state:
             export_state = {
                 "status": "FAILED",
                 "error_code": "IRON_REPORT_EXPORT_STATE_MISSING",
@@ -268,6 +272,17 @@ class IronReportService:
     def _structured_result(self, task) -> dict[str, Any]:
         result = dict(task.result_payload_json or {})
         structured = result.get("structured")
+        if not isinstance(structured, dict):
+            content = str(result.get("content") or "")
+            if 0 < len(content) <= MAX_STRUCTURED_RESULT_CHARS:
+                candidates = JSON_FENCE_PATTERN.findall(content)
+                if len(candidates) == 1:
+                    try:
+                        parsed = json.loads(candidates[0])
+                    except json.JSONDecodeError:
+                        parsed = None
+                    if isinstance(parsed, dict):
+                        structured = parsed
         if not isinstance(structured, dict):
             raise IronReportError(
                 "IRON_REPORT_STRUCTURED_RESULT_MISSING",
