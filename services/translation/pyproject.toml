@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aituge-translation"
+version = "0.1.0"
+description = "Independent text and document translation service for Aituge"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "httpx[socks]>=0.28,<1",
+  "lxml>=5.3,<7",
+  "pydantic-settings>=2.4,<3",
+  "pypdf>=5,<7",
+  "python-multipart>=0.0.20,<1",
+  "uvicorn[standard]>=0.31,<1",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8,<10",
+  "pytest-asyncio>=0.23,<2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/translation_service"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "../..", "../../backend", "../../backend/single-agent"]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
+asyncio_mode = "auto"
