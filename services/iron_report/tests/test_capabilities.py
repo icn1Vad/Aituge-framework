@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -7,7 +8,6 @@ import pytest
 
 REGISTER_PATH = Path(__file__).resolve().parents[1] / "capabilities" / "register.py"
 SKILL_PATH = REGISTER_PATH.parent / "skills" / "iron-report-generator" / "SKILL.md"
-DOCKERFILE_PATH = Path(__file__).resolve().parents[3] / "deploy" / "appliance" / "iron-report.Dockerfile"
 
 
 class FakeRegistry:
@@ -103,10 +103,14 @@ async def test_capability_uses_configured_model_and_existing_react_tools() -> No
 
 def test_skill_and_image_define_chinese_chart_font_contract() -> None:
     skill = SKILL_PATH.read_text(encoding="utf-8")
-    dockerfile = DOCKERFILE_PATH.read_text(encoding="utf-8")
+    matched_font = subprocess.run(
+        ["fc-match", "Noto Sans CJK SC", "--format=%{family}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
 
     assert "Every chart title, axis label, legend, and annotation must use Simplified Chinese" in skill
     assert "Noto Sans CJK SC" in skill
     assert "axes.unicode_minus" in skill
-    assert "fonts-noto-cjk" in dockerfile
-    assert "fontconfig" in dockerfile
+    assert "Noto Sans CJK" in matched_font
