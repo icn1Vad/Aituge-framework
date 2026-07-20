@@ -58,7 +58,11 @@ def create_router(service: IronReportService) -> APIRouter:
         service.verify_internal_token(x_internal_token)
         context = _context(request, x_user_id, x_tenant_id, x_dept_id)
         data = await service.create_report(context, payload, idempotency_key)
-        return _success(request, data.model_dump(mode="json"))
+        return _success(
+            request,
+            data.model_dump(mode="json"),
+            status_code=status.HTTP_202_ACCEPTED,
+        )
 
     @router.get("/v1/iron-reports/{report_id}")
     async def get_report(
@@ -172,7 +176,8 @@ def _request_id(request: Request) -> str:
     return value[:128] if value else uuid.uuid4().hex
 
 
-def _success(request: Request, data):
+def _success(request: Request, data, *, status_code: int = status.HTTP_200_OK):
     return JSONResponse(
+        status_code=status_code,
         content={"success": True, "data": data, "request_id": _request_id(request)},
     )

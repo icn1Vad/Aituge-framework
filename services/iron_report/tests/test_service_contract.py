@@ -3,6 +3,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from iron_report.api import create_router
 from iron_report.config import Settings
@@ -100,3 +102,29 @@ def test_internal_create_route_declares_http_202(tmp_path: Path) -> None:
     )
 
     assert route.status_code == 202
+
+
+def test_internal_create_route_actually_returns_http_202(tmp_path: Path) -> None:
+    app = FastAPI()
+    app.include_router(create_router(_service(tmp_path)))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/iron-reports",
+            headers={
+                "Idempotency-Key": "http-contract-key",
+                "X-User-Id": "7",
+                "X-Tenant-Id": "11",
+                "X-Dept-Id": "13",
+                "X-Internal-Token": "test-internal-token",
+            },
+            json={
+                "reportType": "DAILY",
+                "asOfDate": "2026-07-17",
+                "outputFormats": ["DOCX", "PDF"],
+                "includeWebResearch": True,
+            },
+        )
+
+    assert response.status_code == 202
+    assert response.json()["success"] is True
