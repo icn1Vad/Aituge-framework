@@ -1,0 +1,5047 @@
+{
+  "components": {
+    "schemas": {
+      "Body_create_review_v1_contract_reviews_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "request": {
+            "title": "Request",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file",
+          "request"
+        ],
+        "title": "Body_create_review_v1_contract_reviews_post",
+        "type": "object"
+      },
+      "CancelReviewData": {
+        "additionalProperties": false,
+        "properties": {
+          "already_terminal": {
+            "title": "Already Terminal",
+            "type": "boolean"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "CANCELLED",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "status",
+          "already_terminal"
+        ],
+        "title": "CancelReviewData",
+        "type": "object"
+      },
+      "CommercialTermsStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "evidences": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceCandidate"
+            },
+            "title": "Evidences",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "result_type": {
+            "const": "COMMERCIAL_TERMS_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_type"
+        ],
+        "title": "CommercialTermsStageResult",
+        "type": "object"
+      },
+      "ContractBlockData": {
+        "additionalProperties": false,
+        "properties": {
+          "block_id": {
+            "title": "Block Id",
+            "type": "string"
+          },
+          "block_no": {
+            "exclusiveMinimum": 0.0,
+            "title": "Block No",
+            "type": "integer"
+          },
+          "block_type": {
+            "title": "Block Type",
+            "type": "string"
+          },
+          "char_end": {
+            "exclusiveMinimum": 0.0,
+            "title": "Char End",
+            "type": "integer"
+          },
+          "char_start": {
+            "minimum": 0.0,
+            "title": "Char Start",
+            "type": "integer"
+          },
+          "heading_path": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Heading Path",
+            "type": "array"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Metadata",
+            "type": "object"
+          },
+          "page_number": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Number"
+          },
+          "paragraph_no": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paragraph No"
+          },
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "block_id",
+          "block_no",
+          "block_type",
+          "char_start",
+          "char_end",
+          "text"
+        ],
+        "title": "ContractBlockData",
+        "type": "object"
+      },
+      "ContractBlocksToolData": {
+        "additionalProperties": false,
+        "properties": {
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/ContractBlockData"
+            },
+            "title": "Blocks",
+            "type": "array"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "generation_id": {
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "review_id": {
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id",
+          "generation_id",
+          "blocks"
+        ],
+        "title": "ContractBlocksToolData",
+        "type": "object"
+      },
+      "ContractBlocksToolRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "block_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Block Ids",
+            "type": "array"
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "limit": {
+            "default": 200,
+            "maximum": 2000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id"
+        ],
+        "title": "ContractBlocksToolRequest",
+        "type": "object"
+      },
+      "ContractClauseContextToolData": {
+        "additionalProperties": false,
+        "properties": {
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/ContractBlockData"
+            },
+            "title": "Blocks",
+            "type": "array"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "generation_id": {
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "review_id": {
+            "title": "Review Id",
+            "type": "string"
+          },
+          "target_block_id": {
+            "title": "Target Block Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id",
+          "generation_id",
+          "blocks",
+          "target_block_id"
+        ],
+        "title": "ContractClauseContextToolData",
+        "type": "object"
+      },
+      "ContractClauseContextToolRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "default": 1,
+            "maximum": 5.0,
+            "minimum": 0.0,
+            "title": "After",
+            "type": "integer"
+          },
+          "before": {
+            "default": 1,
+            "maximum": 5.0,
+            "minimum": 0.0,
+            "title": "Before",
+            "type": "integer"
+          },
+          "block_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Block Id",
+            "type": "string"
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id",
+          "block_id"
+        ],
+        "title": "ContractClauseContextToolRequest",
+        "type": "object"
+      },
+      "ContractDocumentToolData": {
+        "additionalProperties": false,
+        "properties": {
+          "block_count": {
+            "exclusiveMinimum": 0.0,
+            "title": "Block Count",
+            "type": "integer"
+          },
+          "content_hash": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "contract_version_id": {
+            "title": "Contract Version Id",
+            "type": "string"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "file_size": {
+            "exclusiveMinimum": 0.0,
+            "title": "File Size",
+            "type": "integer"
+          },
+          "file_type": {
+            "enum": [
+              "pdf",
+              "docx"
+            ],
+            "title": "File Type",
+            "type": "string"
+          },
+          "generation_id": {
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "generation_status": {
+            "enum": [
+              "RUNNING",
+              "SUCCEEDED"
+            ],
+            "title": "Generation Status",
+            "type": "string"
+          },
+          "original_name": {
+            "title": "Original Name",
+            "type": "string"
+          },
+          "review_id": {
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id",
+          "contract_version_id",
+          "original_name",
+          "content_type",
+          "file_type",
+          "file_size",
+          "content_hash",
+          "generation_id",
+          "generation_status",
+          "block_count"
+        ],
+        "title": "ContractDocumentToolData",
+        "type": "object"
+      },
+      "ContractDocumentToolRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id"
+        ],
+        "title": "ContractDocumentToolRequest",
+        "type": "object"
+      },
+      "ContractIR": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Acceptance Terms",
+            "type": "array"
+          },
+          "amounts": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Amounts",
+            "type": "array"
+          },
+          "clauses": {
+            "items": {
+              "$ref": "#/components/schemas/IRClause"
+            },
+            "minItems": 1,
+            "title": "Clauses",
+            "type": "array"
+          },
+          "confidentiality_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Confidentiality Terms",
+            "type": "array"
+          },
+          "contract_type": {
+            "default": "AUTO",
+            "pattern": "^[A-Z][A-Z0-9_]*$",
+            "title": "Contract Type",
+            "type": "string"
+          },
+          "counterparty": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counterparty"
+          },
+          "dates": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Dates",
+            "type": "array"
+          },
+          "definitions": {
+            "items": {
+              "$ref": "#/components/schemas/IRDefinition"
+            },
+            "title": "Definitions",
+            "type": "array"
+          },
+          "delivery_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Delivery Terms",
+            "type": "array"
+          },
+          "dispute_resolution": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Dispute Resolution",
+            "type": "array"
+          },
+          "document": {
+            "$ref": "#/components/schemas/IRDocument"
+          },
+          "intellectual_property_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Intellectual Property Terms",
+            "type": "array"
+          },
+          "ir_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Ir Version",
+            "type": "string"
+          },
+          "liabilities": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Liabilities",
+            "type": "array"
+          },
+          "obligations": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Obligations",
+            "type": "array"
+          },
+          "our_party": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Our Party"
+          },
+          "parties": {
+            "items": {
+              "$ref": "#/components/schemas/IRParty"
+            },
+            "title": "Parties",
+            "type": "array"
+          },
+          "payment_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Payment Terms",
+            "type": "array"
+          },
+          "prohibitions": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Prohibitions",
+            "type": "array"
+          },
+          "rights": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Rights",
+            "type": "array"
+          },
+          "source_anchors": {
+            "items": {
+              "$ref": "#/components/schemas/SourceAnchor"
+            },
+            "minItems": 1,
+            "title": "Source Anchors",
+            "type": "array"
+          },
+          "termination_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Termination Terms",
+            "type": "array"
+          }
+        },
+        "required": [
+          "document",
+          "clauses",
+          "source_anchors"
+        ],
+        "title": "ContractIR",
+        "type": "object"
+      },
+      "ContractIrSemanticDelta": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Acceptance Terms",
+            "type": "array"
+          },
+          "amounts": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Amounts",
+            "type": "array"
+          },
+          "confidentiality_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Confidentiality Terms",
+            "type": "array"
+          },
+          "dates": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Dates",
+            "type": "array"
+          },
+          "definitions": {
+            "items": {
+              "$ref": "#/components/schemas/IRDefinition"
+            },
+            "title": "Definitions",
+            "type": "array"
+          },
+          "delivery_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Delivery Terms",
+            "type": "array"
+          },
+          "dispute_resolution": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Dispute Resolution",
+            "type": "array"
+          },
+          "intellectual_property_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Intellectual Property Terms",
+            "type": "array"
+          },
+          "liabilities": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Liabilities",
+            "type": "array"
+          },
+          "obligations": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Obligations",
+            "type": "array"
+          },
+          "payment_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Payment Terms",
+            "type": "array"
+          },
+          "prohibitions": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Prohibitions",
+            "type": "array"
+          },
+          "rights": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Rights",
+            "type": "array"
+          },
+          "termination_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Termination Terms",
+            "type": "array"
+          }
+        },
+        "title": "ContractIrSemanticDelta",
+        "type": "object"
+      },
+      "ContractIrToolData": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_ir": {
+            "$ref": "#/components/schemas/ContractIR"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "generation_id": {
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "generation_status": {
+            "enum": [
+              "RUNNING",
+              "SUCCEEDED"
+            ],
+            "title": "Generation Status",
+            "type": "string"
+          },
+          "review_id": {
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id",
+          "generation_id",
+          "generation_status",
+          "contract_ir"
+        ],
+        "title": "ContractIrToolData",
+        "type": "object"
+      },
+      "ContractIrToolRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id"
+        ],
+        "title": "ContractIrToolRequest",
+        "type": "object"
+      },
+      "ContractProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_type": {
+            "maxLength": 80,
+            "pattern": "^[A-Z][A-Z0-9_]*$",
+            "title": "Contract Type",
+            "type": "string"
+          },
+          "counterparty": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Counterparty",
+            "type": "string"
+          },
+          "our_party": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Our Party",
+            "type": "string"
+          },
+          "party_a": {
+            "$ref": "#/components/schemas/PartyProfile"
+          },
+          "party_b": {
+            "$ref": "#/components/schemas/PartyProfile"
+          },
+          "perspective": {
+            "$ref": "#/components/schemas/Perspective"
+          },
+          "review_attitude": {
+            "const": "NEUTRAL",
+            "default": "NEUTRAL",
+            "title": "Review Attitude",
+            "type": "string"
+          }
+        },
+        "required": [
+          "contract_type",
+          "party_a",
+          "party_b",
+          "perspective",
+          "our_party",
+          "counterparty"
+        ],
+        "title": "ContractProfile",
+        "type": "object"
+      },
+      "CreateReviewData": {
+        "additionalProperties": false,
+        "properties": {
+          "current_stage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewStage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "framework_attempt_no": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Framework Attempt No"
+          },
+          "framework_run_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Framework Run Id"
+          },
+          "framework_task_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Framework Task Id"
+          },
+          "reused": {
+            "title": "Reused",
+            "type": "boolean"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "CREATED",
+              "RUNNING"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id",
+          "status",
+          "reused"
+        ],
+        "title": "CreateReviewData",
+        "type": "object"
+      },
+      "ErrorData": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          },
+          "message": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "user_action_required": {
+            "title": "User Action Required",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "retryable",
+          "user_action_required"
+        ],
+        "title": "ErrorData",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorData"
+          },
+          "request_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "success": {
+            "const": false,
+            "default": false,
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "error",
+          "request_id"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
+      "Evidence": {
+        "additionalProperties": false,
+        "properties": {
+          "block_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Block Id"
+          },
+          "bounding_boxes": {
+            "items": {
+              "type": "null"
+            },
+            "maxItems": 0,
+            "title": "Bounding Boxes",
+            "type": "array"
+          },
+          "char_end": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Char End"
+          },
+          "char_start": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Char Start"
+          },
+          "checked_scope": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked Scope"
+          },
+          "evidence_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "evidence_type": {
+            "$ref": "#/components/schemas/EvidenceType"
+          },
+          "finding_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "page_number": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Number"
+          },
+          "quoted_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quoted Text"
+          },
+          "quoted_text_hash": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quoted Text Hash"
+          },
+          "verification_note": {
+            "anyOf": [
+              {
+                "maxLength": 5000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification Note"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "finding_id",
+          "evidence_type"
+        ],
+        "title": "Evidence",
+        "type": "object"
+      },
+      "EvidenceCandidate": {
+        "additionalProperties": false,
+        "properties": {
+          "block_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Block Id"
+          },
+          "bounding_boxes": {
+            "items": {
+              "type": "null"
+            },
+            "maxItems": 0,
+            "title": "Bounding Boxes",
+            "type": "array"
+          },
+          "char_end": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Char End"
+          },
+          "char_start": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Char Start"
+          },
+          "checked_scope": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked Scope"
+          },
+          "evidence_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "evidence_type": {
+            "$ref": "#/components/schemas/EvidenceType"
+          },
+          "finding_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "page_number": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Number"
+          },
+          "quoted_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quoted Text"
+          },
+          "quoted_text_hash": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quoted Text Hash"
+          },
+          "verification_note": {
+            "anyOf": [
+              {
+                "maxLength": 5000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification Note"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "finding_id",
+          "evidence_type"
+        ],
+        "title": "EvidenceCandidate",
+        "type": "object"
+      },
+      "EvidenceType": {
+        "enum": [
+          "TEXT_QUOTE",
+          "CONTEXT",
+          "ABSENCE"
+        ],
+        "title": "EvidenceType",
+        "type": "string"
+      },
+      "EvidenceVerificationStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_profile": {
+            "$ref": "#/components/schemas/ContractProfile"
+          },
+          "evidences": {
+            "items": {
+              "$ref": "#/components/schemas/Evidence"
+            },
+            "title": "Evidences",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "overview": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Overview",
+            "type": "string"
+          },
+          "relationships": {
+            "items": {
+              "type": "null"
+            },
+            "maxItems": 0,
+            "title": "Relationships",
+            "type": "array"
+          },
+          "result_type": {
+            "const": "EVIDENCE_VERIFICATION_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_type",
+          "contract_profile",
+          "overview"
+        ],
+        "title": "EvidenceVerificationStageResult",
+        "type": "object"
+      },
+      "ExtractContractIrStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "result_type": {
+            "const": "CONTRACT_IR_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          },
+          "semantic_ir": {
+            "$ref": "#/components/schemas/ContractIrSemanticDelta"
+          }
+        },
+        "required": [
+          "result_type",
+          "semantic_ir"
+        ],
+        "title": "ExtractContractIrStageResult",
+        "type": "object"
+      },
+      "FinalizeReviewStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "business_task_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Business Task Id",
+            "type": "string"
+          },
+          "contract_profile": {
+            "$ref": "#/components/schemas/ContractProfile"
+          },
+          "contract_version_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Contract Version Id",
+            "type": "string"
+          },
+          "evidences": {
+            "items": {
+              "$ref": "#/components/schemas/Evidence"
+            },
+            "title": "Evidences",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "relationships": {
+            "items": {
+              "type": "null"
+            },
+            "maxItems": 0,
+            "title": "Relationships",
+            "type": "array"
+          },
+          "result_type": {
+            "const": "FINAL_REVIEW_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/ReviewSummary"
+          }
+        },
+        "required": [
+          "result_type",
+          "schema_version",
+          "review_id",
+          "business_task_id",
+          "contract_version_id",
+          "contract_profile",
+          "summary",
+          "findings",
+          "evidences"
+        ],
+        "title": "FinalizeReviewStageResult",
+        "type": "object"
+      },
+      "Finding": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "$ref": "#/components/schemas/FindingCategory"
+          },
+          "counterparty": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Counterparty",
+            "type": "string"
+          },
+          "evidence_ids": {
+            "items": {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "finding_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "impact_to_our_party": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Impact To Our Party",
+            "type": "string"
+          },
+          "issue": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Issue",
+            "type": "string"
+          },
+          "our_party": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Our Party",
+            "type": "string"
+          },
+          "perspective": {
+            "$ref": "#/components/schemas/Perspective"
+          },
+          "risk_level": {
+            "$ref": "#/components/schemas/RiskLevel"
+          },
+          "suggestion": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Suggestion",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding_id",
+          "category",
+          "risk_level",
+          "title",
+          "perspective",
+          "our_party",
+          "counterparty",
+          "issue",
+          "impact_to_our_party",
+          "suggestion",
+          "evidence_ids"
+        ],
+        "title": "Finding",
+        "type": "object"
+      },
+      "FindingCategory": {
+        "enum": [
+          "PARTY_IDENTIFICATION",
+          "RIGHTS_OBLIGATIONS_IMBALANCE",
+          "PAYMENT",
+          "DELIVERY",
+          "ACCEPTANCE",
+          "BREACH",
+          "LIABILITY",
+          "TERMINATION",
+          "CONFIDENTIALITY",
+          "INTELLECTUAL_PROPERTY",
+          "DISPUTE_RESOLUTION",
+          "MISSING_CLAUSE",
+          "AMBIGUITY",
+          "INTERNAL_CONFLICT",
+          "OTHER"
+        ],
+        "title": "FindingCategory",
+        "type": "string"
+      },
+      "FrameworkCallbackData": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "duplicate": {
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "ignored_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ignored Reason"
+          }
+        },
+        "required": [
+          "accepted",
+          "duplicate"
+        ],
+        "title": "FrameworkCallbackData",
+        "type": "object"
+      },
+      "FrameworkTaskInput": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_no": {
+            "maximum": 2.0,
+            "minimum": 1.0,
+            "title": "Attempt No",
+            "type": "integer"
+          },
+          "business_task_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Business Task Id",
+            "type": "string"
+          },
+          "contract_type": {
+            "const": "AUTO",
+            "title": "Contract Type",
+            "type": "string"
+          },
+          "contract_version_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Contract Version Id",
+            "type": "string"
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "our_party_name": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Our Party Name"
+          },
+          "perspective": {
+            "enum": [
+              "PARTY_A",
+              "PARTY_B"
+            ],
+            "title": "Perspective",
+            "type": "string"
+          },
+          "review_attitude": {
+            "const": "NEUTRAL",
+            "title": "Review Attitude",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "review_id",
+          "attempt_no",
+          "business_task_id",
+          "contract_version_id",
+          "document_id",
+          "perspective",
+          "contract_type",
+          "review_attitude"
+        ],
+        "title": "FrameworkTaskInput",
+        "type": "object"
+      },
+      "HealthData": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "enum": [
+              "mock",
+              "runtime"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "service": {
+            "const": "contract",
+            "default": "contract",
+            "title": "Service",
+            "type": "string"
+          },
+          "status": {
+            "const": "UP",
+            "default": "UP",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "HealthData",
+        "type": "object"
+      },
+      "IRClause": {
+        "additionalProperties": false,
+        "properties": {
+          "clause_id": {
+            "minLength": 1,
+            "title": "Clause Id",
+            "type": "string"
+          },
+          "clause_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clause No"
+          },
+          "clause_type": {
+            "minLength": 1,
+            "title": "Clause Type",
+            "type": "string"
+          },
+          "heading_path": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Heading Path",
+            "type": "array"
+          },
+          "source_anchors": {
+            "items": {
+              "$ref": "#/components/schemas/SourceAnchor"
+            },
+            "minItems": 1,
+            "title": "Source Anchors",
+            "type": "array"
+          },
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "clause_id",
+          "clause_type",
+          "text",
+          "source_anchors"
+        ],
+        "title": "IRClause",
+        "type": "object"
+      },
+      "IRDefinition": {
+        "additionalProperties": false,
+        "properties": {
+          "meaning": {
+            "minLength": 1,
+            "title": "Meaning",
+            "type": "string"
+          },
+          "source_anchors": {
+            "items": {
+              "$ref": "#/components/schemas/SourceAnchor"
+            },
+            "minItems": 1,
+            "title": "Source Anchors",
+            "type": "array"
+          },
+          "term": {
+            "minLength": 1,
+            "title": "Term",
+            "type": "string"
+          }
+        },
+        "required": [
+          "term",
+          "meaning",
+          "source_anchors"
+        ],
+        "title": "IRDefinition",
+        "type": "object"
+      },
+      "IRDocument": {
+        "additionalProperties": false,
+        "properties": {
+          "block_count": {
+            "exclusiveMinimum": 0.0,
+            "title": "Block Count",
+            "type": "integer"
+          },
+          "content_hash": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "document_id": {
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "file_type": {
+            "enum": [
+              "pdf",
+              "docx"
+            ],
+            "title": "File Type",
+            "type": "string"
+          },
+          "generation_id": {
+            "minLength": 1,
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "page_count": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Count"
+          },
+          "parser_version": {
+            "minLength": 1,
+            "title": "Parser Version",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "document_id",
+          "generation_id",
+          "content_hash",
+          "file_type",
+          "block_count",
+          "parser_version"
+        ],
+        "title": "IRDocument",
+        "type": "object"
+      },
+      "IRParty": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "PARTY_A",
+              "PARTY_B",
+              "OTHER"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "source_anchors": {
+            "items": {
+              "$ref": "#/components/schemas/SourceAnchor"
+            },
+            "minItems": 1,
+            "title": "Source Anchors",
+            "type": "array"
+          }
+        },
+        "required": [
+          "role",
+          "name",
+          "source_anchors"
+        ],
+        "title": "IRParty",
+        "type": "object"
+      },
+      "IRSemanticItem": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "minLength": 1,
+            "title": "Item Id",
+            "type": "string"
+          },
+          "object": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object"
+          },
+          "predicate": {
+            "minLength": 1,
+            "title": "Predicate",
+            "type": "string"
+          },
+          "source_anchors": {
+            "items": {
+              "$ref": "#/components/schemas/SourceAnchor"
+            },
+            "minItems": 1,
+            "title": "Source Anchors",
+            "type": "array"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          }
+        },
+        "required": [
+          "item_id",
+          "predicate",
+          "source_anchors"
+        ],
+        "title": "IRSemanticItem",
+        "type": "object"
+      },
+      "InternalRelationship": {
+        "additionalProperties": false,
+        "properties": {
+          "explanation": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Explanation",
+            "type": "string"
+          },
+          "relation_type": {
+            "enum": [
+              "SUPPORTS",
+              "CONFLICTS",
+              "DEPENDS_ON",
+              "OVERRIDES"
+            ],
+            "title": "Relation Type",
+            "type": "string"
+          },
+          "source_clause_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Source Clause Id",
+            "type": "string"
+          },
+          "target_clause_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Target Clause Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_clause_id",
+          "target_clause_id",
+          "relation_type",
+          "explanation"
+        ],
+        "title": "InternalRelationship",
+        "type": "object"
+      },
+      "JsonValue": {},
+      "LiabilityTerminationStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "evidences": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceCandidate"
+            },
+            "title": "Evidences",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "result_type": {
+            "const": "LIABILITY_TERMINATION_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_type"
+        ],
+        "title": "LiabilityTerminationStageResult",
+        "type": "object"
+      },
+      "MissingAmbiguityStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "evidences": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceCandidate"
+            },
+            "title": "Evidences",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "result_type": {
+            "const": "MISSING_AMBIGUITY_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_type"
+        ],
+        "title": "MissingAmbiguityStageResult",
+        "type": "object"
+      },
+      "ParseContractStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "block_count": {
+            "exclusiveMinimum": 0.0,
+            "title": "Block Count",
+            "type": "integer"
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "generation_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "ir_hash": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Ir Hash",
+            "type": "string"
+          },
+          "result_type": {
+            "const": "PARSE_CONTRACT_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_type",
+          "document_id",
+          "generation_id",
+          "block_count",
+          "ir_hash"
+        ],
+        "title": "ParseContractStageResult",
+        "type": "object"
+      },
+      "PartyProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "PartyProfile",
+        "type": "object"
+      },
+      "PartyResolutionStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_type": {
+            "maxLength": 80,
+            "pattern": "^[A-Z][A-Z0-9_]*$",
+            "title": "Contract Type",
+            "type": "string"
+          },
+          "counterparty": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Counterparty",
+            "type": "string"
+          },
+          "our_party": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Our Party",
+            "type": "string"
+          },
+          "party_a": {
+            "$ref": "#/components/schemas/PartyProfile"
+          },
+          "party_b": {
+            "$ref": "#/components/schemas/PartyProfile"
+          },
+          "perspective": {
+            "enum": [
+              "PARTY_A",
+              "PARTY_B"
+            ],
+            "title": "Perspective",
+            "type": "string"
+          },
+          "result_type": {
+            "const": "PARTY_RESOLUTION_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_type",
+          "contract_type",
+          "party_a",
+          "party_b",
+          "perspective",
+          "our_party",
+          "counterparty"
+        ],
+        "title": "PartyResolutionStageResult",
+        "type": "object"
+      },
+      "Perspective": {
+        "enum": [
+          "PARTY_A",
+          "PARTY_B"
+        ],
+        "title": "Perspective",
+        "type": "string"
+      },
+      "RelationExtractionStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "evidences": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceCandidate"
+            },
+            "title": "Evidences",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "internal_relationships": {
+            "items": {
+              "$ref": "#/components/schemas/InternalRelationship"
+            },
+            "title": "Internal Relationships",
+            "type": "array"
+          },
+          "result_type": {
+            "const": "RELATION_EXTRACTION_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_type"
+        ],
+        "title": "RelationExtractionStageResult",
+        "type": "object"
+      },
+      "ReviewResultData": {
+        "additionalProperties": false,
+        "properties": {
+          "business_task_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Business Task Id",
+            "type": "string"
+          },
+          "contract_profile": {
+            "$ref": "#/components/schemas/ContractProfile"
+          },
+          "contract_version_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Contract Version Id",
+            "type": "string"
+          },
+          "evidences": {
+            "items": {
+              "$ref": "#/components/schemas/Evidence"
+            },
+            "title": "Evidences",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "relationships": {
+            "items": {
+              "type": "null"
+            },
+            "maxItems": 0,
+            "title": "Relationships",
+            "type": "array"
+          },
+          "result_hash": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Result Hash",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/ReviewSummary"
+          }
+        },
+        "required": [
+          "review_id",
+          "business_task_id",
+          "contract_version_id",
+          "contract_profile",
+          "summary",
+          "findings",
+          "evidences",
+          "result_hash"
+        ],
+        "title": "ReviewResultData",
+        "type": "object"
+      },
+      "ReviewStage": {
+        "enum": [
+          "PARSING",
+          "PARTY_RESOLUTION",
+          "IR_EXTRACTION",
+          "RIGHTS_OBLIGATIONS",
+          "RISK_REVIEW",
+          "EVIDENCE_VERIFICATION",
+          "FINALIZING"
+        ],
+        "title": "ReviewStage",
+        "type": "string"
+      },
+      "ReviewStatus": {
+        "enum": [
+          "CREATED",
+          "RUNNING",
+          "SUCCEEDED",
+          "FAILED",
+          "CANCELLED"
+        ],
+        "title": "ReviewStatus",
+        "type": "string"
+      },
+      "ReviewStatusData": {
+        "additionalProperties": false,
+        "properties": {
+          "business_task_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Business Task Id",
+            "type": "string"
+          },
+          "contract_version_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Contract Version Id",
+            "type": "string"
+          },
+          "current_stage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewStage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErrorData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "framework_attempt_no": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Framework Attempt No"
+          },
+          "framework_run_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Framework Run Id"
+          },
+          "framework_task_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Framework Task Id"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ReviewStatus"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "business_task_id",
+          "contract_version_id",
+          "status",
+          "document_id",
+          "updated_at"
+        ],
+        "title": "ReviewStatusData",
+        "type": "object"
+      },
+      "ReviewSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "high_count": {
+            "minimum": 0.0,
+            "title": "High Count",
+            "type": "integer"
+          },
+          "info_count": {
+            "minimum": 0.0,
+            "title": "Info Count",
+            "type": "integer"
+          },
+          "low_count": {
+            "minimum": 0.0,
+            "title": "Low Count",
+            "type": "integer"
+          },
+          "medium_count": {
+            "minimum": 0.0,
+            "title": "Medium Count",
+            "type": "integer"
+          },
+          "overview": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Overview",
+            "type": "string"
+          }
+        },
+        "required": [
+          "overview",
+          "high_count",
+          "medium_count",
+          "low_count",
+          "info_count"
+        ],
+        "title": "ReviewSummary",
+        "type": "object"
+      },
+      "RightsObligationsStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "evidences": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceCandidate"
+            },
+            "title": "Evidences",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "result_type": {
+            "const": "RIGHTS_OBLIGATIONS_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_type"
+        ],
+        "title": "RightsObligationsStageResult",
+        "type": "object"
+      },
+      "RiskLevel": {
+        "enum": [
+          "HIGH",
+          "MEDIUM",
+          "LOW",
+          "INFO"
+        ],
+        "title": "RiskLevel",
+        "type": "string"
+      },
+      "RunFailedCallback": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_no": {
+            "maximum": 2.0,
+            "minimum": 1.0,
+            "title": "Attempt No",
+            "type": "integer"
+          },
+          "callback_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Callback Id",
+            "type": "string"
+          },
+          "callback_type": {
+            "const": "RUN_FAILED",
+            "title": "Callback Type",
+            "type": "string"
+          },
+          "error": {
+            "$ref": "#/components/schemas/ErrorData"
+          },
+          "event_sequence": {
+            "minimum": 0.0,
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "framework_run_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Framework Run Id",
+            "type": "string"
+          },
+          "framework_task_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Framework Task Id",
+            "type": "string"
+          },
+          "result": {
+            "title": "Result",
+            "type": "null"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "enum": [
+                  "parse_contract",
+                  "resolve_parties",
+                  "extract_contract_ir",
+                  "rights_obligations_review",
+                  "commercial_terms_review",
+                  "liability_termination_review",
+                  "missing_ambiguous_clauses",
+                  "relation_extraction",
+                  "verify_evidence",
+                  "finalize_review"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Id"
+          }
+        },
+        "required": [
+          "schema_version",
+          "review_id",
+          "attempt_no",
+          "framework_task_id",
+          "framework_run_id",
+          "event_sequence",
+          "callback_id",
+          "callback_type",
+          "stage_id",
+          "result",
+          "error"
+        ],
+        "title": "RunFailedCallback",
+        "type": "object"
+      },
+      "RunSucceededCallback": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_no": {
+            "maximum": 2.0,
+            "minimum": 1.0,
+            "title": "Attempt No",
+            "type": "integer"
+          },
+          "callback_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Callback Id",
+            "type": "string"
+          },
+          "callback_type": {
+            "const": "RUN_SUCCEEDED",
+            "title": "Callback Type",
+            "type": "string"
+          },
+          "error": {
+            "title": "Error",
+            "type": "null"
+          },
+          "event_sequence": {
+            "minimum": 0.0,
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "framework_run_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Framework Run Id",
+            "type": "string"
+          },
+          "framework_task_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Framework Task Id",
+            "type": "string"
+          },
+          "result": {
+            "title": "Result",
+            "type": "null"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "stage_id": {
+            "title": "Stage Id",
+            "type": "null"
+          }
+        },
+        "required": [
+          "schema_version",
+          "review_id",
+          "attempt_no",
+          "framework_task_id",
+          "framework_run_id",
+          "event_sequence",
+          "callback_id",
+          "callback_type",
+          "stage_id",
+          "result",
+          "error"
+        ],
+        "title": "RunSucceededCallback",
+        "type": "object"
+      },
+      "SourceAnchor": {
+        "additionalProperties": false,
+        "properties": {
+          "anchor_id": {
+            "minLength": 1,
+            "title": "Anchor Id",
+            "type": "string"
+          },
+          "block_id": {
+            "minLength": 1,
+            "title": "Block Id",
+            "type": "string"
+          },
+          "char_end": {
+            "exclusiveMinimum": 0.0,
+            "title": "Char End",
+            "type": "integer"
+          },
+          "char_start": {
+            "minimum": 0.0,
+            "title": "Char Start",
+            "type": "integer"
+          },
+          "page_number": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Number"
+          }
+        },
+        "required": [
+          "anchor_id",
+          "block_id",
+          "char_start",
+          "char_end"
+        ],
+        "title": "SourceAnchor",
+        "type": "object"
+      },
+      "StageExecuteRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/JsonValue"
+              },
+              "type": "object"
+            },
+            "title": "Artifacts",
+            "type": "object"
+          },
+          "attempt_no": {
+            "maximum": 2.0,
+            "minimum": 1.0,
+            "title": "Attempt No",
+            "type": "integer"
+          },
+          "framework_run_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Framework Run Id",
+            "type": "string"
+          },
+          "framework_task_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Framework Task Id",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "stage_id": {
+            "enum": [
+              "parse_contract",
+              "verify_evidence",
+              "finalize_review"
+            ],
+            "title": "Stage Id",
+            "type": "string"
+          },
+          "task_input": {
+            "$ref": "#/components/schemas/FrameworkTaskInput"
+          }
+        },
+        "required": [
+          "schema_version",
+          "review_id",
+          "attempt_no",
+          "framework_task_id",
+          "framework_run_id",
+          "stage_id",
+          "task_input"
+        ],
+        "title": "StageExecuteRequest",
+        "type": "object"
+      },
+      "StageResultCallback": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_no": {
+            "maximum": 2.0,
+            "minimum": 1.0,
+            "title": "Attempt No",
+            "type": "integer"
+          },
+          "callback_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Callback Id",
+            "type": "string"
+          },
+          "callback_type": {
+            "const": "STAGE_RESULT",
+            "title": "Callback Type",
+            "type": "string"
+          },
+          "error": {
+            "title": "Error",
+            "type": "null"
+          },
+          "event_sequence": {
+            "minimum": 0.0,
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "framework_run_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Framework Run Id",
+            "type": "string"
+          },
+          "framework_task_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Framework Task Id",
+            "type": "string"
+          },
+          "result": {
+            "discriminator": {
+              "mapping": {
+                "COMMERCIAL_TERMS_STAGE_V1": "#/components/schemas/CommercialTermsStageResult",
+                "CONTRACT_IR_STAGE_V1": "#/components/schemas/ExtractContractIrStageResult",
+                "EVIDENCE_VERIFICATION_STAGE_V1": "#/components/schemas/EvidenceVerificationStageResult",
+                "FINAL_REVIEW_STAGE_V1": "#/components/schemas/FinalizeReviewStageResult",
+                "LIABILITY_TERMINATION_STAGE_V1": "#/components/schemas/LiabilityTerminationStageResult",
+                "MISSING_AMBIGUITY_STAGE_V1": "#/components/schemas/MissingAmbiguityStageResult",
+                "PARSE_CONTRACT_STAGE_V1": "#/components/schemas/ParseContractStageResult",
+                "PARTY_RESOLUTION_STAGE_V1": "#/components/schemas/PartyResolutionStageResult",
+                "RELATION_EXTRACTION_STAGE_V1": "#/components/schemas/RelationExtractionStageResult",
+                "RIGHTS_OBLIGATIONS_STAGE_V1": "#/components/schemas/RightsObligationsStageResult"
+              },
+              "propertyName": "result_type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ParseContractStageResult"
+              },
+              {
+                "$ref": "#/components/schemas/PartyResolutionStageResult"
+              },
+              {
+                "$ref": "#/components/schemas/ExtractContractIrStageResult"
+              },
+              {
+                "$ref": "#/components/schemas/RightsObligationsStageResult"
+              },
+              {
+                "$ref": "#/components/schemas/CommercialTermsStageResult"
+              },
+              {
+                "$ref": "#/components/schemas/LiabilityTerminationStageResult"
+              },
+              {
+                "$ref": "#/components/schemas/MissingAmbiguityStageResult"
+              },
+              {
+                "$ref": "#/components/schemas/RelationExtractionStageResult"
+              },
+              {
+                "$ref": "#/components/schemas/EvidenceVerificationStageResult"
+              },
+              {
+                "$ref": "#/components/schemas/FinalizeReviewStageResult"
+              }
+            ],
+            "title": "Result"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "stage_id": {
+            "enum": [
+              "parse_contract",
+              "resolve_parties",
+              "extract_contract_ir",
+              "rights_obligations_review",
+              "commercial_terms_review",
+              "liability_termination_review",
+              "missing_ambiguous_clauses",
+              "relation_extraction",
+              "verify_evidence",
+              "finalize_review"
+            ],
+            "title": "Stage Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "review_id",
+          "attempt_no",
+          "framework_task_id",
+          "framework_run_id",
+          "event_sequence",
+          "callback_id",
+          "callback_type",
+          "stage_id",
+          "result",
+          "error"
+        ],
+        "title": "StageResultCallback",
+        "type": "object"
+      },
+      "SuccessResponse_Annotated_Union_ParseContractStageResult__EvidenceVerificationStageResult__FinalizeReviewStageResult___FieldInfo_annotation_NoneType__required_True__discriminator__result_type____": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "discriminator": {
+              "mapping": {
+                "EVIDENCE_VERIFICATION_STAGE_V1": "#/components/schemas/EvidenceVerificationStageResult",
+                "FINAL_REVIEW_STAGE_V1": "#/components/schemas/FinalizeReviewStageResult",
+                "PARSE_CONTRACT_STAGE_V1": "#/components/schemas/ParseContractStageResult"
+              },
+              "propertyName": "result_type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ParseContractStageResult"
+              },
+              {
+                "$ref": "#/components/schemas/EvidenceVerificationStageResult"
+              },
+              {
+                "$ref": "#/components/schemas/FinalizeReviewStageResult"
+              }
+            ],
+            "title": "Data"
+          },
+          "request_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "success": {
+            "const": true,
+            "default": true,
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "title": "SuccessResponse[Annotated[Union[ParseContractStageResult, EvidenceVerificationStageResult, FinalizeReviewStageResult], FieldInfo(annotation=NoneType, required=True, discriminator='result_type')]]",
+        "type": "object"
+      },
+      "SuccessResponse_CancelReviewData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/CancelReviewData"
+          },
+          "request_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "success": {
+            "const": true,
+            "default": true,
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "title": "SuccessResponse[CancelReviewData]",
+        "type": "object"
+      },
+      "SuccessResponse_ContractBlocksToolData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ContractBlocksToolData"
+          },
+          "request_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "success": {
+            "const": true,
+            "default": true,
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "title": "SuccessResponse[ContractBlocksToolData]",
+        "type": "object"
+      },
+      "SuccessResponse_ContractClauseContextToolData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ContractClauseContextToolData"
+          },
+          "request_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "success": {
+            "const": true,
+            "default": true,
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "title": "SuccessResponse[ContractClauseContextToolData]",
+        "type": "object"
+      },
+      "SuccessResponse_ContractDocumentToolData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ContractDocumentToolData"
+          },
+          "request_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "success": {
+            "const": true,
+            "default": true,
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "title": "SuccessResponse[ContractDocumentToolData]",
+        "type": "object"
+      },
+      "SuccessResponse_ContractIrToolData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ContractIrToolData"
+          },
+          "request_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "success": {
+            "const": true,
+            "default": true,
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "title": "SuccessResponse[ContractIrToolData]",
+        "type": "object"
+      },
+      "SuccessResponse_CreateReviewData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/CreateReviewData"
+          },
+          "request_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "success": {
+            "const": true,
+            "default": true,
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "title": "SuccessResponse[CreateReviewData]",
+        "type": "object"
+      },
+      "SuccessResponse_FrameworkCallbackData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/FrameworkCallbackData"
+          },
+          "request_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "success": {
+            "const": true,
+            "default": true,
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "title": "SuccessResponse[FrameworkCallbackData]",
+        "type": "object"
+      },
+      "SuccessResponse_HealthData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/HealthData"
+          },
+          "request_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "success": {
+            "const": true,
+            "default": true,
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "title": "SuccessResponse[HealthData]",
+        "type": "object"
+      },
+      "SuccessResponse_ReviewResultData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ReviewResultData"
+          },
+          "request_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "success": {
+            "const": true,
+            "default": true,
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "title": "SuccessResponse[ReviewResultData]",
+        "type": "object"
+      },
+      "SuccessResponse_ReviewStatusData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ReviewStatusData"
+          },
+          "request_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "success": {
+            "const": true,
+            "default": true,
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "title": "SuccessResponse[ReviewStatusData]",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Contract Agent",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_HealthData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/v1/contract-reviews": {
+      "post": {
+        "operationId": "create_review_v1_contract_reviews_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Service",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Service",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-User-Id",
+            "required": true,
+            "schema": {
+              "title": "X-User-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Request-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Request-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "encoding": {
+                "request": {
+                  "contentType": "application/json"
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/Body_create_review_v1_contract_reviews_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_CreateReviewData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request Entity Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Media Type"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Gateway Timeout"
+          }
+        },
+        "summary": "Create Review"
+      }
+    },
+    "/v1/contract-reviews/{review_id}": {
+      "get": {
+        "operationId": "get_review_status_v1_contract_reviews__review_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "title": "Review Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Service",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Service",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-User-Id",
+            "required": true,
+            "schema": {
+              "title": "X-User-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Request-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Request-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_ReviewStatusData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request Entity Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Media Type"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Gateway Timeout"
+          }
+        },
+        "summary": "Get Review Status"
+      }
+    },
+    "/v1/contract-reviews/{review_id}/cancel": {
+      "post": {
+        "operationId": "cancel_review_v1_contract_reviews__review_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "title": "Review Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Service",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Service",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-User-Id",
+            "required": true,
+            "schema": {
+              "title": "X-User-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Request-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Request-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_CancelReviewData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request Entity Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Media Type"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Gateway Timeout"
+          }
+        },
+        "summary": "Cancel Review"
+      }
+    },
+    "/v1/contract-reviews/{review_id}/result": {
+      "get": {
+        "operationId": "get_review_result_v1_contract_reviews__review_id__result_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "title": "Review Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Service",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Service",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-User-Id",
+            "required": true,
+            "schema": {
+              "title": "X-User-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Request-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Request-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_ReviewResultData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request Entity Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Media Type"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Gateway Timeout"
+          }
+        },
+        "summary": "Get Review Result"
+      }
+    },
+    "/v1/internal/contract-reviews/{review_id}/framework-result": {
+      "post": {
+        "operationId": "accept_framework_result_v1_internal_contract_reviews__review_id__framework_result_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "title": "Review Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Service",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Service",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Request-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Request-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "discriminator": {
+                  "mapping": {
+                    "RUN_FAILED": "#/components/schemas/RunFailedCallback",
+                    "RUN_SUCCEEDED": "#/components/schemas/RunSucceededCallback",
+                    "STAGE_RESULT": "#/components/schemas/StageResultCallback"
+                  },
+                  "propertyName": "callback_type"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/StageResultCallback"
+                  },
+                  {
+                    "$ref": "#/components/schemas/RunSucceededCallback"
+                  },
+                  {
+                    "$ref": "#/components/schemas/RunFailedCallback"
+                  }
+                ],
+                "title": "Callback"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_FrameworkCallbackData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request Entity Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Media Type"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Gateway Timeout"
+          }
+        },
+        "summary": "Accept Framework Result"
+      }
+    },
+    "/v1/internal/contract-reviews/{review_id}/stages/execute": {
+      "post": {
+        "operationId": "execute_framework_stage_v1_internal_contract_reviews__review_id__stages_execute_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "title": "Review Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Service",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Service",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Request-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Request-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StageExecuteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_Annotated_Union_ParseContractStageResult__EvidenceVerificationStageResult__FinalizeReviewStageResult___FieldInfo_annotation_NoneType__required_True__discriminator__result_type____"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request Entity Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Media Type"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Gateway Timeout"
+          }
+        },
+        "summary": "Execute Framework Stage"
+      }
+    },
+    "/v1/internal/contract-tools/blocks": {
+      "post": {
+        "operationId": "contract_get_blocks_v1_internal_contract_tools_blocks_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Service",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Service",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Request-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Request-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContractBlocksToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_ContractBlocksToolData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request Entity Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Media Type"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Gateway Timeout"
+          }
+        },
+        "summary": "Contract Get Blocks"
+      }
+    },
+    "/v1/internal/contract-tools/clause-context": {
+      "post": {
+        "operationId": "contract_get_clause_context_v1_internal_contract_tools_clause_context_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Service",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Service",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Request-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Request-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContractClauseContextToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_ContractClauseContextToolData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request Entity Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Media Type"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Gateway Timeout"
+          }
+        },
+        "summary": "Contract Get Clause Context"
+      }
+    },
+    "/v1/internal/contract-tools/document": {
+      "post": {
+        "operationId": "contract_get_document_v1_internal_contract_tools_document_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Service",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Service",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Request-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Request-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContractDocumentToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_ContractDocumentToolData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request Entity Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Media Type"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Gateway Timeout"
+          }
+        },
+        "summary": "Contract Get Document"
+      }
+    },
+    "/v1/internal/contract-tools/ir": {
+      "post": {
+        "operationId": "contract_get_ir_v1_internal_contract_tools_ir_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Service",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Service",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Request-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Request-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContractIrToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_ContractIrToolData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request Entity Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Media Type"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Gateway Timeout"
+          }
+        },
+        "summary": "Contract Get Ir"
+      }
+    }
+  }
+}

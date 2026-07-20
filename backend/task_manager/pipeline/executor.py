@@ -18,9 +18,14 @@ from task_manager.artifact_service import TaskArtifactPublisher
 from task_manager import item_store
 from task_manager.models import TaskArtifactEntity, TaskEntity, TaskRunEntity, utc_now
 from task_manager.output_parser import parse_json_output
-from task_manager.payload_schemas import validate_stage_payload
+from task_manager.payload_schemas import get_stage_json_schema, validate_stage_payload
 from task_manager.registry import TaskType
-from task_manager.result_sink import deliver_task_result
+from task_manager.result_sink import (
+    RequiredResultSinkError,
+    ResultSinkRejectedError,
+    deliver_task_result,
+    is_required_result_sink,
+)
 from tool.artifacts import extract_artifacts
 
 from .errors import PipelineCancelled, StageExecutionError
@@ -187,6 +192,7 @@ class PipelineExecutor:
         last_error: StageExecutionError | None = None
         stage_run = None
         started = time.perf_counter()
+        required_sink = is_required_result_sink(task.task_type)
         for local_attempt in range(1, stage.retry_policy.max_attempts + 1):
             attempt = attempt_offsets.get(stage.stage_id, 0) + local_attempt
             result = None
@@ -220,6 +226,7 @@ class PipelineExecutor:
                         stage_events = self._stream_agent_stage(
                             context=context, task=task, run=run, stage=stage,
                             stage_run_id=stage_run.id, attempt=attempt, stage_input=stage_input,
+                            retry_feedback=str(last_error) if last_error is not None else None,
                         )
                     elif stage.stage_type == "direct_model":
                         stage_events = self._stream_direct_model_stage(
@@ -257,6 +264,32 @@ class PipelineExecutor:
                 if result is None:
                     raise StageExecutionError("Stage produced no result.", code="empty_stage_output")
                 result.output = validate_stage_payload(stage.output_schema, result.output)
+                if required_sink:
+                    try:
+                        await deliver_task_result(
+                            task,
+                            context.task_type,
+                            result.output,
+                            stage_id=stage.stage_id,
+                        )
+                    except RequiredResultSinkError as exc:
+                        rejection = (
+                            exc.__cause__ if isinstance(exc.__cause__, ResultSinkRejectedError) else None
+                        )
+                        retryable = rejection is not None
+                        raise StageExecutionError(
+                            str(exc),
+                            code="required_result_sink_failed",
+                            retryable=retryable,
+                            domain_error_code=rejection.code if rejection is not None else None,
+                            domain_retryable=(
+                                rejection.retryable if rejection is not None else False
+                            ),
+                            user_action_required=(
+                                rejection.user_action_required if rejection is not None else False
+                            ),
+                            details=rejection.details if rejection is not None else None,
+                        ) from exc
                 break
             except TimeoutError:
                 last_error = StageExecutionError("Stage timed out.", code="timeout", retryable=True)
@@ -299,6 +332,12 @@ class PipelineExecutor:
                     stage_id=stage.stage_id,
                     status="failed",
                     error_message=str(last_error),
+                    error_code=last_error.code,
+                    retryable=last_error.retryable,
+                    domain_error_code=last_error.domain_error_code,
+                    domain_retryable=last_error.domain_retryable,
+                    user_action_required=last_error.user_action_required,
+                    error_details=last_error.details,
                 )
             except Exception as sink_error:
                 yield _event(
@@ -358,21 +397,22 @@ class PipelineExecutor:
             finished_at=utc_now(),
             duration_ms=_duration_ms(started),
         )
-        try:
-            await deliver_task_result(
-                task,
-                context.task_type,
-                result.output,
-                stage_id=stage.stage_id,
-            )
-        except Exception as sink_error:
-            yield _event(
-                "stage_result_sink_failed",
-                stage.stage_id,
-                str(sink_error),
-                level="warning",
-                stage_run_id=stage_run.id,
-            )
+        if not required_sink:
+            try:
+                await deliver_task_result(
+                    task,
+                    context.task_type,
+                    result.output,
+                    stage_id=stage.stage_id,
+                )
+            except Exception as sink_error:
+                yield _event(
+                    "stage_result_sink_failed",
+                    stage.stage_id,
+                    str(sink_error),
+                    level="warning",
+                    stage_run_id=stage_run.id,
+                )
         yield _event(
             "artifact_created", stage.stage_id, f"Artifact '{artifact.artifact_type}' created.",
             stage_run_id=stage_run.id, agent_id=stage_run.agent_id, semantics="reference",
@@ -541,6 +581,7 @@ class PipelineExecutor:
         stage_run_id: str,
         attempt: int,
         stage_input: dict[str, Any],
+        retry_feedback: str | None = None,
     ) -> AsyncIterator[TaskHandlerEvent]:
         config = stage.agent_config
         assert config is not None
@@ -557,7 +598,12 @@ class PipelineExecutor:
             )
 
         session_id = _stage_session_id(run, stage, attempt)
-        stage_message = _stage_message(task, stage, stage_input)
+        stage_message = _stage_message(
+            task,
+            stage,
+            stage_input,
+            retry_feedback=retry_feedback,
+        )
 
         request = SchedulingChatRequest(
             message=stage_message,
@@ -709,19 +755,40 @@ async def _artifacts_by_stage(run_id: str) -> dict[str, TaskArtifactEntity]:
     return result
 
 
-def _stage_message(task: TaskEntity, stage: StageDefinition, stage_input: dict[str, Any]) -> str:
-    return "\n".join(
-        [
-            "Execute one isolated TaskManager Pipeline stage.",
-            f"Task type: {task.task_type}",
-            f"Stage id: {stage.stage_id}",
-            f"Stage name: {stage.name}",
-            f"Required output schema: {stage.output_schema or 'JSON object'}",
-            "Return exactly one valid JSON object and no Markdown outside it.",
-            "Stage input:",
-            json.dumps(stage_input, ensure_ascii=False, indent=2),
-        ]
-    )
+def _stage_message(
+    task: TaskEntity,
+    stage: StageDefinition,
+    stage_input: dict[str, Any],
+    *,
+    retry_feedback: str | None = None,
+) -> str:
+    output_schema = get_stage_json_schema(stage.output_schema)
+    lines = [
+        "Execute one isolated TaskManager Pipeline stage.",
+        f"Task type: {task.task_type}",
+        f"Stage id: {stage.stage_id}",
+        f"Stage name: {stage.name}",
+        f"Required output schema name: {stage.output_schema or 'JSON object'}",
+        "Required output JSON Schema:",
+        json.dumps(
+            output_schema or {"type": "object"},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        "Return exactly one valid JSON object and no Markdown outside it.",
+        "The final answer must start with '{' and end with '}'; do not narrate analysis before it.",
+        "Stage input:",
+        json.dumps(stage_input, ensure_ascii=False, indent=2),
+    ]
+    if retry_feedback:
+        lines.extend(
+            [
+                "Previous attempt rejection:",
+                retry_feedback[:2000],
+                "Correct that rejection and return a new complete JSON object.",
+            ]
+        )
+    return "\n".join(lines)
 
 
 def _stage_session_id(run: TaskRunEntity, stage: StageDefinition, attempt: int) -> str:

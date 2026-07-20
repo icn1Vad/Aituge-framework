@@ -13,8 +13,9 @@ create_database() {
 
 create_database aituge
 create_database proofreading
+create_database contract_review
 
-for database_name in aituge proofreading; do
+for database_name in aituge proofreading contract_review; do
   psql --username "$POSTGRES_USER" --dbname "$database_name" --set ON_ERROR_STOP=1 \
     --command "CREATE EXTENSION IF NOT EXISTS vector"
 done

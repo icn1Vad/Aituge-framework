@@ -32,13 +32,27 @@ StageServiceHandler = Callable[[StageExecutionContext], Awaitable[StageServiceRe
 
 
 _HANDLERS: dict[str, StageServiceHandler] = {}
+_HANDLER_SOURCES: dict[str, str] = {}
 
 
-def register_stage_handler(name: str, handler: StageServiceHandler) -> None:
+def register_stage_handler(
+    name: str,
+    handler: StageServiceHandler,
+    *,
+    source: str = "framework",
+) -> None:
+    normalized_source = source.strip()
+    if not normalized_source:
+        raise ValueError("Stage handler source is required.")
     existing = _HANDLERS.get(name)
-    if existing is not None and existing is not handler:
-        raise ValueError(f"Stage handler '{name}' is already registered.")
+    existing_source = _HANDLER_SOURCES.get(name)
+    if existing is not None and existing_source != normalized_source:
+        raise ValueError(
+            f"Stage handler '{name}' is already registered by "
+            f"'{existing_source or 'framework'}'."
+        )
     _HANDLERS[name] = handler
+    _HANDLER_SOURCES[name] = normalized_source
 
 
 def get_stage_handler(name: str) -> StageServiceHandler:

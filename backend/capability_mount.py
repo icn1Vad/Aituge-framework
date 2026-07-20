@@ -8,6 +8,7 @@ import inspect
 import json
 import os
 import sys
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -36,6 +37,8 @@ from task_manager.pipeline.models import (
     StageDefinition,
 )
 from task_manager.pipeline.registry import register_pipeline as register_pipeline_definition
+from task_manager.pipeline.stage_registry import register_stage_handler as register_stage_handler_definition
+from task_manager.result_sink import register_result_sink_handler as register_result_sink_definition
 from tool import ToolBundle
 from tool.registry import (
     ToolConfigEntity,
@@ -102,12 +105,27 @@ class _HttpToolRegistration:
     path: str
     method: str
     input_model: type[BaseModel]
+    headers: Mapping[str, str]
+    request_id_header: str | None
     timeout_seconds: float
     max_response_chars: int
 
     @property
     def key(self) -> tuple[str, str]:
         return self.tool_name, self.provider
+
+
+@dataclass(frozen=True, slots=True)
+class _StageHandlerRegistration:
+    name: str
+    handler: Any
+
+
+@dataclass(frozen=True, slots=True)
+class _ResultSinkRegistration:
+    task_type: str
+    handler: Any
+    required: bool
 
 
 class CapabilityRegistry:
@@ -124,6 +142,8 @@ class CapabilityRegistry:
         self._skill_packages: dict[str, _SkillPackageRegistration] = {}
         self._skill_roots: list[Path] = []
         self._http_tools: dict[tuple[str, str], _HttpToolRegistration] = {}
+        self._stage_handlers: dict[str, _StageHandlerRegistration] = {}
+        self._result_sinks: dict[str, _ResultSinkRegistration] = {}
         self._input_schemas: dict[str, type[BaseModel]] = {}
         self._output_schemas: dict[str, type[BaseModel]] = {}
 
@@ -373,6 +393,36 @@ class CapabilityRegistry:
             enabled=enabled,
         )
 
+    def register_stage_handler(self, *, name: str, handler: Any) -> None:
+        normalized = name.strip()
+        if not normalized:
+            raise ValueError("Capability stage handler name is required.")
+        if normalized in self._stage_handlers:
+            raise ValueError(f"Stage handler '{normalized}' is declared more than once.")
+        if not inspect.iscoroutinefunction(handler):
+            raise ValueError("Capability stage handler must be an async function.")
+        self._stage_handlers[normalized] = _StageHandlerRegistration(normalized, handler)
+
+    def register_result_sink(
+        self,
+        *,
+        task_type: str,
+        handler: Any,
+        required: bool = False,
+    ) -> None:
+        normalized = task_type.strip()
+        if not normalized:
+            raise ValueError("Capability result sink task_type is required.")
+        if normalized in self._result_sinks:
+            raise ValueError(f"Result sink '{normalized}' is declared more than once.")
+        if not inspect.iscoroutinefunction(handler):
+            raise ValueError("Capability result sink handler must be an async function.")
+        self._result_sinks[normalized] = _ResultSinkRegistration(
+            normalized,
+            handler,
+            bool(required),
+        )
+
     def register_skill_package(
         self,
         *,
@@ -417,6 +467,8 @@ class CapabilityRegistry:
         path: str,
         input_model: type[BaseModel],
         method: str = "POST",
+        headers: Mapping[str, str] | None = None,
+        request_id_header: str | None = None,
         timeout_seconds: float = 30.0,
         max_response_chars: int = 100_000,
     ) -> None:
@@ -438,6 +490,23 @@ class CapabilityRegistry:
             raise ValueError(f"HTTP tool '{normalized_name}' input_model must be a Pydantic model.")
         if timeout_seconds <= 0 or max_response_chars <= 0:
             raise ValueError("HTTP tool limits must be positive.")
+        normalized_headers = {
+            str(name).strip(): str(value)
+            for name, value in dict(headers or {}).items()
+            if str(name).strip()
+        }
+        if any(not value or "\r" in value or "\n" in value for value in normalized_headers.values()):
+            raise ValueError("HTTP tool header values must be non-empty single-line strings.")
+        normalized_request_id_header = str(request_id_header or "").strip() or None
+        if normalized_request_id_header is not None:
+            if not normalized_request_id_header.replace("-", "").isalnum():
+                raise ValueError("HTTP tool request_id_header must be a valid HTTP header name.")
+            if normalized_request_id_header.lower() in {
+                name.lower() for name in normalized_headers
+            }:
+                raise ValueError(
+                    "HTTP tool request_id_header cannot also be declared as a static header."
+                )
 
         registration = _HttpToolRegistration(
             tool_name=normalized_name,
@@ -448,6 +517,8 @@ class CapabilityRegistry:
             path=normalized_path,
             method=normalized_method,
             input_model=input_model,
+            headers=normalized_headers,
+            request_id_header=normalized_request_id_header,
             timeout_seconds=float(timeout_seconds),
             max_response_chars=int(max_response_chars),
         )
@@ -472,6 +543,11 @@ class CapabilityRegistry:
                 raise ValueError(
                     f"Capability task '{task.task_type}' references an undeclared pipeline."
                 )
+        for task_type in self._result_sinks:
+            if task_type not in self._tasks:
+                raise ValueError(
+                    f"Capability result sink '{task_type}' references an undeclared task."
+                )
 
         for name, schema in self._input_schemas.items():
             register_input_schema(name, schema)
@@ -479,6 +555,19 @@ class CapabilityRegistry:
             register_output_schema(name, schema)
         for root in self._skill_roots:
             register_skill_root(root)
+        for registration in self._stage_handlers.values():
+            register_stage_handler_definition(
+                registration.name,
+                registration.handler,
+                source=self.source_id,
+            )
+        for registration in self._result_sinks.values():
+            register_result_sink_definition(
+                registration.task_type,
+                registration.handler,
+                source=self.source_id,
+                required=registration.required,
+            )
         for pipeline in self._pipelines.values():
             register_pipeline_definition(pipeline, source=self.source_id)
         for task in self._tasks.values():
@@ -605,6 +694,8 @@ class CapabilityRegistry:
             "skill_packages": sorted(self._skill_packages),
             "skill_roots": [str(path) for path in self._skill_roots],
             "tools": sorted(tool.tool_name for tool in self._http_tools.values()),
+            "stage_handlers": sorted(self._stage_handlers),
+            "result_sinks": sorted(self._result_sinks),
         }
 
 
@@ -764,12 +855,20 @@ def _http_tool_factory(registration: _HttpToolRegistration):
         )
 
         async def invoke_http_tool(**payload: Any) -> str:
+            headers = dict(registration.headers)
+            if registration.request_id_header is not None:
+                headers[registration.request_id_header] = f"tool-{uuid.uuid4().hex}"
             try:
                 async with httpx.AsyncClient(
                     base_url=base_url,
                     timeout=timeout_seconds,
                 ) as client:
-                    response = await client.request(method, path, json=payload)
+                    response = await client.request(
+                        method,
+                        path,
+                        headers=headers,
+                        json=payload,
+                    )
                     response.raise_for_status()
             except httpx.HTTPStatusError as exc:
                 detail = exc.response.text[:500].strip()
