@@ -22,10 +22,13 @@ No local dependency installation, compilation, test execution, image build, or f
 - Tenant and owner isolation passed through the real Java HTTP layer. Temporary rows with the same user/different tenant and the same tenant/different user both returned HTTP 404 with `IRON_REPORT_TASK_NOT_FOUND` and a ContiNew `X-Trace-Id`; all temporary rows were deleted.
 - Full restart persistence passed after force-recreating all four isolated containers. The LIVE daily, DISABLED weekly, and FALLBACK daily tasks remained `SUCCEEDED`; all 12 archived files were downloaded again and their pre-restart checksum, response-header checksum, and actual-file SHA-256 were identical.
 - The existing `frontnew-web`, `continew-dev-java`, `ai-framework-proof-1`, document-viewer test, DEV Redis, and DEV MySQL container identities and start times were unchanged across the complete verification run.
-- Accepted runtime code commits are Python `a80087bac433029adbb5a6d59412c9939848debf` and Java `c8727613257b71af1b2180ac98d66de237670eb5`; later Python commits only update this acceptance record. No PR or merge was performed.
+- Stage 7 Chinese output passed 22 Python Docker tests. Fresh Java-to-Python tasks `869617845414133763` (DAILY) and `869618423351476233` (WEEKLY) both reached Java `SUCCEEDED` after export and archive, with 13/20 metrics, 5 sections each, two Chinese dynamic charts each, and verified DOCX/PDF files.
+- The archived JSON checksum, Java download header checksum, and downloaded bytes matched for all eight files. User-visible narrative was 93.0% CJK for DAILY and 87.4% CJK for WEEKLY; the remaining Latin text was attributable IDs, symbols, URLs, or official source names.
+- Visual QA covered all 13 exported PDF pages and the four source PNG charts. Noto Sans CJK SC rendered Chinese titles, axes, legends, annotations, report prose, and tables without missing glyphs, clipping, or overlap.
+- Accepted runtime code commits are Python `01518391bbfefdbc5b2fe5d7065ce59726934a28` and Java `c8727613257b71af1b2180ac98d66de237670eb5`; later Python commits only update this acceptance record. No PR or merge was performed.
 - At every remaining feature boundary, reread this file and update this checkpoint before proceeding.
 
-## Stage 7 - Chinese report output (in progress)
+## Stage 7 - Chinese report output (completed)
 
 Scope:
 
