@@ -87,13 +87,17 @@ async def register(registry, settings) -> None:
         agent_type="single",
         model_id=model_id,
         system_prompt=(
-            "You are the iron ore daily and weekly report Agent. Follow the active Skill exactly. "
-            "Use only supplied market data and attributable research/fallback sources. Call the market data tool first, "
-            "use iron_report_research instead of web_search when research is requested, "
-            "use code_interpreter to create the required charts, preserve reportDate and dataAsOfDate separately, "
-            "never invent missing fundamentals, and return exactly one valid JSON object. "
-            "Use code_interpreter only for numeric analysis and the two PNG charts; do not use it to invent a different "
-            "report JSON contract. The final object must validate against this exact JSON Schema, with no extra keys: "
+            "你是铁矿石市场日报和周报 Agent，必须严格遵循当前 Skill。"
+            "只使用工具返回的市场数据以及可归因的实时检索或固定快照来源。先调用市场数据工具；"
+            "需要研究时只能调用 iron_report_research，不能直接调用 web_search；"
+            "使用 code_interpreter 完成数值分析并动态生成两张 PNG 图表；始终区分 report_date 和 data_as_of_date；"
+            "不得编造缺失的基本面数据。所有面向读者的报告内容必须使用简体中文，包括标题、摘要、指标名称、"
+            "章节标题与正文、发现、证据、风险、限制以及图表标题、坐标轴、图例和注释。"
+            "JSON 属性名、枚举、标识符、URL、市场代码及必要的官方来源名称保持原样；"
+            "单位优先使用中文可读形式，例如元/吨、美元/吨、手和%。"
+            "最终只返回一个有效 JSON 对象，不得使用 Markdown 包裹。"
+            "code_interpreter 只能用于计算和生成两张图，不能自行发明另一套报告 JSON。"
+            "最终对象必须通过以下精确 JSON Schema，且不能包含额外属性："
             f"{output_schema}"
         ),
         default_tools=["iron_market_data", "iron_report_research", "code_interpreter"],

@@ -6,6 +6,8 @@ import pytest
 
 
 REGISTER_PATH = Path(__file__).resolve().parents[1] / "capabilities" / "register.py"
+SKILL_PATH = REGISTER_PATH.parent / "skills" / "iron-report-generator" / "SKILL.md"
+DOCKERFILE_PATH = Path(__file__).resolve().parents[3] / "deploy" / "appliance" / "iron-report.Dockerfile"
 
 
 class FakeRegistry:
@@ -77,7 +79,8 @@ async def test_capability_uses_configured_model_and_existing_react_tools() -> No
         "research_status",
     ):
         assert f'"{field}"' in system_prompt
-    assert "with no extra keys" in system_prompt
+    assert "所有面向读者的报告内容必须使用简体中文" in system_prompt
+    assert "JSON 属性名、枚举、标识符" in system_prompt
     assert registry.tasks[0]["task_type"] == "iron.report.generate"
     assert registry.tasks[0]["handler"] == "scheduler"
     assert registry.tasks[0]["result_sink_url"].endswith(
@@ -96,3 +99,14 @@ async def test_capability_uses_configured_model_and_existing_react_tools() -> No
     assert payload["report_date"] == "2026-07-17"
     assert payload["data_as_of_date"] == "2026-07-17"
     json.dumps(payload)
+
+
+def test_skill_and_image_define_chinese_chart_font_contract() -> None:
+    skill = SKILL_PATH.read_text(encoding="utf-8")
+    dockerfile = DOCKERFILE_PATH.read_text(encoding="utf-8")
+
+    assert "Every chart title, axis label, legend, and annotation must use Simplified Chinese" in skill
+    assert "Noto Sans CJK SC" in skill
+    assert "axes.unicode_minus" in skill
+    assert "fonts-noto-cjk" in dockerfile
+    assert "fontconfig" in dockerfile

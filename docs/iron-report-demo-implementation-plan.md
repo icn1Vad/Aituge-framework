@@ -25,6 +25,24 @@ No local dependency installation, compilation, test execution, image build, or f
 - Accepted runtime code commits are Python `a80087bac433029adbb5a6d59412c9939848debf` and Java `c8727613257b71af1b2180ac98d66de237670eb5`; later Python commits only update this acceptance record. No PR or merge was performed.
 - At every remaining feature boundary, reread this file and update this checkpoint before proceeding.
 
+## Stage 7 - Chinese report output (in progress)
+
+Scope:
+
+- Keep the Java API, Python API, JSON field names, enums, database schema, and Artifact contract unchanged.
+- Require Simplified Chinese for all user-visible report narratives: title, executive summary, metric labels, section headings and text, limitations, and generated chart labels.
+- Preserve identifiers, units, URLs, official source names, market symbols, and machine-readable enum values where translation would damage traceability or compatibility.
+- Use the existing `fonts-noto-cjk` image dependency and configure matplotlib to select an installed CJK font before drawing charts.
+- Keep DOCX generation through `python-docx` and PDF conversion through LibreOffice Headless.
+- Add a server-tested language contract so an English narrative cannot silently be archived as a successful Chinese report.
+
+Exit criteria:
+
+- Python Docker tests cover the Chinese prompt, Skill, schema validation, document labels, and CJK chart-font contract.
+- Fresh DAILY and WEEKLY tasks complete through the isolated Java-to-Python chain and reach Java `SUCCEEDED` only after `ARCHIVING`.
+- Extracted DOCX/PDF text is predominantly Chinese; two chart images per report visibly use Chinese titles, axes, legends, and annotations without missing glyphs.
+- SHA-256 archive/download checks still pass, and current DEV, production, and Proof containers remain untouched.
+
 ## Confirmed baselines
 
 - Python repository: `AI-tuge/Aituge-framework`

@@ -100,6 +100,7 @@ class IronReportExporter:
 
         try:
             output = IronReportTaskOutput.model_validate(payload.get("output") or {})
+            _validate_chinese_output(output)
             task_input = IronReportTaskInput.model_validate(task.input_payload_json)
             self._validate_result_dates(task_input, output)
             existing = await self.tasks.list_task_artifacts(task_id)
@@ -316,7 +317,12 @@ class IronReportExporter:
         document.add_heading("数据限制", level=1)
         for item in report.limitations:
             document.add_paragraph(item, style="List Bullet")
-        document.add_paragraph(f"研究方式：{report.research_status}")
+        research_label = {
+            "LIVE": "实时检索",
+            "FALLBACK": "固定新闻快照（在线检索降级）",
+            "DISABLED": "未启用在线检索",
+        }[report.research_status]
+        document.add_paragraph(f"研究方式：{research_label}")
         document.add_paragraph(f"生成时间：{report.generated_at.isoformat()}")
         document.save(target)
 
@@ -443,6 +449,40 @@ class IronReportExporter:
 def _safe_base_name(title: str) -> str:
     normalized = re.sub(r"[\\/:*?\"<>|\r\n\t]", "_", title).strip(" ._")
     return normalized[:120] or "iron-ore-report"
+
+
+def _validate_chinese_output(report: IronReportTaskOutput) -> None:
+    required_texts: list[tuple[str, str]] = [
+        ("title", report.title),
+        ("executive_summary", report.executive_summary),
+    ]
+    required_texts.extend((f"metrics[{index}].label", metric.label) for index, metric in enumerate(report.metrics))
+    for section_index, section in enumerate(report.sections):
+        required_texts.extend(
+            [
+                (f"sections[{section_index}].heading", section.heading),
+                (f"sections[{section_index}].summary", section.summary),
+            ]
+        )
+        for collection_name in ("findings", "evidence", "risks"):
+            values = getattr(section, collection_name)
+            required_texts.extend(
+                (f"sections[{section_index}].{collection_name}[{item_index}]", value)
+                for item_index, value in enumerate(values)
+            )
+    required_texts.extend(
+        (f"limitations[{index}]", value) for index, value in enumerate(report.limitations)
+    )
+
+    invalid_fields = [path for path, value in required_texts if not re.search(r"[\u3400-\u4dbf\u4e00-\u9fff]", value)]
+    if invalid_fields:
+        raise IronReportError(
+            "IRON_REPORT_OUTPUT_LANGUAGE_INVALID",
+            "Agent 返回的报告包含非中文的面向读者内容",
+            status_code=422,
+            retryable=True,
+            details={"fields": invalid_fields[:30], "requiredLanguage": "zh-CN"},
+        )
 
 
 def _sha256(path: Path) -> str:

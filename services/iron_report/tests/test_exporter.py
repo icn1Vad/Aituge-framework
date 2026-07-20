@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from docx import Document
 
 from iron_report.config import Settings
 from iron_report.errors import IronReportError
@@ -140,6 +141,44 @@ async def test_invalid_agent_output_has_stable_schema_error(tmp_path: Path) -> N
     assert failure["details"]["validationErrors"]
 
 
+@pytest.mark.asyncio
+async def test_english_narrative_is_rejected_before_archiving(tmp_path: Path) -> None:
+    task = SimpleNamespace(
+        id="task-english",
+        task_type="iron.report.generate",
+        current_run_id="run-english",
+        input_payload_json={
+            "report_type": "DAILY",
+            "report_date": "2026-07-17",
+            "data_as_of_date": "2026-07-17",
+            "output_formats": ["DOCX", "PDF"],
+            "include_web_research": False,
+            "fallback_news_available": True,
+        },
+    )
+    state = ExportStateStore(tmp_path / "state")
+    exporter = IronReportExporter(_settings(tmp_path), _options(tmp_path), state)
+    exporter.tasks = FakeTasks(task)
+    payload = _output()
+    payload["title"] = "Iron Ore Market Daily Report"
+    payload["executive_summary"] = "The market closed higher with active trading."
+
+    with pytest.raises(IronReportError) as caught:
+        await exporter.accept_task_result(
+            {
+                "task_id": "task-english",
+                "run_id": "run-english",
+                "status": "completed",
+                "output": payload,
+            }
+        )
+
+    assert caught.value.code == "IRON_REPORT_OUTPUT_LANGUAGE_INVALID"
+    assert caught.value.details["requiredLanguage"] == "zh-CN"
+    assert caught.value.details["fields"] == ["title", "executive_summary"]
+    assert state.get("task-english")["error_code"] == "IRON_REPORT_OUTPUT_LANGUAGE_INVALID"
+
+
 def test_libreoffice_is_the_configured_pdf_conversion_path(tmp_path: Path, monkeypatch) -> None:
     exporter = IronReportExporter(
         _settings(tmp_path), _options(tmp_path), ExportStateStore(tmp_path / "state")
@@ -184,3 +223,9 @@ def test_docx_export_keeps_report_and_data_dates_separate(tmp_path: Path) -> Non
 
     assert target.read_bytes().startswith(b"PK")
     assert target.stat().st_size > 1000
+
+    document = Document(target)
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    assert "报告日期：2026-07-12" in text
+    assert "数据截至：2026-07-10" in text
+    assert "研究方式：固定新闻快照（在线检索降级）" in text

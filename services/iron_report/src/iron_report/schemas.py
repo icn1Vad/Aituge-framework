@@ -95,7 +95,11 @@ class IronReportTaskPayload(StrictModel):
 
 class ReportMetric(StrictModel):
     key: str = Field(min_length=1, max_length=80)
-    label: str = Field(min_length=1, max_length=120)
+    label: str = Field(
+        min_length=1,
+        max_length=120,
+        description="面向读者的简体中文指标名称",
+    )
     value: float | int | str
     unit: str = Field(default="", max_length=40)
     source_id: str = Field(min_length=1, max_length=120)
@@ -103,11 +107,11 @@ class ReportMetric(StrictModel):
 
 
 class ReportSection(StrictModel):
-    heading: str = Field(min_length=1, max_length=120)
-    summary: str = Field(min_length=1, max_length=2000)
-    findings: list[str] = Field(default_factory=list, max_length=6)
-    evidence: list[str] = Field(default_factory=list, max_length=8)
-    risks: list[str] = Field(default_factory=list, max_length=6)
+    heading: str = Field(min_length=1, max_length=120, description="简体中文章节标题")
+    summary: str = Field(min_length=1, max_length=2000, description="简体中文章节摘要")
+    findings: list[str] = Field(default_factory=list, max_length=6, description="简体中文主要发现")
+    evidence: list[str] = Field(default_factory=list, max_length=8, description="简体中文证据说明")
+    risks: list[str] = Field(default_factory=list, max_length=6, description="简体中文风险说明")
 
 
 class ReportSource(StrictModel):
@@ -122,12 +126,16 @@ class IronReportTaskOutput(StrictModel):
     report_type: ReportType
     report_date: date
     data_as_of_date: date
-    title: str = Field(min_length=1, max_length=300)
-    executive_summary: str = Field(min_length=1, max_length=3000)
+    title: str = Field(min_length=1, max_length=300, description="简体中文报告标题")
+    executive_summary: str = Field(
+        min_length=1,
+        max_length=3000,
+        description="简体中文核心摘要",
+    )
     metrics: list[ReportMetric] = Field(min_length=1, max_length=30)
     sections: list[ReportSection] = Field(min_length=2, max_length=10)
     sources: list[ReportSource] = Field(min_length=1, max_length=30)
-    limitations: list[str] = Field(default_factory=list, max_length=12)
+    limitations: list[str] = Field(default_factory=list, max_length=12, description="简体中文数据限制")
     research_status: Literal["LIVE", "FALLBACK", "DISABLED"]
     generated_at: datetime
 
