@@ -126,9 +126,13 @@ class IronReportDataRepository:
                     "previous_week_average_volume": int(round(previous_week["volume_contracts"].mean())),
                 }
             )
-        daily_rows = frame.tail(90 if report_type == ReportType.WEEKLY else 60)
-        fred = self._load_global(self.GLOBAL_FRED_FILE, validated.data_as_of_date)
-        world_bank = self._load_global(self.GLOBAL_WORLD_BANK_FILE, validated.data_as_of_date)
+        daily_rows = frame.tail(60)
+        if report_type == ReportType.WEEKLY:
+            fred = self._load_global(self.GLOBAL_FRED_FILE, validated.data_as_of_date, limit=12)
+            world_bank = self._load_global(self.GLOBAL_WORLD_BANK_FILE, validated.data_as_of_date, limit=12)
+        else:
+            fred = []
+            world_bank = []
         return {
             "report_type": report_type.value,
             "report_date": validated.report_date.isoformat(),
@@ -141,7 +145,9 @@ class IronReportDataRepository:
                 "source_id": str(latest["source_id"]),
             },
             "metrics": metrics,
-            "daily_series": _records(daily_rows),
+            "daily_series": _records(daily_rows, report_type),
+            "daily_series_order": "chronological_ascending",
+            "daily_series_complete_through": validated.data_as_of_date.isoformat(),
             "global_monthly": {"fred_imf": fred, "world_bank": world_bank},
             "fallback_news": self.fallback_news(validated.report_date),
             "sources": self._read_json(self.SOURCES_FILE).get("sources", []),
@@ -183,10 +189,10 @@ class IronReportDataRepository:
             self._futures = frame
         return self._futures
 
-    def _load_global(self, relative: str, data_date: date) -> list[dict[str, Any]]:
+    def _load_global(self, relative: str, data_date: date, *, limit: int) -> list[dict[str, Any]]:
         frame = pd.read_csv(self._require_file(relative))
         frame["month_date"] = pd.to_datetime(frame["month"] + "-01")
-        frame = frame.loc[frame["month_date"].dt.date <= data_date.replace(day=1)].tail(24)
+        frame = frame.loc[frame["month_date"].dt.date <= data_date.replace(day=1)].tail(limit)
         return [
             {
                 "month": str(row["month"]),
@@ -224,20 +230,20 @@ def _number(value: Any) -> float:
     return round(float(value), 6)
 
 
-def _records(frame: pd.DataFrame) -> list[dict[str, Any]]:
-    fields = ["date", "open", "high", "low", "close", "settlement", "volume_contracts", "open_interest_contracts"]
+def _records(frame: pd.DataFrame, report_type: ReportType) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
-    for _, row in frame[fields].iterrows():
-        result.append(
-            {
-                "date": row["date"].date().isoformat(),
-                "open": _number(row["open"]),
-                "high": _number(row["high"]),
-                "low": _number(row["low"]),
-                "close": _number(row["close"]),
-                "settlement": _number(row["settlement"]),
-                "volume_contracts": int(row["volume_contracts"]),
-                "open_interest_contracts": int(row["open_interest_contracts"]),
-            }
-        )
+    for _, row in frame.iterrows():
+        record = {
+            "date": row["date"].date().isoformat(),
+            "close": _number(row["close"]),
+            "settlement": _number(row["settlement"]),
+        }
+        if report_type == ReportType.DAILY:
+            record.update(
+                {
+                    "volume_contracts": int(row["volume_contracts"]),
+                    "open_interest_contracts": int(row["open_interest_contracts"]),
+                }
+            )
+        result.append(record)
     return result
