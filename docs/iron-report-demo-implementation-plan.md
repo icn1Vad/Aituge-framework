@@ -22,7 +22,7 @@ No local dependency installation, compilation, test execution, image build, or f
 - Tenant and owner isolation passed through the real Java HTTP layer. Temporary rows with the same user/different tenant and the same tenant/different user both returned HTTP 404 with `IRON_REPORT_TASK_NOT_FOUND` and a ContiNew `X-Trace-Id`; all temporary rows were deleted.
 - Full restart persistence passed after force-recreating all four isolated containers. The LIVE daily, DISABLED weekly, and FALLBACK daily tasks remained `SUCCEEDED`; all 12 archived files were downloaded again and their pre-restart checksum, response-header checksum, and actual-file SHA-256 were identical.
 - The existing `frontnew-web`, `continew-dev-java`, `ai-framework-proof-1`, document-viewer test, DEV Redis, and DEV MySQL container identities and start times were unchanged across the complete verification run.
-- Final pushed commits are Python `a80087bac433029adbb5a6d59412c9939848debf` and Java `c8727613257b71af1b2180ac98d66de237670eb5`. No PR or merge was performed.
+- Accepted runtime code commits are Python `a80087bac433029adbb5a6d59412c9939848debf` and Java `c8727613257b71af1b2180ac98d66de237670eb5`; later Python commits only update this acceptance record. No PR or merge was performed.
 - At every remaining feature boundary, reread this file and update this checkpoint before proceeding.
 
 ## Confirmed baselines
