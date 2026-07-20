@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -64,3 +65,16 @@ async def test_capability_uses_configured_model_and_existing_react_tools() -> No
     assert registry.tasks[0]["result_sink_url"].endswith(
         "/v1/internal/iron-report/task-result?callback_token=internal-token-123"
     )
+
+    payload = registry.tasks[0]["input_model"].model_validate(
+        {
+            "report_type": "DAILY",
+            "report_date": "2026-07-17",
+            "data_as_of_date": "2026-07-17",
+            "output_formats": ["DOCX", "PDF"],
+            "include_web_research": True,
+        }
+    ).model_dump()
+    assert payload["report_date"] == "2026-07-17"
+    assert payload["data_as_of_date"] == "2026-07-17"
+    json.dumps(payload)

@@ -65,6 +65,34 @@ class IronReportTaskInput(StrictModel):
     fallback_news_available: bool = True
 
 
+class IronReportTaskPayload(StrictModel):
+    """JSON-safe Task Manager payload contract.
+
+    Framework's shared payload validator persists ``model_dump()`` directly to a
+    JSON column. Keep dates as validated ISO strings here, then parse them back
+    into ``IronReportTaskInput`` at the service/export boundary.
+    """
+
+    report_type: ReportType
+    report_date: str
+    data_as_of_date: str
+    output_formats: list[OutputFormat]
+    include_web_research: bool
+    fallback_news_available: bool = True
+
+    @field_validator("report_date", "data_as_of_date")
+    @classmethod
+    def strict_task_date(cls, value: str) -> str:
+        normalized = value.strip()
+        try:
+            parsed = date.fromisoformat(normalized)
+        except ValueError as exc:
+            raise ValueError("task date must use YYYY-MM-DD") from exc
+        if parsed.isoformat() != normalized:
+            raise ValueError("task date must strictly use YYYY-MM-DD")
+        return normalized
+
+
 class ReportMetric(StrictModel):
     key: str = Field(min_length=1, max_length=80)
     label: str = Field(min_length=1, max_length=120)

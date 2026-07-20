@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict
 
-from iron_report.schemas import IronReportTaskInput, IronReportTaskOutput, ReportType
+from iron_report.schemas import IronReportTaskOutput, IronReportTaskPayload, ReportType
 
 
 CAPABILITY_ID = "iron-report"
@@ -76,7 +76,7 @@ async def register(registry, settings) -> None:
         default_primary_skill="iron-report-generator",
         default_tools=["iron_market_data", "web_search", "code_interpreter"],
         default_datasets=[],
-        input_model=IronReportTaskInput,
+        input_model=IronReportTaskPayload,
         output_model=IronReportTaskOutput,
         result_sink_url=(
             f"{service_base_url}/v1/internal/iron-report/task-result?callback_token={callback_token}"
