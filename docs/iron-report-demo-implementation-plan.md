@@ -9,17 +9,20 @@ No local dependency installation, compilation, test execution, image build, or f
 
 ## Current checkpoint (2026-07-20)
 
-- Stages 1 through 5 are implemented on both feature branches and pushed.
-- Stage 6 is active in the isolated `/home/aituge/workspace/ai-feature-demo` environment.
-- The isolated MySQL, Redis, Python, and Java containers are healthy; Python and Java Docker test suites passed before real E2E execution.
+- Stages 1 through 6 are implemented and accepted in the isolated `/home/aituge/workspace/ai-feature-demo` environment.
+- The isolated MySQL, Redis, Python, and Java containers are healthy. The final server Docker runs passed 20 Python tests, 49 Java tests, and the complete `continew-server` package build.
 - The first real DAILY run safely exposed an Agent output-schema mismatch; the exact JSON Schema is now injected and schema failures use `IRON_REPORT_OUTPUT_SCHEMA_INVALID`.
 - A fresh DAILY run then completed the full Java-to-Python chain with live research, 11 metrics, 5 sections, 7 sources, two dynamic PNG charts, DOCX, LibreOffice PDF, Java SHA-256 verification, private-file archive, and Java-only downloads. All four archived files matched the JSON checksum, download header checksum, and downloaded bytes.
 - Idempotency now passes end to end: a new request returns `reused=false`, same-key/same-body replay returns the same task with `reused=true`, and same-key/different-body returns `409 IRON_REPORT_IDEMPOTENCY_CONFLICT`. The archived DAILY result also remained available through Java after the Python container was rebuilt.
 - Model-wrapped JSON is now recovered only from one bounded fenced JSON object and still passes the strict registered schema; specific export errors are preserved.
 - A rerun WEEKLY report passed with `researchStatus=DISABLED`, 18 metrics, 6 sections, 7 sources, DOCX/PDF/two charts, archive and download checksums. Visual inspection confirmed the first chart reaches July 17 and includes the 20-session moving average; the second uses three independently rebased series and explicitly states it is not a cross-currency price spread.
 - An out-of-range Java request for 2026-07-18 passed with HTTP 422 and `IRON_REPORT_DATE_OUT_OF_RANGE`.
-- A deliberately unreachable live-search endpoint exposed an unsafe core-tool failure shape (`result` became a string and downstream ReAct raised `AttributeError`). The current feature adds an `iron_report_research` business adapter that reuses the existing Aliyun client but always returns either structured `LIVE` results or the fixed `news_snapshot.json` with `FALLBACK`; the Agent no longer calls core `web_search` directly. This change still requires server Docker tests and a repeated real failure E2E before acceptance.
-- After search fallback passes, the remaining verification order is tenant isolation, full restart persistence, and proof that existing DEV/production/Proof container identities did not change.
+- A deliberately unreachable live-search endpoint exposed an unsafe core-tool failure shape (`result` became a string and downstream ReAct raised `AttributeError`). The `iron_report_research` business adapter now reuses the existing Aliyun client but always returns either structured `LIVE` results or fixed `news_snapshot.json` content with `FALLBACK`; the Agent no longer calls core `web_search` directly.
+- Search degradation passed 20 Docker tests and a repeated real Java-to-Python failure E2E. Java task `869607775280300066` completed as `SUCCEEDED` with `researchStatus=FALLBACK`, 15 metrics, 6 sections, 5 sources, and 4 archived Artifacts. The original private search configuration was restored and the Python container returned healthy.
+- Tenant and owner isolation passed through the real Java HTTP layer. Temporary rows with the same user/different tenant and the same tenant/different user both returned HTTP 404 with `IRON_REPORT_TASK_NOT_FOUND` and a ContiNew `X-Trace-Id`; all temporary rows were deleted.
+- Full restart persistence passed after force-recreating all four isolated containers. The LIVE daily, DISABLED weekly, and FALLBACK daily tasks remained `SUCCEEDED`; all 12 archived files were downloaded again and their pre-restart checksum, response-header checksum, and actual-file SHA-256 were identical.
+- The existing `frontnew-web`, `continew-dev-java`, `ai-framework-proof-1`, document-viewer test, DEV Redis, and DEV MySQL container identities and start times were unchanged across the complete verification run.
+- Final pushed commits are Python `a80087bac433029adbb5a6d59412c9939848debf` and Java `c8727613257b71af1b2180ac98d66de237670eb5`. No PR or merge was performed.
 - At every remaining feature boundary, reread this file and update this checkpoint before proceeding.
 
 ## Confirmed baselines
@@ -37,7 +40,7 @@ No local dependency installation, compilation, test execution, image build, or f
 ## Non-negotiable boundaries
 
 - Add an independent `services/iron_report` business service. Do not modify Framework core behavior.
-- Reuse CapabilityRegistry, ReactAgent, ToolRegistry, `web_search`, `code_interpreter`, TaskManager, and Artifact.
+- Reuse CapabilityRegistry, ReactAgent, ToolRegistry, the existing Aliyun search client through the business-safe research adapter, `code_interpreter`, TaskManager, and Artifact.
 - Do not reuse Douyin-specific report logic.
 - Do not modify translation implementation, BabelDOC implementation, current DEV, production, or the running Proof containers.
 - Frontend calls Java only. Python endpoints are internal.
@@ -68,7 +71,7 @@ Exit criteria:
 Deliverables:
 
 - Capability entry, iron report Agent, Skill, and `iron_market_data` HTTP tool.
-- ReAct uses real data, configured web search, and code_interpreter.
+- ReAct uses real data, configured search through `iron_report_research`, and code_interpreter.
 - Daily and weekly structured reports.
 - Dynamic PNG charts published as Framework Artifacts.
 - DOCX generated with `python-docx`.
