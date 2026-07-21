@@ -8,6 +8,11 @@ import urllib.request
 EXPECTED_STAGES = [
     "parse_contract",
     "resolve_parties",
+    "extract_ir_definitions_basics",
+    "extract_ir_rights_duties",
+    "extract_ir_commercial_terms",
+    "extract_ir_liability_termination",
+    "extract_ir_special_terms",
     "extract_contract_ir",
     "rights_obligations_review",
     "commercial_terms_review",
@@ -49,7 +54,7 @@ def main() -> None:
         item for item in pipelines if item["pipeline_id"] == "contract-review-pipeline-v1"
     )
     assert pipeline["task_type"] == "contract.review.run"
-    assert pipeline["max_parallelism"] == 5
+    assert pipeline["max_parallelism"] == 3
     assert [stage["stage_id"] for stage in pipeline["stages"]] == EXPECTED_STAGES
 
     openapi = _get_json(f"{contract}/openapi.json")
