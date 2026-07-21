@@ -71,8 +71,6 @@ def test_report_merges_semantic_findings_in_existing_shape() -> None:
         "id": "unit-1",
         "message": "责任主体和处理时限不明确。",
         "suggestion": "明确责任部门和完成时限。",
-        "clause_ordinal": 1,
-        "clause_no_raw": "第一条",
     }
 
 

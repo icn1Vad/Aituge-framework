@@ -76,9 +76,7 @@ Return exactly one JSON object and no Markdown:
     "role": "Role or department",
     "summary": "A combined description of the role's material authority, responsibilities, obligations, and handoffs."
   }],
-  "key_process": ["A coherent process phase or a combined sequence of closely related steps."],
-  "key_rules": ["A summarized material threshold, deadline, approval condition, or control requirement."],
-  "exceptions": ["A summarized explicit exception or special handling path."]
+  "key_rules": ["A summarized material threshold, deadline, approval condition, or control requirement."]
 }
 ```
 

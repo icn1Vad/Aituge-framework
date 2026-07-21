@@ -70,7 +70,8 @@ Finding；某一 Stage 完成后，Java 或前端只请求该 Stage 的结果并
 - `GET /v1/policies/{id}/conflict-findings`：返回冲突 Stage 结果；
 - `POST /v1/policies/{id}/confirm`：审校完成后确认入库；
 - `DELETE /v1/policies/{id}`：只允许丢弃草稿；
-- `POST /v1/internal/semantic-audits/result`：Framework 固定可信回调。
+- `POST /v1/internal/semantic-audits/result`：Framework 统一制度审校可信回调；接口名称保持不变，
+  同一回调按 stage 接收制度概览、语义审校和制度冲突结果。
 
 冲突 Stage 成功或失败也回调上述父 Task sink；独立诊断 Task 仍使用
 `POST /v1/internal/conflict-audits/result`。

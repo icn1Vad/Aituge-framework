@@ -421,7 +421,7 @@
       const conflictFindings = (report.conflict_findings || []).map((item, index) => `<article class="finding">
         <div class="finding-title">${index + 1}. ${escapeHtml({ numeric_conflict: "数值冲突", authority_conflict: "权责冲突", process_conflict: "流程冲突", rule_reversal: "规则反转" }[item.conflict_type] || item.conflict_type)}</div>
         <div>${escapeHtml(item.problem)}</div>
-        <div class="finding-meta">当前 Chunk：${escapeHtml(item.id)}<br>冲突 Chunk：${escapeHtml((item.candidate_ids || []).join("、"))}<br>建议：${escapeHtml(item.suggestion)}</div>
+        <div class="finding-meta">当前 Chunk：${escapeHtml(item.id)}<br>冲突 Chunk：${renderConflictCandidates(item)}<br>建议：${escapeHtml(item.suggestion)}</div>
       </article>`).join("");
       const conflictResult = conflictFindings || (conflict.status === "completed" ? '<div class="report-ok">制度冲突审校已完成，未发现问题。</div>' : "");
       return `<section class="review-section"><h3 class="review-heading">语义与可执行性审校</h3>${auditState}${semanticResult}</section>`
@@ -430,11 +430,23 @@
         + actions;
     }
 
+    function renderConflictCandidates(item) {
+      const unavailable = new Set(item.unavailable_candidate_ids || []);
+      return (item.candidate_ids || []).map((id) => unavailable.has(id)
+        ? `${escapeHtml(id)} <span class="badge amber">关联制度已删除或不可用</span>`
+        : escapeHtml(id)
+      ).join("<br>");
+    }
+
     function findingEvidence(item) {
       if (item.type === "duplicate_number") return `位置：${item.occurrences.map((x) => `Chunk #${x.clause_ordinal}${x.line_no ? ` 第${x.line_no}行` : ""}`).join("、")}`;
       if (item.type === "missing_number") return `缺少：${(item.missing_numbers || []).join("、")}`;
       if (item.type === "mixed_structure") return `识别结构：${(item.profiles || []).map((x) => profileName[x] || x).join(" + ")}`;
-      if (["semantic_ambiguity", "executability_gap"].includes(item.type)) return `Chunk ID：${escapeHtml(item.id)}<br>位置：Chunk #${item.clause_ordinal} ${escapeHtml(item.clause_no_raw || "")}<br>建议：${escapeHtml(item.suggestion)}`;
+      if (["semantic_ambiguity", "executability_gap"].includes(item.type)) {
+        const chunk = (state.detail?.clauses || []).find((candidate) => candidate.id === item.id);
+        const location = chunk ? `<br>位置：Chunk #${chunk.clause_ordinal} ${escapeHtml(chunk.clause_no_raw || "")}` : "";
+        return `Chunk ID：${escapeHtml(item.id)}${location}<br>建议：${escapeHtml(item.suggestion)}`;
+      }
       return "";
     }
 

@@ -51,6 +51,8 @@ def test_ingest_read_fetch_duplicate_and_atomic_failure(tmp_path) -> None:
         confirmed = service.confirm_policy(policy_id)
         assert confirmed["status"] == "effective"
         fetched = service.fetch_units([clauses[0]["id"]])[0]
+        assert set(fetched) == {"id", "text", "citation"}
+        assert fetched["text"] == clauses[0]["text"]
         assert fetched["citation"]["policy_id"] == policy_id
         assert fetched["citation"]["clause_no_raw"] == "第一条"
 

@@ -139,10 +139,12 @@ uv run python -m proof.tools.validate_dataset_chunks \
 - `GET /v1/policies/{policy_id}/policy-summary`：返回制度初步分析；
 - `GET /v1/policies/{policy_id}/semantic-findings`：返回结构、语义与可执行性结果；
 - `GET /v1/policies/{policy_id}/conflict-findings`：返回制度冲突结果；
+  `unavailable_candidate_ids` 标识已删除或当前不可用的候选 Chunk；
 - `POST /v1/policies/{policy_id}/confirm`：审校完成后确认制度生效；
 - `GET /v1/ingestion-runs/{run_id}`：查看本次入库、复用或失败的运行记录；
 - `GET /v1/dataset/audit`：扫描固定数据集口径并返回分类、chunk 计数和异常；
 - `GET /v1/dataset/files/{file_id}`：返回单个数据集文件的完整条款 chunk；
+- `GET /v1/files`、`GET /v1/files/{file_id}/content`、`GET /v1/files/{file_id}/chunks`：查看库内文件及其内容；
 - `GET /v1/meta/policy-levels`：三个固定层级；
 - `GET/POST /v1/categories`：查询或增加简单分类；
 - `POST /v1/documents/{document_id}/index`：调用外部 embedding 并写入 pgvector；

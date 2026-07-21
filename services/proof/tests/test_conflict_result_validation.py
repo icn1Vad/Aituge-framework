@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from proof.application.service import ProofService
-from proof.application.semantic_audit import SemanticAuditService
+from proof.application.semantic_audit import PolicyAuditService
 from proof.config import Settings
 from proof.errors import ProofError
 
@@ -150,7 +150,7 @@ def _integrated_payload() -> dict:
 
 def test_integrated_conflict_callback_persists_validated_findings() -> None:
     repository = _IntegratedRepository()
-    semantic = SemanticAuditService(Settings(semantic_audit_enabled=True), repository)
+    semantic = PolicyAuditService(Settings(semantic_audit_enabled=True), repository)
     proof = object.__new__(ProofService)
     proof.repository = repository
 
@@ -172,7 +172,7 @@ def test_integrated_conflict_callback_persists_validated_findings() -> None:
 def test_integrated_conflict_callback_rejects_non_effective_candidate() -> None:
     repository = _IntegratedRepository()
     repository.units["candidate-unit"]["policy_status"] = "draft"
-    semantic = SemanticAuditService(Settings(semantic_audit_enabled=True), repository)
+    semantic = PolicyAuditService(Settings(semantic_audit_enabled=True), repository)
     proof = object.__new__(ProofService)
     proof.repository = repository
 
@@ -189,7 +189,7 @@ def test_integrated_conflict_callback_rejects_non_effective_candidate() -> None:
 
 def test_integrated_conflict_stage_failure_is_recorded_separately() -> None:
     repository = _IntegratedRepository()
-    semantic = SemanticAuditService(Settings(semantic_audit_enabled=True), repository)
+    semantic = PolicyAuditService(Settings(semantic_audit_enabled=True), repository)
     payload = _integrated_payload()
     payload.update(status="failed", output=None, error_message="conflict agent timeout")
 

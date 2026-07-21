@@ -37,7 +37,6 @@ class FileRepository:
             for index in range(min(limit, remaining))
         ]
 
-
 def _service(tmp_path: Path, repository: FileRepository) -> ProofService:
     return ProofService(
         Settings(database_url="postgresql://unused", storage_root=tmp_path),

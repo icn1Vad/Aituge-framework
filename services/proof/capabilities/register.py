@@ -163,9 +163,7 @@ class ProofPolicySummaryOutput(BaseModel):
     purpose: str | None = Field(default=None, min_length=1, max_length=2000)
     scope: list[str] = Field(default_factory=list)
     concerned_roles: list[ProofConcernedRole] = Field(default_factory=list)
-    key_process: list[str] = Field(default_factory=list)
     key_rules: list[str] = Field(default_factory=list)
-    exceptions: list[str] = Field(default_factory=list)
 
 
 class ProofAuditPipelineOutput(BaseModel):

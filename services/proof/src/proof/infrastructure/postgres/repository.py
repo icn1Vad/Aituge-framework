@@ -898,28 +898,56 @@ class ProofRepository:
             raise RuntimeError("Audit run could not be read back.")
         return run
 
-    def reset_failed_audit_run(self, audit_run_id: str) -> bool:
+    def prepare_audit_run_for_dispatch(self, audit_run_id: str) -> bool:
+        """Reset only incomplete review stages while preserving completed artifacts."""
+
         with self.connect() as conn:
-            row = conn.execute(
-                """
-                UPDATE proof_audit_run
-                SET status = 'pending', framework_task_id = NULL, framework_run_id = NULL,
-                    error_message = NULL, summary_status = 'pending', summary_content = NULL,
-                    summary_error_message = NULL, conflict_status = 'pending',
-                    conflict_error_message = NULL, updated_at = now()
-                WHERE id = %s AND (status = 'failed' OR conflict_status = 'failed')
-                RETURNING id
-                """,
+            run = conn.execute(
+                "SELECT status, summary_status, conflict_status FROM proof_audit_run WHERE id = %s FOR UPDATE",
                 (audit_run_id,),
             ).fetchone()
-            if row:
+            if run is None:
+                return False
+            semantic_incomplete = run["status"] != "completed"
+            summary_incomplete = run["summary_status"] != "completed"
+            conflict_incomplete = run["conflict_status"] != "completed"
+            if not any((semantic_incomplete, summary_incomplete, conflict_incomplete)):
+                return False
+
+            conn.execute(
+                """
+                UPDATE proof_audit_run
+                SET status = CASE WHEN status = 'completed' THEN status ELSE 'pending' END,
+                    error_message = CASE WHEN status = 'completed' THEN error_message ELSE NULL END,
+                    summary_status = CASE
+                      WHEN summary_status = 'completed' THEN summary_status ELSE 'pending'
+                    END,
+                    summary_content = CASE
+                      WHEN summary_status = 'completed' THEN summary_content ELSE NULL
+                    END,
+                    summary_error_message = CASE
+                      WHEN summary_status = 'completed' THEN summary_error_message ELSE NULL
+                    END,
+                    conflict_status = CASE
+                      WHEN conflict_status = 'completed' THEN conflict_status ELSE 'pending'
+                    END,
+                    conflict_error_message = CASE
+                      WHEN conflict_status = 'completed' THEN conflict_error_message ELSE NULL
+                    END,
+                    framework_task_id = NULL, framework_run_id = NULL, updated_at = now()
+                WHERE id = %s
+                """,
+                (audit_run_id,),
+            )
+            if semantic_incomplete:
                 conn.execute("DELETE FROM proof_audit_finding WHERE audit_run_id = %s", (audit_run_id,))
+            if conflict_incomplete:
                 conn.execute(
                     "DELETE FROM proof_conflict_audit_finding WHERE audit_run_id = %s",
                     (audit_run_id,),
                 )
             conn.commit()
-        return bool(row)
+        return True
 
     def mark_audit_running(
         self,
@@ -959,7 +987,9 @@ class ProofRepository:
                 """
                 UPDATE proof_audit_run
                 SET framework_task_id = %s, updated_at = now()
-                WHERE id = %s AND status = 'pending'
+                WHERE id = %s AND (
+                  status = 'pending' OR summary_status = 'pending' OR conflict_status = 'pending'
+                )
                 """,
                 (framework_task_id, audit_run_id),
             )
@@ -1071,8 +1101,7 @@ class ProofRepository:
             rows = conn.execute(
                 """
                 SELECT f.source_unit_id AS id, f.candidate_ids, f.conflict_type,
-                       f.problem, f.suggestion,
-                       u.clause_ordinal, u.clause_no_raw
+                       f.problem, f.suggestion
                 FROM proof_conflict_audit_finding f
                 JOIN proof_retrieval_unit u ON u.id = f.source_unit_id
                 WHERE f.audit_run_id = %s
@@ -1124,8 +1153,7 @@ class ProofRepository:
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT f.retrieval_unit_id AS id, f.category, f.problem, f.suggestion,
-                       u.clause_ordinal, u.clause_no_raw
+                SELECT f.retrieval_unit_id AS id, f.category, f.problem, f.suggestion
                 FROM proof_audit_finding f
                 JOIN proof_retrieval_unit u ON u.id = f.retrieval_unit_id
                 WHERE f.audit_run_id = %s

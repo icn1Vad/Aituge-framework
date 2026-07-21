@@ -172,6 +172,16 @@ class FakeService:
     def index_document(self, document_id: str):
         raise ProofError("embedding_unconfigured", "Embedding API is not configured.", status_code=503)
 
+    def fetch_units(self, unit_ids: list[str]):
+        return [
+            {
+                "id": unit_id,
+                "text": f"原文 {unit_id}",
+                "citation": {"policy_title": "测试制度", "label": f"[测试制度｜{unit_id}]"},
+            }
+            for unit_id in unit_ids
+        ]
+
     def search(self, **kwargs):
         raise ProofError("embedding_unconfigured", "Embedding API is not configured.", status_code=503)
 
@@ -320,6 +330,7 @@ def test_file_list_pdf_content_and_limited_chunks() -> None:
     assert client.get("/v1/files/document-1/chunks?limit=11").status_code == 422
     assert client.get("/v1/files/missing/content").status_code == 404
     assert client.get("/v1/files/missing/chunks").status_code == 404
+    assert client.delete("/v1/files/document-1").status_code == 404
 
 
 def test_workbench_and_experiment_policy_are_available() -> None:
@@ -334,6 +345,7 @@ def test_workbench_and_experiment_policy_are_available() -> None:
     assert workbench.status_code == 200
     assert "上传并开始审校" in workbench.text
     assert "确认入库" in workbench.text
+    assert "关联制度已删除或不可用" in workbench.text
 
     experiment = client.get("/examples/policy-semantic-conflict-test.txt")
     assert experiment.status_code == 200
@@ -362,6 +374,32 @@ def test_internal_conflict_retrieval_endpoint() -> None:
     assert response.status_code == 200
     assert response.json()["data"]["source"]["id"] == "unit-1"
     assert response.json()["data"]["candidate_counts"]["returned"] == 7
+
+
+def test_retrieval_fetch_returns_compact_chunks_in_requested_order() -> None:
+    client = TestClient(create_app(Settings(), FakeService()))
+
+    response = client.post(
+        "/v1/retrieval/fetch",
+        json={"unit_ids": ["unit-2", "unit-1", "unit-2"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": True,
+        "data": [
+            {
+                "id": "unit-2",
+                "text": "原文 unit-2",
+                "citation": {"policy_title": "测试制度", "label": "[测试制度｜unit-2]"},
+            },
+            {
+                "id": "unit-1",
+                "text": "原文 unit-1",
+                "citation": {"policy_title": "测试制度", "label": "[测试制度｜unit-1]"},
+            },
+        ],
+    }
 
 
 def test_internal_conflict_retrieval_defaults_to_ten_results() -> None:
@@ -423,6 +461,10 @@ def test_review_workflow_endpoints() -> None:
         json={"audit_id": "audit-1", "output": {"summary": {}, "items": []}},
     )
     assert callback.json()["data"]["status"] == "completed"
+    assert client.post(
+        "/v1/internal/policy-audits/result",
+        json={"audit_id": "audit-1", "output": {"summary": {}, "items": []}},
+    ).status_code == 404
 
     conflict_callback = client.post(
         "/v1/internal/conflict-audits/result",

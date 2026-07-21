@@ -42,8 +42,6 @@ def build_policy_quality_report(
             "id": item["id"],
             "message": item["problem"],
             "suggestion": item["suggestion"],
-            "clause_ordinal": item.get("clause_ordinal"),
-            "clause_no_raw": item.get("clause_no_raw"),
         }
         for item in (semantic_findings or [])
     ]

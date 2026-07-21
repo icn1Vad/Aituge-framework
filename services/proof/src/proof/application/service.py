@@ -14,7 +14,7 @@ from proof.application.conflict_retrieval.service import CONFLICT_RERANK_INSTRUC
 from proof.application.ingestion import PolicyIngestionPipeline
 from proof.application.quality_report import build_policy_quality_report
 from proof.application.retrieval import HybridPolicyRetriever, RetrievalFilters
-from proof.application.semantic_audit import SemanticAuditService
+from proof.application.semantic_audit import PolicyAuditService
 from proof.application.sql_query import PolicySqlQueryService
 from proof.config import Settings
 from proof.errors import ProofError
@@ -36,7 +36,7 @@ class ProofService:
         dataset_auditor: DatasetAuditor | None = None,
         retrieval_pipeline: HybridPolicyRetriever | None = None,
         sql_query_service: PolicySqlQueryService | None = None,
-        semantic_audit_service: SemanticAuditService | None = None,
+        policy_audit_service: PolicyAuditService | None = None,
         conflict_retrieval_service: ConflictRetrievalService | None = None,
     ) -> None:
         self.settings = settings
@@ -57,7 +57,7 @@ class ProofService:
             rerank_candidate_limit=settings.rerank_candidate_limit,
         )
         self.sql_query_service = sql_query_service or PolicySqlQueryService(settings, self.repository)
-        self.semantic_audit_service = semantic_audit_service or SemanticAuditService(settings, self.repository)
+        self.policy_audit_service = policy_audit_service or PolicyAuditService(settings, self.repository)
         self.conflict_retrieval_service = conflict_retrieval_service
 
     def health(self) -> dict[str, Any]:
@@ -100,8 +100,8 @@ class ProofService:
         )
         policy = result["policy"]
         document = result["document"]
-        if policy.get("status") == "draft":
-            audit_state = self.semantic_audit_service.ensure_dispatched(document["id"])
+        if policy.get("status") == "draft" or result.get("reused"):
+            audit_state = self.policy_audit_service.ensure_dispatched(document["id"])
         else:
             audit_state = self._semantic_state_for_policy(policy, document["id"])
         result["audit_task"] = _audit_task_view(audit_state)
@@ -230,9 +230,9 @@ class ProofService:
             policy,
             clauses,
             semantic_audit=semantic,
-            semantic_findings=self.semantic_audit_service.findings(document_id),
+            semantic_findings=self.policy_audit_service.findings(document_id),
             conflict_audit=conflict,
-            conflict_findings=self.semantic_audit_service.conflict_findings(document_id),
+            conflict_findings=self.policy_audit_service.conflict_findings(document_id),
         )
         semantic_ready = semantic.get("status") == "completed"
         conflict_ready = conflict.get("status") == "completed"
@@ -277,7 +277,7 @@ class ProofService:
             policy,
             self.repository.list_clauses(policy_id, include_text=True),
             semantic_audit=audit,
-            semantic_findings=self.semantic_audit_service.findings(document_id),
+            semantic_findings=self.policy_audit_service.findings(document_id),
         )
         return {
             **_stage_status(audit),
@@ -288,31 +288,59 @@ class ProofService:
         policy = self.get_policy(policy_id)
         document_id = policy["document_id"]
         audit = self._conflict_state_for_policy(policy, document_id)
+        findings = self.policy_audit_service.conflict_findings(document_id)
         return {
             **_stage_status(audit),
-            "findings": self.semantic_audit_service.conflict_findings(document_id),
+            "findings": self._with_conflict_candidate_availability(findings),
         }
 
+    def _with_conflict_candidate_availability(
+        self,
+        findings: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        candidate_ids = list(
+            dict.fromkeys(
+                str(candidate_id)
+                for finding in findings
+                for candidate_id in (finding.get("candidate_ids") or [])
+            )
+        )
+        available_ids = {
+            str(unit["id"])
+            for unit in self.repository.fetch_units(candidate_ids)
+        }
+        return [
+            {
+                **finding,
+                "unavailable_candidate_ids": [
+                    str(candidate_id)
+                    for candidate_id in (finding.get("candidate_ids") or [])
+                    if str(candidate_id) not in available_ids
+                ],
+            }
+            for finding in findings
+        ]
+
     def _summary_state_for_policy(self, policy: dict[str, Any], document_id: str) -> dict[str, Any]:
-        state = self.semantic_audit_service.summary_state(document_id)
+        state = self.policy_audit_service.summary_state(document_id)
         if policy.get("status") == "effective" and state.get("status") == "pending":
             return {"status": "not_requested", "error_message": None, "content": None}
         return state
 
     def _semantic_state_for_policy(self, policy: dict[str, Any], document_id: str) -> dict[str, Any]:
-        state = self.semantic_audit_service.get_state(document_id)
+        state = self.policy_audit_service.get_state(document_id)
         if policy.get("status") == "effective" and state.get("status") == "pending" and not state.get("id"):
             return {"status": "not_requested", "error_message": None}
         return state
 
     def _conflict_state_for_policy(self, policy: dict[str, Any], document_id: str) -> dict[str, Any]:
-        state = self.semantic_audit_service.conflict_state(document_id)
+        state = self.policy_audit_service.conflict_state(document_id)
         if policy.get("status") == "effective" and state.get("status") == "pending":
             return {"status": "not_requested", "error_message": None}
         return state
 
     def accept_semantic_audit_result(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.semantic_audit_service.accept_result(
+        return self.policy_audit_service.accept_result(
             payload,
             conflict_output_validator=self._validate_conflict_output,
         )
@@ -328,7 +356,7 @@ class ProofService:
                 status_code=409,
             )
         if self.settings.semantic_audit_enabled:
-            audit = self.semantic_audit_service.get_state(policy["document_id"])
+            audit = self.policy_audit_service.get_state(policy["document_id"])
             if audit["status"] != "completed":
                 raise ProofError(
                     "semantic_audit_incomplete",
@@ -336,7 +364,7 @@ class ProofService:
                     status_code=409,
                     details={"semantic_audit": audit},
                 )
-            conflict = self.semantic_audit_service.conflict_state(policy["document_id"])
+            conflict = self.policy_audit_service.conflict_state(policy["document_id"])
             if conflict["status"] != "completed":
                 raise ProofError(
                     "conflict_audit_incomplete",
@@ -359,13 +387,20 @@ class ProofService:
         deleted = self.repository.delete_draft_policy(policy_id)
         if deleted is None:
             raise ProofError("policy_not_found", "Policy not found.", status_code=404)
-        storage_path = (self.storage_root / Path(deleted["storage_path"])).resolve()
+        self._remove_stored_file(
+            deleted["storage_path"],
+            warning="Draft %s was deleted but its source file could not be removed.",
+            resource_id=policy_id,
+        )
+        return {"id": policy_id, "status": "discarded"}
+
+    def _remove_stored_file(self, relative_path: str, *, warning: str, resource_id: str) -> None:
+        storage_path = (self.storage_root / Path(relative_path)).resolve()
         if storage_path.is_relative_to(self.storage_root) and storage_path.is_file():
             try:
                 storage_path.unlink()
             except OSError:
-                logger.warning("Draft %s was deleted but its source file could not be removed.", policy_id)
-        return {"id": policy_id, "status": "discarded"}
+                logger.warning(warning, resource_id)
 
     def list_levels(self) -> list[dict[str, Any]]:
         return self.repository.list_levels()
@@ -377,7 +412,17 @@ class ProofService:
         return self.repository.create_category(code, name, description)
 
     def fetch_units(self, unit_ids: list[str]) -> list[dict[str, Any]]:
-        return [_with_citation(unit) for unit in self.repository.fetch_units(unit_ids)]
+        results = []
+        for unit in self.repository.fetch_units(unit_ids):
+            enriched = _with_citation(unit)
+            results.append(
+                {
+                    "id": enriched["id"],
+                    "text": enriched["text"],
+                    "citation": enriched["citation"],
+                }
+            )
+        return results
 
     def index_document(self, document_id: str) -> dict[str, Any]:
         policy = self.repository.get_policy_by_document_id(document_id)
