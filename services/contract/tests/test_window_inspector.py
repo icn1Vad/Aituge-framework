@@ -25,7 +25,7 @@ def test_window_inspector_renders_test_page() -> None:
 
     assert response.status_code == 200
     assert "合同 IR Window 阶段验收" in response.text
-    assert "并发 3 抽取全部 Window 并合并 IR" in response.text
+    assert "并发 10 抽取全部 Window 并合并 IR" in response.text
 
 
 def test_window_inspector_returns_sections_windows_and_exact_coverage() -> None:

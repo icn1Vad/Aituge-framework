@@ -66,6 +66,19 @@
 - 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage31-window-inspection.json`、`stage31-synthetic-window-extraction.json`、`stage3-1-window-latency-matrix.json`、`stage3-1-window-quality-probe.json`、`stage3-1-window-latency-report.md`
 - 遗留问题：执行环境不允许代理将完整用户合同发送给外部模型，因此自动验收只对真实合同完成 Parser/Window/Coverage，对真实模型使用无敏感合成合同；用户可在已更新的测试页面自行触发真实合同抽取并补充结果。精简 Prompt 虽更快但会漏掉 PAYMENT、DELIVERY、ACCEPTANCE 等专属类别，当前未采用
 
+## 阶段 3.2：确定性规范化对齐与并发10
+
+- 状态：通过
+- 开始前设计复读：已重新完整复读本设计、阶段记录，并复核联合冻结稿中 Framework 执行、Contract IR、Evidence、错误与冻结结论；确认只改变内部 Window 对齐和调度，不修改 Java–Python API、状态机、Attempt、回调、Finding/Evidence DTO 及 `schema_version=1.0`
+- 对齐实现：优先逐字符精确匹配；失败时对模型文本与 Window 原文执行 Unicode NFKC，忽略空白、换行、普通中英文标点和全半角差异，保留中文、数字、英文字母、金额和百分比等业务字符；禁止语义、拼音、同义词和编辑距离模糊匹配；匹配后通过索引映射还原原始 Block 的真实 `[char_start,char_end)` 与逐字 `quoted_text`；无法唯一定位返回 `ALIGNMENT_AMBIGUOUS`
+- 并发实现：Window Pipeline 滚动并发由 3 固定为 10，Request、Result、测试 API 和测试页面保持一致；单 Window 两次局部尝试、失败不返回残缺 IR、Coverage 和确定性合并规则不变
+- 测试页面：继续复用 `contract-ir-window-stage1-ui` 和服务器本机 `127.0.0.1:19310`；按钮及结果显示更新为并发 10；失败时直接显示失败 Window、两次 Attempt、错误码、错误信息、耗时及完整错误 JSON，不再只显示笼统 422
+- 自动测试：对齐、Pipeline 与页面针对性测试分别组成 `20 passed` 和 `3 passed`；Framework 回归 `163 passed, 2 deselected`，两项排除仍为隔离容器未接入 Smoke 服务与 Redis；Contract Python 回归 `103 passed, 10 skipped`；`git diff --check` 通过
+- 真实模型验收：12 个无敏感信息的合成 Window 使用真实 `deepseek-v4-pro`、固定并发 10 完成；总耗时 6416 ms；模型调用 13 次、局部重试 1 次；12/12 Window、Section、Block 全部成功且 Coverage 通过；合并得到 33 项 IR。唯一重试为 DATE 首轮缺少 predicate，第二轮按既有局部重试规则成功
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage32-concurrency10-request.json`、`stage32-concurrency10-response.json`
+- 代码提交：`功能：合同IR支持规范化溯源并提升至并发10`
+- 遗留问题：并发 10 已通过当前模型端点验证，但它会同时占用更多 HTTP 连接、在途响应缓冲和模型端点配额；若后续模型提供方收紧并发或一体机改为本地模型，应通过内部配置重新压测资源上限，不能直接假设 10 永远适合所有模型部署
+
 ## 阶段 4：Legacy/Window Shadow Compare
 
 - 状态：未开始

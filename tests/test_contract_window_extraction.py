@@ -79,6 +79,23 @@ def _request(source_text: str | None = None) -> WindowExtractionRequest:
     )
 
 
+def _single_block_request(source_text: str) -> WindowExtractionRequest:
+    return WindowExtractionRequest(
+        window_id="window-single",
+        source_text=source_text,
+        offset_map=[
+            {
+                "rendered_start": 0,
+                "rendered_end": len(source_text),
+                "block_id": "block-single",
+                "block_no": 1,
+                "block_char_start": 0,
+                "block_char_end": len(source_text),
+            }
+        ],
+    )
+
+
 def _model_output(extraction_text: str = "乙方应在十日内交付成果") -> str:
     return json.dumps(
         {
@@ -171,6 +188,72 @@ async def test_window_extractor_rejects_ungrounded_or_paraphrased_text() -> None
         )
 
     assert exc_info.value.code == "WINDOW_ALIGNMENT_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_window_extractor_normalizes_layout_but_returns_exact_source_span() -> None:
+    source = "乙方应于 ２０２６ 年 ７ 月 １ 日前，支付 １００，０００ 元。"
+    runtime = FakeRuntime(_model_output("乙方应于2026年7月1日前支付100000元"))
+
+    result = await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+        _single_block_request(source),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    extraction = result.extractions[0]
+    assert extraction.alignment_status == "MATCH_NORMALIZED"
+    assert extraction.extraction_text == source
+    assert extraction.rendered_char_start == 0
+    assert extraction.rendered_char_end == len(source)
+    assert extraction.source_spans[0].model_dump() == {
+        "block_id": "block-single",
+        "block_no": 1,
+        "block_char_start": 0,
+        "block_char_end": len(source),
+        "quoted_text": source,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "model_text"),
+    [
+        ("甲方应支付10万元。", "甲方应支付100万元"),
+        ("服务费按10%支付。", "服务费按10支付"),
+        ("单价为10.5万元。", "单价为105万元"),
+        ("产品型号为ABC-10。", "产品型号为ABD10"),
+    ],
+)
+async def test_window_extractor_preserves_business_significant_content(
+    source: str,
+    model_text: str,
+) -> None:
+    runtime = FakeRuntime(_model_output(model_text))
+
+    with pytest.raises(WindowExtractionError) as exc_info:
+        await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+            _single_block_request(source),
+            tenant_id="tenant-001",
+            model_id="contract-model",
+        )
+
+    assert exc_info.value.code == "WINDOW_ALIGNMENT_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_window_extractor_rejects_ambiguous_normalized_location() -> None:
+    source = "乙 方应付款。\n乙方应 付款！"
+    runtime = FakeRuntime(_model_output("乙方应付款"))
+
+    with pytest.raises(WindowExtractionError) as exc_info:
+        await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+            _single_block_request(source),
+            tenant_id="tenant-001",
+            model_id="contract-model",
+        )
+
+    assert exc_info.value.code == "ALIGNMENT_AMBIGUOUS"
 
 
 @pytest.mark.asyncio
@@ -319,7 +402,7 @@ def test_window_pipeline_test_api_returns_typed_merged_result(monkeypatch) -> No
                 ],
             }
         ],
-        "concurrency": 3,
+        "concurrency": 10,
     }
 
     with TestClient(create_app(engine)) as client:
@@ -328,6 +411,6 @@ def test_window_pipeline_test_api_returns_typed_merged_result(monkeypatch) -> No
     assert response.status_code == 200
     body = response.json()
     assert body["coverage"]["valid"] is True
-    assert body["concurrency"] == 3
+    assert body["concurrency"] == 10
     assert body["semantic_ir"]["obligations"] == []
     assert engine.calls[0]["retry_feedback"] is None

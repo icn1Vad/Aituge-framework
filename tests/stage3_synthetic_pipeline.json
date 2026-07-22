@@ -104,6 +104,6 @@
         ]
       }
     ],
-    "concurrency": 3
+    "concurrency": 10
   }
 }

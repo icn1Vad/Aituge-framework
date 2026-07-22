@@ -39,7 +39,7 @@
 <body>
 <main>
   <h1>合同 IR Window 阶段验收</h1>
-  <div class="hint">阶段三验证：文件解析 → Section/Window → 并发 3 抽取 → 精确对齐 → IR Mapper → 确定性合并与 Coverage。这里不会写业务数据库，也不会替换正式审查链路。</div>
+  <div class="hint">阶段三验证：文件解析 → Section/Window → 并发 10 抽取 → 确定性字面对齐 → IR Mapper → 确定性合并与 Coverage。这里不会写业务数据库，也不会替换正式审查链路。</div>
   <section class="panel upload">
     <input id="file" type="file" accept=".pdf,.docx">
     <button id="run">解析并构建 Window</button>
@@ -49,7 +49,7 @@
   <section id="result" hidden>
     <div id="metrics" class="panel metrics"></div>
     <section class="panel">
-      <button id="extract-all">并发 3 抽取全部 Window 并合并 IR</button>
+      <button id="extract-all">并发 10 抽取全部 Window 并合并 IR</button>
       <span id="extract-all-state" class="hint"></span>
       <div id="extract-all-result" class="extract-result" hidden></div>
     </section>
@@ -103,10 +103,14 @@
         method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(inspection)
       });
       const body = await response.json();
-      if (!response.ok) throw new Error(body?.error?.message || body?.detail || JSON.stringify(body));
+      if (!response.ok) {
+        renderPipelineFailure(outputBox, body);
+        outputBox.hidden = false; stateBox.textContent = ' 失败';
+        return;
+      }
       const windowRows = body.windows.map(item => `<div class="extraction"><b>Window ${item.sequence_no}</b> · ${item.status} · ${item.mapped_extractions.length} 项<div class="meta">${item.attempts.map(attempt => `第${attempt.attempt_no}次：${attempt.status} / ${attempt.duration_ms}ms`).join('；')}</div></div>`).join('');
       outputBox.innerHTML = `<b>总耗时 ${escapeHtml(body.duration_ms)} ms；模型调用 ${escapeHtml(body.model_call_count)} 次；局部重试 ${escapeHtml(body.retry_count)} 次；IR Hash ${escapeHtml(body.semantic_ir_hash)}</b>` +
-        `<div class="meta">Coverage：${body.coverage.valid ? '通过' : '失败'}；并发固定 3；处理 Window ${body.coverage.processed_window_count}/${body.coverage.expected_window_count}</div>` +
+        `<div class="meta">Coverage：${body.coverage.valid ? '通过' : '失败'}；并发固定 10；处理 Window ${body.coverage.processed_window_count}/${body.coverage.expected_window_count}</div>` +
         windowRows + `<details><summary>合并后的 Contract IR Delta</summary><pre>${escapeHtml(JSON.stringify(body.semantic_ir, null, 2))}</pre></details>` +
         `<details><summary>完整阶段三 JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
       outputBox.hidden = false; stateBox.textContent = ' 完成';
@@ -117,6 +121,17 @@
   });
 
   function showError(message) { errorBox.textContent = message; errorBox.hidden = false; }
+  function renderPipelineFailure(outputBox, body) {
+    const error = body?.error || {};
+    const details = error.details || {};
+    const coverage = details.coverage || {};
+    const failedWindows = (details.windows || []).filter(item => item.status === 'FAILED');
+    const failedRows = failedWindows.map(item => `<div class="extraction"><b>Window ${escapeHtml(item.sequence_no)} · ${escapeHtml(item.window_id)}</b>` +
+      `<div class="meta">${item.attempts.map(attempt => `第${attempt.attempt_no}次：${escapeHtml(attempt.error_code || attempt.status)} / ${attempt.duration_ms}ms<br>${escapeHtml(attempt.error_message || '')}`).join('<br>')}</div></div>`).join('');
+    outputBox.innerHTML = `<b class="error">${escapeHtml(error.code || 'PIPELINE_FAILED')}：${escapeHtml(error.message || body?.detail || '抽取失败')}</b>` +
+      `<div class="meta">处理 Window ${escapeHtml(coverage.processed_window_count ?? '-')}/${escapeHtml(coverage.expected_window_count ?? '-')}；失败：${escapeHtml((coverage.failed_window_ids || []).join(', ') || '未提供')}</div>` +
+      failedRows + `<details><summary>完整错误 JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
+  }
   function render(data) {
     inspection = data;
     result.hidden = false;

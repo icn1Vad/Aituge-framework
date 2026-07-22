@@ -136,32 +136,40 @@ def _pipeline_request(count: int = 4, *, source: str = "履行事项") -> Window
 
 
 @pytest.mark.asyncio
-async def test_pipeline_runs_rolling_concurrency_three_and_retries_only_failed_window() -> None:
+async def test_pipeline_runs_rolling_concurrency_ten_and_retries_only_failed_window() -> None:
     extractor = FakePipelineExtractor(fail_first={"window-002"})
     pipeline = ContractIrWindowPipeline(extractor=extractor)
 
     result = await pipeline.run(
-        _pipeline_request(),
+        _pipeline_request(count=12),
         tenant_id="tenant-001",
         model_id="contract-model",
     )
 
-    assert extractor.max_active == 3
-    assert pipeline.max_observed_concurrency == 3
+    assert extractor.max_active == 10
+    assert pipeline.max_observed_concurrency == 10
     assert extractor.call_counts == {
         "window-001": 1,
         "window-002": 2,
         "window-003": 1,
         "window-004": 1,
+        "window-005": 1,
+        "window-006": 1,
+        "window-007": 1,
+        "window-008": 1,
+        "window-009": 1,
+        "window-010": 1,
+        "window-011": 1,
+        "window-012": 1,
     }
     assert [item for item in extractor.calls if item[0] == "window-002"] == [
         ("window-002", None),
         ("window-002", "WINDOW_OUTPUT_INVALID: first attempt failed"),
     ]
-    assert result.model_call_count == 5
+    assert result.model_call_count == 13
     assert result.retry_count == 1
     assert result.coverage.valid is True
-    assert result.coverage.processed_window_count == 4
+    assert result.coverage.processed_window_count == 12
     assert [item.item_id for item in result.semantic_ir.obligations] == [
         item.contract_value.item_id
         for window in result.windows

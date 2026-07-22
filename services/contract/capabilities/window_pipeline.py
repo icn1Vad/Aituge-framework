@@ -41,6 +41,7 @@ IR_FIELD_BY_CLASS = {
     "AMOUNT": "amounts",
 }
 IR_FIELDS = tuple(IR_FIELD_BY_CLASS.values())
+WINDOW_EXTRACTION_CONCURRENCY = 10
 _CRITICAL_CONTENT = re.compile(
     r"付款|费用|价款|金额|交付|验收|违约|赔偿|责任|解除|终止|保密|"
     r"知识产权|争议|仲裁|诉讼|权利|义务|应当|必须|不得|日期|期限"
@@ -87,7 +88,7 @@ class WindowPipelineRequest(StrictModel):
     expected_blocks: list[ExpectedBlock] = Field(min_length=1, max_length=20_000)
     expected_section_ids: list[str] = Field(min_length=1, max_length=20_000)
     windows: list[PipelineWindowInput] = Field(min_length=1, max_length=5_000)
-    concurrency: Literal[3] = 3
+    concurrency: Literal[10] = WINDOW_EXTRACTION_CONCURRENCY
 
     @model_validator(mode="after")
     def validate_identity(self) -> "WindowPipelineRequest":
@@ -206,7 +207,7 @@ class PipelineCoverage(StrictModel):
 class WindowPipelineResult(StrictModel):
     document_id: str
     generation_id: str
-    concurrency: Literal[3] = 3
+    concurrency: Literal[10] = WINDOW_EXTRACTION_CONCURRENCY
     duration_ms: int = Field(ge=0)
     model_call_count: int = Field(ge=0)
     retry_count: int = Field(ge=0)
@@ -238,7 +239,7 @@ class WindowExtractor(Protocol):
 class ContractIrWindowPipeline:
     extractor: WindowExtractor
     clock: Callable[[], float] = time.perf_counter
-    max_concurrency: int = 3
+    max_concurrency: int = WINDOW_EXTRACTION_CONCURRENCY
     max_attempts_per_window: int = 2
     _active_calls: int = field(default=0, init=False)
     _max_observed_concurrency: int = field(default=0, init=False)
@@ -250,10 +251,13 @@ class ContractIrWindowPipeline:
         tenant_id: str,
         model_id: str,
     ) -> WindowPipelineResult:
-        if request.concurrency != self.max_concurrency or self.max_concurrency != 3:
+        if (
+            request.concurrency != self.max_concurrency
+            or self.max_concurrency != WINDOW_EXTRACTION_CONCURRENCY
+        ):
             raise WindowPipelineError(
                 "WINDOW_CONCURRENCY_INVALID",
-                "合同 IR Window 并发必须固定为 3",
+                "合同 IR Window 并发必须固定为 10",
                 {"requested": request.concurrency, "configured": self.max_concurrency},
             )
         structural_coverage = _validate_structural_coverage(request)

@@ -27,7 +27,7 @@ Contract Python 持久化 Block
   -> Framework Contract Capability 一次读取全部 Block
   -> SectionUnitBuilder
   -> SectionWindowBuilder
-  -> Window Extractor（最多并发 3）
+  -> Window Extractor（最多并发 10）
   -> Framework LlmRuntime + 当前 CONTRACT_MODEL_ID
   -> Framework 完整 JSON 解析 + 严格 Pydantic Schema
   -> LangExtract 1.6.0 精确 Source Alignment
@@ -129,7 +129,9 @@ referenced_clause_nos
 
 模型禁止输出过程说明、Markdown、技术 ID、Block ID、字符位置和 Hash；禁止调用工具；`extraction_text` 必须来自当前 `source_text`。
 
-同一原文允许同时产生不同语义类别，例如一条付款义务同时属于 `OBLIGATION` 和 `PAYMENT`。对齐按单条 Extraction 执行，不得因为第三方批量对齐器的非重叠选择而删除合法语义；同一类别、同一原文重复出现时按出现次数顺序定位。模糊匹配和部分匹配始终关闭。
+同一原文允许同时产生不同语义类别，例如一条付款义务同时属于 `OBLIGATION` 和 `PAYMENT`。对齐按单条 Extraction 执行，不得因为第三方批量对齐器的非重叠选择而删除合法语义。
+
+原文定位采用确定性字面规范化匹配：先尝试逐字符精确匹配；失败后对模型文本和 Window 原文同时执行 Unicode NFKC，忽略空白、换行、普通中英文标点以及全半角形式差异，再做规范化后的精确匹配。中文、数字、英文字母、金额和百分比等业务有效字符必须保留；不使用语义相似、同义词、拼音或编辑距离模糊匹配。匹配成功后必须通过索引映射还原为原始 Block 的真实 `[char_start,char_end)` 和逐字 `quoted_text`。同一 Window 中无法唯一定位时返回 `ALIGNMENT_AMBIGUOUS`，不得猜测第一个位置。
 
 ## 6. 确定性字段
 
@@ -230,7 +232,7 @@ CONTRACT_IR_ENGINE=window
 
 - [x] 阶段 1：Section Unit、Window Builder、Offset Map；
 - [x] 阶段 2：Framework 模型链路、LangExtract 解析和单 Window 对齐；
-- [x] 阶段 3：并发 3、IR Mapper、合并、Coverage、局部重试；
+- [x] 阶段 3：并发调度（当前上限 10）、IR Mapper、合并、Coverage、局部重试；
 - [ ] 阶段 4：Legacy/Window Shadow Compare；
 - [ ] 阶段 5：独立测试环境完整 Finding/Evidence 回归。
 

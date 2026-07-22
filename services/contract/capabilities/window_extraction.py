@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 from typing import Callable, Literal, Protocol
 
@@ -132,7 +134,7 @@ class SourceSpan(StrictModel):
 class AlignedExtraction(ModelExtraction):
     rendered_char_start: int = Field(ge=0)
     rendered_char_end: int = Field(gt=0)
-    alignment_status: Literal["MATCH_EXACT"]
+    alignment_status: Literal["MATCH_EXACT", "MATCH_NORMALIZED"]
     source_spans: list[SourceSpan] = Field(min_length=1)
 
 
@@ -243,24 +245,43 @@ def _align_extractions(
     envelope: WindowExtractionEnvelope,
     resolver: Resolver,
 ) -> list[AlignedExtraction]:
-    occurrence_counts: dict[tuple[str, str], int] = {}
+    normalized_keys = [
+        (item.extraction_class, _normalize_alignment_text(item.extraction_text).text)
+        for item in envelope.extractions
+    ]
+    model_occurrence_counts = Counter(normalized_keys)
+    used_candidate_ranges: dict[tuple[str, str], set[tuple[int, int]]] = {}
     results: list[AlignedExtraction] = []
-    for model_item in envelope.extractions:
-        occurrence_key = (model_item.extraction_class, model_item.extraction_text)
-        occurrence_index = occurrence_counts.get(occurrence_key, 0)
-        occurrences = _exact_occurrences(request.source_text, model_item.extraction_text)
-        if occurrence_index >= len(occurrences):
+    for model_item, occurrence_key in zip(envelope.extractions, normalized_keys, strict=True):
+        candidates, alignment_status = _alignment_candidates(
+            request.source_text,
+            model_item.extraction_text,
+        )
+        if not candidates:
             raise WindowExtractionError(
                 "WINDOW_ALIGNMENT_FAILED",
-                f"{model_item.extraction_class} 未逐字出现在当前 Window 原文",
+                f"{model_item.extraction_class} 未在当前 Window 原文中获得确定性字面匹配",
             )
-        start = occurrences[occurrence_index]
-        end = start + len(model_item.extraction_text)
-        occurrence_counts[occurrence_key] = occurrence_index + 1
+        expected_occurrences = model_occurrence_counts[occurrence_key]
+        if len(candidates) > 1 and len(candidates) != expected_occurrences:
+            raise WindowExtractionError(
+                "ALIGNMENT_AMBIGUOUS",
+                f"{model_item.extraction_class} 规范化后在当前 Window 原文中存在多个候选位置",
+            )
+        used_ranges = used_candidate_ranges.setdefault(occurrence_key, set())
+        available_candidates = [item for item in candidates if item not in used_ranges]
+        if not available_candidates:
+            raise WindowExtractionError(
+                "WINDOW_ALIGNMENT_FAILED",
+                f"{model_item.extraction_class} 的模型输出次数超过原文候选位置数量",
+            )
+        start, end = available_candidates[0]
+        used_ranges.add((start, end))
+        grounded_text = request.source_text[start:end]
 
         langextract_item = langextract_data.Extraction(
             extraction_class=model_item.extraction_class,
-            extraction_text=model_item.extraction_text,
+            extraction_text=grounded_text,
             attributes=model_item.model_dump(
                 exclude={"extraction_class", "extraction_text"},
                 exclude_none=True,
@@ -269,7 +290,7 @@ def _align_extractions(
         aligned_items = list(
             resolver.align(
                 [langextract_item],
-                model_item.extraction_text,
+                grounded_text,
                 token_offset=0,
                 char_offset=start,
                 enable_fuzzy_alignment=False,
@@ -296,19 +317,21 @@ def _align_extractions(
         if (
             aligned_start != start
             or aligned_end != end
-            or request.source_text[start:end] != model_item.extraction_text
+            or request.source_text[start:end] != grounded_text
         ):
             raise WindowExtractionError(
                 "WINDOW_ALIGNMENT_FAILED",
-                f"{model_item.extraction_class} 的定位文本与模型 extraction_text 不一致",
+                f"{model_item.extraction_class} 的定位文本与原文区间不一致",
             )
         spans = _map_source_spans(request, start, end)
+        aligned_payload = model_item.model_dump()
+        aligned_payload["extraction_text"] = grounded_text
         results.append(
             AlignedExtraction(
-                **model_item.model_dump(),
+                **aligned_payload,
                 rendered_char_start=start,
                 rendered_char_end=end,
-                alignment_status="MATCH_EXACT",
+                alignment_status=alignment_status,
                 source_spans=spans,
             )
         )
@@ -327,6 +350,119 @@ def _exact_occurrences(source_text: str, extraction_text: str) -> list[int]:
             return positions
         positions.append(position)
         cursor = position + max(1, len(extraction_text))
+
+
+@dataclass(frozen=True, slots=True)
+class _NormalizedAlignmentText:
+    text: str
+    original_starts: tuple[int, ...]
+    original_ends: tuple[int, ...]
+
+
+def _alignment_candidates(
+    source_text: str,
+    extraction_text: str,
+) -> tuple[list[tuple[int, int]], Literal["MATCH_EXACT", "MATCH_NORMALIZED"]]:
+    exact_positions = _exact_occurrences(source_text, extraction_text)
+    if exact_positions:
+        return (
+            [(position, position + len(extraction_text)) for position in exact_positions],
+            "MATCH_EXACT",
+        )
+
+    normalized_source = _normalize_alignment_text(source_text)
+    normalized_extraction = _normalize_alignment_text(extraction_text)
+    if not normalized_extraction.text:
+        return [], "MATCH_NORMALIZED"
+
+    normalized_positions = _exact_occurrences(
+        normalized_source.text,
+        normalized_extraction.text,
+    )
+    candidates: list[tuple[int, int]] = []
+    normalized_length = len(normalized_extraction.text)
+    for position in normalized_positions:
+        start = normalized_source.original_starts[position]
+        end = normalized_source.original_ends[position + normalized_length - 1]
+        end = _extend_trailing_ignored_punctuation(source_text, end)
+        candidates.append((start, end))
+    return candidates, "MATCH_NORMALIZED"
+
+
+def _normalize_alignment_text(value: str) -> _NormalizedAlignmentText:
+    expanded: list[tuple[str, int, int]] = []
+    for original_index, original_char in enumerate(value):
+        for normalized_char in unicodedata.normalize("NFKC", original_char):
+            expanded.append((normalized_char, original_index, original_index + 1))
+
+    kept: list[str] = []
+    starts: list[int] = []
+    ends: list[int] = []
+    for index, (char, original_start, original_end) in enumerate(expanded):
+        if not _is_alignment_significant(expanded, index):
+            continue
+        kept.append(char)
+        starts.append(original_start)
+        ends.append(original_end)
+    return _NormalizedAlignmentText(
+        text="".join(kept),
+        original_starts=tuple(starts),
+        original_ends=tuple(ends),
+    )
+
+
+def _is_alignment_significant(
+    expanded: list[tuple[str, int, int]],
+    index: int,
+) -> bool:
+    char = expanded[index][0]
+    if char.isspace():
+        return False
+    category = unicodedata.category(char)
+    if category.startswith("P"):
+        if char in {"%", "‰", "‱"}:
+            return True
+        if char == ".":
+            previous = _nearest_non_space(expanded, index, -1)
+            following = _nearest_non_space(expanded, index, 1)
+            return bool(
+                previous
+                and following
+                and previous.isdecimal()
+                and following.isdecimal()
+            )
+        return False
+    if category.startswith(("L", "M", "N", "S")):
+        return True
+    return False
+
+
+def _nearest_non_space(
+    expanded: list[tuple[str, int, int]],
+    index: int,
+    direction: Literal[-1, 1],
+) -> str | None:
+    cursor = index + direction
+    while 0 <= cursor < len(expanded):
+        candidate = expanded[cursor][0]
+        if not candidate.isspace():
+            return candidate
+        cursor += direction
+    return None
+
+
+def _extend_trailing_ignored_punctuation(source_text: str, end: int) -> int:
+    cursor = end
+    while cursor < len(source_text):
+        normalized = unicodedata.normalize("NFKC", source_text[cursor])
+        if not normalized or any(char.isspace() for char in normalized):
+            break
+        if any(not unicodedata.category(char).startswith("P") for char in normalized):
+            break
+        if any(char in {"%", "‰", "‱"} for char in normalized):
+            break
+        cursor += 1
+    return cursor
 
 
 def _map_source_spans(

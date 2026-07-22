@@ -198,7 +198,7 @@ async def extract_all(inspection: InspectionView):
             "expected_blocks": [item.model_dump() for item in inspection.expected_blocks],
             "expected_section_ids": [item.section_id for item in inspection.sections],
             "windows": [item.model_dump() for item in inspection.windows],
-            "concurrency": 3,
+            "concurrency": 10,
         }
     }
     try:
