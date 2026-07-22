@@ -1,4 +1,5 @@
 from typing import Any, Callable, Optional
+from urllib.parse import urlparse
 
 from common.encrypt_utils import decrypt_key
 from common.llm.constants import DEFAULT_LLM_MODEL_ID
@@ -72,6 +73,7 @@ class LlmRuntime:
         system_prompt: str = "",
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
+        thinking_override: Optional[bool] = None,
     ) -> str:
         llm = await self.get_llm(model_id)
         runtime_messages = list(messages)
@@ -87,11 +89,24 @@ class LlmRuntime:
             stream=False,
             temperature=llm.temperature if temperature is None else temperature,
             max_tokens=llm.max_tokens if max_tokens is None else max_tokens,
-            extra_body={
-                "chat_template_kwargs": {"enable_thinking": llm.enable_thinking},
-                "enable_thinking": llm.enable_thinking,
-            },
+            extra_body=_build_thinking_extra_body(llm, thinking_override),
         )
         if not response.choices:
             return ""
         return response.choices[0].message.content or ""
+
+
+def _build_thinking_extra_body(llm: Any, thinking_override: Optional[bool]) -> dict[str, Any]:
+    enabled = llm.enable_thinking if thinking_override is None else thinking_override
+    if thinking_override is not None and _is_official_deepseek_v4(llm):
+        return {"thinking": {"type": "enabled" if enabled else "disabled"}}
+    return {
+        "chat_template_kwargs": {"enable_thinking": enabled},
+        "enable_thinking": enabled,
+    }
+
+
+def _is_official_deepseek_v4(llm: Any) -> bool:
+    hostname = (urlparse(str(getattr(llm, "api_base", ""))).hostname or "").lower()
+    model = str(getattr(llm, "model", "")).lower()
+    return hostname == "api.deepseek.com" and model.startswith("deepseek-v4-")

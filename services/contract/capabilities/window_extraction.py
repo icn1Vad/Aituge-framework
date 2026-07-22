@@ -152,6 +152,7 @@ class LlmCompleter(Protocol):
         system_prompt: str = "",
         max_tokens: int | None = None,
         temperature: float | None = None,
+        thinking_override: bool | None = None,
     ) -> str: ...
 
 
@@ -180,6 +181,7 @@ class WindowExtractionEngine:
             system_prompt=_SYSTEM_PROMPT,
             max_tokens=20_000,
             temperature=0,
+            thinking_override=False,
         )
         envelope = _parse_envelope(content)
         aligned = _align_extractions(request, envelope, self.resolver_factory())

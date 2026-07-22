@@ -11,6 +11,7 @@ from contract.parser.models import ParsedContractBlock
 
 
 TokenEstimator = Callable[[str], int]
+DEFAULT_WINDOW_TOKEN_LIMIT = 300
 
 _CHINESE_NUMBER = "〇零一二三四五六七八九十百千万两0-9０-９"
 _CHAPTER_RE = re.compile(rf"^\s*第\s*[{_CHINESE_NUMBER}]+\s*(?:编|章|篇)")
@@ -146,8 +147,8 @@ def build_section_units(blocks: Sequence[ParsedContractBlock]) -> list[SectionUn
 def build_section_windows(
     sections: Sequence[SectionUnit],
     *,
-    soft_token_limit: int = 4_000,
-    hard_token_limit: int = 6_000,
+    soft_token_limit: int = DEFAULT_WINDOW_TOKEN_LIMIT,
+    hard_token_limit: int = DEFAULT_WINDOW_TOKEN_LIMIT,
     context_lines: Iterable[str] = (),
     token_estimator: TokenEstimator = estimate_model_tokens,
 ) -> list[SectionWindow]:

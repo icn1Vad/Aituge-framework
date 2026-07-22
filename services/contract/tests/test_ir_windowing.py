@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contract.ir.windowing import (
+    DEFAULT_WINDOW_TOKEN_LIMIT,
     build_section_units,
     build_section_windows,
     validate_window_coverage,
@@ -116,6 +117,20 @@ def test_splits_oversized_block_into_exact_non_overlapping_ranges() -> None:
     assert spans[-1][1] == len(text)
     assert all(left[1] == right[0] for left, right in zip(spans, spans[1:]))
     assert all(window.estimated_tokens <= 18 for window in windows)
+
+
+def test_default_window_limit_is_300_tokens_and_preserves_full_coverage() -> None:
+    sentence = "乙方应按约定完成服务并向甲方交付全部成果。"
+    text = sentence * 40
+    blocks = [_block(1, text)]
+
+    windows = build_section_windows(build_section_units(blocks))
+    report = validate_window_coverage(blocks, windows)
+
+    assert DEFAULT_WINDOW_TOKEN_LIMIT == 300
+    assert len(windows) > 1
+    assert report.valid
+    assert all(window.estimated_tokens <= DEFAULT_WINDOW_TOKEN_LIMIT for window in windows)
 
 
 def test_offset_map_round_trips_to_original_blocks() -> None:

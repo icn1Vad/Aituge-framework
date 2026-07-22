@@ -40,6 +40,8 @@ Contract Python 持久化 Block
 
 LangExtract 不作为独立服务，不接管 Framework 的模型配置、任务、并发、重试和日志，也不直接调用模型。模型输出继续由 Framework 的 `parse_json_output` 提取完整 JSON，再由严格 Pydantic Schema 校验；LangExtract 只提供 Extraction 数据模型和精确原文对齐能力。
 
+Contract IR Window 调用固定关闭 DeepSeek V4 思考模式，以受控抽取方式生成最小语义；后续风险判断 Stage 是否启用思考仍由各自模型配置决定，本设置不得改变其他 Stage。
+
 ## 3. Section Unit 规则
 
 按现有有序 Block 确定性建层，不使用 LLM 切分。
@@ -71,8 +73,8 @@ LangExtract 不作为独立服务，不接管 Framework 的模型配置、任务
 
 - 完整条款优先保持在同一 Primary Window；
 - 相邻小 Section 可合并，但不跨大章边界；
-- 软上限初始为约 4,000 模型 Token；
-- 硬上限初始为约 6,000 模型 Token；
+- Contract IR Window 的软上限和硬上限均固定为约 300 模型 Token；
+- `estimated_tokens`不得超过 300；超长条款仍按子条款、段落、完整表格行和句子确定性拆分；
 - 超大 Section 依次按子条款、段落、完整表格行、句子拆分；
 - 普通有效 Block 必须且只能属于一个 Primary Window；
 - 单个 Block 本身超过硬限制时，允许按句界拆成多个不重叠 Source Slice；这些 Slice 的字符区间必须首尾相接并完整覆盖原 Block，不能遗漏或重叠；

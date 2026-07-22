@@ -120,6 +120,7 @@ async def test_window_extractor_uses_framework_runtime_and_exact_block_alignment
     assert call["model_id"] == "contract-model"
     assert call["max_tokens"] == 20_000
     assert call["temperature"] == 0
+    assert call["thinking_override"] is False
     assert "source_text" in call["messages"][0]["content"]
     assert "不调用工具" in call["system_prompt"]
     assert "类别不是互斥分类" in call["system_prompt"]
