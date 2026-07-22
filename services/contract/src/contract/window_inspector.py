@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict
 
@@ -230,6 +230,26 @@ async def extract_all(request: ExtractAllView):
         content = response.json()
     except ValueError as exc:
         raise HTTPException(status_code=502, detail="窗口抽取测试服务返回了非 JSON 响应") from exc
+    return JSONResponse(status_code=response.status_code, content=content)
+
+
+@app.post("/api/shadow-compare")
+async def shadow_compare(request: Request):
+    """Pass test-only comparison JSON to the isolated Framework helper."""
+
+    extractor_url = os.getenv("CONTRACT_WINDOW_EXTRACTOR_URL", "").rstrip("/")
+    if not extractor_url:
+        raise HTTPException(status_code=503, detail="窗口抽取测试服务尚未配置")
+    payload = await request.json()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            response = await client.post(f"{extractor_url}/api/shadow-compare", json=payload)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Shadow 对照服务不可用：{exc}") from exc
+    try:
+        content = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="Shadow 对照服务返回了非 JSON 响应") from exc
     return JSONResponse(status_code=response.status_code, content=content)
 
 

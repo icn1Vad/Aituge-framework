@@ -30,6 +30,8 @@ def test_window_inspector_renders_test_page() -> None:
     assert 'id="party-a-name"' in response.text
     assert 'id="party-b-name"' in response.text
     assert 'value="PARTY_A"' in response.text
+    assert "Shadow Compare 只比较同类别的原文 Anchor" in response.text
+    assert 'id="legacy-ir-file"' in response.text
 
 
 def test_window_inspector_returns_sections_windows_and_exact_coverage() -> None:

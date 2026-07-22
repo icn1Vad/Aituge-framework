@@ -34,6 +34,8 @@
     .extract { margin:10px 0; }
     .extract-result { border-left:3px solid #2867e8; margin-top:10px; padding-left:12px; }
     .extraction { background:#111d35; border-radius:8px; padding:10px; margin:8px 0; }
+    table { width:100%; border-collapse:collapse; margin-top:10px; }
+    th, td { border-bottom:1px solid #2a385b; padding:8px; text-align:left; white-space:nowrap; }
     pre { white-space:pre-wrap; word-break:break-word; background:#080e1a; border-radius:8px; padding:12px; max-height:420px; overflow:auto; }
     code { color:#b9ccff; }
     [hidden] { display:none !important; }
@@ -65,6 +67,15 @@
       <span id="extract-all-state" class="hint"></span>
       <div id="extract-all-result" class="extract-result" hidden></div>
     </section>
+    <section class="panel">
+      <div class="hint">Shadow Compare 只比较同类别的原文 Anchor，不会覆盖 Legacy 正式结果，也不把任一引擎当作标准答案。</div>
+      <div class="upload">
+        <input id="legacy-ir-file" type="file" accept=".json,application/json">
+        <button id="shadow-compare" disabled>对比 Legacy 与 Window IR</button>
+        <span id="shadow-state" class="hint"></span>
+      </div>
+      <div id="shadow-result" class="extract-result" hidden></div>
+    </section>
     <div class="tabs">
       <button data-tab="sections" class="active">Section Tree</button>
       <button data-tab="windows">Windows</button>
@@ -82,7 +93,9 @@
   const errorBox = document.querySelector('#error');
   const result = document.querySelector('#result');
   const extractAllButton = document.querySelector('#extract-all');
+  const shadowButton = document.querySelector('#shadow-compare');
   let inspection = null;
+  let latestWindowResult = null;
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
   function partyContext() {
@@ -97,6 +110,26 @@
       contract_type: document.querySelector('#contract-type').value.trim() || 'AUTO',
       review_attitude: 'NEUTRAL'
     };
+  }
+
+  function windowSourceBlocks() {
+    const blocks = new Map();
+    for (const window of inspection?.windows || []) {
+      for (const offset of window.offset_map) {
+        const current = blocks.get(offset.block_id) || {block_id:offset.block_id, block_no:offset.block_no, pieces:[]};
+        current.pieces.push({
+          start: offset.block_char_start,
+          end: offset.block_char_end,
+          text: window.source_text.slice(offset.rendered_start, offset.rendered_end)
+        });
+        blocks.set(offset.block_id, current);
+      }
+    }
+    return [...blocks.values()].sort((a,b) => a.block_no - b.block_no).map(block => ({
+      block_id: block.block_id,
+      block_no: block.block_no,
+      text: block.pieces.sort((a,b) => a.start - b.start).map(piece => piece.text).join('')
+    }));
   }
 
   runButton.addEventListener('click', async () => {
@@ -137,6 +170,8 @@
         return;
       }
       const successfulAttempts = body.windows.flatMap(item => item.attempts).filter(item => item.status === 'SUCCEEDED');
+      latestWindowResult = body;
+      shadowButton.disabled = false;
       const canonicalizationCount = successfulAttempts.reduce((sum, item) => sum + (item.value_canonicalization_count || 0), 0);
       const ambiguousValueCount = successfulAttempts.reduce((sum, item) => sum + (item.ambiguous_value_count || 0), 0);
       const unboundValueCount = successfulAttempts.reduce((sum, item) => sum + (item.unbound_value_count || 0), 0);
@@ -154,6 +189,46 @@
     } finally { extractAllButton.disabled = false; }
   });
 
+  shadowButton.addEventListener('click', async () => {
+    const file = document.querySelector('#legacy-ir-file').files[0];
+    const stateBox = document.querySelector('#shadow-state');
+    const outputBox = document.querySelector('#shadow-result');
+    if (!latestWindowResult) { showError('请先完成 Window 全量抽取。'); return; }
+    if (!file) { showError('请选择同一合同的 Legacy IR JSON。'); return; }
+    shadowButton.disabled = true; stateBox.textContent = ' 对照中…'; outputBox.hidden = true;
+    try {
+      const parsed = JSON.parse(await file.text());
+      const legacyIr = parsed.legacy_ir || parsed.semantic_ir || parsed.contract_ir?.semantic_ir || parsed.contract_ir || parsed.data?.contract_ir?.semantic_ir || parsed.data?.contract_ir || parsed;
+      const legacyBlocks = parsed.legacy_blocks || parsed.blocks || parsed.data?.blocks || [];
+      const response = await fetch('/api/shadow-compare', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          legacy_ir:legacyIr,
+          window_ir:latestWindowResult.semantic_ir,
+          legacy_blocks:legacyBlocks,
+          window_blocks:windowSourceBlocks()
+        })
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(JSON.stringify(body));
+      const percent = value => value == null ? 'N/A' : `${(value * 100).toFixed(1)}%`;
+      const fieldRows = body.fields.filter(item => item.legacy_count || item.window_count).map(item =>
+        `<tr><td>${escapeHtml(item.field)}</td><td>${item.legacy_count}</td><td>${item.window_count}</td><td>${item.exact_anchor_match_count}</td><td>${item.overlapping_anchor_match_count}</td><td>${item.legacy_only_count}</td><td>${item.window_only_count}</td></tr>`
+      ).join('');
+      outputBox.innerHTML = `<b>Anchor 一致性：Legacy ${percent(body.legacy_anchor_agreement)}；Window ${percent(body.window_anchor_agreement)}</b>` +
+        `<div class="meta">Legacy ${body.legacy_count} 项；Window ${body.window_count} 项；精确 Anchor ${body.exact_anchor_match_count}；重叠 Anchor ${body.overlapping_anchor_match_count}；Legacy 独有 ${body.legacy_only_count}；Window 独有 ${body.window_only_count}</div>` +
+        `<div class="meta">${escapeHtml(body.interpretation)}</div>` +
+        `<div style="overflow:auto"><table><thead><tr><th>类别</th><th>Legacy</th><th>Window</th><th>精确</th><th>重叠</th><th>Legacy独有</th><th>Window独有</th></tr></thead><tbody>${fieldRows}</tbody></table></div>` +
+        `<details><summary>Legacy 独有项</summary><pre>${escapeHtml(JSON.stringify(body.legacy_only, null, 2))}</pre></details>` +
+        `<details><summary>Window 独有项</summary><pre>${escapeHtml(JSON.stringify(body.window_only, null, 2))}</pre></details>` +
+        `<details><summary>完整 Shadow JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
+      outputBox.hidden = false; stateBox.textContent = ' 完成';
+    } catch (error) {
+      outputBox.innerHTML = `<span class="error">${escapeHtml(error.message)}</span>`;
+      outputBox.hidden = false; stateBox.textContent = ' 失败';
+    } finally { shadowButton.disabled = false; }
+  });
+
   function showError(message) { errorBox.textContent = message; errorBox.hidden = false; }
   function renderPipelineFailure(outputBox, body) {
     const error = body?.error || {};
@@ -168,6 +243,8 @@
   }
   function render(data) {
     inspection = data;
+    latestWindowResult = null;
+    shadowButton.disabled = true;
     result.hidden = false;
     const coverage = data.coverage;
     document.querySelector('#metrics').innerHTML = [

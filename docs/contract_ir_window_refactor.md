@@ -209,6 +209,10 @@ CONTRACT_IR_ENGINE=window
 
 先进行 Shadow Compare，新引擎结果保存为测试 Artifact，不覆盖正式 IR。质量验收后只在独立测试环境切换 `window`；稳定一个版本周期后再评估删除旧五个 IR Agent。
 
+Shadow Compare 只按“相同 IR 类别 + 原文 Anchor”衡量来源一致性，不把 Legacy 当作标准答案：先匹配完全相同区间，再一对一匹配同 Block 的重叠区间，剩余项分别列为 Legacy 独有和 Window 独有。跨 Parse Generation 时，只有 `block_no + UTF-8原文SHA-256` 同时一致的 Block 才建立确定性对应；禁止按语义、相似文本或模型判断映射 Block。原始一致率只用于发现差异，不能表述为法律准确率。
+
+对付款、验收和争议三类强指示条款增加类别完整性门。明确出现对应类别指示而模型未返回该类别时，只重试当前 Window 一次；第二次仍缺失则整个 IR Stage 失败。该门只检查抽取分类是否完整，不判断合同风险，不根据具体金额或特定合同写规则。
+
 ## 10. 独立测试页面
 
 测试页面仅部署在合同审查独立测试环境，不进入正式前端。页面至少提供：
@@ -246,7 +250,7 @@ CONTRACT_IR_ENGINE=window
 - [x] 阶段 2：Framework 模型链路、LangExtract 解析和单 Window 对齐；
 - [x] 阶段 3：并发调度（当前上限 10）、IR Mapper、合并、Coverage、局部重试；
 - [x] 阶段 3.4：测试旁路主体上下文接线与溯源隔离；
-- [ ] 阶段 4：Legacy/Window Shadow Compare；
+- [x] 阶段 4：Legacy/Window Shadow Compare；
 - [ ] 阶段 5：独立测试环境完整 Finding/Evidence 回归。
 
 ## 12. 验收指标

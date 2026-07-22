@@ -111,14 +111,21 @@
 
 ## 阶段 4：Legacy/Window Shadow Compare
 
-- 状态：未开始
-- 开始前设计复读：未完成
-- 代码提交：
-- 自动测试：
-- 独立容器验收：
-- 测试页面验收：
-- 测试 Artifact：
-- 遗留问题：
+- 状态：通过
+- 开始前设计复读：已重新完整复读改造设计、阶段记录及联合冻结稿第 14～20、33～39 节；确认 Shadow 不覆盖 Legacy 正式结果、不修改 Java–Python API、状态机、Attempt、回调、公开 DTO 和 `schema_version=1.0`
+- 实现：新增类型化 Shadow Comparator，按相同 IR 类别先匹配完全一致 Anchor，再确定性一对一匹配同 Block 重叠区间；输出逐类别计数、一致率、Legacy 独有和 Window 独有项，并明确 `ground_truth_available=false`
+- 跨 Generation：同一文件在持久化 Generation 和测试页面重新解析后 Block ID 不同；仅以 `block_no + UTF-8原文SHA-256` 建立跨 Generation Block 对应，93/93 Block 成功对应，不使用语义或模糊文本映射
+- 真实 Shadow：同一份 `sha256:c25a655f...7fafda`、93 Block 服务外包合同；Legacy `98` 项、Window `102` 项；同类别精确 Anchor `1`、重叠 Anchor `63`、Legacy 独有 `34`、Window 独有 `38`；Legacy Anchor 一致率 `65.31%`、Window Anchor 一致率 `62.75%`
+- 差异复核：Legacy 将一般服务标准/响应时限归入 `ACCEPTANCE`，并将单纯适用法律归入 `DISPUTE`；Window 返回正式验收 `0`、争议解决 `0`，与该合同“缺少正式验收机制和争议解决条款”的风险事实一致。Legacy 的甲乙方定义由正式 `resolve_parties` Artifact 负责，不要求 Window 重复。Window 旧结果中的发票、抵扣、逾期付款语义存在于义务/权利/责任，但 `PAYMENT` 类别不完整
+- 分类修正：Prompt 明确付款、正式验收、争议解决和定义边界；增加 PAYMENT/ACCEPTANCE/DISPUTE 强指示类别完整性门，缺类时只重试当前 Window 一次，第二次仍缺则 Stage 失败，不静默接受残缺分类
+- 无敏感真实模型复测：5 个合成 Window、总耗时 `4448 ms`、模型调用 `5` 次、重试 `0`、Coverage `5/5`；价款/发票得到 `PAYMENT+AMOUNT+OBLIGATION`，抵扣和逾期付款得到 `PAYMENT`，一般服务质量未误归 `ACCEPTANCE`，仅适用法律未误归 `DISPUTE`，正式验收及法院条款分别得到 `ACCEPTANCE` 和 `DISPUTE`
+- 自动测试：Shadow/Window 定向 `36 passed`；Framework 回归 `179 passed, 1 deselected`；Contract Python 回归 `103 passed, 10 skipped`；排除项仍为隔离一次性容器未接 localhost Redis 的既有现场测试
+- 独立容器验收：复用 `contract-ir-window-stage1-ui`、`contract-ir-window-stage2-framework` 和服务器本机 `127.0.0.1:19310/19320`；正式容器和正式环境未修改
+- 测试页面验收：增加 Legacy IR JSON 导入和 Shadow 分类表，显示精确/重叠 Anchor、双方独有项和“非准确率”说明；页面健康检查通过，主体上下文控件继续存在
+- 测试 Artifact：`stage4-legacy-shadow-input.json`、`stage4-window-contract-ir.json`、`stage4-shadow-request.json`、`stage4-shadow-response.json`、`stage4-classification-response-v2.json`
+- 数据边界：真实 Shadow 使用用户已经在页面生成并提供的 Window 结果，没有由代理重新发送合同；分类修正后的真实合同复跑因外部模型数据策略被拒绝，改用无敏感合成条款验证，用户后续可在隔离测试页面主动复跑
+- 代码提交：`功能：增加合同IR新旧链路影子对照`
+- 遗留问题：Shadow 一致率不是准确率；下一阶段必须在独立环境把 Window IR 接入后续风险 Stage，验证 Finding/Evidence 是否保持或提升，才能决定测试环境切换
 
 ## 阶段 5：完整Finding/Evidence回归
 

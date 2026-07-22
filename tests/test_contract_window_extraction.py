@@ -172,6 +172,10 @@ async def test_window_extractor_uses_framework_runtime_and_exact_block_alignment
     assert "不调用工具" in call["system_prompt"]
     assert "类别不是互斥分类" in call["system_prompt"]
     assert "OBLIGATION 和 PAYMENT" in call["system_prompt"]
+    assert "发票税费、调价、扣款抵销" in call["system_prompt"]
+    assert "一般服务质量、响应时限" in call["system_prompt"]
+    assert "仅引用适用法律不等于争议解决" in call["system_prompt"]
+    assert "不重复 context_only 中的合同主体" in call["system_prompt"]
 
     extraction = result.extractions[0]
     expected_text = "乙方应在十日内交付成果"

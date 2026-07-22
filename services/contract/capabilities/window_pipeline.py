@@ -46,6 +46,11 @@ _CRITICAL_CONTENT = re.compile(
     r"付款|费用|价款|金额|交付|验收|违约|赔偿|责任|解除|终止|保密|"
     r"知识产权|争议|仲裁|诉讼|权利|义务|应当|必须|不得|日期|期限"
 )
+_CATEGORY_CUES = {
+    "PAYMENT": re.compile(r"付款|支付|价款|费用|结算|发票|税费|扣款|抵扣|抵销|冲抵"),
+    "ACCEPTANCE": re.compile(r"验收"),
+    "DISPUTE": re.compile(r"争议|仲裁|诉讼|管辖|人民法院"),
+}
 
 
 class StrictModel(BaseModel):
@@ -174,7 +179,7 @@ class MappedExtraction(StrictModel):
 class WindowAttempt(StrictModel):
     attempt_no: int = Field(ge=1, le=2)
     duration_ms: int = Field(ge=0)
-    status: Literal["SUCCEEDED", "FAILED", "SUSPICIOUS_EMPTY"]
+    status: Literal["SUCCEEDED", "FAILED", "SUSPICIOUS_EMPTY", "SUSPICIOUS_CATEGORY"]
     extraction_count: int = Field(ge=0)
     value_canonicalization_count: int = Field(default=0, ge=0)
     ambiguous_value_count: int = Field(default=0, ge=0)
@@ -361,6 +366,35 @@ class ContractIrWindowPipeline:
                     )
                     retry_feedback = "关键条款 Window 返回空结果"
                     continue
+                missing_categories = _missing_expected_categories(window, extracted)
+                if missing_categories:
+                    missing_text = "、".join(missing_categories)
+                    attempts.append(
+                        WindowAttempt(
+                            attempt_no=attempt_no,
+                            duration_ms=duration_ms,
+                            status="SUSPICIOUS_CATEGORY",
+                            extraction_count=len(extracted.extractions),
+                            value_canonicalization_count=len(
+                                extracted.value_canonicalizations
+                            ),
+                            ambiguous_value_count=sum(
+                                item.binding_status == "AMBIGUOUS"
+                                for item in extracted.value_canonicalizations
+                            ),
+                            unbound_value_count=sum(
+                                item.binding_status == "UNBOUND"
+                                for item in extracted.value_canonicalizations
+                            ),
+                            error_code="WINDOW_CATEGORY_MISSING",
+                            error_message=f"强指示条款缺少类别：{missing_text}",
+                        )
+                    )
+                    retry_feedback = (
+                        f"当前 source_text 明确包含 {missing_text} 类别指示，但结果缺少对应类别；"
+                        "类别可以共享同一 extraction_text，请补齐后返回完整结果"
+                    )
+                    continue
                 mapped = [
                     _map_extraction(request, window, item)
                     for item in extracted.extractions
@@ -480,6 +514,19 @@ def _validate_structural_coverage(request: WindowPipelineRequest) -> PipelineCov
 def _is_suspicious_empty(window: PipelineWindowInput) -> bool:
     searchable = "\n".join([*window.heading_path, *window.clause_nos, window.source_text])
     return _CRITICAL_CONTENT.search(searchable) is not None
+
+
+def _missing_expected_categories(
+    window: PipelineWindowInput,
+    extracted: WindowExtractionResult,
+) -> list[str]:
+    searchable = "\n".join([*window.heading_path, *window.clause_nos, window.source_text])
+    actual = {item.extraction_class for item in extracted.extractions}
+    return [
+        category
+        for category, pattern in _CATEGORY_CUES.items()
+        if pattern.search(searchable) is not None and category not in actual
+    ]
 
 
 def _map_extraction(

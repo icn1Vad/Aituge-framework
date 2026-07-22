@@ -82,10 +82,11 @@ def _aligned(
     request: WindowExtractionRequest,
     *,
     predicate: str = "应履行",
+    extraction_class: str = "OBLIGATION",
 ) -> AlignedExtraction:
     text = request.source_text
     return AlignedExtraction(
-        extraction_class="OBLIGATION",
+        extraction_class=extraction_class,
         extraction_text=text,
         subject="乙方",
         predicate=predicate,
@@ -106,6 +107,32 @@ def _aligned(
             )
         ],
     )
+
+
+class CategoryRetryExtractor(FakePipelineExtractor):
+    async def extract(
+        self,
+        request: WindowExtractionRequest,
+        *,
+        tenant_id: str,
+        model_id: str,
+        retry_feedback: str | None = None,
+    ) -> WindowExtractionResult:
+        self.calls.append((request.window_id, retry_feedback))
+        self.call_counts[request.window_id] = self.call_counts.get(request.window_id, 0) + 1
+        classes = (
+            ["OBLIGATION"]
+            if self.call_counts[request.window_id] == 1
+            else ["OBLIGATION", "PAYMENT"]
+        )
+        return WindowExtractionResult(
+            window_id=request.window_id,
+            model_id=model_id,
+            extractions=[
+                _aligned(request, extraction_class=extraction_class)
+                for extraction_class in classes
+            ],
+        )
 
 
 def _pipeline_request(count: int = 4, *, source: str = "履行事项") -> WindowPipelineRequest:
@@ -280,6 +307,24 @@ async def test_pipeline_accepts_reviewed_empty_non_business_window() -> None:
     assert result.retry_count == 0
     assert result.semantic_ir.obligations == []
     assert result.coverage.valid is True
+
+
+@pytest.mark.asyncio
+async def test_pipeline_retries_strong_category_cue_missing_from_first_result() -> None:
+    extractor = CategoryRetryExtractor()
+
+    result = await ContractIrWindowPipeline(extractor=extractor).run(
+        _pipeline_request(count=1, source="乙方应在付款前提供发票"),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    assert extractor.call_counts == {"window-001": 2}
+    assert result.retry_count == 1
+    assert result.windows[0].attempts[0].status == "SUSPICIOUS_CATEGORY"
+    assert result.windows[0].attempts[0].error_code == "WINDOW_CATEGORY_MISSING"
+    assert "PAYMENT" in (extractor.calls[1][1] or "")
+    assert len(result.semantic_ir.payment_terms) == 1
 
 
 @pytest.mark.asyncio

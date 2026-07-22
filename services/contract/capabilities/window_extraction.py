@@ -42,6 +42,11 @@ context_only 只用于理解主体和标题，不得作为 extraction_text。
 必须分别返回多条并允许共享同一 extraction_text：付款义务至少同时输出 OBLIGATION 和 PAYMENT，
 交付义务至少同时输出 OBLIGATION 和 DELIVERY，验收义务至少同时输出 OBLIGATION 和 ACCEPTANCE；
 违约责任、解除、争议等也必须输出各自的 LIABILITY、TERMINATION、DISPUTE 条目。
+PAYMENT 包括价款或费用、支付时间和方式、发票税费、调价、扣款抵销及逾期付款责任；
+它们同时属于义务、权利或责任时仍须分别输出对应类别。
+ACCEPTANCE 只表示正式的验收标准、程序、期限、通过条件或不通过后果；一般服务质量、响应时限、
+履约考核本身不等于验收。DISPUTE 只表示协商、调解、仲裁、诉讼、管辖法院等争议解决机制；
+仅引用适用法律不等于争议解决。DEFINITION 只提取正文明确界定的术语，不重复 context_only 中的合同主体。
 只输出一个 JSON 对象，不输出推理过程、解释、Markdown 或代码围栏。
 JSON 顶层只能包含 extractions。每项只能包含：extraction_class、extraction_text、
 subject、predicate、object、term、meaning、referenced_clause_nos。

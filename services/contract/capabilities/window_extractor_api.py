@@ -23,6 +23,11 @@ from services.contract.capabilities.window_pipeline import (
     WindowPipelineRequest,
     WindowPipelineResult,
 )
+from services.contract.capabilities.window_shadow import (
+    ShadowCompareRequest,
+    ShadowCompareResult,
+    compare_contract_ir,
+)
 
 
 class StrictModel(BaseModel):
@@ -205,6 +210,10 @@ def create_app(engine: WindowExtractionEngine | None = None) -> FastAPI:
                     }
                 },
             )
+
+    @app.post("/api/shadow-compare", response_model=ShadowCompareResult)
+    async def shadow_compare(payload: ShadowCompareRequest):
+        return compare_contract_ir(payload)
 
     return app
 
