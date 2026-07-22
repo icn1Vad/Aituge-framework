@@ -73,7 +73,8 @@ LangExtract 不作为独立服务，不接管 Framework 的模型配置、任务
 - 软上限初始为约 4,000 模型 Token；
 - 硬上限初始为约 6,000 模型 Token；
 - 超大 Section 依次按子条款、段落、完整表格行、句子拆分；
-- 每个有效 Block 必须且只能属于一个 Primary Window；
+- 普通有效 Block 必须且只能属于一个 Primary Window；
+- 单个 Block 本身超过硬限制时，允许按句界拆成多个不重叠 Source Slice；这些 Slice 的字符区间必须首尾相接并完整覆盖原 Block，不能遗漏或重叠；
 - 一期正文不做普通 Overlap，防止重复抽取；
 - 合同双方、视角、合同类型、上级标题等以 `context_only` 提供，不能成为 SourceAnchor。
 
@@ -212,17 +213,17 @@ CONTRACT_IR_ENGINE=window
 每个阶段开始前必须重新阅读本文件及顶层联合冻结稿的第 14～20、33～39 节。每阶段必须依次完成：
 
 1. 实现；
-2. 单元/集成测试；
-3. 中文 Git Commit；
-4. 推送 `feat/contract-ir-window-v1`；
-5. 服务器独立环境构建；
-6. 测试页面或接口验收；
-7. 保存阶段测试 Artifact；
+2. 将未提交代码临时同步到服务器隔离工作树；
+3. 在服务器独立环境构建并运行单元/集成测试；
+4. 通过测试页面或接口验收并保存 Artifact；
+5. 中文 Git Commit；
+6. 推送 `feat/contract-ir-window-v1`；
+7. 在阶段记录中登记提交与验收结果；
 8. 验收通过后才进入下一阶段。
 
 阶段清单：
 
-- [ ] 阶段 1：Section Unit、Window Builder、Offset Map；
+- [x] 阶段 1：Section Unit、Window Builder、Offset Map；
 - [ ] 阶段 2：Framework 模型链路、LangExtract 解析和单 Window 对齐；
 - [ ] 阶段 3：并发 3、IR Mapper、合并、Coverage、局部重试；
 - [ ] 阶段 4：Legacy/Window Shadow Compare；
@@ -233,7 +234,7 @@ CONTRACT_IR_ENGINE=window
 ```text
 Schema 合法率 = 100%
 正式 Anchor 有效率 = 100%
-Block Primary Window 覆盖率 = 100%
+Block 字符区间 Primary Window 覆盖率 = 100%
 相同输入重复执行 IR Hash 一致
 关键 IR 人工召回不低于 Legacy
 当前 93 Block 合同 IR 阶段目标 <= 180 秒，优化目标 <= 120 秒

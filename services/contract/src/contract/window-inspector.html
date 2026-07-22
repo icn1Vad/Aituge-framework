@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>合同 IR Window 阶段验收</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, "Microsoft YaHei", sans-serif; background:#0b1020; color:#e8eefc; }
+    * { box-sizing:border-box; }
+    body { margin:0; }
+    main { max-width:1280px; margin:auto; padding:28px; }
+    h1 { margin:0 0 8px; font-size:28px; }
+    .hint { color:#99a8c7; margin-bottom:22px; }
+    .panel { background:#131b30; border:1px solid #273454; border-radius:14px; padding:18px; margin-bottom:18px; }
+    .upload { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    input, button { border-radius:9px; border:1px solid #34456e; padding:10px 13px; background:#0d1528; color:#e8eefc; }
+    button { background:#2867e8; border-color:#2867e8; cursor:pointer; font-weight:650; }
+    button:disabled { opacity:.55; cursor:wait; }
+    .error { color:#ff9eaa; white-space:pre-wrap; }
+    .metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+    .metric { background:#0d1528; border-radius:10px; padding:13px; }
+    .metric span { color:#94a3c4; display:block; font-size:12px; margin-bottom:4px; }
+    .good { color:#64e8a7; }
+    .tabs { display:flex; gap:8px; margin:18px 0 10px; }
+    .tabs button { background:#16213b; border-color:#34456e; }
+    .tabs button.active { background:#2867e8; }
+    .list { display:grid; gap:10px; }
+    details { border:1px solid #2a385b; background:#0e172a; border-radius:10px; padding:12px; }
+    summary { cursor:pointer; font-weight:650; }
+    .meta { color:#9cadce; font-size:13px; margin:8px 0; word-break:break-all; }
+    pre { white-space:pre-wrap; word-break:break-word; background:#080e1a; border-radius:8px; padding:12px; max-height:420px; overflow:auto; }
+    code { color:#b9ccff; }
+    [hidden] { display:none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>合同 IR Window 阶段验收</h1>
+  <div class="hint">阶段一只验证：文件解析 → Section 分层 → Window 构建 → 字符区间覆盖。这里不会调用模型，也不会写业务数据库。</div>
+  <section class="panel upload">
+    <input id="file" type="file" accept=".pdf,.docx">
+    <button id="run">解析并构建 Window</button>
+    <span id="state" class="hint"></span>
+  </section>
+  <div id="error" class="panel error" hidden></div>
+  <section id="result" hidden>
+    <div id="metrics" class="panel metrics"></div>
+    <div class="tabs">
+      <button data-tab="sections" class="active">Section Tree</button>
+      <button data-tab="windows">Windows</button>
+      <button data-tab="raw">完整 JSON</button>
+    </div>
+    <div id="sections" class="list"></div>
+    <div id="windows" class="list" hidden></div>
+    <pre id="raw" hidden></pre>
+  </section>
+</main>
+<script>
+  const fileInput = document.querySelector('#file');
+  const runButton = document.querySelector('#run');
+  const state = document.querySelector('#state');
+  const errorBox = document.querySelector('#error');
+  const result = document.querySelector('#result');
+  const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  runButton.addEventListener('click', async () => {
+    const file = fileInput.files[0];
+    if (!file) { showError('请先选择 PDF 或 DOCX 合同。'); return; }
+    runButton.disabled = true; state.textContent = '正在解析…'; errorBox.hidden = true; result.hidden = true;
+    const form = new FormData(); form.append('file', file);
+    try {
+      const response = await fetch('/api/inspect', { method:'POST', body:form });
+      const body = await response.json();
+      if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : JSON.stringify(body));
+      render(body); state.textContent = '完成';
+    } catch (error) { showError(error.message); state.textContent = '失败'; }
+    finally { runButton.disabled = false; }
+  });
+
+  document.querySelectorAll('[data-tab]').forEach(button => button.addEventListener('click', () => {
+    document.querySelectorAll('[data-tab]').forEach(item => item.classList.remove('active'));
+    button.classList.add('active');
+    ['sections','windows','raw'].forEach(id => document.querySelector(`#${id}`).hidden = id !== button.dataset.tab);
+  }));
+
+  function showError(message) { errorBox.textContent = message; errorBox.hidden = false; }
+  function render(data) {
+    result.hidden = false;
+    const coverage = data.coverage;
+    document.querySelector('#metrics').innerHTML = [
+      ['文件', data.filename], ['Block', data.block_count], ['Section', data.section_count],
+      ['Window', data.window_count], ['覆盖', `${coverage.covered_block_count}/${coverage.expected_block_count}`],
+      ['覆盖校验', coverage.valid ? '<b class="good">通过</b>' : '失败']
+    ].map(([name,value]) => `<div class="metric"><span>${escapeHtml(name)}</span>${name === '覆盖校验' ? value : escapeHtml(value)}</div>`).join('');
+    document.querySelector('#sections').innerHTML = data.sections.map(section => `
+      <details><summary>${section.sequence_no}. ${escapeHtml(section.section_type)} · ${escapeHtml(section.title)}</summary>
+      <div class="meta">section_id: ${escapeHtml(section.section_id)}<br>parent: ${escapeHtml(section.parent_section_id)}<br>major: ${escapeHtml(section.major_section_id)}</div>
+      <div>Blocks：<code>${escapeHtml(section.block_ids.join(', '))}</code></div>
+      <div>子款 Block：<code>${escapeHtml(section.subclause_block_ids.join(', ') || '无')}</code></div></details>`).join('');
+    document.querySelector('#windows').innerHTML = data.windows.map(window => `
+      <details><summary>Window ${window.sequence_no} · ${window.estimated_tokens} tokens（估算） · ${window.primary_block_ids.length} Blocks</summary>
+      <div class="meta">window_id: ${escapeHtml(window.window_id)}<br>clauses: ${escapeHtml(window.clause_nos.join(', ') || '无')}<br>sections: ${escapeHtml(window.section_ids.join(', '))}</div>
+      <pre>${escapeHtml(window.source_text)}</pre>
+      <details><summary>Offset Map（${window.offset_map.length}）</summary><pre>${escapeHtml(JSON.stringify(window.offset_map, null, 2))}</pre></details></details>`).join('');
+    document.querySelector('#raw').textContent = JSON.stringify(data, null, 2);
+  }
+</script>
+</body>
+</html>
