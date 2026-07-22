@@ -175,7 +175,10 @@ async def test_window_extractor_uses_framework_runtime_and_exact_block_alignment
     assert "发票税费、调价、扣款抵销" in call["system_prompt"]
     assert "一般服务质量、响应时限" in call["system_prompt"]
     assert "仅引用适用法律不等于争议解决" in call["system_prompt"]
-    assert "不重复 context_only 中的合同主体" in call["system_prompt"]
+    assert "context_only 中的合同主体" in call["system_prompt"]
+    assert "不得把合同当事人" in call["system_prompt"]
+    assert "同时包含 term 和 meaning 的完整定义性原文句段" in call["system_prompt"]
+    assert "不得只返回重复出现的术语短词" in call["system_prompt"]
 
     extraction = result.extractions[0]
     expected_text = "乙方应在十日内交付成果"
@@ -288,6 +291,45 @@ async def test_window_extractor_rejects_ambiguous_normalized_location() -> None:
         )
 
     assert exc_info.value.code == "ALIGNMENT_AMBIGUOUS"
+
+
+@pytest.mark.asyncio
+async def test_definition_ambiguity_produces_private_targeted_retry_feedback() -> None:
+    source = "甲方（发包方）：某公司（以下简称甲方）。甲方负责提出服务要求。"
+    runtime = FakeRuntime(
+        json.dumps(
+            {
+                "extractions": [
+                    {
+                        "extraction_class": "DEFINITION",
+                        "extraction_text": "甲方",
+                        "subject": None,
+                        "predicate": None,
+                        "object": None,
+                        "term": "甲方",
+                        "meaning": "某公司",
+                        "referenced_clause_nos": [],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    with pytest.raises(WindowExtractionError) as exc_info:
+        await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+            _single_block_request(source),
+            tenant_id="tenant-001",
+            model_id="contract-model",
+        )
+
+    error = exc_info.value
+    assert error.code == "ALIGNMENT_AMBIGUOUS"
+    assert str(error) == "DEFINITION 规范化后在当前 Window 原文中存在 3 个候选位置"
+    assert "extraction_text=\"甲方\"" in (error.retry_feedback or "")
+    assert "请删除该 DEFINITION" in (error.retry_feedback or "")
+    assert "完整连续定义性原文句段" in (error.retry_feedback or "")
+    assert "甲方" not in str(error)
 
 
 @pytest.mark.asyncio

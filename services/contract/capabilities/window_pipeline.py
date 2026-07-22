@@ -443,7 +443,10 @@ class ContractIrWindowPipeline:
                         error_message=message,
                     )
                 )
-                retry_feedback = f"{code}: {message}"
+                retry_feedback = (
+                    getattr(exc, "retry_feedback", None)
+                    or f"{code}: {message}"
+                )
 
         return WindowRunResult(
             window_id=window.window_id,

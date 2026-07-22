@@ -155,3 +155,14 @@
 - 测试 Artifact：`stage51-source-review-artifacts.json`、`stage51-consolidation-decisions.json`、`stage51-finding-merge-replay.json`
 - 测试页面对比：保留阶段 5 的修改前完整结果按钮（Finding `19`、Evidence `27`），新增独立的“阶段 5.1 合并后对比”按钮（Finding `15`、Evidence `20`、安全删除重复项 `4`），同时展示候选对及 `SAME_RISK/RELATED_DISTINCT/DISTINCT` 判定统计和合并后保留项；只读取既有 Artifact，不重跑模型；`/health` 与 `/api/stage51-result` 均返回 `200`
 - 后续：跨 Stage 重复已不再阻塞现有完整链路；下一阶段单独设计风险审查层的输入裁剪、受控判断、并发和耗时优化，不在本阶段顺带修改五个风险 Agent
+
+## 阶段 5.2：DEFINITION 唯一溯源修复
+
+- 状态：自动测试与隔离服务加载通过，等待用户使用原测试页面对真实合同复测
+- 开始前设计复读：已完整重读 Window 改造设计、阶段记录和唯一联合冻结稿；确认本次只修 Framework 内部 `DEFINITION` Prompt、Alignment 局部重试和安全诊断，不修改 Java–Python API、OpenAPI、公开 DTO、状态机、Attempt、回调或 `schema_version=1.0`
+- 现场原因：真实合同 12 个 Window 中 11 个成功，第 1 个 Window 两次返回 `ALIGNMENT_AMBIGUOUS`；模型把重复短词作为 `DEFINITION.extraction_text`，系统无法唯一绑定原文且按安全规则拒绝返回残缺 IR；该问题与 `resolve_parties` 和用户所选甲乙方立场无关
+- 实现：合同当事人及“甲方/乙方/双方/我方/相对方/本合同”等指代禁止进入 `DEFINITION`；真正定义必须引用同时包含 `term` 和 `meaning`、且能在当前 Window 唯一定位的完整连续定义性原文；歧义时第二次局部调用接收具体短文本、候选数以及“删除主体定义或扩展完整定义句”的纠错动作
+- 隐私边界：具体歧义短文本只作为同一 Window 第二次模型调用的内部反馈；公开 Attempt 错误、HTTP 错误和日志只保存类别及候选数量，不记录该合同原文
+- 自动测试：Window 抽取与 Pipeline 针对性测试 `34 passed`；Framework 回归排除未启动 Smoke 服务的既有 `test_live_multi_capability` 后 `181 passed`；未排除时为 `181 passed, 1 failed`，唯一失败是一次性测试容器无法连接独立 Smoke 服务，与本次修改无关；`git diff --check` 通过
+- 隔离环境：源码同步到 `python-ir-window-source`，复用并重启 `contract-ir-window-stage2-framework`；已确认新 Prompt 加载，`127.0.0.1:19320/openapi.json` 返回 `200`；测试页面 `127.0.0.1:19310/health` 返回 `UP`；正式容器、正式环境和 Java 未修改
+- 用户验收：继续使用原测试页面上传《服务外包协议之补充协议0829.docx》，填写规范化甲乙方名称并触发全量 Window 抽取；该真实模型结果完成后再补充本阶段最终 Artifact 和验收结论

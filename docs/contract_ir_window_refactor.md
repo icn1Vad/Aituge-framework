@@ -127,6 +127,14 @@ term / meaning
 referenced_clause_nos
 ```
 
+`DEFINITION` 只提取明确界定的业务术语。合同当事人以及“甲方”“乙方”“双方”
+“我方”“相对方”“本合同”等主体或文书指代由主体解析和上下文负责，不进入
+`DEFINITION`。`term` 与 `meaning` 保存术语和含义；`extraction_text` 必须逐字引用
+同时包含二者的完整定义性原文句段，并能在当前 Window 中唯一定位，不能只引用
+重复出现的术语短词。若首次对齐发现多个候选位置，局部重试必须携带具体歧义项和
+候选数，要求模型删除主体定义或扩展为唯一的完整定义句；公开错误和日志不得包含该
+原文片段。
+
 模型禁止输出过程说明、Markdown、技术 ID、Block ID、字符位置和 Hash；禁止调用工具；`extraction_text` 必须来自当前 `source_text`。
 
 同一原文允许同时产生不同语义类别，例如一条付款义务同时属于 `OBLIGATION` 和 `PAYMENT`。对齐按单条 Extraction 执行，不得因为第三方批量对齐器的非重叠选择而删除合法语义。

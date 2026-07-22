@@ -46,7 +46,12 @@ PAYMENT 包括价款或费用、支付时间和方式、发票税费、调价、
 它们同时属于义务、权利或责任时仍须分别输出对应类别。
 ACCEPTANCE 只表示正式的验收标准、程序、期限、通过条件或不通过后果；一般服务质量、响应时限、
 履约考核本身不等于验收。DISPUTE 只表示协商、调解、仲裁、诉讼、管辖法院等争议解决机制；
-仅引用适用法律不等于争议解决。DEFINITION 只提取正文明确界定的术语，不重复 context_only 中的合同主体。
+仅引用适用法律不等于争议解决。DEFINITION 只提取 source_text 中以“是指”“定义为”等方式
+明确界定的业务术语；不得把合同当事人及“甲方”“乙方”“双方”“我方”“相对方”“本合同”
+等主体或文书指代作为 DEFINITION，无论 source_text 是否使用“以下简称”“统称”等表述，
+也不得重复 context_only 中的合同主体。term 填被定义的术语，meaning 填定义含义；
+DEFINITION 的 extraction_text 必须逐字复制同时包含 term 和 meaning 的完整定义性原文句段，
+且其规范化文本必须能在当前 source_text 中唯一定位，不得只返回重复出现的术语短词。
 只输出一个 JSON 对象，不输出推理过程、解释、Markdown 或代码围栏。
 JSON 顶层只能包含 extractions。每项只能包含：extraction_class、extraction_text、
 subject、predicate、object、term、meaning、referenced_clause_nos。
@@ -59,9 +64,16 @@ DISPUTE、DATE、AMOUNT。"""
 
 
 class WindowExtractionError(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retry_feedback: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.retry_feedback = retry_feedback
 
 
 class StrictModel(BaseModel):
@@ -291,9 +303,17 @@ def _align_extractions(
             )
         expected_occurrences = model_occurrence_counts[occurrence_key]
         if len(candidates) > 1 and len(candidates) != expected_occurrences:
+            retry_feedback = _ambiguous_alignment_retry_feedback(
+                model_item,
+                candidate_count=len(candidates),
+            )
             raise WindowExtractionError(
                 "ALIGNMENT_AMBIGUOUS",
-                f"{model_item.extraction_class} 规范化后在当前 Window 原文中存在多个候选位置",
+                (
+                    f"{model_item.extraction_class} 规范化后在当前 Window 原文中存在"
+                    f" {len(candidates)} 个候选位置"
+                ),
+                retry_feedback=retry_feedback,
             )
         used_ranges = used_candidate_ranges.setdefault(occurrence_key, set())
         available_candidates = [item for item in candidates if item not in used_ranges]
@@ -514,6 +534,32 @@ def _exact_occurrences(source_text: str, extraction_text: str) -> list[int]:
             return positions
         positions.append(position)
         cursor = position + max(1, len(extraction_text))
+
+
+def _ambiguous_alignment_retry_feedback(
+    item: ModelExtraction,
+    *,
+    candidate_count: int,
+) -> str:
+    quoted_text = json.dumps(
+        item.extraction_text[:240],
+        ensure_ascii=False,
+    )
+    if item.extraction_class == "DEFINITION":
+        return (
+            f"DEFINITION 的 extraction_text={quoted_text} 在 source_text 中匹配到"
+            f" {candidate_count} 处，不能唯一溯源。若它表示合同当事人或甲方、乙方、"
+            "双方、我方、相对方、本合同等指代，请删除该 DEFINITION；若它是真正的"
+            "业务术语定义，请把 extraction_text 扩展为同时包含 term 和 meaning、"
+            "且在 source_text 中唯一出现的完整连续定义性原文句段。不得任选第一处，"
+            "并请返回当前 Window 的完整抽取结果"
+        )
+    return (
+        f"{item.extraction_class} 的 extraction_text={quoted_text} 在 source_text 中匹配到"
+        f" {candidate_count} 处。请逐字引用能够唯一确定本项语义的完整连续原文句段；"
+        "若原文确有多处独立且相同的语义，请按原文顺序为每一处分别返回一项。"
+        "不得任选第一处，并请返回当前 Window 的完整抽取结果"
+    )
 
 
 @dataclass(frozen=True, slots=True)

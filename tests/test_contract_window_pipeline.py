@@ -135,6 +135,30 @@ class CategoryRetryExtractor(FakePipelineExtractor):
         )
 
 
+class TargetedRetryExtractor(FakePipelineExtractor):
+    async def extract(
+        self,
+        request: WindowExtractionRequest,
+        *,
+        tenant_id: str,
+        model_id: str,
+        retry_feedback: str | None = None,
+    ) -> WindowExtractionResult:
+        self.calls.append((request.window_id, retry_feedback))
+        self.call_counts[request.window_id] = self.call_counts.get(request.window_id, 0) + 1
+        if self.call_counts[request.window_id] == 1:
+            raise WindowExtractionError(
+                "ALIGNMENT_AMBIGUOUS",
+                "DEFINITION 存在多个候选位置",
+                retry_feedback="请删除主体简称定义，或扩展为唯一的完整定义句",
+            )
+        return WindowExtractionResult(
+            window_id=request.window_id,
+            model_id=model_id,
+            extractions=[_aligned(request)],
+        )
+
+
 def _pipeline_request(count: int = 4, *, source: str = "履行事项") -> WindowPipelineRequest:
     expected_blocks = []
     expected_sections = []
@@ -219,6 +243,24 @@ async def test_pipeline_runs_rolling_concurrency_ten_and_retries_only_failed_win
         for item in window.mapped_extractions
     ]
     ContractIrSemanticDelta.model_validate(result.semantic_ir.model_dump(mode="json"))
+
+
+@pytest.mark.asyncio
+async def test_pipeline_uses_private_targeted_feedback_for_local_retry() -> None:
+    extractor = TargetedRetryExtractor()
+
+    result = await ContractIrWindowPipeline(extractor=extractor).run(
+        _pipeline_request(count=1),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    assert result.coverage.valid is True
+    assert extractor.calls == [
+        ("window-001", None),
+        ("window-001", "请删除主体简称定义，或扩展为唯一的完整定义句"),
+    ]
+    assert result.windows[0].attempts[0].error_message == "DEFINITION 存在多个候选位置"
 
 
 @pytest.mark.asyncio
