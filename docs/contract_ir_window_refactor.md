@@ -29,7 +29,8 @@ Contract Python 持久化 Block
   -> SectionWindowBuilder
   -> Window Extractor（最多并发 3）
   -> Framework LlmRuntime + 当前 CONTRACT_MODEL_ID
-  -> LangExtract 结果解析及 Source Alignment
+  -> Framework 完整 JSON 解析 + 严格 Pydantic Schema
+  -> LangExtract 1.6.0 精确 Source Alignment
   -> ContractIrMapper 生成技术字段
   -> DeterministicIrMerger
   -> CoverageChecker / 局部重试
@@ -37,7 +38,7 @@ Contract Python 持久化 Block
   -> Contract Python 终检并持久化
 ```
 
-LangExtract 不作为独立服务，不接管 Framework 的模型配置、任务、并发、重试和日志。它只提供结构化 Extraction 数据、结果解析和原文对齐能力。
+LangExtract 不作为独立服务，不接管 Framework 的模型配置、任务、并发、重试和日志，也不直接调用模型。模型输出继续由 Framework 的 `parse_json_output` 提取完整 JSON，再由严格 Pydantic Schema 校验；LangExtract 只提供 Extraction 数据模型和精确原文对齐能力。
 
 ## 3. Section Unit 规则
 
@@ -125,6 +126,8 @@ referenced_clause_nos
 ```
 
 模型禁止输出过程说明、Markdown、技术 ID、Block ID、字符位置和 Hash；禁止调用工具；`extraction_text` 必须来自当前 `source_text`。
+
+同一原文允许同时产生不同语义类别，例如一条付款义务同时属于 `OBLIGATION` 和 `PAYMENT`。对齐按单条 Extraction 执行，不得因为第三方批量对齐器的非重叠选择而删除合法语义；同一类别、同一原文重复出现时按出现次数顺序定位。模糊匹配和部分匹配始终关闭。
 
 ## 6. 确定性字段
 
@@ -224,7 +227,7 @@ CONTRACT_IR_ENGINE=window
 阶段清单：
 
 - [x] 阶段 1：Section Unit、Window Builder、Offset Map；
-- [ ] 阶段 2：Framework 模型链路、LangExtract 解析和单 Window 对齐；
+- [x] 阶段 2：Framework 模型链路、LangExtract 解析和单 Window 对齐；
 - [ ] 阶段 3：并发 3、IR Mapper、合并、Coverage、局部重试；
 - [ ] 阶段 4：Legacy/Window Shadow Compare；
 - [ ] 阶段 5：独立测试环境完整 Finding/Evidence 回归。
