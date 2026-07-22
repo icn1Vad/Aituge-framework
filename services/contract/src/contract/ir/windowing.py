@@ -80,6 +80,7 @@ class WindowOffset:
     block_no: int
     block_char_start: int
     block_char_end: int
+    page_number: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -506,6 +507,7 @@ def _render_slices(slices: Sequence[SourceSlice]) -> tuple[str, tuple[WindowOffs
                 block_no=item.block_no,
                 block_char_start=item.block_char_start,
                 block_char_end=item.block_char_end,
+                page_number=item.page_number,
             )
         )
     return "".join(parts), tuple(offsets)

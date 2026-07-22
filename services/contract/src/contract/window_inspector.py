@@ -42,6 +42,12 @@ class OffsetView(StrictView):
     block_no: int
     block_char_start: int
     block_char_end: int
+    page_number: int | None = None
+
+
+class ExpectedBlockView(StrictView):
+    block_id: str
+    text_length: int
 
 
 class SectionView(StrictView):
@@ -82,11 +88,14 @@ class InspectionView(StrictView):
     filename: str
     file_type: str
     content_sha256: str
+    document_id: str
+    generation_id: str
     block_count: int
     section_count: int
     window_count: int
     warnings: list[str]
     coverage: CoverageView
+    expected_blocks: list[ExpectedBlockView]
     sections: list[SectionView]
     windows: list[WindowView]
 
@@ -119,9 +128,10 @@ async def inspect_contract(file: UploadFile = File(...)) -> InspectionView:
         with tempfile.TemporaryDirectory(prefix="contract-window-") as directory:
             source_path = Path(directory) / f"source{suffix}"
             source_path.write_bytes(payload)
+            generation_id = f"window-inspector-{digest[:24]}"
             parsed = NativeContractParser().parse(
                 source_path,
-                generation_id=f"window-inspector-{digest[:24]}",
+                generation_id=generation_id,
             )
         sections = build_section_units(parsed.blocks)
         windows = build_section_windows(sections)
@@ -135,11 +145,17 @@ async def inspect_contract(file: UploadFile = File(...)) -> InspectionView:
         filename=filename,
         file_type=parsed.file_type,
         content_sha256=f"sha256:{digest}",
+        document_id=f"window-document-{digest[:24]}",
+        generation_id=generation_id,
         block_count=len(parsed.blocks),
         section_count=len(sections),
         window_count=len(windows),
         warnings=list(parsed.warnings),
         coverage=_coverage_view(coverage),
+        expected_blocks=[
+            ExpectedBlockView(block_id=item.block_id, text_length=len(item.text))
+            for item in parsed.blocks
+        ],
         sections=[_section_view(item) for item in sections],
         windows=[_window_view(item) for item in windows],
     )
@@ -161,6 +177,33 @@ async def extract_window(window: WindowView):
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
             response = await client.post(f"{extractor_url}/api/extract-window", json=payload)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"窗口抽取测试服务不可用：{exc}") from exc
+    try:
+        content = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="窗口抽取测试服务返回了非 JSON 响应") from exc
+    return JSONResponse(status_code=response.status_code, content=content)
+
+
+@app.post("/api/extract-all")
+async def extract_all(inspection: InspectionView):
+    extractor_url = os.getenv("CONTRACT_WINDOW_EXTRACTOR_URL", "").rstrip("/")
+    if not extractor_url:
+        raise HTTPException(status_code=503, detail="窗口抽取测试服务尚未配置")
+    payload = {
+        "pipeline": {
+            "document_id": inspection.document_id,
+            "generation_id": inspection.generation_id,
+            "expected_blocks": [item.model_dump() for item in inspection.expected_blocks],
+            "expected_section_ids": [item.section_id for item in inspection.sections],
+            "windows": [item.model_dump() for item in inspection.windows],
+            "concurrency": 3,
+        }
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(900.0, connect=10.0)) as client:
+            response = await client.post(f"{extractor_url}/api/extract-all", json=payload)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"窗口抽取测试服务不可用：{exc}") from exc
     try:

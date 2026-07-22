@@ -26,9 +26,21 @@ class FakeEngine:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    async def extract(self, window, *, tenant_id: str, model_id: str):
+    async def extract(
+        self,
+        window,
+        *,
+        tenant_id: str,
+        model_id: str,
+        retry_feedback: str | None = None,
+    ):
         self.calls.append(
-            {"window": window, "tenant_id": tenant_id, "model_id": model_id}
+            {
+                "window": window,
+                "tenant_id": tenant_id,
+                "model_id": model_id,
+                "retry_feedback": retry_feedback,
+            }
         )
         return WindowExtractionResult(
             window_id=window.window_id,
@@ -110,6 +122,8 @@ async def test_window_extractor_uses_framework_runtime_and_exact_block_alignment
     assert call["temperature"] == 0
     assert "source_text" in call["messages"][0]["content"]
     assert "不调用工具" in call["system_prompt"]
+    assert "类别不是互斥分类" in call["system_prompt"]
+    assert "OBLIGATION 和 PAYMENT" in call["system_prompt"]
 
     extraction = result.extractions[0]
     expected_text = "乙方应在十日内交付成果"
@@ -269,3 +283,50 @@ def test_window_extractor_test_api_uses_configured_model(monkeypatch) -> None:
     assert response.json()["result"]["window_id"] == "window-001"
     assert engine.calls[0]["tenant_id"] == "tenant-001"
     assert engine.calls[0]["model_id"] == "contract-model"
+
+
+def test_window_pipeline_test_api_returns_typed_merged_result(monkeypatch) -> None:
+    monkeypatch.setenv("CONTRACT_MODEL_ID", "contract-model")
+    monkeypatch.setenv("CONTRACT_TEST_TENANT_ID", "tenant-001")
+    engine = FakeEngine()
+    text = "合同标题"
+    pipeline = {
+        "document_id": "document-001",
+        "generation_id": "generation-001",
+        "expected_blocks": [{"block_id": "block-001", "text_length": len(text)}],
+        "expected_section_ids": ["section-001"],
+        "windows": [
+            {
+                "window_id": "window-001",
+                "sequence_no": 1,
+                "section_ids": ["section-001"],
+                "heading_path": ["合同标题"],
+                "clause_nos": [],
+                "primary_block_ids": ["block-001"],
+                "estimated_tokens": 4,
+                "source_text": text,
+                "context_text": "",
+                "offset_map": [
+                    {
+                        "rendered_start": 0,
+                        "rendered_end": len(text),
+                        "block_id": "block-001",
+                        "block_no": 1,
+                        "block_char_start": 0,
+                        "block_char_end": len(text),
+                    }
+                ],
+            }
+        ],
+        "concurrency": 3,
+    }
+
+    with TestClient(create_app(engine)) as client:
+        response = client.post("/api/extract-all", json={"pipeline": pipeline})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["coverage"]["valid"] is True
+    assert body["concurrency"] == 3
+    assert body["semantic_ir"]["obligations"] == []
+    assert engine.calls[0]["retry_feedback"] is None

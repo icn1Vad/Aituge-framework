@@ -25,6 +25,7 @@ def test_window_inspector_renders_test_page() -> None:
 
     assert response.status_code == 200
     assert "合同 IR Window 阶段验收" in response.text
+    assert "并发 3 抽取全部 Window 并合并 IR" in response.text
 
 
 def test_window_inspector_returns_sections_windows_and_exact_coverage() -> None:
@@ -42,6 +43,8 @@ def test_window_inspector_returns_sections_windows_and_exact_coverage() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["file_type"] == "docx"
+    assert body["document_id"].startswith("window-document-")
+    assert body["generation_id"].startswith("window-inspector-")
     assert body["block_count"] == 5
     assert body["section_count"] >= 3
     assert body["window_count"] >= 1
@@ -54,6 +57,7 @@ def test_window_inspector_returns_sections_windows_and_exact_coverage() -> None:
         "overlap_block_ids": [],
     }
     assert body["windows"][0]["offset_map"]
+    assert len(body["expected_blocks"]) == body["block_count"]
     assert "第一条 服务内容" in "\n".join(item["source_text"] for item in body["windows"])
 
 

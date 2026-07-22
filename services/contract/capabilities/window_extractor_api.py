@@ -15,6 +15,12 @@ from services.contract.capabilities.window_extraction import (
     WindowExtractionRequest,
     WindowExtractionResult,
 )
+from services.contract.capabilities.window_pipeline import (
+    ContractIrWindowPipeline,
+    WindowPipelineError,
+    WindowPipelineRequest,
+    WindowPipelineResult,
+)
 
 
 class StrictModel(BaseModel):
@@ -30,6 +36,12 @@ class ExtractionTestRequest(StrictModel):
 class ExtractionTestResponse(StrictModel):
     duration_ms: int
     result: WindowExtractionResult
+
+
+class PipelineTestRequest(StrictModel):
+    pipeline: WindowPipelineRequest
+    tenant_id: str | None = None
+    model_id: str | None = None
 
 
 def create_app(engine: WindowExtractionEngine | None = None) -> FastAPI:
@@ -76,8 +88,40 @@ def create_app(engine: WindowExtractionEngine | None = None) -> FastAPI:
             result=result,
         )
 
+    @app.post("/api/extract-all", response_model=WindowPipelineResult)
+    async def extract_all(payload: PipelineTestRequest):
+        tenant_id = payload.tenant_id or os.getenv("CONTRACT_TEST_TENANT_ID", "default")
+        model_id = payload.model_id or os.getenv("CONTRACT_MODEL_ID", "")
+        if not model_id:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "error": {
+                        "code": "MODEL_ID_REQUIRED",
+                        "message": "CONTRACT_MODEL_ID is not configured",
+                    }
+                },
+            )
+        pipeline = ContractIrWindowPipeline(extractor=extractor)
+        try:
+            return await pipeline.run(
+                payload.pipeline,
+                tenant_id=tenant_id,
+                model_id=model_id,
+            )
+        except WindowPipelineError as exc:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "error": {
+                        "code": exc.code,
+                        "message": str(exc),
+                        "details": exc.details,
+                    }
+                },
+            )
+
     return app
 
 
 app = create_app()
-

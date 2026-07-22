@@ -1,0 +1,109 @@
+{
+  "pipeline": {
+    "document_id": "document-stage3-synthetic",
+    "generation_id": "generation-stage3-synthetic",
+    "expected_blocks": [
+      {"block_id": "block-stage3-001", "text_length": 20},
+      {"block_id": "block-stage3-002", "text_length": 23},
+      {"block_id": "block-stage3-003", "text_length": 28},
+      {"block_id": "block-stage3-004", "text_length": 39}
+    ],
+    "expected_section_ids": [
+      "section-stage3-001",
+      "section-stage3-002",
+      "section-stage3-003",
+      "section-stage3-004"
+    ],
+    "windows": [
+      {
+        "window_id": "window-stage3-001",
+        "sequence_no": 1,
+        "section_ids": ["section-stage3-001"],
+        "heading_path": ["第一条 服务交付"],
+        "clause_nos": ["第一条"],
+        "primary_block_ids": ["block-stage3-001"],
+        "estimated_tokens": 32,
+        "source_text": "乙方应于合同生效后十日内向甲方交付系统。",
+        "context_text": "甲方为采购方，乙方为服务方。",
+        "offset_map": [
+          {
+            "rendered_start": 0,
+            "rendered_end": 20,
+            "block_id": "block-stage3-001",
+            "block_no": 1,
+            "block_char_start": 0,
+            "block_char_end": 20,
+            "page_number": 1
+          }
+        ]
+      },
+      {
+        "window_id": "window-stage3-002",
+        "sequence_no": 2,
+        "section_ids": ["section-stage3-002"],
+        "heading_path": ["第二条 付款"],
+        "clause_nos": ["第二条"],
+        "primary_block_ids": ["block-stage3-002"],
+        "estimated_tokens": 36,
+        "source_text": "甲方应在验收合格后十个工作日内支付全部服务费。",
+        "context_text": "甲方为采购方，乙方为服务方。",
+        "offset_map": [
+          {
+            "rendered_start": 0,
+            "rendered_end": 23,
+            "block_id": "block-stage3-002",
+            "block_no": 2,
+            "block_char_start": 0,
+            "block_char_end": 23,
+            "page_number": 1
+          }
+        ]
+      },
+      {
+        "window_id": "window-stage3-003",
+        "sequence_no": 3,
+        "section_ids": ["section-stage3-003"],
+        "heading_path": ["第三条 验收与责任"],
+        "clause_nos": ["第三条"],
+        "primary_block_ids": ["block-stage3-003"],
+        "estimated_tokens": 42,
+        "source_text": "甲方应在收到交付物后五日内验收，乙方对质量缺陷负责修复。",
+        "context_text": "甲方为采购方，乙方为服务方。",
+        "offset_map": [
+          {
+            "rendered_start": 0,
+            "rendered_end": 28,
+            "block_id": "block-stage3-003",
+            "block_no": 3,
+            "block_char_start": 0,
+            "block_char_end": 28,
+            "page_number": 1
+          }
+        ]
+      },
+      {
+        "window_id": "window-stage3-004",
+        "sequence_no": 4,
+        "section_ids": ["section-stage3-004"],
+        "heading_path": ["第四条 解除与争议"],
+        "clause_nos": ["第四条"],
+        "primary_block_ids": ["block-stage3-004"],
+        "estimated_tokens": 52,
+        "source_text": "一方严重违约且十五日内未改正的，另一方可以解除合同；争议由甲方所在地法院管辖。",
+        "context_text": "甲方为采购方，乙方为服务方。",
+        "offset_map": [
+          {
+            "rendered_start": 0,
+            "rendered_end": 39,
+            "block_id": "block-stage3-004",
+            "block_no": 4,
+            "block_char_start": 0,
+            "block_char_end": 39,
+            "page_number": 1
+          }
+        ]
+      }
+    ],
+    "concurrency": 3
+  }
+}
