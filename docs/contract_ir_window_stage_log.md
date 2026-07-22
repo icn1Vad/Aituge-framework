@@ -42,14 +42,16 @@
 
 ## 阶段 3：并发、IR映射、合并、Coverage和局部重试
 
-- 状态：未开始
-- 开始前设计复读：未完成
-- 代码提交：
-- 自动测试：
-- 独立容器验收：
-- 测试页面验收：
-- 测试 Artifact：
-- 遗留问题：
+- 状态：通过
+- 开始前设计复读：已完整复读本设计、阶段记录以及联合冻结稿第 14～20、33～39 节；确认本阶段只建设 Window 内部编排，不切换正式 `extract_contract_ir` Stage，不修改 Java–Python API、状态机、Attempt、回调和 `schema_version=1.0`
+- 实现：滚动 Worker 并发固定为 3；单 Window 最多执行两次；Schema、JSON、Alignment、执行异常及关键条款可疑空结果只重试当前 Window；二次失败则整个 Pipeline 失败且不返回残缺 IR；按 Block 字符区间验证 Primary Source、Section 和 Window 覆盖；将逐字 Extraction 确定性映射到现有 `ContractIrSemanticDelta`；生成 Source-grounded `anchor_id`、`item_id`、原文 Hash 和技术溯源字段；按 Window、字符位置、类别和稳定 Hash 排序；同类别、同逐字原文、同 Anchor 确定性去重；测试 API 和页面增加全 Window 并发抽取、逐 Window 耗时、重试、Coverage 和合并 IR 展示
+- Prompt 补强：真实模型首轮把付款、交付和验收只归为 `OBLIGATION`，因此明确冻结“类别不互斥、不得用 OBLIGATION 代替专属类别”；修正后同一逐字原文可同时生成 `OBLIGATION + PAYMENT/DELIVERY/ACCEPTANCE`，并继续由逐 Extraction 精确对齐支持共享 Anchor
+- 代码提交：`b187882 功能：实现合同IR窗口并发映射与合并`
+- 自动测试：阶段三相关测试 `14 passed`；测试页面及 Window 构建测试 `9 passed`；Framework 全量回归 `154 passed, 2 deselected`，两项排除仍为一次性测试容器未接入 Smoke 服务与 Redis；Contract Python 全量 `102 passed, 10 skipped`；`git diff --check` 通过
+- 独立容器验收：继续复用 `contract-ir-window-stage1-ui` 和服务器本机 `127.0.0.1:19310`，未新增测试前端；页面镜像升级为 `contract-ir-window-stage3-contract:test`；模型助手继续复用 `contract-ir-window-stage2-framework` 和 `127.0.0.1:19320`，只读挂载隔离源码及模型配置；正式容器和正式环境未修改
+- 测试页面验收：页面已出现“并发 3 抽取全部 Window 并合并 IR”；四个无敏感信息的合成 Window 使用真实 `deepseek-v4-pro` 完成抽取，总耗时 39563 ms，单 Window 耗时分别为 16444、10162、19348、29383 ms；滚动并发使总耗时显著小于四项串行总和；模型调用 4 次、局部重试 0 次、4/4 Window、4/4 Section、4/4 Block 覆盖通过；合并后得到 12 项，覆盖 DELIVERY、OBLIGATION、PAYMENT、ACCEPTANCE、DATE、LIABILITY、RIGHT、TERMINATION、DISPUTE，全部精确映射回 Block `[char_start,char_end)`
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage3-synthetic-window-pipeline.json`；重复真实模型实验为 `stage3-synthetic-window-pipeline-repeat.json`
+- 遗留问题：确定性 Mapper 对完全相同的已对齐模型输出会生成相同 IR Hash，且同类别、同原文、同 Anchor 的技术 `item_id` 不受模型 predicate/object 措辞影响；但两次真实模型调用仍会在谓词措辞、DATE/RIGHT 分类和 Extraction 边界上产生变化，因此完整 `semantic_ir_hash` 不保证跨独立模型调用一致。该质量问题必须在阶段四 Shadow Compare 中量化并决定采用更严格分类规范、结果缓存或其他稳定化措施，不能通过隐藏式语义规则伪造一致。真实用户合同仍只用于本地 Parser/Window 覆盖，没有发送给外部模型
 
 ## 阶段 4：Legacy/Window Shadow Compare
 

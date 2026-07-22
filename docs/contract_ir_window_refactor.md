@@ -228,7 +228,7 @@ CONTRACT_IR_ENGINE=window
 
 - [x] 阶段 1：Section Unit、Window Builder、Offset Map；
 - [x] 阶段 2：Framework 模型链路、LangExtract 解析和单 Window 对齐；
-- [ ] 阶段 3：并发 3、IR Mapper、合并、Coverage、局部重试；
+- [x] 阶段 3：并发 3、IR Mapper、合并、Coverage、局部重试；
 - [ ] 阶段 4：Legacy/Window Shadow Compare；
 - [ ] 阶段 5：独立测试环境完整 Finding/Evidence 回归。
 
