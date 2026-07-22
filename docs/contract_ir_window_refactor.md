@@ -223,6 +223,8 @@ CONTRACT_IR_ENGINE=window
 - 触发完整测试审查并查看阶段耗时、Token、重试和错误；
 - 对比 Legacy 与 Window IR。
 
+其中主体信息复用正式 `resolve_parties` Artifact 的类型化投影，并且只能作为 `context_only` 注入；`our_party`、`counterparty` 由所选立场确定性计算。主体上下文不得进入 `source_text`、Offset Map、Extraction 原文或 Evidence。
+
 该页面只能调用测试环境接口，不保存用户正式业务数据，不暴露密钥和完整 Prompt。
 
 ## 11. 阶段门禁
@@ -243,6 +245,7 @@ CONTRACT_IR_ENGINE=window
 - [x] 阶段 1：Section Unit、Window Builder、Offset Map；
 - [x] 阶段 2：Framework 模型链路、LangExtract 解析和单 Window 对齐；
 - [x] 阶段 3：并发调度（当前上限 10）、IR Mapper、合并、Coverage、局部重试；
+- [x] 阶段 3.4：测试旁路主体上下文接线与溯源隔离；
 - [ ] 阶段 4：Legacy/Window Shadow Compare；
 - [ ] 阶段 5：独立测试环境完整 Finding/Evidence 回归。
 

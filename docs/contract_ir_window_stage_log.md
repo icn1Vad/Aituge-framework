@@ -95,6 +95,20 @@
 - 代码提交：`功能：规范化合同日期金额值关系`
 - 遗留边界：内部规范化只保证值实体结构完整和真实溯源，不替代后续跨 Window 关系判断；歧义/未绑定计数将在阶段 4 Shadow Compare 中继续量化
 
+### 阶段 3.4：主体上下文接线
+
+- 状态：已完成
+- 目的：补齐测试旁路与正式链路之间的主体上下文差异；正式链路原有 `resolve_parties` 不变，本阶段只把它的类型化投影注入 Window 的 `context_only`
+- 输入：`party_a_name`、`party_b_name`、`perspective`、`contract_type`、固定一期 `review_attitude=NEUTRAL`
+- 确定性派生：根据 `perspective` 计算 `our_party` 和 `counterparty`；甲乙方同名或空白由请求校验拒绝
+- 溯源边界：主体上下文只写 `context_text`，不写 `source_text` 和 Offset Map；Extractor、Alignment、Anchor 仍只能引用 `source_text`
+- 测试页面：增加甲方、乙方、立场和合同类型输入；单 Window 与全量抽取结果都显示已解析的主体上下文
+- 针对性测试：Framework Window `31 passed`；Contract 测试页面 `3 passed`
+- 真实模型验收：复用 12 个无敏感合成 Window，真实模型、并发 10；总耗时 `5814 ms`，模型调用 `12` 次，局部重试 `0`，Coverage `12/12`；注入的“甲方测试单位/乙方测试单位”在所有证据 `quoted_text` 中出现 `0` 次
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage4a-party-context-response.json`
+- 影响范围：只修改功能分支和 `contract-ir-window-*` 隔离容器；未修改正式 Pipeline、公开 DTO、OpenAPI、数据库或正式容器
+- 代码提交：`功能：为合同Window注入主体上下文`
+
 ## 阶段 4：Legacy/Window Shadow Compare
 
 - 状态：未开始

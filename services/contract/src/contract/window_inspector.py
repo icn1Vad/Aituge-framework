@@ -100,6 +100,24 @@ class InspectionView(StrictView):
     windows: list[WindowView]
 
 
+class PartyContextView(StrictView):
+    party_a_name: str
+    party_b_name: str
+    perspective: str
+    contract_type: str = "AUTO"
+    review_attitude: str = "NEUTRAL"
+
+
+class ExtractWindowView(StrictView):
+    window: WindowView
+    party_context: PartyContextView
+
+
+class ExtractAllView(StrictView):
+    inspection: InspectionView
+    party_context: PartyContextView
+
+
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 def index() -> HTMLResponse:
     return HTMLResponse(_STATIC_FILE.read_text(encoding="utf-8"))
@@ -162,17 +180,18 @@ async def inspect_contract(file: UploadFile = File(...)) -> InspectionView:
 
 
 @app.post("/api/extract-window")
-async def extract_window(window: WindowView):
+async def extract_window(request: ExtractWindowView):
     extractor_url = os.getenv("CONTRACT_WINDOW_EXTRACTOR_URL", "").rstrip("/")
     if not extractor_url:
         raise HTTPException(status_code=503, detail="窗口抽取测试服务尚未配置")
     payload = {
         "window": {
-            "window_id": window.window_id,
-            "source_text": window.source_text,
-            "context_text": window.context_text,
-            "offset_map": [item.model_dump() for item in window.offset_map],
-        }
+            "window_id": request.window.window_id,
+            "source_text": request.window.source_text,
+            "context_text": request.window.context_text,
+            "offset_map": [item.model_dump() for item in request.window.offset_map],
+        },
+        "party_context": request.party_context.model_dump(),
     }
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
@@ -187,19 +206,20 @@ async def extract_window(window: WindowView):
 
 
 @app.post("/api/extract-all")
-async def extract_all(inspection: InspectionView):
+async def extract_all(request: ExtractAllView):
     extractor_url = os.getenv("CONTRACT_WINDOW_EXTRACTOR_URL", "").rstrip("/")
     if not extractor_url:
         raise HTTPException(status_code=503, detail="窗口抽取测试服务尚未配置")
     payload = {
         "pipeline": {
-            "document_id": inspection.document_id,
-            "generation_id": inspection.generation_id,
-            "expected_blocks": [item.model_dump() for item in inspection.expected_blocks],
-            "expected_section_ids": [item.section_id for item in inspection.sections],
-            "windows": [item.model_dump() for item in inspection.windows],
+            "document_id": request.inspection.document_id,
+            "generation_id": request.inspection.generation_id,
+            "expected_blocks": [item.model_dump() for item in request.inspection.expected_blocks],
+            "expected_section_ids": [item.section_id for item in request.inspection.sections],
+            "windows": [item.model_dump() for item in request.inspection.windows],
             "concurrency": 10,
-        }
+        },
+        "party_context": request.party_context.model_dump(),
     }
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(900.0, connect=10.0)) as client:

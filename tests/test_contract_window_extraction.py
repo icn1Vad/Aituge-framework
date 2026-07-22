@@ -96,6 +96,16 @@ def _single_block_request(source_text: str) -> WindowExtractionRequest:
     )
 
 
+def _party_context() -> dict[str, str]:
+    return {
+        "party_a_name": "甲方测试单位",
+        "party_b_name": "乙方测试单位",
+        "perspective": "PARTY_A",
+        "contract_type": "AUTO",
+        "review_attitude": "NEUTRAL",
+    }
+
+
 def _model_output(extraction_text: str = "乙方应在十日内交付成果") -> str:
     return json.dumps(
         {
@@ -579,13 +589,23 @@ def test_window_extractor_test_api_uses_configured_model(monkeypatch) -> None:
     with TestClient(create_app(engine)) as client:
         response = client.post(
             "/api/extract-window",
-            json={"window": _request().model_dump()},
+            json={
+                "window": _request().model_dump(),
+                "party_context": _party_context(),
+            },
         )
 
     assert response.status_code == 200
     assert response.json()["result"]["window_id"] == "window-001"
     assert engine.calls[0]["tenant_id"] == "tenant-001"
     assert engine.calls[0]["model_id"] == "contract-model"
+    assert response.json()["party_context"]["our_party"] == "甲方测试单位"
+    assert response.json()["party_context"]["counterparty"] == "乙方测试单位"
+    sent_window = engine.calls[0]["window"]
+    assert "PARTY_A_NAME=甲方测试单位" in sent_window.context_text
+    assert "OUR_PARTY=甲方测试单位" in sent_window.context_text
+    assert "甲方测试单位" not in sent_window.source_text
+    assert sent_window.offset_map == _request().offset_map
 
 
 def test_window_pipeline_test_api_returns_typed_merged_result(monkeypatch) -> None:
@@ -625,11 +645,32 @@ def test_window_pipeline_test_api_returns_typed_merged_result(monkeypatch) -> No
     }
 
     with TestClient(create_app(engine)) as client:
-        response = client.post("/api/extract-all", json={"pipeline": pipeline})
+        response = client.post(
+            "/api/extract-all",
+            json={"pipeline": pipeline, "party_context": _party_context()},
+        )
 
     assert response.status_code == 200
     body = response.json()
     assert body["coverage"]["valid"] is True
     assert body["concurrency"] == 10
     assert body["semantic_ir"]["obligations"] == []
+    assert body["party_context"]["perspective"] == "PARTY_A"
+    assert body["party_context"]["our_party"] == "甲方测试单位"
     assert engine.calls[0]["retry_feedback"] is None
+    assert "COUNTERPARTY=乙方测试单位" in engine.calls[0]["window"].context_text
+    assert engine.calls[0]["window"].source_text == text
+
+
+def test_window_extractor_test_api_rejects_identical_parties(monkeypatch) -> None:
+    monkeypatch.setenv("CONTRACT_MODEL_ID", "contract-model")
+    context = _party_context()
+    context["party_b_name"] = context["party_a_name"]
+
+    with TestClient(create_app(FakeEngine())) as client:
+        response = client.post(
+            "/api/extract-window",
+            json={"window": _request().model_dump(), "party_context": context},
+        )
+
+    assert response.status_code == 422

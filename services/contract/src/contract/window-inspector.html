@@ -13,7 +13,10 @@
     .hint { color:#99a8c7; margin-bottom:22px; }
     .panel { background:#131b30; border:1px solid #273454; border-radius:14px; padding:18px; margin-bottom:18px; }
     .upload { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
-    input, button { border-radius:9px; border:1px solid #34456e; padding:10px 13px; background:#0d1528; color:#e8eefc; }
+    input, select, button { border-radius:9px; border:1px solid #34456e; padding:10px 13px; background:#0d1528; color:#e8eefc; }
+    .party-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; }
+    .party-grid label { color:#99a8c7; font-size:12px; }
+    .party-grid input, .party-grid select { display:block; width:100%; margin-top:6px; }
     button { background:#2867e8; border-color:#2867e8; cursor:pointer; font-weight:650; }
     button:disabled { opacity:.55; cursor:wait; }
     .error { color:#ff9eaa; white-space:pre-wrap; }
@@ -45,6 +48,15 @@
     <button id="run">解析并构建 Window</button>
     <span id="state" class="hint"></span>
   </section>
+  <section class="panel">
+    <div class="hint">模拟正式链路已有的 resolve_parties 结果；仅作为模型理解上下文，不会写入 extraction_text、原文 Anchor 或 Evidence。</div>
+    <div class="party-grid">
+      <label>甲方名称<input id="party-a-name" type="text" placeholder="请输入合同中的甲方名称"></label>
+      <label>乙方名称<input id="party-b-name" type="text" placeholder="请输入合同中的乙方名称"></label>
+      <label>审查立场<select id="perspective"><option value="PARTY_A">我方是甲方</option><option value="PARTY_B">我方是乙方</option></select></label>
+      <label>合同类型<input id="contract-type" type="text" value="AUTO"></label>
+    </div>
+  </section>
   <div id="error" class="panel error" hidden></div>
   <section id="result" hidden>
     <div id="metrics" class="panel metrics"></div>
@@ -73,6 +85,20 @@
   let inspection = null;
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
+  function partyContext() {
+    const partyA = document.querySelector('#party-a-name').value.trim();
+    const partyB = document.querySelector('#party-b-name').value.trim();
+    if (!partyA || !partyB) throw new Error('请填写甲方名称和乙方名称。');
+    if (partyA === partyB) throw new Error('甲方名称和乙方名称不能相同。');
+    return {
+      party_a_name: partyA,
+      party_b_name: partyB,
+      perspective: document.querySelector('#perspective').value,
+      contract_type: document.querySelector('#contract-type').value.trim() || 'AUTO',
+      review_attitude: 'NEUTRAL'
+    };
+  }
+
   runButton.addEventListener('click', async () => {
     const file = fileInput.files[0];
     if (!file) { showError('请先选择 PDF 或 DOCX 合同。'); return; }
@@ -97,10 +123,12 @@
     if (!inspection) return;
     const stateBox = document.querySelector('#extract-all-state');
     const outputBox = document.querySelector('#extract-all-result');
+    let context;
+    try { context = partyContext(); } catch (error) { showError(error.message); return; }
     extractAllButton.disabled = true; stateBox.textContent = ' 全量抽取中…'; outputBox.hidden = true;
     try {
       const response = await fetch('/api/extract-all', {
-        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(inspection)
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({inspection, party_context:context})
       });
       const body = await response.json();
       if (!response.ok) {
@@ -113,7 +141,9 @@
       const ambiguousValueCount = successfulAttempts.reduce((sum, item) => sum + (item.ambiguous_value_count || 0), 0);
       const unboundValueCount = successfulAttempts.reduce((sum, item) => sum + (item.unbound_value_count || 0), 0);
       const windowRows = body.windows.map(item => `<div class="extraction"><b>Window ${item.sequence_no}</b> · ${item.status} · ${item.mapped_extractions.length} 项<div class="meta">${item.attempts.map(attempt => `第${attempt.attempt_no}次：${attempt.status} / ${attempt.duration_ms}ms / 值规范化 ${attempt.value_canonicalization_count || 0}（歧义 ${attempt.ambiguous_value_count || 0}，未绑定 ${attempt.unbound_value_count || 0}）`).join('；')}</div></div>`).join('');
-      outputBox.innerHTML = `<b>总耗时 ${escapeHtml(body.duration_ms)} ms；模型调用 ${escapeHtml(body.model_call_count)} 次；局部重试 ${escapeHtml(body.retry_count)} 次；IR Hash ${escapeHtml(body.semantic_ir_hash)}</b>` +
+      const party = body.party_context || {};
+      outputBox.innerHTML = `<div class="extraction"><b>主体上下文（context_only）</b><div class="meta">甲方：${escapeHtml(party.party_a_name)}<br>乙方：${escapeHtml(party.party_b_name)}<br>立场：${escapeHtml(party.perspective)}<br>我方：${escapeHtml(party.our_party)}<br>相对方：${escapeHtml(party.counterparty)}<br>合同类型：${escapeHtml(party.contract_type)}</div></div>` +
+        `<b>总耗时 ${escapeHtml(body.duration_ms)} ms；模型调用 ${escapeHtml(body.model_call_count)} 次；局部重试 ${escapeHtml(body.retry_count)} 次；IR Hash ${escapeHtml(body.semantic_ir_hash)}</b>` +
         `<div class="meta">Coverage：${body.coverage.valid ? '通过' : '失败'}；并发固定 10；处理 Window ${body.coverage.processed_window_count}/${body.coverage.expected_window_count}；值规范化 ${canonicalizationCount}（歧义 ${ambiguousValueCount}，未绑定 ${unboundValueCount}）</div>` +
         windowRows + `<details><summary>合并后的 Contract IR Delta</summary><pre>${escapeHtml(JSON.stringify(body.semantic_ir, null, 2))}</pre></details>` +
         `<details><summary>完整阶段三 JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
@@ -167,16 +197,20 @@
     if (!windowData) return;
     const stateBox = document.querySelector(`#extract-state-${index}`);
     const outputBox = document.querySelector(`#extract-result-${index}`);
+    let context;
+    try { context = partyContext(); } catch (error) { showError(error.message); return; }
     button.disabled = true; stateBox.textContent = ' 模型抽取中…'; outputBox.hidden = true;
     try {
       const response = await fetch('/api/extract-window', {
-        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(windowData)
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({window:windowData, party_context:context})
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body?.error?.message || body?.detail || JSON.stringify(body));
       const items = body.result.extractions;
       const canonicalizations = body.result.value_canonicalizations || [];
-      outputBox.innerHTML = `<b>耗时 ${escapeHtml(body.duration_ms)} ms，抽取 ${items.length} 项，值规范化 ${canonicalizations.length} 项</b>` +
+      const party = body.party_context || {};
+      outputBox.innerHTML = `<div class="meta">上下文：我方 ${escapeHtml(party.our_party)}；相对方 ${escapeHtml(party.counterparty)}；${escapeHtml(party.perspective)}</div>` +
+        `<b>耗时 ${escapeHtml(body.duration_ms)} ms，抽取 ${items.length} 项，值规范化 ${canonicalizations.length} 项</b>` +
         items.map(item => `<div class="extraction"><b>${escapeHtml(item.extraction_class)}</b> · ${escapeHtml(item.subject || '无主体')} · ${escapeHtml(item.predicate || item.term || '')}<br>${escapeHtml(item.extraction_text)}<div class="meta">Window字符：[${item.rendered_char_start}, ${item.rendered_char_end})<br>Block溯源：${escapeHtml(item.source_spans.map(span => `${span.block_id}[${span.block_char_start},${span.block_char_end})`).join('；'))}</div></div>`).join('') +
         (canonicalizations.length ? `<details><summary>DATE/AMOUNT 规范化记录</summary><pre>${escapeHtml(JSON.stringify(canonicalizations, null, 2))}</pre></details>` : '') +
         `<details><summary>完整抽取 JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
