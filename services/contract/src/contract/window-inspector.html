@@ -28,6 +28,9 @@
     details { border:1px solid #2a385b; background:#0e172a; border-radius:10px; padding:12px; }
     summary { cursor:pointer; font-weight:650; }
     .meta { color:#9cadce; font-size:13px; margin:8px 0; word-break:break-all; }
+    .extract { margin:10px 0; }
+    .extract-result { border-left:3px solid #2867e8; margin-top:10px; padding-left:12px; }
+    .extraction { background:#111d35; border-radius:8px; padding:10px; margin:8px 0; }
     pre { white-space:pre-wrap; word-break:break-word; background:#080e1a; border-radius:8px; padding:12px; max-height:420px; overflow:auto; }
     code { color:#b9ccff; }
     [hidden] { display:none !important; }
@@ -36,7 +39,7 @@
 <body>
 <main>
   <h1>合同 IR Window 阶段验收</h1>
-  <div class="hint">阶段一只验证：文件解析 → Section 分层 → Window 构建 → 字符区间覆盖。这里不会调用模型，也不会写业务数据库。</div>
+  <div class="hint">阶段二验证：文件解析 → Section/Window → Framework 模型抽取 → LangExtract 精确对齐 → Block 字符区间。这里不会写业务数据库，也不会替换正式审查链路。</div>
   <section class="panel upload">
     <input id="file" type="file" accept=".pdf,.docx">
     <button id="run">解析并构建 Window</button>
@@ -61,6 +64,7 @@
   const state = document.querySelector('#state');
   const errorBox = document.querySelector('#error');
   const result = document.querySelector('#result');
+  let inspection = null;
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
   runButton.addEventListener('click', async () => {
@@ -85,6 +89,7 @@
 
   function showError(message) { errorBox.textContent = message; errorBox.hidden = false; }
   function render(data) {
+    inspection = data;
     result.hidden = false;
     const coverage = data.coverage;
     document.querySelector('#metrics').innerHTML = [
@@ -100,9 +105,36 @@
     document.querySelector('#windows').innerHTML = data.windows.map(window => `
       <details><summary>Window ${window.sequence_no} · ${window.estimated_tokens} tokens（估算） · ${window.primary_block_ids.length} Blocks</summary>
       <div class="meta">window_id: ${escapeHtml(window.window_id)}<br>clauses: ${escapeHtml(window.clause_nos.join(', ') || '无')}<br>sections: ${escapeHtml(window.section_ids.join(', '))}</div>
+      <button class="extract" data-window-index="${window.sequence_no - 1}">用真实模型抽取这个 Window</button>
+      <span class="hint" id="extract-state-${window.sequence_no - 1}"></span>
+      <div class="extract-result" id="extract-result-${window.sequence_no - 1}" hidden></div>
       <pre>${escapeHtml(window.source_text)}</pre>
       <details><summary>Offset Map（${window.offset_map.length}）</summary><pre>${escapeHtml(JSON.stringify(window.offset_map, null, 2))}</pre></details></details>`).join('');
+    document.querySelectorAll('[data-window-index]').forEach(button => button.addEventListener('click', () => extractWindow(Number(button.dataset.windowIndex), button)));
     document.querySelector('#raw').textContent = JSON.stringify(data, null, 2);
+  }
+
+  async function extractWindow(index, button) {
+    const windowData = inspection?.windows?.[index];
+    if (!windowData) return;
+    const stateBox = document.querySelector(`#extract-state-${index}`);
+    const outputBox = document.querySelector(`#extract-result-${index}`);
+    button.disabled = true; stateBox.textContent = ' 模型抽取中…'; outputBox.hidden = true;
+    try {
+      const response = await fetch('/api/extract-window', {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(windowData)
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.error?.message || body?.detail || JSON.stringify(body));
+      const items = body.result.extractions;
+      outputBox.innerHTML = `<b>耗时 ${escapeHtml(body.duration_ms)} ms，抽取 ${items.length} 项</b>` +
+        items.map(item => `<div class="extraction"><b>${escapeHtml(item.extraction_class)}</b> · ${escapeHtml(item.subject || '无主体')} · ${escapeHtml(item.predicate || item.term || '')}<br>${escapeHtml(item.extraction_text)}<div class="meta">Window字符：[${item.rendered_char_start}, ${item.rendered_char_end})<br>Block溯源：${escapeHtml(item.source_spans.map(span => `${span.block_id}[${span.block_char_start},${span.block_char_end})`).join('；'))}</div></div>`).join('') +
+        `<details><summary>完整抽取 JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
+      outputBox.hidden = false; stateBox.textContent = ' 完成';
+    } catch (error) {
+      outputBox.innerHTML = `<span class="error">${escapeHtml(error.message)}</span>`;
+      outputBox.hidden = false; stateBox.textContent = ' 失败';
+    } finally { button.disabled = false; }
   }
 </script>
 </body>

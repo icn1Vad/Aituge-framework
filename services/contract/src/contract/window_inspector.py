@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import tempfile
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from contract.errors import ContractError
@@ -63,6 +65,7 @@ class WindowView(StrictView):
     primary_block_ids: list[str]
     estimated_tokens: int
     source_text: str
+    context_text: str
     offset_map: list[OffsetView]
 
 
@@ -142,6 +145,31 @@ async def inspect_contract(file: UploadFile = File(...)) -> InspectionView:
     )
 
 
+@app.post("/api/extract-window")
+async def extract_window(window: WindowView):
+    extractor_url = os.getenv("CONTRACT_WINDOW_EXTRACTOR_URL", "").rstrip("/")
+    if not extractor_url:
+        raise HTTPException(status_code=503, detail="窗口抽取测试服务尚未配置")
+    payload = {
+        "window": {
+            "window_id": window.window_id,
+            "source_text": window.source_text,
+            "context_text": window.context_text,
+            "offset_map": [item.model_dump() for item in window.offset_map],
+        }
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
+            response = await client.post(f"{extractor_url}/api/extract-window", json=payload)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"窗口抽取测试服务不可用：{exc}") from exc
+    try:
+        content = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="窗口抽取测试服务返回了非 JSON 响应") from exc
+    return JSONResponse(status_code=response.status_code, content=content)
+
+
 def _coverage_view(report: CoverageReport) -> CoverageView:
     return CoverageView(
         valid=report.valid,
@@ -177,5 +205,6 @@ def _window_view(window: SectionWindow) -> WindowView:
         primary_block_ids=list(window.primary_block_ids),
         estimated_tokens=window.estimated_tokens,
         source_text=window.source_text,
+        context_text=window.context_text,
         offset_map=[OffsetView.model_validate(item, from_attributes=True) for item in window.offset_map],
     )
