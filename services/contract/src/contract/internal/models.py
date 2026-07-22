@@ -6,6 +6,7 @@ from pydantic import Field, JsonValue
 
 from contract.api.models import StrictModel
 from contract.ir.models import ContractIR
+from contract.risk.models import RiskReviewPlan
 
 
 class ContractDocumentToolRequest(StrictModel):
@@ -30,6 +31,14 @@ class ContractIrToolRequest(ContractDocumentToolRequest):
 
 class ContractWindowPlanToolRequest(ContractDocumentToolRequest):
     pass
+
+
+class ContractRiskPlanRequest(ContractDocumentToolRequest):
+    selected_playbook_ids: list[str] = Field(
+        default_factory=lambda: ["base_neutral"],
+        min_length=1,
+        max_length=20,
+    )
 
 
 class ContractDocumentToolData(StrictModel):
@@ -114,3 +123,6 @@ class ContractWindowPlanToolData(StrictModel):
     expected_section_ids: list[str] = Field(min_length=1, max_length=20000)
     windows: list[ContractWindowData] = Field(min_length=1, max_length=5000)
     concurrency: Literal[10] = 10
+
+
+ContractRiskPlanData = RiskReviewPlan

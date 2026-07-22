@@ -47,9 +47,11 @@ from contract.internal.models import (
     ContractDocumentToolRequest,
     ContractIrToolData,
     ContractIrToolRequest,
+    ContractRiskPlanRequest,
     ContractWindowPlanToolData,
     ContractWindowPlanToolRequest,
 )
+from contract.risk.models import RiskReviewPlan
 from contract.internal.service import ContractInternalService
 from contract.persistence.postgres.callback_repository import FrameworkCallbackRepository
 from contract.persistence.postgres.repository import ContractRepository
@@ -301,6 +303,27 @@ def create_app(
         request_id: Annotated[str, Depends(_framework_request_id)],
     ) -> SuccessResponse[ContractWindowPlanToolData]:
         data = await asyncio.to_thread(_internal_service(http_request).get_window_plan, payload)
+        return SuccessResponse(data=data, request_id=request_id)
+
+    @app.post(
+        "/v1/internal/contract-reviews/{review_id}/risk-plan",
+        response_model=SuccessResponse[RiskReviewPlan],
+        responses=ERROR_RESPONSES,
+        include_in_schema=False,
+    )
+    async def contract_get_risk_plan(
+        review_id: str,
+        payload: ContractRiskPlanRequest,
+        http_request: Request,
+        request_id: Annotated[str, Depends(_framework_request_id)],
+    ) -> SuccessResponse[RiskReviewPlan]:
+        if payload.review_id != review_id:
+            raise ContractError(
+                "FRAMEWORK_CALLBACK_MISMATCH",
+                "Risk plan review_id does not match the request path",
+                status_code=409,
+            )
+        data = await asyncio.to_thread(_internal_service(http_request).get_risk_plan, payload)
         return SuccessResponse(data=data, request_id=request_id)
 
     @app.get(

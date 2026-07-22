@@ -10,6 +10,7 @@ from contract.callback.models import (
     CommercialTermsStageResult,
     EvidenceCandidate,
     EvidenceVerificationStageResult,
+    ExtractContractIrStageResult,
     FindingConsolidationArtifact,
     FinalizeReviewStageResult,
     FrameworkTaskInput,
@@ -29,6 +30,7 @@ from contract.internal.models import (
     ContractBlocksToolRequest,
     ContractClauseContextToolData,
     ContractClauseContextToolRequest,
+    ContractRiskPlanRequest,
     ContractDocumentToolData,
     ContractDocumentToolRequest,
     ContractIrToolData,
@@ -39,6 +41,8 @@ from contract.internal.models import (
     ContractWindowPlanToolData,
     ContractWindowPlanToolRequest,
 )
+from contract.risk.models import RiskReviewPlan, RiskReviewPlanInput, RiskSourceBlock
+from contract.risk.plan_builder import RiskReviewPlanBuilder
 from contract.ir.windowing import build_section_units, build_section_windows, validate_window_coverage
 from contract.parser.models import ParsedContractBlock
 from contract.persistence.postgres.callback_repository import FrameworkCallbackRepository
@@ -60,9 +64,11 @@ class ContractInternalService:
         self,
         repository: ContractRepository,
         callback_repository: FrameworkCallbackRepository,
+        risk_plan_builder: RiskReviewPlanBuilder | None = None,
     ) -> None:
         self.repository = repository
         self.callback_repository = callback_repository
+        self.risk_plan_builder = risk_plan_builder or RiskReviewPlanBuilder()
 
     def execute_stage(self, request: StageExecuteRequest):
         context = self._execution_context(request)
@@ -233,6 +239,77 @@ class ContractInternalService:
                 )
                 for window in windows
             ],
+        )
+
+    def get_risk_plan(self, request: ContractRiskPlanRequest) -> RiskReviewPlan:
+        review = self._tool_context(request.review_id, request.document_id)
+        generation = self._generation(review)
+        if not isinstance(generation["contract_ir_json"], dict):
+            raise ContractError("RESULT_INVALID", "Contract IR is not available", status_code=422)
+        attempt_no = review.get("active_attempt_no")
+        if not isinstance(attempt_no, int):
+            raise ContractError("RESULT_INVALID", "Review Attempt is unavailable", status_code=422)
+        party_value = self.callback_repository.get_validated_stage_result(
+            review["id"],
+            attempt_no,
+            "resolve_parties",
+        )
+        if party_value is None:
+            raise ContractError(
+                "RESULT_INVALID",
+                "Validated party resolution is unavailable",
+                status_code=422,
+            )
+        party = PartyResolutionStageResult.model_validate(party_value)
+        full_ir = ContractIR.model_validate(copy.deepcopy(generation["contract_ir_json"]))
+        stage_result = ExtractContractIrStageResult(
+            result_type="CONTRACT_IR_STAGE_V1",
+            semantic_ir={
+                field: getattr(full_ir, field)
+                for field in (
+                    "definitions",
+                    "rights",
+                    "obligations",
+                    "prohibitions",
+                    "payment_terms",
+                    "delivery_terms",
+                    "acceptance_terms",
+                    "liabilities",
+                    "termination_terms",
+                    "confidentiality_terms",
+                    "intellectual_property_terms",
+                    "dispute_resolution",
+                    "dates",
+                    "amounts",
+                )
+            },
+        )
+        rows = self.repository.list_blocks(generation["id"], tenant_id=review["tenant_id"])
+        return self.risk_plan_builder.build(
+            RiskReviewPlanInput(
+                review_id=review["id"],
+                document_id=review["document_id"],
+                generation_id=generation["id"],
+                attempt_no=attempt_no,
+                perspective=party.perspective,
+                our_party=party.our_party,
+                counterparty=party.counterparty,
+                contract_type=party.contract_type,
+                review_attitude="NEUTRAL",
+                stage_result=stage_result,
+                source_blocks=[
+                    RiskSourceBlock(
+                        block_id=row["block_id"],
+                        block_no=row["block_no"],
+                        text=row["text"],
+                        page_number=row["page_number"],
+                        heading_path=list(row["heading_path"]),
+                    )
+                    for row in rows
+                    if row["block_type"] != "footer" and row["text"]
+                ],
+                selected_playbook_ids=request.selected_playbook_ids,
+            )
         )
 
     def validate_final_result(self, value: FinalizeReviewStageResult) -> ReviewResultData:

@@ -88,3 +88,9 @@ def test_framework_callback_openapi_exposes_both_discriminators() -> None:
     assert len(callback_schema["oneOf"]) == 3
     assert stage_result_schema["discriminator"]["propertyName"] == "result_type"
     assert len(stage_result_schema["oneOf"]) == 10
+
+
+def test_hidden_risk_plan_interface_does_not_change_frozen_openapi() -> None:
+    schema = create_app(Settings(internal_auth_enabled=False)).openapi()
+
+    assert "/v1/internal/contract-reviews/{review_id}/risk-plan" not in schema["paths"]

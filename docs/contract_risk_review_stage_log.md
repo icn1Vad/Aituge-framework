@@ -92,13 +92,53 @@
 
 ## 阶段 6.1：Playbook 与 PlanBuilder
 
-状态：待基线迁移文档提交后开始。
+状态：通过；已停止在阶段 6.1，不自动进入阶段 6.2。
 
 目标：实现固定模型、基础Manifest、Router、确定性PlanBuilder、Plan Hash、隐藏Plan接口、适用性和完整性门禁；不得新增模型调用。
 
 固定输入：服务器标准`CONTRACT_IR_STAGE_V1` Artifact、固定Risk Context和完整Window/Block/Anchor Fixture。直接生成Plan，不执行parse、主体解析、IR抽取、旧风险Agent、Tool或LLM。
 
 开始前：重新完整阅读联合冻结稿、`contract_risk_review_design.md`和本记录。
+
+### 已实现
+
+- 新增严格`PlaybookManifest`、`CheckSpec`、`RiskReviewPlan`、`ReviewUnitSpec`、`RiskReviewContext`及相关枚举和校验模型。
+- 固定45项一期检查及逐Finding兼容映射；检查编号和映射均唯一。
+- `FVA-005`是唯一允许映射为`OTHER`的检查，内部`risk_type`固定为`MANDATORY_RULE_OR_VALIDITY_RISK`；注册时不满足该条件直接失败。
+- 新增`PlaybookRegistry`和`PlaybookRouter`：基础包必选、重复/未知/停用/不适用包失败、Specialist最多2个、`EXTEND_DOMAIN`只能复用既有七个审查单元。
+- 新增确定性`RiskReviewPlanBuilder`：按检查所需IR类型投影、验证真实Block和Anchor、生成逐字Source Excerpt、Context Hash、Plan Hash和稳定ID。
+- 五个基础Unit固定存在；两个横向Unit由确定性候选驱动，没有候选时直接产生11项`REVIEWED/NO_DETERMINISTIC_CANDIDATES`，不生成模型Batch。
+- 模型预算投影使用Context内稳定短Evidence引用，Python保留并映射真实Anchor、Block、字符区间、原文和Hash；没有截断、删除或改变任何IR与Source Excerpt。
+- 超过硬预算时按`check_code`执行确定性最小Batch分组；排序规则依次为Batch数量、最大Batch Token和检查编号，输入相同则结果完全一致。
+- 新增隐藏Plan接口`POST /v1/internal/contract-reviews/{review_id}/risk-plan`；`include_in_schema=false`，固定公开OpenAPI未增加路径或Schema。
+- Fixture Loader仅位于测试目录，必须显式传入目录并核对三个固定SHA-256；生产代码没有默认Fixture路径或回退逻辑。
+- 没有引入依赖、数据库变更、Compose变更、模型客户端、HTTP调用、LLM调用或Tool调用；未修改Window、阶段5.1、Java、公开DTO和`schema_version=1.0`。
+
+### 固定Fixture结果
+
+- 输入：101项IR、93个Block、12个Window，固定`PARTY_A/NEUTRAL`上下文。
+- Plan ID：`risk-plan-a7b1227bd27984e4cf63ca2e433bf452`。
+- Plan Hash：`sha256:a7b1227bd27984e4cf63ca2e433bf452fef822601fb2f88dd6eb3891565b3eac`。
+- Review Unit：7个，其中5个基础Unit、2个横向Unit。
+- 检查：45项完整分配且无重复；无候选横向确定性结果11项。
+- 正常模型Batch计划：7个；横向无候选模型调用：0；Specialist：0。
+- Batch Token估算：基础Unit全部不超过6,000硬限制；实际范围3,984～5,826。
+- 每个模型Context投影均少于完整101项IR；Anchor逐字回查全部通过。
+- 相同输入连续100次得到完全相同Plan；PlanBuilder P95=`334.801ms`，低于1秒门禁。
+
+### 服务器隔离验证
+
+- 测试只在服务器隔离源码目录和已有Python测试镜像执行，没有覆盖`python-source`、`python-ir-window-source`或运行中的正式/联调容器。
+- 固定Fixture以只读Volume挂载；没有下载到本地，没有改动、覆盖或重新生成。
+- 未重新运行parse、resolve_parties、Window IR抽取或旧风险Agent；外部模型调用为0。
+- 针对性Plan/API/OpenAPI测试：34项通过（中间门禁）。
+- 最终Contract Python全量测试：`117 passed, 10 skipped`。
+- 固定运行时OpenAPI与冻结文件一致；隐藏Plan接口明确不出现在公开OpenAPI。
+- `git diff --check`通过；阶段6.1代码中不存在模型Runtime、OpenAI、HTTP客户端或`.complete()`调用。
+
+### 阶段结论
+
+阶段6.1门禁全部通过。当前只提交并推送功能分支，不合并`main/proof`，不部署测试或正式运行容器；后续阶段6.2必须在重新阅读联合冻结稿、设计稿和本记录并获得下一步指令后开始。
 
 ## 阶段 6.2：LlmRuntime 可观测结果
 

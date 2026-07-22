@@ -9,6 +9,9 @@ from contract.api.app import create_app
 from contract.callback.models import FrameworkCallbackData
 from contract.config import Settings
 from contract.internal.models import ContractDocumentToolData, ContractWindowPlanToolData
+from contract.risk.plan_builder import RiskReviewPlanBuilder
+
+from risk_test_data import risk_plan_input
 
 
 TOKEN = "contract-test-token"
@@ -262,6 +265,12 @@ def test_framework_tool_endpoint_uses_callback_credential_and_typed_response() -
                 ],
             )
 
+        def get_risk_plan(self, payload):
+            assert payload.review_id == "review-1"
+            assert payload.document_id == "document-1"
+            assert payload.selected_playbook_ids == ["base_neutral"]
+            return RiskReviewPlanBuilder().build(risk_plan_input())
+
     client = TestClient(
         create_app(
             Settings(
@@ -296,6 +305,11 @@ def test_framework_tool_endpoint_uses_callback_credential_and_typed_response() -
         headers=headers,
         json=payload,
     )
+    risk_plan = client.post(
+        "/v1/internal/contract-reviews/review-1/risk-plan",
+        headers=headers,
+        json={**payload, "selected_playbook_ids": ["base_neutral"]},
+    )
 
     assert accepted.status_code == 200
     assert accepted.json()["data"]["generation_status"] == "RUNNING"
@@ -305,6 +319,9 @@ def test_framework_tool_endpoint_uses_callback_credential_and_typed_response() -
     assert windows.status_code == 200
     assert windows.json()["data"]["concurrency"] == 10
     assert windows.json()["data"]["windows"][0]["primary_block_ids"] == ["block-1"]
+    assert risk_plan.status_code == 200
+    assert risk_plan.json()["data"]["plan_version"] == "1.0"
+    assert len(risk_plan.json()["data"]["review_units"]) == 7
 
 
 def test_create_status_result_not_ready_and_cancel_flow() -> None:
