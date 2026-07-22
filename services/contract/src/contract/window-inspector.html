@@ -39,7 +39,7 @@
 <body>
 <main>
   <h1>合同 IR Window 阶段验收</h1>
-  <div class="hint">阶段三验证：文件解析 → Section/Window → 并发 10 抽取 → 确定性字面对齐 → IR Mapper → 确定性合并与 Coverage。这里不会写业务数据库，也不会替换正式审查链路。</div>
+  <div class="hint">阶段 3.3 验证：文件解析 → Section/Window → 并发 10 抽取 → 确定性字面对齐 → DATE/AMOUNT 规范化 → IR Mapper → 确定性合并与 Coverage。这里不会写业务数据库，也不会替换正式审查链路。</div>
   <section class="panel upload">
     <input id="file" type="file" accept=".pdf,.docx">
     <button id="run">解析并构建 Window</button>
@@ -108,9 +108,13 @@
         outputBox.hidden = false; stateBox.textContent = ' 失败';
         return;
       }
-      const windowRows = body.windows.map(item => `<div class="extraction"><b>Window ${item.sequence_no}</b> · ${item.status} · ${item.mapped_extractions.length} 项<div class="meta">${item.attempts.map(attempt => `第${attempt.attempt_no}次：${attempt.status} / ${attempt.duration_ms}ms`).join('；')}</div></div>`).join('');
+      const successfulAttempts = body.windows.flatMap(item => item.attempts).filter(item => item.status === 'SUCCEEDED');
+      const canonicalizationCount = successfulAttempts.reduce((sum, item) => sum + (item.value_canonicalization_count || 0), 0);
+      const ambiguousValueCount = successfulAttempts.reduce((sum, item) => sum + (item.ambiguous_value_count || 0), 0);
+      const unboundValueCount = successfulAttempts.reduce((sum, item) => sum + (item.unbound_value_count || 0), 0);
+      const windowRows = body.windows.map(item => `<div class="extraction"><b>Window ${item.sequence_no}</b> · ${item.status} · ${item.mapped_extractions.length} 项<div class="meta">${item.attempts.map(attempt => `第${attempt.attempt_no}次：${attempt.status} / ${attempt.duration_ms}ms / 值规范化 ${attempt.value_canonicalization_count || 0}（歧义 ${attempt.ambiguous_value_count || 0}，未绑定 ${attempt.unbound_value_count || 0}）`).join('；')}</div></div>`).join('');
       outputBox.innerHTML = `<b>总耗时 ${escapeHtml(body.duration_ms)} ms；模型调用 ${escapeHtml(body.model_call_count)} 次；局部重试 ${escapeHtml(body.retry_count)} 次；IR Hash ${escapeHtml(body.semantic_ir_hash)}</b>` +
-        `<div class="meta">Coverage：${body.coverage.valid ? '通过' : '失败'}；并发固定 10；处理 Window ${body.coverage.processed_window_count}/${body.coverage.expected_window_count}</div>` +
+        `<div class="meta">Coverage：${body.coverage.valid ? '通过' : '失败'}；并发固定 10；处理 Window ${body.coverage.processed_window_count}/${body.coverage.expected_window_count}；值规范化 ${canonicalizationCount}（歧义 ${ambiguousValueCount}，未绑定 ${unboundValueCount}）</div>` +
         windowRows + `<details><summary>合并后的 Contract IR Delta</summary><pre>${escapeHtml(JSON.stringify(body.semantic_ir, null, 2))}</pre></details>` +
         `<details><summary>完整阶段三 JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
       outputBox.hidden = false; stateBox.textContent = ' 完成';
@@ -171,8 +175,10 @@
       const body = await response.json();
       if (!response.ok) throw new Error(body?.error?.message || body?.detail || JSON.stringify(body));
       const items = body.result.extractions;
-      outputBox.innerHTML = `<b>耗时 ${escapeHtml(body.duration_ms)} ms，抽取 ${items.length} 项</b>` +
+      const canonicalizations = body.result.value_canonicalizations || [];
+      outputBox.innerHTML = `<b>耗时 ${escapeHtml(body.duration_ms)} ms，抽取 ${items.length} 项，值规范化 ${canonicalizations.length} 项</b>` +
         items.map(item => `<div class="extraction"><b>${escapeHtml(item.extraction_class)}</b> · ${escapeHtml(item.subject || '无主体')} · ${escapeHtml(item.predicate || item.term || '')}<br>${escapeHtml(item.extraction_text)}<div class="meta">Window字符：[${item.rendered_char_start}, ${item.rendered_char_end})<br>Block溯源：${escapeHtml(item.source_spans.map(span => `${span.block_id}[${span.block_char_start},${span.block_char_end})`).join('；'))}</div></div>`).join('') +
+        (canonicalizations.length ? `<details><summary>DATE/AMOUNT 规范化记录</summary><pre>${escapeHtml(JSON.stringify(canonicalizations, null, 2))}</pre></details>` : '') +
         `<details><summary>完整抽取 JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
       outputBox.hidden = false; stateBox.textContent = ' 完成';
     } catch (error) {

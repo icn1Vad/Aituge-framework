@@ -176,6 +176,9 @@ class WindowAttempt(StrictModel):
     duration_ms: int = Field(ge=0)
     status: Literal["SUCCEEDED", "FAILED", "SUSPICIOUS_EMPTY"]
     extraction_count: int = Field(ge=0)
+    value_canonicalization_count: int = Field(default=0, ge=0)
+    ambiguous_value_count: int = Field(default=0, ge=0)
+    unbound_value_count: int = Field(default=0, ge=0)
     error_code: str | None = None
     error_message: str | None = None
 
@@ -368,6 +371,17 @@ class ContractIrWindowPipeline:
                         duration_ms=duration_ms,
                         status="SUCCEEDED",
                         extraction_count=len(mapped),
+                        value_canonicalization_count=len(
+                            extracted.value_canonicalizations
+                        ),
+                        ambiguous_value_count=sum(
+                            item.binding_status == "AMBIGUOUS"
+                            for item in extracted.value_canonicalizations
+                        ),
+                        unbound_value_count=sum(
+                            item.binding_status == "UNBOUND"
+                            for item in extracted.value_canonicalizations
+                        ),
                     )
                 )
                 return WindowRunResult(

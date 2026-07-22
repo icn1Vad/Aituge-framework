@@ -45,7 +45,9 @@ context_only 只用于理解主体和标题，不得作为 extraction_text。
 只输出一个 JSON 对象，不输出推理过程、解释、Markdown 或代码围栏。
 JSON 顶层只能包含 extractions。每项只能包含：extraction_class、extraction_text、
 subject、predicate、object、term、meaning、referenced_clause_nos。
-DEFINITION 必须填写 term 和 meaning；其他类别必须填写 predicate。未知的可选字段使用 null。
+DEFINITION 必须填写 term 和 meaning；其他类别必须填写 predicate。DATE 和 AMOUNT 是值实体：
+subject 填被该值约束的事项，predicate 填该值与事项的关系，object 填逐字原文值。
+未知的可选字段使用 null。
 类别只允许：DEFINITION、RIGHT、OBLIGATION、PROHIBITION、PAYMENT、DELIVERY、
 ACCEPTANCE、LIABILITY、TERMINATION、CONFIDENTIALITY、INTELLECTUAL_PROPERTY、
 DISPUTE、DATE、AMOUNT。"""
@@ -114,7 +116,7 @@ class ModelExtraction(StrictModel):
         if self.extraction_class == "DEFINITION":
             if not self.term or not self.meaning:
                 raise ValueError("DEFINITION requires term and meaning")
-        elif not self.predicate:
+        elif self.extraction_class not in {"DATE", "AMOUNT"} and not self.predicate:
             raise ValueError(f"{self.extraction_class} requires predicate")
         return self
 
@@ -138,12 +140,27 @@ class AlignedExtraction(ModelExtraction):
     source_spans: list[SourceSpan] = Field(min_length=1)
 
 
+class ValueCanonicalization(StrictModel):
+    extraction_class: Literal["DATE", "AMOUNT"]
+    value_family: Literal["TEMPORAL", "NUMERIC"]
+    extraction_text: str
+    predicate: Literal["时间约束为", "数值约束为"]
+    binding_status: Literal[
+        "BOUND_CONTAINING",
+        "BOUND_SENTENCE",
+        "UNBOUND",
+        "AMBIGUOUS",
+    ]
+    related_extraction_class: ExtractionClass | None = None
+
+
 class WindowExtractionResult(StrictModel):
     window_id: str
     model_id: str
     parser: Literal["task_manager.parse_json_output"] = "task_manager.parse_json_output"
     aligner: Literal["langextract-1.6.0"] = "langextract-1.6.0"
     extractions: list[AlignedExtraction]
+    value_canonicalizations: list[ValueCanonicalization] = Field(default_factory=list)
 
 
 class LlmCompleter(Protocol):
@@ -187,10 +204,15 @@ class WindowExtractionEngine:
         )
         envelope = _parse_envelope(content)
         aligned = _align_extractions(request, envelope, self.resolver_factory())
+        aligned, canonicalizations = _canonicalize_value_extractions(
+            request.source_text,
+            aligned,
+        )
         return WindowExtractionResult(
             window_id=request.window_id,
             model_id=model_id,
             extractions=aligned,
+            value_canonicalizations=canonicalizations,
         )
 
 
@@ -339,6 +361,143 @@ def _align_extractions(
         results,
         key=lambda item: (item.rendered_char_start, item.extraction_class, item.extraction_text),
     )
+
+
+def _canonicalize_value_extractions(
+    source_text: str,
+    extractions: list[AlignedExtraction],
+) -> tuple[list[AlignedExtraction], list[ValueCanonicalization]]:
+    """Fill only structurally missing DATE/AMOUNT triples after source alignment.
+
+    The fallback deliberately does not classify legal value subtypes or infer a
+    relationship from vocabulary.  A relation is attached only when one aligned
+    semantic item uniquely contains the value or is the sole item in the same
+    sentence.  Ambiguous and unbound values remain grounded but relation-neutral.
+    """
+
+    relation_candidates = [
+        item
+        for item in extractions
+        if item.extraction_class not in {"DEFINITION", "DATE", "AMOUNT"}
+        and item.predicate
+    ]
+    normalized: list[AlignedExtraction] = []
+    diagnostics: list[ValueCanonicalization] = []
+    for item in extractions:
+        if item.extraction_class not in {"DATE", "AMOUNT"} or item.predicate:
+            normalized.append(item)
+            continue
+
+        related, binding_status = _find_unique_value_relation(
+            source_text,
+            item,
+            relation_candidates,
+        )
+        predicate = "时间约束为" if item.extraction_class == "DATE" else "数值约束为"
+        model_matter = (
+            item.object
+            if item.object and item.object != item.extraction_text
+            else None
+        )
+        subject = item.subject or model_matter or _related_matter(related)
+        normalized_item = AlignedExtraction.model_validate(
+            {
+                **item.model_dump(),
+                "subject": subject,
+                "predicate": predicate,
+                "object": item.extraction_text,
+            }
+        )
+        normalized.append(normalized_item)
+        diagnostics.append(
+            ValueCanonicalization(
+                extraction_class=item.extraction_class,
+                value_family=(
+                    "TEMPORAL" if item.extraction_class == "DATE" else "NUMERIC"
+                ),
+                extraction_text=item.extraction_text,
+                predicate=predicate,
+                binding_status=binding_status,
+                related_extraction_class=(
+                    related.extraction_class if related is not None else None
+                ),
+            )
+        )
+    return (
+        sorted(
+            normalized,
+            key=lambda value: (
+                value.rendered_char_start,
+                value.extraction_class,
+                value.extraction_text,
+            ),
+        ),
+        diagnostics,
+    )
+
+
+def _find_unique_value_relation(
+    source_text: str,
+    value: AlignedExtraction,
+    candidates: list[AlignedExtraction],
+) -> tuple[
+    AlignedExtraction | None,
+    Literal["BOUND_CONTAINING", "BOUND_SENTENCE", "UNBOUND", "AMBIGUOUS"],
+]:
+    containing = [
+        item
+        for item in candidates
+        if item.rendered_char_start <= value.rendered_char_start
+        and item.rendered_char_end >= value.rendered_char_end
+    ]
+    if containing:
+        shortest_length = min(
+            item.rendered_char_end - item.rendered_char_start for item in containing
+        )
+        nearest = [
+            item
+            for item in containing
+            if item.rendered_char_end - item.rendered_char_start == shortest_length
+        ]
+        if len(nearest) == 1:
+            return nearest[0], "BOUND_CONTAINING"
+        return None, "AMBIGUOUS"
+
+    sentence_start, sentence_end = _sentence_bounds(
+        source_text,
+        value.rendered_char_start,
+        value.rendered_char_end,
+    )
+    same_sentence = [
+        item
+        for item in candidates
+        if item.rendered_char_start >= sentence_start
+        and item.rendered_char_end <= sentence_end
+    ]
+    if len(same_sentence) == 1:
+        return same_sentence[0], "BOUND_SENTENCE"
+    if len(same_sentence) > 1:
+        return None, "AMBIGUOUS"
+    return None, "UNBOUND"
+
+
+def _sentence_bounds(source_text: str, start: int, end: int) -> tuple[int, int]:
+    boundaries = {"。", "！", "？", "；", "\n", "\r"}
+    sentence_start = start
+    while sentence_start > 0 and source_text[sentence_start - 1] not in boundaries:
+        sentence_start -= 1
+    sentence_end = end
+    while sentence_end < len(source_text) and source_text[sentence_end] not in boundaries:
+        sentence_end += 1
+    return sentence_start, sentence_end
+
+
+def _related_matter(related: AlignedExtraction | None) -> str | None:
+    if related is None:
+        return None
+    if related.object and related.object != related.extraction_text:
+        return related.object
+    return related.subject or related.predicate
 
 
 def _exact_occurrences(source_text: str, extraction_text: str) -> list[int]:

@@ -79,6 +79,22 @@
 - 代码提交：`功能：合同IR支持规范化溯源并提升至并发10`
 - 遗留问题：并发 10 已通过当前模型端点验证，但它会同时占用更多 HTTP 连接、在途响应缓冲和模型端点配额；若后续模型提供方收紧并发或一体机改为本地模型，应通过内部配置重新压测资源上限，不能直接假设 10 永远适合所有模型部署
 
+## 阶段 3.3：DATE/AMOUNT 开放值规范化与 Span 关系绑定
+
+- 状态：通过
+- 开始前设计复读：已重新完整复核本设计、阶段记录及联合冻结稿；确认 Contract IR 属于 Python 内部技术模型，重要字段必须关联真实 Source Anchor，本阶段不修改 Java–Python API、状态机、Attempt、回调、Finding/Evidence DTO 或 `schema_version=1.0`
+- 实现：不建立封闭的日期/金额子类型枚举，不按合同中的具体数字硬编码；模型已给出合法 DATE/AMOUNT 关系时原样保留；仅对缺失 `predicate` 的已对齐值执行 `TEMPORAL/NUMERIC` 基础族规范化，分别补充中性 `时间约束为/数值约束为`，并将逐字原文值写入 `object`
+- 关系绑定：只依据当前 Window 的已对齐字符区间，依次选择唯一最小包含项或同一句唯一语义项；多个候选记为 `AMBIGUOUS`、没有候选记为 `UNBOUND`，两者都不猜关系、不做语义模糊匹配，也不触发整个 Window 重试；非 DATE/AMOUNT 类别缺少 `predicate` 仍按严格 Schema 失败
+- 可观测性：Window Attempt 增加内部 `value_canonicalization_count`、`ambiguous_value_count`、`unbound_value_count`；测试页面显示总计和逐 Window 计数；这些字段只属于隔离测试结果，不进入正式 Contract IR 和跨服务协议
+- 针对性测试：`30 passed`；覆盖任意工作日、月数、百分比、金额区间、模型合法关系保留、唯一包含绑定、同句唯一绑定、歧义不猜、无候选不造主体、非值类别仍失败以及 Pipeline 不新增模型调用
+- Framework 回归：`173 passed, 1 deselected`；排除项是现有隔离容器未接 localhost Redis 的会话压缩现场测试，另一个依赖未启动 Smoke 服务的 live 文件按既有方式忽略；均与本次改动无关
+- Contract Python 回归：`103 passed, 10 skipped`
+- 真实模型验收：复用阶段 3.2 的 12 个无敏感合成 Window 请求，真实 `deepseek-v4-pro`、并发 10；总耗时 `6507 ms`，模型调用 `12` 次，局部重试 `0` 次，Coverage `12/12`，合并得到 `42` 项 IR；本轮模型直接返回完整 DATE 关系，因此规范化计数为 0，证明正常合法输出不会被覆盖，缺字段兜底路径由确定性测试覆盖
+- 隔离容器：继续复用 `contract-ir-window-stage1-ui`、`contract-ir-window-stage2-framework`、服务器本机 `127.0.0.1:19310/19320`；只重建测试 UI 镜像并重启现有隔离容器，正式容器和正式环境未修改
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage33-value-canonicalization-response.json`
+- 代码提交：`功能：规范化合同日期金额值关系`
+- 遗留边界：内部规范化只保证值实体结构完整和真实溯源，不替代后续跨 Window 关系判断；歧义/未绑定计数将在阶段 4 Shadow Compare 中继续量化
+
 ## 阶段 4：Legacy/Window Shadow Compare
 
 - 状态：未开始

@@ -116,6 +116,26 @@ def _model_output(extraction_text: str = "乙方应在十日内交付成果") ->
     )
 
 
+def _semantic_item(
+    extraction_class: str,
+    extraction_text: str,
+    *,
+    subject: str | None = None,
+    predicate: str | None = None,
+    object_: str | None = None,
+) -> dict:
+    return {
+        "extraction_class": extraction_class,
+        "extraction_text": extraction_text,
+        "subject": subject,
+        "predicate": predicate,
+        "object": object_,
+        "term": None,
+        "meaning": None,
+        "referenced_clause_nos": [],
+    }
+
+
 @pytest.mark.asyncio
 async def test_window_extractor_uses_framework_runtime_and_exact_block_alignment() -> None:
     runtime = FakeRuntime(_model_output())
@@ -350,6 +370,205 @@ async def test_window_extractor_allows_multiple_ir_types_on_same_source_span() -
     assert result.extractions[0].rendered_char_start == result.extractions[1].rendered_char_start
     assert result.extractions[0].rendered_char_end == result.extractions[1].rendered_char_end
     assert all(item.source_spans[0].block_id == "block-002" for item in result.extractions)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extraction_class", "source", "value", "expected_predicate", "family"),
+    [
+        ("DATE", "乙方应在收到材料后十五个工作日内完成交付。", "十五个工作日内", "时间约束为", "TEMPORAL"),
+        ("DATE", "服务期限自生效日起连续三十六个月。", "三十六个月", "时间约束为", "TEMPORAL"),
+        ("AMOUNT", "违约方应按合同总价的百分之十二支付违约金。", "百分之十二", "数值约束为", "NUMERIC"),
+        ("AMOUNT", "每次服务的费用区间为人民币800至1500元。", "人民币800至1500元", "数值约束为", "NUMERIC"),
+    ],
+)
+async def test_window_extractor_canonicalizes_arbitrary_grounded_values_without_literal_rules(
+    extraction_class: str,
+    source: str,
+    value: str,
+    expected_predicate: str,
+    family: str,
+) -> None:
+    parent = _semantic_item(
+        "OBLIGATION",
+        source[:-1],
+        subject="合同当事方",
+        predicate="应履行",
+        object_="约定事项",
+    )
+    raw_value = _semantic_item(extraction_class, value)
+    runtime = FakeRuntime(
+        json.dumps({"extractions": [parent, raw_value]}, ensure_ascii=False)
+    )
+
+    result = await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+        _single_block_request(source),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    value_item = next(
+        item for item in result.extractions if item.extraction_class == extraction_class
+    )
+    assert value_item.subject == "约定事项"
+    assert value_item.predicate == expected_predicate
+    assert value_item.object == value
+    assert value_item.extraction_text == value
+    assert value_item.source_spans[0].quoted_text == value
+    assert len(result.value_canonicalizations) == 1
+    diagnostic = result.value_canonicalizations[0]
+    assert diagnostic.value_family == family
+    assert diagnostic.binding_status == "BOUND_CONTAINING"
+    assert diagnostic.related_extraction_class == "OBLIGATION"
+
+
+@pytest.mark.asyncio
+async def test_window_extractor_preserves_model_supplied_value_relationship() -> None:
+    source = "履约保证金为合同金额的8%。"
+    runtime = FakeRuntime(
+        json.dumps(
+            {
+                "extractions": [
+                    _semantic_item(
+                        "AMOUNT",
+                        "合同金额的8%",
+                        subject="履约保证金",
+                        predicate="计取标准为",
+                        object_="合同金额的8%",
+                    )
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    result = await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+        _single_block_request(source),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    assert result.extractions[0].predicate == "计取标准为"
+    assert result.extractions[0].object == "合同金额的8%"
+    assert result.value_canonicalizations == []
+
+
+@pytest.mark.asyncio
+async def test_window_extractor_keeps_ambiguous_value_grounded_without_guessing_relation() -> None:
+    source = "甲方应在二十日内支付全部服务费。"
+    clause = source[:-1]
+    runtime = FakeRuntime(
+        json.dumps(
+            {
+                "extractions": [
+                    _semantic_item(
+                        "OBLIGATION",
+                        clause,
+                        subject="甲方",
+                        predicate="应履行",
+                        object_="付款义务",
+                    ),
+                    _semantic_item(
+                        "PAYMENT",
+                        clause,
+                        subject="甲方",
+                        predicate="应支付",
+                        object_="服务费",
+                    ),
+                    _semantic_item("DATE", "二十日内"),
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    result = await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+        _single_block_request(source),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    value_item = next(item for item in result.extractions if item.extraction_class == "DATE")
+    assert value_item.subject is None
+    assert value_item.predicate == "时间约束为"
+    assert value_item.object == "二十日内"
+    assert result.value_canonicalizations[0].binding_status == "AMBIGUOUS"
+    assert result.value_canonicalizations[0].related_extraction_class is None
+
+
+@pytest.mark.asyncio
+async def test_window_extractor_binds_value_to_only_semantic_item_in_same_sentence() -> None:
+    source = "甲方应支付服务费，付款期限为四十五日内。"
+    runtime = FakeRuntime(
+        json.dumps(
+            {
+                "extractions": [
+                    _semantic_item(
+                        "PAYMENT",
+                        "甲方应支付服务费",
+                        subject="甲方",
+                        predicate="应支付",
+                        object_="服务费",
+                    ),
+                    _semantic_item("DATE", "四十五日内"),
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    result = await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+        _single_block_request(source),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    value_item = next(item for item in result.extractions if item.extraction_class == "DATE")
+    assert value_item.subject == "服务费"
+    assert result.value_canonicalizations[0].binding_status == "BOUND_SENTENCE"
+    assert result.value_canonicalizations[0].related_extraction_class == "PAYMENT"
+
+
+@pytest.mark.asyncio
+async def test_window_extractor_keeps_standalone_value_without_inventing_subject() -> None:
+    source = "合同暂定总价人民币235000元。"
+    runtime = FakeRuntime(
+        json.dumps(
+            {"extractions": [_semantic_item("AMOUNT", "人民币235000元")]},
+            ensure_ascii=False,
+        )
+    )
+
+    result = await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+        _single_block_request(source),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    value_item = result.extractions[0]
+    assert value_item.subject is None
+    assert value_item.predicate == "数值约束为"
+    assert value_item.object == "人民币235000元"
+    assert result.value_canonicalizations[0].binding_status == "UNBOUND"
+
+
+@pytest.mark.asyncio
+async def test_window_extractor_still_rejects_missing_predicate_for_non_value_class() -> None:
+    runtime = FakeRuntime(
+        json.dumps(
+            {"extractions": [_semantic_item("PAYMENT", "甲方支付服务费")]},
+            ensure_ascii=False,
+        )
+    )
+
+    with pytest.raises(WindowExtractionError) as exc_info:
+        await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+            _single_block_request("甲方支付服务费。"),
+            tenant_id="tenant-001",
+            model_id="contract-model",
+        )
+
+    assert exc_info.value.code == "WINDOW_SCHEMA_INVALID"
 
 
 def test_window_extractor_test_api_uses_configured_model(monkeypatch) -> None:

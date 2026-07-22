@@ -133,6 +133,16 @@ referenced_clause_nos
 
 原文定位采用确定性字面规范化匹配：先尝试逐字符精确匹配；失败后对模型文本和 Window 原文同时执行 Unicode NFKC，忽略空白、换行、普通中英文标点以及全半角形式差异，再做规范化后的精确匹配。中文、数字、英文字母、金额和百分比等业务有效字符必须保留；不使用语义相似、同义词、拼音或编辑距离模糊匹配。匹配成功后必须通过索引映射还原为原始 Block 的真实 `[char_start,char_end)` 和逐字 `quoted_text`。同一 Window 中无法唯一定位时返回 `ALIGNMENT_AMBIGUOUS`，不得猜测第一个位置。
 
+DATE 和 AMOUNT 不再建立封闭的日期/金额子类型枚举，也不按具体数值写业务规则。模型已经输出合法 `predicate` 时完整保留；只有 `predicate` 缺失时，才在完成 Source Alignment 后执行确定性结构规范化：
+
+```text
+DATE   -> TEMPORAL -> predicate=时间约束为
+AMOUNT -> NUMERIC  -> predicate=数值约束为
+object -> 已对齐的逐字 extraction_text
+```
+
+关系绑定只使用当前 Window 已对齐的 Source Span：优先选择唯一包含该值且范围最小的语义项；没有包含关系时，只接受同一句中唯一的语义项。多个候选记为 `AMBIGUOUS`，没有候选记为 `UNBOUND`，均不得按关键词或语义相似度猜测。歧义或未绑定值仍保留原文锚点和中性结构，不触发整个 Window 的第二次模型调用；规范化、歧义和未绑定计数只进入内部测试诊断，不改变公开 Contract IR、Java–Python DTO 或 `schema_version=1.0`。除 DATE/AMOUNT 外的类别缺少 `predicate` 仍然按严格 Schema 失败。
+
 ## 6. 确定性字段
 
 由代码根据数据库上下文、Window Offset Map 和对齐结果生成：

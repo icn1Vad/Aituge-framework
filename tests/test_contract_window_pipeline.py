@@ -9,6 +9,7 @@ from services.contract.capabilities.window_extraction import (
     WindowExtractionError,
     WindowExtractionRequest,
     WindowExtractionResult,
+    ValueCanonicalization,
 )
 from services.contract.capabilities.window_pipeline import (
     ContractIrWindowPipeline,
@@ -24,10 +25,12 @@ class FakePipelineExtractor:
         fail_first: set[str] | None = None,
         empty: bool = False,
         predicate: str = "应履行",
+        with_value_canonicalization: bool = False,
     ) -> None:
         self.fail_first = fail_first or set()
         self.empty = empty
         self.predicate = predicate
+        self.with_value_canonicalization = with_value_canonicalization
         self.calls: list[tuple[str, str | None]] = []
         self.call_counts: dict[str, int] = {}
         self.active = 0
@@ -57,6 +60,19 @@ class FakePipelineExtractor:
                 window_id=request.window_id,
                 model_id=model_id,
                 extractions=extractions,
+                value_canonicalizations=(
+                    [
+                        ValueCanonicalization(
+                            extraction_class="DATE",
+                            value_family="TEMPORAL",
+                            extraction_text="十五日内",
+                            predicate="时间约束为",
+                            binding_status="AMBIGUOUS",
+                        )
+                    ]
+                    if self.with_value_canonicalization
+                    else []
+                ),
             )
         finally:
             self.active -= 1
@@ -264,3 +280,21 @@ async def test_pipeline_accepts_reviewed_empty_non_business_window() -> None:
     assert result.retry_count == 0
     assert result.semantic_ir.obligations == []
     assert result.coverage.valid is True
+
+
+@pytest.mark.asyncio
+async def test_pipeline_reports_value_canonicalization_without_retrying_window() -> None:
+    extractor = FakePipelineExtractor(with_value_canonicalization=True)
+    result = await ContractIrWindowPipeline(extractor=extractor).run(
+        _pipeline_request(count=1),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    assert extractor.call_counts == {"window-001": 1}
+    assert result.model_call_count == 1
+    assert result.retry_count == 0
+    attempt = result.windows[0].attempts[0]
+    assert attempt.value_canonicalization_count == 1
+    assert attempt.ambiguous_value_count == 1
+    assert attempt.unbound_value_count == 0
