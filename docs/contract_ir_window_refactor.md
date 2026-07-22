@@ -251,7 +251,7 @@ Shadow Compare 只按“相同 IR 类别 + 原文 Anchor”衡量来源一致性
 - [x] 阶段 3：并发调度（当前上限 10）、IR Mapper、合并、Coverage、局部重试；
 - [x] 阶段 3.4：测试旁路主体上下文接线与溯源隔离；
 - [x] 阶段 4：Legacy/Window Shadow Compare；
-- [ ] 阶段 5：独立测试环境完整 Finding/Evidence 回归。
+- [ ] 阶段 5：独立测试环境完整 Finding/Evidence 回归（技术链路通过；跨 Stage 重复 Finding 质量门未通过，暂不进入阶段 6）。
 
 ## 12. 验收指标
 

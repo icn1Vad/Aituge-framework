@@ -14,6 +14,18 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from task_manager.pipeline.errors import StageExecutionError
 from task_manager.pipeline.stage_registry import StageExecutionContext, StageServiceResult
 from task_manager.result_sink import ResultSinkDelivery, ResultSinkRejectedError
+try:
+    from services.contract.capabilities.window_extraction import WindowExtractionEngine
+    from services.contract.capabilities.window_pipeline import (
+        ContractIrWindowPipeline,
+        WindowPipelineError,
+        WindowPipelineRequest,
+    )
+except ModuleNotFoundError as exc:  # standalone capability mount in the runtime image
+    if exc.name != "services":
+        raise
+    from window_extraction import WindowExtractionEngine
+    from window_pipeline import ContractIrWindowPipeline, WindowPipelineError, WindowPipelineRequest
 
 
 CAPABILITY_ID = "contract-review"
@@ -508,6 +520,16 @@ class InternalContractBlocksEnvelope(StrictModel):
     request_id: str = Field(min_length=1, max_length=160)
 
 
+class InternalContractWindowPlanData(WindowPipelineRequest):
+    review_id: str = Field(min_length=1, max_length=160)
+
+
+class InternalContractWindowPlanEnvelope(StrictModel):
+    success: Literal[True]
+    data: InternalContractWindowPlanData
+    request_id: str = Field(min_length=1, max_length=160)
+
+
 IR_FRAGMENT_MODELS = {
     "extract_ir_definitions_basics": IrDefinitionsBasicsFragmentResult,
     "extract_ir_rights_duties": IrRightsDutiesFragmentResult,
@@ -624,6 +646,139 @@ def _merge_contract_ir_fragments_handler():
         )
 
     return merge
+
+
+def _party_window_context(party: PartyResolutionStageResult) -> str:
+    return "\n".join(
+        (
+            "Validated party context only; never use these values as extraction_text or evidence:",
+            f"PARTY_A_NAME={party.party_a.name}",
+            f"PARTY_B_NAME={party.party_b.name}",
+            f"PERSPECTIVE={party.perspective}",
+            f"OUR_PARTY={party.our_party}",
+            f"COUNTERPARTY={party.counterparty}",
+            f"CONTRACT_TYPE={party.contract_type}",
+            "REVIEW_ATTITUDE=NEUTRAL",
+        )
+    )
+
+
+def _window_contract_ir_handler(base_url: str, token: str, model_id: str):
+    async def execute(context: StageExecutionContext) -> StageServiceResult:
+        task_input = ContractTaskInput.model_validate(context.task.input_payload_json or {})
+        party_artifact = context.artifacts.get("resolve_parties")
+        if party_artifact is None or not isinstance(party_artifact.content_json, dict):
+            raise StageExecutionError(
+                "Validated party resolution artifact is missing.",
+                code="missing_dependency_artifact",
+                retryable=False,
+            )
+        party = PartyResolutionStageResult.model_validate(party_artifact.content_json)
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=60) as client:
+                response = await client.post(
+                    "/v1/internal/contract-tools/windows",
+                    headers={
+                        "X-Internal-Service": "aituge-framework",
+                        "X-Internal-Token": token,
+                        "X-Request-Id": f"contract-window:{context.run.id}:{context.stage.stage_id}",
+                    },
+                    json={
+                        "review_id": task_input.review_id,
+                        "document_id": task_input.document_id,
+                    },
+                )
+            response.raise_for_status()
+            envelope = InternalContractWindowPlanEnvelope.model_validate(response.json())
+        except httpx.HTTPStatusError as exc:
+            raise StageExecutionError(
+                f"Contract Window plan returned HTTP {exc.response.status_code}",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=exc.response.status_code >= 500,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise StageExecutionError(
+                f"Contract Window plan request failed: {exc}",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=True,
+            ) from exc
+        except ValueError as exc:
+            raise StageExecutionError(
+                "Contract Window plan response is invalid.",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=False,
+            ) from exc
+
+        plan = envelope.data
+        if plan.review_id != task_input.review_id or plan.document_id != task_input.document_id:
+            raise StageExecutionError(
+                "Contract Window plan identity does not match the task.",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=False,
+            )
+        party_context = _party_window_context(party)
+        request = WindowPipelineRequest.model_validate(
+            plan.model_dump(
+                mode="json",
+                exclude={"review_id"},
+            )
+        )
+        request = request.model_copy(
+            update={
+                "windows": [
+                    window.model_copy(
+                        update={
+                            "context_text": "\n".join(
+                                item
+                                for item in (party_context, window.context_text)
+                                if item
+                            )
+                        }
+                    )
+                    for window in request.windows
+                ]
+            }
+        )
+        try:
+            pipeline_result = await ContractIrWindowPipeline(
+                extractor=WindowExtractionEngine(),
+            ).run(
+                request,
+                tenant_id=context.task.tenant_id,
+                model_id=model_id,
+            )
+        except WindowPipelineError as exc:
+            raise StageExecutionError(
+                str(exc),
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=False,
+                domain_error_code=exc.code,
+                details=exc.details,
+            ) from exc
+        result = ExtractContractIrStageResult(
+            result_type="CONTRACT_IR_STAGE_V1",
+            semantic_ir=ContractIrSemanticDelta.model_validate(
+                pipeline_result.semantic_ir.model_dump(mode="json")
+            ),
+        )
+        return StageServiceResult(
+            output=result.model_dump(mode="json"),
+            summary=(
+                f"Extracted Contract IR from {len(request.windows)} windows in "
+                f"{pipeline_result.duration_ms} ms; model calls={pipeline_result.model_call_count}, "
+                f"retries={pipeline_result.retry_count}."
+            ),
+            metadata={
+                "ir_engine": "window",
+                "window_count": len(request.windows),
+                "duration_ms": pipeline_result.duration_ms,
+                "model_call_count": pipeline_result.model_call_count,
+                "retry_count": pipeline_result.retry_count,
+                "semantic_ir_hash": pipeline_result.semantic_ir_hash,
+            },
+        )
+
+    return execute
 
 
 def _fragment_anchor_validator(base_url: str, token: str):
@@ -897,6 +1052,9 @@ async def register(registry, settings) -> None:
     base_url = settings.require("CONTRACT_SERVICE_BASE_URL").rstrip("/")
     callback_token = settings.require("CONTRACT_RESULT_SINK_INTERNAL_TOKEN")
     model_id = settings.get("CONTRACT_MODEL_ID", "deepseek-v4-pro").strip()
+    ir_engine = settings.get("CONTRACT_IR_ENGINE", "legacy").strip().lower()
+    if ir_engine not in {"legacy", "window"}:
+        raise ValueError("CONTRACT_IR_ENGINE must be either 'legacy' or 'window'.")
     internal_headers = {
         "X-Internal-Service": "aituge-framework",
         "X-Internal-Token": callback_token,
@@ -981,6 +1139,10 @@ async def register(registry, settings) -> None:
     registry.register_stage_handler(
         name="contract_ir_fragment_merge_v1",
         handler=_merge_contract_ir_fragments_handler(),
+    )
+    registry.register_stage_handler(
+        name="contract_ir_window_v1",
+        handler=_window_contract_ir_handler(base_url, callback_token, model_id),
     )
     registry.register_result_sink(
         task_type=TASK_TYPE,
@@ -1094,9 +1256,10 @@ async def register(registry, settings) -> None:
             },
         },
     ]
-    for stage_id, name, output_model, package, skill in ir_fragment_stages:
-        stages.append(
-            {
+    if ir_engine == "legacy":
+        for stage_id, name, output_model, package, skill in ir_fragment_stages:
+            stages.append(
+                {
                 "stage_id": stage_id,
                 "name": name,
                 "stage_type": "agent",
@@ -1118,21 +1281,39 @@ async def register(registry, settings) -> None:
                         "required_result_sink_failed",
                     ],
                 },
+                }
+            )
+        stages.append(
+            {
+                "stage_id": "extract_contract_ir",
+                "name": "Merge semantic Contract IR fragments",
+                "stage_type": "finalizer",
+                "depends_on": list(IR_FRAGMENT_STAGE_IDS),
+                "input_model": PipelineContextInput,
+                "output_model": ExtractContractIrStageResult,
+                "artifact_type": "contract_ir",
+                "service_handler": "contract_ir_fragment_merge_v1",
+                "timeout_seconds": 30,
             }
         )
-    stages.append(
-        {
-            "stage_id": "extract_contract_ir",
-            "name": "Merge semantic Contract IR fragments",
-            "stage_type": "finalizer",
-            "depends_on": list(IR_FRAGMENT_STAGE_IDS),
-            "input_model": PipelineContextInput,
-            "output_model": ExtractContractIrStageResult,
-            "artifact_type": "contract_ir",
-            "service_handler": "contract_ir_fragment_merge_v1",
-            "timeout_seconds": 30,
-        }
-    )
+    else:
+        stages.append(
+            {
+                "stage_id": "extract_contract_ir",
+                "name": "Extract semantic Contract IR by source windows",
+                "stage_type": "finalizer",
+                "depends_on": ["parse_contract", "resolve_parties"],
+                "input_model": PipelineContextInput,
+                "output_model": ExtractContractIrStageResult,
+                "artifact_type": "contract_ir",
+                "service_handler": "contract_ir_window_v1",
+                "timeout_seconds": 600,
+                "retry_policy": {
+                    "max_attempts": 1,
+                    "retry_on": [],
+                },
+            }
+        )
     for stage_id, name, output_model, package, skill in parallel_stages:
         stages.append(
             {

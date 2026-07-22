@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -126,6 +127,24 @@ def index() -> HTMLResponse:
 @app.get("/health", include_in_schema=False)
 def health() -> dict[str, str]:
     return {"status": "UP"}
+
+
+@app.get("/api/stage5-result", include_in_schema=False)
+def stage5_result() -> JSONResponse:
+    """Expose only the mounted, test-only Stage 5 artifact to the local inspector."""
+
+    summary_path = Path(os.getenv("CONTRACT_STAGE5_SUMMARY_FILE", ""))
+    result_path = Path(os.getenv("CONTRACT_STAGE5_RESULT_FILE", ""))
+    if not summary_path.is_file() or not result_path.is_file():
+        raise HTTPException(status_code=404, detail="Stage 5 test result is not mounted")
+    try:
+        summary = json.loads(summary_path.read_text("utf-8"))
+        result = json.loads(result_path.read_text("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail="Stage 5 test result is invalid") from exc
+    if not isinstance(result, dict) or not isinstance(result.get("data"), dict):
+        raise HTTPException(status_code=500, detail="Stage 5 result envelope is invalid")
+    return JSONResponse(content={"summary": summary, "result": result["data"]})
 
 
 @app.post("/api/inspect", response_model=InspectionView)

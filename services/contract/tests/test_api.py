@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from contract.api.app import create_app
 from contract.callback.models import FrameworkCallbackData
 from contract.config import Settings
-from contract.internal.models import ContractDocumentToolData
+from contract.internal.models import ContractDocumentToolData, ContractWindowPlanToolData
 
 
 TOKEN = "contract-test-token"
@@ -227,6 +227,41 @@ def test_framework_tool_endpoint_uses_callback_credential_and_typed_response() -
                 block_count=1,
             )
 
+        def get_window_plan(self, payload):
+            assert payload.review_id == "review-1"
+            assert payload.document_id == "document-1"
+            return ContractWindowPlanToolData(
+                review_id="review-1",
+                document_id="document-1",
+                generation_id="generation-1",
+                expected_blocks=[{"block_id": "block-1", "text_length": 4}],
+                expected_section_ids=["section-1"],
+                windows=[
+                    {
+                        "window_id": "window-1",
+                        "sequence_no": 1,
+                        "section_ids": ["section-1"],
+                        "heading_path": [],
+                        "clause_nos": [],
+                        "primary_block_ids": ["block-1"],
+                        "estimated_tokens": 4,
+                        "source_text": "test",
+                        "context_text": "",
+                        "offset_map": [
+                            {
+                                "rendered_start": 0,
+                                "rendered_end": 4,
+                                "block_id": "block-1",
+                                "block_no": 1,
+                                "block_char_start": 0,
+                                "block_char_end": 4,
+                                "page_number": None,
+                            }
+                        ],
+                    }
+                ],
+            )
+
     client = TestClient(
         create_app(
             Settings(
@@ -256,12 +291,20 @@ def test_framework_tool_endpoint_uses_callback_credential_and_typed_response() -
         headers={**headers, "X-Internal-Token": TOKEN},
         json=payload,
     )
+    windows = client.post(
+        "/v1/internal/contract-tools/windows",
+        headers=headers,
+        json=payload,
+    )
 
     assert accepted.status_code == 200
     assert accepted.json()["data"]["generation_status"] == "RUNNING"
     assert accepted.json()["data"]["block_count"] == 1
     assert unauthorized.status_code == 401
     assert unauthorized.json()["error"]["code"] == "UNAUTHORIZED_INTERNAL_CALL"
+    assert windows.status_code == 200
+    assert windows.json()["data"]["concurrency"] == 10
+    assert windows.json()["data"]["windows"][0]["primary_block_ids"] == ["block-1"]
 
 
 def test_create_status_result_not_ready_and_cancel_flow() -> None:

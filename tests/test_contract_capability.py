@@ -46,7 +46,7 @@ class CapturingRegistry:
         self.pipelines.append(value)
 
 
-def _registered():
+def _registered(ir_engine="legacy"):
     registry = CapturingRegistry()
     asyncio.run(
         capability.register(
@@ -56,6 +56,7 @@ def _registered():
                     "CONTRACT_SERVICE_BASE_URL": "http://ai-contract:18200",
                     "CONTRACT_RESULT_SINK_INTERNAL_TOKEN": "callback-secret",
                     "CONTRACT_MODEL_ID": "contract-model",
+                    "CONTRACT_IR_ENGINE": ir_engine,
                 }
             ),
         )
@@ -131,6 +132,29 @@ def test_contract_capability_registers_frozen_pipeline_and_internal_tools() -> N
     )
     assert parallel < set(stages["verify_evidence"]["depends_on"])
     assert stages["finalize_review"]["depends_on"] == ["verify_evidence"]
+
+
+def test_contract_capability_can_switch_only_ir_stage_to_window_engine() -> None:
+    registry = _registered("window")
+    stages = {item["stage_id"]: item for item in registry.pipelines[0]["stages"]}
+
+    assert not set(capability.IR_FRAGMENT_STAGE_IDS) & set(stages)
+    assert stages["extract_contract_ir"]["depends_on"] == ["parse_contract", "resolve_parties"]
+    assert stages["extract_contract_ir"]["service_handler"] == "contract_ir_window_v1"
+    assert stages["extract_contract_ir"]["output_model"] is capability.ExtractContractIrStageResult
+    assert [item["name"] for item in registry.stage_handlers] == [
+        "contract_stage_gateway_v1",
+        "contract_ir_fragment_merge_v1",
+        "contract_ir_window_v1",
+    ]
+    assert stages["rights_obligations_review"]["depends_on"] == ["extract_contract_ir"]
+    assert "resolve_parties" in stages["verify_evidence"]["depends_on"]
+    assert stages["finalize_review"]["depends_on"] == ["verify_evidence"]
+
+
+def test_contract_capability_rejects_unknown_ir_engine() -> None:
+    with pytest.raises(ValueError, match="CONTRACT_IR_ENGINE"):
+        _registered("unknown")
 
 
 def test_review_stages_use_source_candidates_and_stage_specific_contract_rules() -> None:
@@ -252,6 +276,132 @@ def test_ir_fragments_cover_every_semantic_field_once_and_merge_deterministicall
 
     assert merged.output["result_type"] == "CONTRACT_IR_STAGE_V1"
     assert merged.output["semantic_ir"] == semantic
+
+
+def test_window_ir_handler_injects_party_context_without_changing_source(monkeypatch) -> None:
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "success": True,
+                "data": {
+                    "review_id": "review-1",
+                    "document_id": "document-1",
+                    "generation_id": "generation-1",
+                    "expected_blocks": [{"block_id": "block-1", "text_length": 4}],
+                    "expected_section_ids": ["section-1"],
+                    "windows": [
+                        {
+                            "window_id": "window-1",
+                            "sequence_no": 1,
+                            "section_ids": ["section-1"],
+                            "heading_path": [],
+                            "clause_nos": [],
+                            "primary_block_ids": ["block-1"],
+                            "estimated_tokens": 4,
+                            "source_text": "test",
+                            "context_text": "section context",
+                            "offset_map": [
+                                {
+                                    "rendered_start": 0,
+                                    "rendered_end": 4,
+                                    "block_id": "block-1",
+                                    "block_no": 1,
+                                    "block_char_start": 0,
+                                    "block_char_end": 4,
+                                    "page_number": None,
+                                }
+                            ],
+                        }
+                    ],
+                    "concurrency": 10,
+                },
+                "request_id": "window-plan",
+            }
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, path, *, headers, json):
+            captured["http"] = (path, headers, json)
+            return Response()
+
+    class FakePipeline:
+        async def run(self, request, *, tenant_id, model_id):
+            captured["request"] = request
+            captured["tenant_id"] = tenant_id
+            captured["model_id"] = model_id
+            semantic = capability.ContractIrSemanticDelta()
+            return SimpleNamespace(
+                semantic_ir=semantic,
+                duration_ms=12,
+                model_call_count=1,
+                retry_count=0,
+                semantic_ir_hash="sha256:" + "1" * 64,
+            )
+
+    monkeypatch.setattr(capability.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(capability, "ContractIrWindowPipeline", lambda **_kwargs: FakePipeline())
+    context = SimpleNamespace(
+        task=SimpleNamespace(
+            tenant_id="tenant-1",
+            input_payload_json={
+                "schema_version": "1.0",
+                "review_id": "review-1",
+                "attempt_no": 1,
+                "business_task_id": "business-1",
+                "contract_version_id": "version-1",
+                "document_id": "document-1",
+                "perspective": "PARTY_A",
+                "our_party_name": None,
+                "contract_type": "AUTO",
+                "review_attitude": "NEUTRAL",
+            },
+        ),
+        run=SimpleNamespace(id="run-1"),
+        stage=SimpleNamespace(stage_id="extract_contract_ir"),
+        artifacts={
+            "resolve_parties": SimpleNamespace(
+                content_json={
+                    "result_type": "PARTY_RESOLUTION_STAGE_V1",
+                    "contract_type": "SERVICE",
+                    "party_a": {"name": "Party A"},
+                    "party_b": {"name": "Party B"},
+                    "perspective": "PARTY_A",
+                    "our_party": "Party A",
+                    "counterparty": "Party B",
+                }
+            )
+        },
+    )
+
+    result = asyncio.run(
+        capability._window_contract_ir_handler(
+            "http://ai-contract:18200", "secret", "contract-model"
+        )(context)
+    )
+
+    assert result.output == {
+        "result_type": "CONTRACT_IR_STAGE_V1",
+        "semantic_ir": capability.ContractIrSemanticDelta().model_dump(mode="json"),
+    }
+    assert captured["http"][0] == "/v1/internal/contract-tools/windows"
+    assert captured["request"].windows[0].source_text == "test"
+    assert "PARTY_A_NAME=Party A" in captured["request"].windows[0].context_text
+    assert "section context" in captured["request"].windows[0].context_text
+    assert captured["tenant_id"] == "tenant-1"
+    assert captured["model_id"] == "contract-model"
 
 
 def test_ir_fragment_rejects_duplicate_semantic_items_before_merge() -> None:

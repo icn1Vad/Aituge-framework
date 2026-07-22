@@ -47,6 +47,8 @@ from contract.internal.models import (
     ContractDocumentToolRequest,
     ContractIrToolData,
     ContractIrToolRequest,
+    ContractWindowPlanToolData,
+    ContractWindowPlanToolRequest,
 )
 from contract.internal.service import ContractInternalService
 from contract.persistence.postgres.callback_repository import FrameworkCallbackRepository
@@ -285,6 +287,20 @@ def create_app(
         request_id: Annotated[str, Depends(_framework_request_id)],
     ) -> SuccessResponse[ContractIrToolData]:
         data = await asyncio.to_thread(_internal_service(http_request).get_ir, payload)
+        return SuccessResponse(data=data, request_id=request_id)
+
+    @app.post(
+        "/v1/internal/contract-tools/windows",
+        response_model=SuccessResponse[ContractWindowPlanToolData],
+        responses=ERROR_RESPONSES,
+        include_in_schema=False,
+    )
+    async def contract_get_windows(
+        payload: ContractWindowPlanToolRequest,
+        http_request: Request,
+        request_id: Annotated[str, Depends(_framework_request_id)],
+    ) -> SuccessResponse[ContractWindowPlanToolData]:
+        data = await asyncio.to_thread(_internal_service(http_request).get_window_plan, payload)
         return SuccessResponse(data=data, request_id=request_id)
 
     @app.get(

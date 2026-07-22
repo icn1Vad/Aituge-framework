@@ -129,11 +129,14 @@
 
 ## 阶段 5：完整Finding/Evidence回归
 
-- 状态：未开始
-- 开始前设计复读：未完成
-- 代码提交：
-- 自动测试：
-- 独立容器验收：
-- 测试页面验收：
-- 测试 Artifact：
-- 遗留问题：
+- 状态：完整技术链路通过，质量门未通过；当前实现保留在功能分支，禁止进入删除 Legacy 的阶段 6
+- 开始前设计复读：已完整复读改造设计、阶段记录及联合冻结稿第 14～20、33～39 节；确认本阶段只在隔离环境把 Window IR 接入现有风险审查、证据验证和最终结果，不修改 Java–Python API、公开 OpenAPI、状态机、Attempt、回调、Finding/Evidence DTO 或 `schema_version=1.0`
+- 实现：Contract Python 增加隐藏且类型化的内部 Window Plan 接口，从当前 Parse Generation 的持久化 Block 构建 300 Token Window 和 Coverage；Framework 增加 `CONTRACT_IR_ENGINE=legacy|window`，默认仍为 `legacy`，只有隔离 Compose 显式选择 `window`；Window 模式对外仍只有 `extract_contract_ir` Stage，并把 `resolve_parties` 的类型化投影作为 `context_only` 注入；后续五个风险 Stage、Evidence 验证、Result Sink 和 Result Hash 保持现有协议；新增可重复执行的无敏感 PDF 端到端脚本和隔离 Compose Override
+- 兼容修复：完整运行镜像中的 Capability 使用独立挂载路径，增加只在顶层 `services` 包不存在时生效的导入回退；隔离环境不再复用缺少锁定依赖的旧基础镜像，改为通过仓库多阶段 Dockerfile 构建包含 `langextract==1.6.0` 的运行镜像；真正缺失第三方依赖时仍原样抛错，不被路径回退掩盖
+- 自动测试：Framework 最终全量回归 `182 passed, 1 deselected`；排除项仍为隔离一次性容器未接 localhost Redis 的既有会话压缩现场测试；Contract Python 最终全量回归 `104 passed, 10 skipped`；测试页面 `4 passed`；`git diff --check` 通过
+- 独立容器验收：无敏感虚构英文服务合同通过真实 `deepseek-v4-pro`、Contract Python、Framework、PostgreSQL 全链路；任务 `SUCCEEDED`，`current_stage=FINALIZING`，Attempt 1；从创建请求到最终状态约 246 秒；得到 Finding `19` 条、Evidence `27` 条，高风险 `7`、中风险 `10`、低风险 `2`；Evidence 包含 `TEXT_QUOTE=20`、`CONTEXT=1`、`ABSENCE=6`；`relationships=[]`、全部 `bounding_boxes=[]`；Result Hash 为 `sha256:3a1edff305a625aa119ea27a2bebce60b9250a72ebc9b696cdbc0853fe1005e6`
+- 测试页面验收：继续复用 `contract-ir-window-stage1-ui` 和服务器本机 `127.0.0.1:19310`；新增“读取阶段5完整审查结果”按钮，展示状态、风险计数、Finding 标题、Evidence 数量和完整 JSON；`/health` 与只读 `/api/stage5-result` 均通过；正式前端、正式容器和正式数据未修改
+- 测试 Artifact：`stage5-neutral-demo.pdf`、`stage5-window-created.json`、`stage5-window-status.json`、`stage5-window-result.json`、`stage5-window-e2e-summary.json`
+- 质量门问题：现有五个下游风险 Stage 对同一语义生成了重复 Finding。短验收期/默示验收、验收标准未定义以及 IP 归属与提前解除冲突分别出现多条语义重合结果；当前 `merge_review_stage_results` 只能按结构和 ID 确定性合并，不能满足冻结稿“重复 Finding 已合并”的结果要求。该问题不说明 Window IR 遗漏，但会造成前端重复风险、计数虚高和人工复核负担
+- 后续门禁：在明确并实现跨 Stage Finding 合并规则，并至少用多份合同验证召回不下降前，不删除旧五个 IR Agent、不切换正式环境、不进入阶段 6。语义合并会改变法律审查结果，不能用未经确认的相似度阈值静默删除
+- 代码提交：本阶段功能提交和验收记录提交见 Git 历史

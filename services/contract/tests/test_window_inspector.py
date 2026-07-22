@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import json
 
 from docx import Document
 from fastapi.testclient import TestClient
@@ -32,6 +33,27 @@ def test_window_inspector_renders_test_page() -> None:
     assert 'value="PARTY_A"' in response.text
     assert "Shadow Compare 只比较同类别的原文 Anchor" in response.text
     assert 'id="legacy-ir-file"' in response.text
+    assert 'id="stage5-load"' in response.text
+
+
+def test_window_inspector_reads_only_mounted_stage5_artifacts(tmp_path, monkeypatch) -> None:
+    summary_path = tmp_path / "summary.json"
+    result_path = tmp_path / "result.json"
+    summary_path.write_text(json.dumps({"status": "SUCCEEDED", "finding_count": 1}), "utf-8")
+    result_path.write_text(
+        json.dumps({"success": True, "data": {"findings": [], "evidences": []}}),
+        "utf-8",
+    )
+    monkeypatch.setenv("CONTRACT_STAGE5_SUMMARY_FILE", str(summary_path))
+    monkeypatch.setenv("CONTRACT_STAGE5_RESULT_FILE", str(result_path))
+
+    response = TestClient(app).get("/api/stage5-result")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "summary": {"status": "SUCCEEDED", "finding_count": 1},
+        "result": {"findings": [], "evidences": []},
+    }
 
 
 def test_window_inspector_returns_sections_windows_and_exact_coverage() -> None:

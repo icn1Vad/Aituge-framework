@@ -17,11 +17,16 @@ from typing import Any, Callable, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from services.contract.capabilities.window_extraction import (
-    AlignedExtraction,
-    WindowExtractionRequest,
-    WindowExtractionResult,
-)
+try:
+    from services.contract.capabilities.window_extraction import (
+        AlignedExtraction,
+        WindowExtractionRequest,
+        WindowExtractionResult,
+    )
+except ModuleNotFoundError as exc:  # standalone capability mount in the runtime image
+    if exc.name != "services":
+        raise
+    from window_extraction import AlignedExtraction, WindowExtractionRequest, WindowExtractionResult
 
 
 IR_FIELD_BY_CLASS = {

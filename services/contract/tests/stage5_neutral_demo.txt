@@ -1,0 +1,15 @@
+NEUTRAL DEMO SERVICES AGREEMENT.
+
+Party A is Alpha Demo Company. Party B is Beta Demo Company.
+
+Party B shall design and deliver a test knowledge platform within thirty days after signing. Party A shall pay a total service fee of USD 100000 within ten business days after final acceptance and receipt of a valid invoice. Party B shall provide source code, deployment instructions and user documentation at delivery.
+
+Party A shall inspect the deliverables within five business days against the written functional checklist, security test report and availability target of 99.9 percent. If Party A gives no written rejection within that period, the deliverables are deemed accepted. Party B shall correct any material defect within five business days after notice.
+
+Late payment bears liquidated damages of 0.05 percent per day, capped at ten percent of the unpaid amount. Party B is liable without any monetary cap for every indirect loss, lost profit and third party claim, regardless of fault.
+
+Party A may terminate this agreement immediately for convenience without compensation, while Party B may terminate only after Party A has failed to pay for ninety days.
+
+Party B shall keep confidential information secret for five years and may disclose it only to personnel who need access. All intellectual property created under this agreement belongs exclusively to Party A after payment.
+
+Any dispute shall first be negotiated for fifteen days and then submitted to the court where Party A is located. This agreement is governed by the laws of the fictional test jurisdiction. Neither party may assign this agreement without the other party written consent.

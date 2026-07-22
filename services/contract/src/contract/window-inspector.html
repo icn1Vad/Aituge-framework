@@ -51,6 +51,12 @@
     <span id="state" class="hint"></span>
   </section>
   <section class="panel">
+    <div class="hint">阶段 5：隔离环境完整链路结果（Window IR → 风险审查 → Finding/Evidence）。</div>
+    <button id="stage5-load">查看阶段 5 完整审查结果</button>
+    <span id="stage5-state" class="hint"></span>
+    <div id="stage5-result" class="extract-result" hidden></div>
+  </section>
+  <section class="panel">
     <div class="hint">模拟正式链路已有的 resolve_parties 结果；仅作为模型理解上下文，不会写入 extraction_text、原文 Anchor 或 Evidence。</div>
     <div class="party-grid">
       <label>甲方名称<input id="party-a-name" type="text" placeholder="请输入合同中的甲方名称"></label>
@@ -94,9 +100,37 @@
   const result = document.querySelector('#result');
   const extractAllButton = document.querySelector('#extract-all');
   const shadowButton = document.querySelector('#shadow-compare');
+  const stage5Button = document.querySelector('#stage5-load');
   let inspection = null;
   let latestWindowResult = null;
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  stage5Button.addEventListener('click', async () => {
+    const stateBox = document.querySelector('#stage5-state');
+    const outputBox = document.querySelector('#stage5-result');
+    stage5Button.disabled = true; stateBox.textContent = ' 加载中…'; outputBox.hidden = true;
+    try {
+      const response = await fetch('/api/stage5-result');
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || JSON.stringify(body));
+      const summary = body.summary || {};
+      const result = body.result || {};
+      const findings = result.findings || [];
+      const rows = findings.map((item, index) => `<tr><td>${index + 1}</td><td>${escapeHtml(item.risk_level)}</td><td>${escapeHtml(item.category)}</td><td style="white-space:normal">${escapeHtml(item.title)}</td><td>${(item.evidence_ids || []).length}</td></tr>`).join('');
+      outputBox.innerHTML = `<div class="metrics">` +
+        `<div class="metric"><span>状态</span><b class="good">${escapeHtml(summary.status)}</b></div>` +
+        `<div class="metric"><span>Finding</span>${escapeHtml(summary.finding_count)}</div>` +
+        `<div class="metric"><span>Evidence</span>${escapeHtml(summary.evidence_count)}</div>` +
+        `<div class="metric"><span>高/中/低</span>${escapeHtml(summary.risk_counts?.high_count || 0)} / ${escapeHtml(summary.risk_counts?.medium_count || 0)} / ${escapeHtml(summary.risk_counts?.low_count || 0)}</div>` +
+        `</div><div class="meta">Review ${escapeHtml(summary.review_id)}<br>Result Hash ${escapeHtml(summary.result_hash)}<br>主体：${escapeHtml(result.contract_profile?.our_party)}（我方） / ${escapeHtml(result.contract_profile?.counterparty)}（相对方）</div>` +
+        `<div style="overflow:auto"><table><thead><tr><th>#</th><th>风险</th><th>类别</th><th>标题</th><th>证据</th></tr></thead><tbody>${rows}</tbody></table></div>` +
+        `<details><summary>完整 Finding/Evidence JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
+      outputBox.hidden = false; stateBox.textContent = ' 完成';
+    } catch (error) {
+      outputBox.innerHTML = `<span class="error">${escapeHtml(error.message)}</span>`;
+      outputBox.hidden = false; stateBox.textContent = ' 失败';
+    } finally { stage5Button.disabled = false; }
+  });
 
   function partyContext() {
     const partyA = document.querySelector('#party-a-name').value.trim();

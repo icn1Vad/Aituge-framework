@@ -32,7 +32,14 @@ from contract.internal.models import (
     ContractDocumentToolRequest,
     ContractIrToolData,
     ContractIrToolRequest,
+    ContractWindowData,
+    ContractWindowExpectedBlockData,
+    ContractWindowOffsetData,
+    ContractWindowPlanToolData,
+    ContractWindowPlanToolRequest,
 )
+from contract.ir.windowing import build_section_units, build_section_windows, validate_window_coverage
+from contract.parser.models import ParsedContractBlock
 from contract.persistence.postgres.callback_repository import FrameworkCallbackRepository
 from contract.persistence.postgres.repository import ContractRepository
 from contract.review import merge_review_stage_results, namespace_review_stage_result
@@ -159,6 +166,72 @@ class ContractInternalService:
             generation_id=generation["id"],
             generation_status=generation["status"],
             contract_ir=contract_ir,
+        )
+
+    def get_window_plan(
+        self,
+        request: ContractWindowPlanToolRequest,
+    ) -> ContractWindowPlanToolData:
+        review = self._tool_context(request.review_id, request.document_id)
+        generation = self._generation(review)
+        rows = self.repository.list_blocks(generation["id"], tenant_id=review["tenant_id"])
+        blocks = [
+            ParsedContractBlock(
+                block_id=row["block_id"],
+                block_no=row["block_no"],
+                block_type=row["block_type"],
+                text=row["text"],
+                page_number=row["page_number"],
+                paragraph_no=row["paragraph_no"],
+                char_start=row["char_start"],
+                char_end=row["char_end"],
+                heading_path=list(row["heading_path"]),
+                metadata=dict(row["metadata_json"]),
+            )
+            for row in rows
+        ]
+        sections = build_section_units(blocks)
+        windows = build_section_windows(sections)
+        validate_window_coverage(blocks, windows)
+        expected = [item for item in blocks if item.block_type != "footer" and item.text]
+        return ContractWindowPlanToolData(
+            review_id=review["id"],
+            document_id=review["document_id"],
+            generation_id=generation["id"],
+            expected_blocks=[
+                ContractWindowExpectedBlockData(
+                    block_id=item.block_id,
+                    text_length=len(item.text),
+                )
+                for item in expected
+            ],
+            expected_section_ids=[item.section_id for item in sections],
+            windows=[
+                ContractWindowData(
+                    window_id=window.window_id,
+                    sequence_no=window.sequence_no,
+                    section_ids=list(window.section_ids),
+                    heading_path=list(window.heading_path),
+                    clause_nos=list(window.clause_nos),
+                    primary_block_ids=list(window.primary_block_ids),
+                    estimated_tokens=window.estimated_tokens,
+                    source_text=window.source_text,
+                    context_text=window.context_text,
+                    offset_map=[
+                        ContractWindowOffsetData(
+                            rendered_start=offset.rendered_start,
+                            rendered_end=offset.rendered_end,
+                            block_id=offset.block_id,
+                            block_no=offset.block_no,
+                            block_char_start=offset.block_char_start,
+                            block_char_end=offset.block_char_end,
+                            page_number=offset.page_number,
+                        )
+                        for offset in window.offset_map
+                    ],
+                )
+                for window in windows
+            ],
         )
 
     def validate_final_result(self, value: FinalizeReviewStageResult) -> ReviewResultData:
