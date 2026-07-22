@@ -2,9 +2,13 @@
 
 状态：阶段 6.0 冻结稿
 
-基线提交：`b471c3624956899706c9aca7d379340cad17e6af`
+基线提交：`7e4e9760d8bdc04374c26d8692151a0399574e50`
 
-基线阶段：Contract IR Window 阶段 5.4
+基线阶段：Contract IR Window 阶段 5.5 最终提交
+
+阶段6.0原提交：`ea68a7f08f29d143d5e7d7f76eb0852d501e6014`
+
+阶段6.0 rebase后提交：`fabd5fd006bc0a0dcd3236aabce213d8e144883f`
 
 分支：`feat/contract-risk-review-playbook-v1`
 
@@ -30,6 +34,22 @@ Contract Python RiskReviewPlanBuilder（确定性函数，不是Framework Stage�
 以下能力是只读基础：`parse_contract`、`resolve_parties`、Contract IR Window、300 Token Window、并发10、LangExtract、Unicode对齐、Anchor Mapper、Coverage、局部重试、主体上下文、DATE/AMOUNT规范化、DEFINITION唯一溯源、阶段5.1、Evidence验证和Result Hash。
 
 不得修改Java、前端、数据库、固定OpenAPI、Python/Java状态、Attempt恢复、Result Sink、正式Finding/Evidence DTO、Window实现或`schema_version=1.0`。若基础能力阻塞，记录位置、复现、影响和归属后停止，等待另开修复分支。
+
+### 1.1 阶段6固定测试输入
+
+阶段6统一使用服务器隔离目录`/home/aituge/workspace/contract-review-dev/test-artifacts/risk-review-input`，仅在服务器只读加载，不下载、不加入Git、不重新解析合同、不重新执行主体解析或Window IR抽取。正式环境未显式配置`CONTRACT_RISK_FIXTURE_DIR`时禁止加载Fixture，也不得回退到固定路径。
+
+固定文件及SHA-256：
+
+| 文件 | SHA-256 | 用途 |
+|---|---|---|
+| `contract-ir-stage-result-service-outsourcing-0829-v1.json` | `bfc3388b471c32938dd8f7092d9c404e4817fa4ade3aff4c951042b9d25ab16c` | 严格`CONTRACT_IR_STAGE_V1`输入 |
+| `contract-risk-review-fixture-service-outsourcing-0829-v1.json` | `9a89bde1e4b05e403a6fefe24a50f494feea5af40e7b1d40f4da5fe9b42dc15e` | Window、Block、Offset、Anchor、Coverage和IR |
+| `risk-review-context-service-outsourcing-0829-v1.json` | `a76b7059ca41aa4bc3e9c1e0b791dd505138872eb73abc5275d847d6fdecb629` | 固定主体、立场和态度 |
+
+`semantic_ir`是14个分类数组，总计101项，不是101元素的平面数组；固定Fixture包含12个Window，Coverage为93/93 Block、12/12 Section、12/12 Window。测试上下文固定为：我方`杭州戎一教育科技有限公司`，相对方`苏州爱兔格人工智能科技有限公司`，`PARTY_A`，`NEUTRAL`。
+
+阶段6.1使用严格Pydantic Stage模型加载标准Artifact。Fixture Loader只能位于测试工具或隐藏隔离测试适配，不进入公开OpenAPI，不完整打印Fixture内容，不成为生产运行依赖。
 
 ## 2. 基线和目标指标
 
@@ -188,7 +208,7 @@ Reviewer只接收本Unit相关投影，不读取全文。Source Excerpt必须携
 | missing_ambiguity_completeness | MAC-005 | 空白、待定、占位符和断裂引用 | AMBIGUITY | missing_ambiguous_clauses_result |
 | missing_ambiguity_completeness | MAC-006 | 必要救济、退出或争议机制缺失 | MISSING_CLAUSE | missing_ambiguous_clauses_result |
 
-`FVA-005 → OTHER`是唯一显式允许的`OTHER`，用于正式Category尚无专门枚举的基础效力/强制性规范风险，不是兜底。其他Check返回`OTHER`一律失败；该项需在阶段6.1前确认。
+`FVA-005 → OTHER`已经确认，是唯一显式允许的`OTHER`，用于正式Category尚无专门枚举的基础效力/强制性规范风险，不是兜底。只有`domain=formation_validity_authority`、`check_code=FVA-005`且`risk_type=MANDATORY_RULE_OR_VALIDITY_RISK`时允许；来源Unit、domain或risk_type不一致，以及其他Check返回`OTHER`时，整个Risk Review输出非法。
 
 ## 8. 横向候选生成
 
@@ -211,14 +231,14 @@ Contract Python构建内部图：Clause、IR Item、Definition、DATE、AMOUNT�
 | 项目 | 软限制 | 硬限制 | 超限处理 |
 |---|---:|---:|---|
 | 公共上下文 | 600 tokens | 800 tokens | Plan失败 |
-| 单基础Unit输入 | 6,000 | 8,000 | Context预算错误 |
-| 单横向Unit输入 | 5,000 | 8,000 | Context预算错误 |
-| 单Specialist输入 | 6,000 | 8,000 | Context预算错误 |
-| 单Unit输出 | 4,000 | 6,000 | Unit失败，不截断 |
+| 单基础Unit输入（目标2,000～4,000） | 5,000 | 6,000 | 按check_code确定性拆Batch，仍超限则失败 |
+| 单横向Unit输入（目标1,000～3,000） | 4,000 | 5,000 | 按check_code确定性拆Batch，仍超限则失败 |
+| 单Specialist输入（目标2,000～4,000） | 5,000 | 6,000 | 按check_code确定性拆Batch，仍超限则失败 |
+| 单Unit输出（目标不超过1,500） | 2,500 | 4,000 | Unit失败，不截断 |
 
-优化只能移除重复技术字段、按IR类型投影、只带候选Excerpt；不得删除Check。仍超限则失败。
+优化只能移除重复技术字段、按IR类型投影、只带候选Excerpt；不得删除Check。预计超过硬上限时，Plan Builder按`check_code`确定性拆Batch，不允许静默截断。模型不得复述合同、输出分析过程、重复输出相同Evidence，也不得生成Python能确定性补全的ID、页码、Hash和技术字段。
 
-常规合同正常调用5～7次；最多两个Specialist后正常硬上限9次；每Unit最多一次修复，理论硬上限18次。同一时刻最多7个模型调用，Specialist等待槽位。七个固定Unit支持同时启动；无候选横向Unit立即完成。并发由隐藏执行单元内部Semaphore控制，不修改Framework全局并发3。
+常规合同正常调用5～7次；最多两个Specialist后正常硬上限9次；Schema修复只重试失败Unit，不得因一个Unit失败重跑全部Unit；每Unit最多一次修复，18次仅是异常理论硬上限。同一时刻最多7个模型调用，Specialist等待槽位。七个固定Unit支持同时启动；无候选横向Unit立即完成。并发由隐藏执行单元内部Semaphore控制，不修改Framework全局并发3。
 
 ## 10. complete_with_usage观测协议
 
@@ -297,6 +317,8 @@ temperature=0、thinking=false、最多修复当前Unit一次
 完整Token和TTFT按review_unit_id记录
 阶段5.1、verify_evidence、finalize_review全部复用
 公开协议、OpenAPI、状态、Attempt和Java不变
+阶段6只读使用服务器固定101项IR/12 Window Fixture
+FVA-005是唯一允许OTHER且risk_type固定
 ```
 
 阶段6.0完成后停止，未经确认不得开始6.1。

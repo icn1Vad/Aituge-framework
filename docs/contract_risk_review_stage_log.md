@@ -4,7 +4,7 @@
 
 ## 工作约束
 
-- 阶段 6 从阶段 5.4 提交 `b471c3624956899706c9aca7d379340cad17e6af` 建立独立工作树。
+- 阶段 6 最初从阶段 5.4 提交`b471c3624956899706c9aca7d379340cad17e6af`建立；确认Window工作结束后，已迁移到阶段5.5最终提交`7e4e9760d8bdc04374c26d8692151a0399574e50`。
 - 分支：`feat/contract-risk-review-playbook-v1`。
 - 工作树：`D:\contract-risk-review-v1`。
 - 不修改、测试、提交或覆盖原 Window 工作树中正在进行的改动。
@@ -18,9 +18,14 @@
 
 ### 基线
 
-- 阶段 5.4 提交：`b471c3624956899706c9aca7d379340cad17e6af`。
-- 阶段 5.4 内容：定向纠正合同 Window 随机改写；真实模型定向验证和完整 12 Window 链路均通过。
-- 新分支直接从该提交建立，不包含原 Window 工作树中的未提交改动。
+- Window最终分支：`feat/contract-ir-window-v1`。
+- 旧Window基线：`b471c3624956899706c9aca7d379340cad17e6af`，阶段5.4。
+- 新Window最终基线：`7e4e9760d8bdc04374c26d8692151a0399574e50`，`修复：合同窗口支持增量重试与显式值补全`，阶段5.5。
+- Window本地工作树干净，本地HEAD与GitHub远程分支HEAD均为`7e4e9760`；全过程只读，未在Window工作树修改、提交、重置或覆盖文件。
+- 原阶段6.0提交：`ea68a7f08f29d143d5e7d7f76eb0852d501e6014`。
+- 本地备份分支：`backup/contract-risk-review-stage6.0-ea68a7f`。
+- rebase后阶段6.0提交：`fabd5fd006bc0a0dcd3236aabce213d8e144883f`。
+- rebase结果：无冲突；提交图为`7e4e976 → fabd5fd`，两份阶段6.0设计文件完整保留。
 
 ### 本阶段范围
 
@@ -52,7 +57,17 @@
 17. `legacy/window/playbook`配置开关、回滚方式和失败恢复路径固定。
 18. 阶段 6.1～6.9 的实施顺序、每阶段测试门禁和停止点固定。
 19. 阶段 6.0 结束后必须停止，不自动进入阶段 6.1。
-20. `FVA-005 -> OTHER -> rights_obligations_review_result`作为唯一待用户确认的显式 `OTHER`映射，不得充当通用兜底。
+20. `FVA-005 -> OTHER -> rights_obligations_review_result`已经确认，是唯一允许的显式`OTHER`映射，不得充当通用兜底；内部`risk_type`固定为`MANDATORY_RULE_OR_VALIDITY_RISK`。
+
+### 固定Fixture核验
+
+- 只读目录：`/home/aituge/workspace/contract-review-dev/test-artifacts/risk-review-input`。
+- 已完整阅读`README.md`；没有下载、修改、覆盖或加入Git。
+- `SHA256SUMS`验证：三个JSON和README全部`OK`。
+- 标准Stage Artifact：`result_type=CONTRACT_IR_STAGE_V1`；14个IR分类数组合计101项。
+- 完整Fixture：12个Window，12个Mapped Extraction；Coverage为93/93 Block、12/12 Section、12/12 Window，无失败Window。
+- 固定上下文：杭州戎一教育科技有限公司、苏州爱兔格人工智能科技有限公司、`PARTY_A`、`NEUTRAL`。
+- 阶段6.1测试从该Artifact直接进入PlanBuilder；不得重新运行parse、resolve_parties或extract_contract_ir，外部模型调用必须为0。
 
 ### 校验结果
 
@@ -60,7 +75,7 @@
 - 设计稿包含阶段6.0要求的20类冻结内容和阶段6.1～6.9门禁。
 - 映射表共45条：组合键45个、`check_code` 45个，均无重复。
 - 五类`legacy_artifact_type`全部属于当前代码已经存在的Artifact；非法Artifact为0。
-- `OTHER`仅出现1次，即文档明确列出的`FVA-005`待确认映射。
+- `OTHER`仅出现1次，即已经确认的`FVA-005`受限兼容映射。
 - 当前差异严格限定为本阶段两份文档，没有修改业务代码、配置、依赖或Compose。
 - `git diff --check`通过。
 
@@ -72,14 +87,16 @@
 
 - 阶段 6.0 文档校验全部通过。
 - 提交并推送远程功能分支。
-- 用户确认阶段 6.0 设计以及 `FVA-005`的显式 `OTHER`映射。
+- 基线迁移和固定Fixture/预算设计修订已单独提交并推送。
 - 用户明确下达开始阶段 6.1 的指令。
 
 ## 阶段 6.1：Playbook 与 PlanBuilder
 
-状态：未开始。
+状态：待基线迁移文档提交后开始。
 
 目标：实现固定模型、基础Manifest、Router、确定性PlanBuilder、Plan Hash、隐藏Plan接口、适用性和完整性门禁；不得新增模型调用。
+
+固定输入：服务器标准`CONTRACT_IR_STAGE_V1` Artifact、固定Risk Context和完整Window/Block/Anchor Fixture。直接生成Plan，不执行parse、主体解析、IR抽取、旧风险Agent、Tool或LLM。
 
 开始前：重新完整阅读联合冻结稿、`contract_risk_review_design.md`和本记录。
 
