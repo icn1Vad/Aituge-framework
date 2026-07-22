@@ -12,8 +12,8 @@
 - 正式协议：顶层《合同审查一期 Java–Python–Framework 联合技术方案 v1.0（冻结稿）》
 - 自动测试：`git diff --check` 通过，设计标题及五阶段清单检查通过
 - 服务器独立环境：`contract-review-dev-framework-1`、`contract-review-dev-ai-contract-1`、PostgreSQL、Redis、Java 均运行；后续使用独立 `python-ir-window-source`，不修改现有脏 `python-source`
-- 提交：待生成
-- 远程分支：待推送
+- 提交：`07b6c1b 文档：冻结合同IR窗口化改造方案`
+- 远程分支：`origin/feat/contract-ir-window-v1`
 
 ## 阶段 1：Section Unit、Window Builder、Offset Map
 
