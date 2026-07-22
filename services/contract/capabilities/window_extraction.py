@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
@@ -35,6 +36,15 @@ ExtractionClass = Literal[
 
 _MAX_RETRY_FEEDBACK_CHARS = 1_500
 _MAX_UNALIGNED_FEEDBACK_ITEMS = 6
+
+EXPLICIT_DATE_PATTERN = re.compile(
+    r"(?:\d+|[零〇一二三四五六七八九十百千万两]+)(?:个)?"
+    r"(?:工作日|自然日|日|天|周|个月|月|年)"
+)
+EXPLICIT_AMOUNT_PATTERN = re.compile(
+    r"(?:人民币|￥|¥)?(?:\d[\d,.]*|[零〇一二三四五六七八九十百千万亿两]+)"
+    r"(?:元|万元|亿元|%|％)|百分之[零〇一二三四五六七八九十百千万两\d.]+"
+)
 
 _SYSTEM_PROMPT = """你是合同语义信息抽取器，不是风险审查器。
 只从本次给出的 source_text 提取，不调用工具，不使用外部事实，不分析条款是否公平。
@@ -75,10 +85,14 @@ class WindowExtractionError(RuntimeError):
         message: str,
         *,
         retry_feedback: str | None = None,
+        accepted_extractions: list[AlignedExtraction] | None = None,
+        value_canonicalizations: list[ValueCanonicalization] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.retry_feedback = retry_feedback
+        self.accepted_extractions = list(accepted_extractions or [])
+        self.value_canonicalizations = list(value_canonicalizations or [])
 
 
 class StrictModel(BaseModel):
@@ -225,7 +239,21 @@ class WindowExtractionEngine:
             thinking_override=False,
         )
         envelope = _remove_context_only_definitions(request, _parse_envelope(content))
-        aligned = _align_extractions(request, envelope, self.resolver_factory())
+        try:
+            aligned = _align_extractions(request, envelope, self.resolver_factory())
+        except WindowExtractionError as exc:
+            accepted = _augment_explicit_value_extractions(
+                request,
+                exc.accepted_extractions,
+            )
+            accepted, canonicalizations = _canonicalize_value_extractions(
+                request.source_text,
+                accepted,
+            )
+            exc.accepted_extractions = accepted
+            exc.value_canonicalizations = canonicalizations
+            raise
+        aligned = _augment_explicit_value_extractions(request, aligned)
         aligned, canonicalizations = _canonicalize_value_extractions(
             request.source_text,
             aligned,
@@ -343,19 +371,6 @@ def _align_extractions(
         )
         if not candidates
     ]
-    if unaligned_items:
-        first_class = unaligned_items[0].extraction_class
-        message = (
-            f"{first_class} 未在当前 Window 原文中获得确定性字面匹配"
-            if len(unaligned_items) == 1
-            else f"{len(unaligned_items)} 条抽取项未在当前 Window 原文中获得确定性字面匹配"
-        )
-        raise WindowExtractionError(
-            "WINDOW_ALIGNMENT_FAILED",
-            message,
-            retry_feedback=_unaligned_retry_feedback(unaligned_items),
-        )
-
     model_occurrence_counts = Counter(normalized_keys)
     used_candidate_ranges: dict[tuple[str, str], set[tuple[int, int]]] = {}
     results: list[AlignedExtraction] = []
@@ -366,6 +381,8 @@ def _align_extractions(
         strict=True,
     ):
         candidates, alignment_status = candidate_set
+        if not candidates:
+            continue
         expected_occurrences = model_occurrence_counts[occurrence_key]
         if len(candidates) > 1 and len(candidates) != expected_occurrences:
             retry_feedback = _ambiguous_alignment_retry_feedback(
@@ -379,6 +396,7 @@ def _align_extractions(
                     f" {len(candidates)} 个候选位置"
                 ),
                 retry_feedback=retry_feedback,
+                accepted_extractions=results,
             )
         used_ranges = used_candidate_ranges.setdefault(occurrence_key, set())
         available_candidates = [item for item in candidates if item not in used_ranges]
@@ -386,6 +404,7 @@ def _align_extractions(
             raise WindowExtractionError(
                 "WINDOW_ALIGNMENT_FAILED",
                 f"{model_item.extraction_class} 的模型输出次数超过原文候选位置数量",
+                accepted_extractions=results,
             )
         start, end = available_candidates[0]
         used_ranges.add((start, end))
@@ -413,6 +432,7 @@ def _align_extractions(
             raise WindowExtractionError(
                 "WINDOW_ALIGNMENT_FAILED",
                 f"{model_item.extraction_class} 未获得 LangExtract 定位结果",
+                accepted_extractions=results,
             )
         aligned = aligned_items[0]
         interval = aligned.char_interval
@@ -423,6 +443,7 @@ def _align_extractions(
             raise WindowExtractionError(
                 "WINDOW_ALIGNMENT_FAILED",
                 f"{model_item.extraction_class} 未获得精确原文定位",
+                accepted_extractions=results,
             )
         aligned_start = int(interval.start_pos)
         aligned_end = int(interval.end_pos)
@@ -434,6 +455,7 @@ def _align_extractions(
             raise WindowExtractionError(
                 "WINDOW_ALIGNMENT_FAILED",
                 f"{model_item.extraction_class} 的定位文本与原文区间不一致",
+                accepted_extractions=results,
             )
         spans = _map_source_spans(request, start, end)
         aligned_payload = model_item.model_dump()
@@ -447,9 +469,75 @@ def _align_extractions(
                 source_spans=spans,
             )
         )
+    if unaligned_items:
+        first_class = unaligned_items[0].extraction_class
+        message = (
+            f"{first_class} 未在当前 Window 原文中获得确定性字面匹配"
+            if len(unaligned_items) == 1
+            else f"{len(unaligned_items)} 条抽取项未在当前 Window 原文中获得确定性字面匹配"
+        )
+        raise WindowExtractionError(
+            "WINDOW_ALIGNMENT_FAILED",
+            message,
+            retry_feedback=_unaligned_retry_feedback(unaligned_items),
+            accepted_extractions=results,
+        )
     return sorted(
         results,
         key=lambda item: (item.rendered_char_start, item.extraction_class, item.extraction_text),
+    )
+
+
+def _augment_explicit_value_extractions(
+    request: WindowExtractionRequest,
+    extractions: list[AlignedExtraction],
+) -> list[AlignedExtraction]:
+    """Add source-backed DATE/AMOUNT values without asking the model to recall them.
+
+    The patterns only identify explicit lexical values.  They do not infer a
+    legal subtype or relationship.  Relation binding remains in
+    ``_canonicalize_value_extractions`` and is accepted only when the aligned
+    spans determine one unambiguous related semantic item.
+    """
+
+    augmented = list(extractions)
+    for extraction_class, pattern in (
+        ("DATE", EXPLICIT_DATE_PATTERN),
+        ("AMOUNT", EXPLICIT_AMOUNT_PATTERN),
+    ):
+        for match in pattern.finditer(request.source_text):
+            start, end = match.span()
+            if any(
+                item.extraction_class == extraction_class
+                and item.rendered_char_start <= start
+                and item.rendered_char_end >= end
+                for item in augmented
+            ):
+                continue
+            grounded_text = request.source_text[start:end]
+            augmented.append(
+                AlignedExtraction(
+                    extraction_class=extraction_class,
+                    extraction_text=grounded_text,
+                    subject=None,
+                    predicate=None,
+                    object=grounded_text,
+                    term=None,
+                    meaning=None,
+                    referenced_clause_nos=[],
+                    rendered_char_start=start,
+                    rendered_char_end=end,
+                    alignment_status="MATCH_EXACT",
+                    source_spans=_map_source_spans(request, start, end),
+                )
+            )
+    return sorted(
+        augmented,
+        key=lambda item: (
+            item.rendered_char_start,
+            item.extraction_class,
+            item.extraction_text,
+        ),
     )
 
 
@@ -624,13 +712,13 @@ def _ambiguous_alignment_retry_feedback(
             "双方、我方、相对方、本合同等指代，请删除该 DEFINITION；若它是真正的"
             "业务术语定义，请把 extraction_text 扩展为同时包含 term 和 meaning、"
             "且在 source_text 中唯一出现的完整连续定义性原文句段。不得任选第一处，"
-            "并请返回当前 Window 的完整抽取结果"
+            "并请修正该抽取项"
         )
     return (
         f"{item.extraction_class} 的 extraction_text={quoted_text} 在 source_text 中匹配到"
         f" {candidate_count} 处。请逐字引用能够唯一确定本项语义的完整连续原文句段；"
         "若原文确有多处独立且相同的语义，请按原文顺序为每一处分别返回一项。"
-        "不得任选第一处，并请返回当前 Window 的完整抽取结果"
+        "不得任选第一处，并请修正该抽取项"
     )
 
 
@@ -649,7 +737,7 @@ def _unaligned_retry_feedback(items: list[ModelExtraction]) -> str:
         f"以下 {len(items)} 项经空白、普通标点和全半角规范化后，仍不是 source_text "
         f"中的连续原文：{item_details}{omitted}。请把每项 extraction_text 改为当前 "
         "source_text 中能够支持该语义的完整连续原文；如果原文没有对应依据就删除该项。"
-        "禁止摘要、改写、补字或拼接不连续句段，并返回当前 Window 的完整抽取结果"
+        "禁止摘要、改写、补字或拼接不连续句段"
     )
 
 
@@ -795,8 +883,11 @@ def _map_source_spans(
 
 __all__ = [
     "AlignedExtraction",
+    "EXPLICIT_AMOUNT_PATTERN",
+    "EXPLICIT_DATE_PATTERN",
     "ModelExtraction",
     "SourceSpan",
+    "ValueCanonicalization",
     "WindowExtractionEngine",
     "WindowExtractionEnvelope",
     "WindowExtractionError",

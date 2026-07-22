@@ -209,8 +209,10 @@ async def test_window_extractor_accepts_complete_json_with_explanatory_prefix() 
         model_id="contract-model",
     )
 
-    assert len(result.extractions) == 1
-    assert result.extractions[0].source_spans[0].block_id == "block-001"
+    obligation = next(
+        item for item in result.extractions if item.extraction_class == "OBLIGATION"
+    )
+    assert obligation.source_spans[0].block_id == "block-001"
 
 
 @pytest.mark.asyncio
@@ -232,6 +234,8 @@ async def test_window_extractor_rejects_ungrounded_or_paraphrased_text() -> None
     )
     assert "如果原文没有对应依据就删除该项" in (error.retry_feedback or "")
     assert "乙方需要尽快交付成果" not in str(error)
+    assert [item.extraction_class for item in error.accepted_extractions] == ["DATE"]
+    assert error.accepted_extractions[0].extraction_text == "十日"
 
 
 @pytest.mark.asyncio
@@ -279,6 +283,86 @@ async def test_window_extractor_reports_all_unaligned_items_in_private_feedback(
     assert "禁止摘要、改写、补字或拼接不连续句段" in (error.retry_feedback or "")
     assert "乙方需要尽快交付成果" not in str(error)
     assert "甲方随后把费用付清" not in str(error)
+
+
+@pytest.mark.asyncio
+async def test_window_extractor_keeps_valid_items_when_another_item_is_unaligned() -> None:
+    source = "乙方应在十日内交付成果。甲方有权要求整改。"
+    runtime = FakeRuntime(
+        json.dumps(
+            {
+                "extractions": [
+                    _semantic_item(
+                        "OBLIGATION",
+                        "乙方应在十日内交付成果",
+                        subject="乙方",
+                        predicate="应交付",
+                        object_="成果",
+                    ),
+                    _semantic_item(
+                        "RIGHT",
+                        "甲方可以要求乙方立即完成整改",
+                        subject="甲方",
+                        predicate="有权要求",
+                        object_="整改",
+                    ),
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    with pytest.raises(WindowExtractionError) as exc_info:
+        await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+            _single_block_request(source),
+            tenant_id="tenant-001",
+            model_id="contract-model",
+        )
+
+    accepted = exc_info.value.accepted_extractions
+    assert [item.extraction_class for item in accepted] == ["OBLIGATION", "DATE"]
+    assert accepted[0].extraction_text == "乙方应在十日内交付成果"
+    assert accepted[1].extraction_text == "十日"
+
+
+@pytest.mark.asyncio
+async def test_window_extractor_adds_explicit_date_and_amount_from_source() -> None:
+    source = (
+        "甲方可要求乙方承担每人次200至2000元的违约金。"
+        "甲方逾期付款的，每逾期一天，应继续支付违约金。"
+    )
+    runtime = FakeRuntime(
+        json.dumps(
+            {
+                "extractions": [
+                    _semantic_item(
+                        "RIGHT",
+                        "甲方可要求乙方承担每人次200至2000元的违约金",
+                        subject="甲方",
+                        predicate="可要求",
+                        object_="乙方承担违约金",
+                    )
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    result = await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+        _single_block_request(source),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    values = {
+        (item.extraction_class, item.extraction_text): item
+        for item in result.extractions
+        if item.extraction_class in {"DATE", "AMOUNT"}
+    }
+    assert set(values) == {("AMOUNT", "2000元"), ("DATE", "一天")}
+    assert values[("AMOUNT", "2000元")].predicate == "数值约束为"
+    assert values[("DATE", "一天")].predicate == "时间约束为"
+    assert all(item.source_spans[0].quoted_text == item.extraction_text for item in values.values())
 
 
 @pytest.mark.asyncio
@@ -549,13 +633,18 @@ async def test_window_extractor_allows_multiple_ir_types_on_same_source_span() -
         model_id="contract-model",
     )
 
-    assert [item.extraction_class for item in result.extractions] == [
+    shared_span_items = [
+        item
+        for item in result.extractions
+        if item.extraction_class in {"OBLIGATION", "PAYMENT"}
+    ]
+    assert [item.extraction_class for item in shared_span_items] == [
         "OBLIGATION",
         "PAYMENT",
     ]
-    assert result.extractions[0].rendered_char_start == result.extractions[1].rendered_char_start
-    assert result.extractions[0].rendered_char_end == result.extractions[1].rendered_char_end
-    assert all(item.source_spans[0].block_id == "block-002" for item in result.extractions)
+    assert shared_span_items[0].rendered_char_start == shared_span_items[1].rendered_char_start
+    assert shared_span_items[0].rendered_char_end == shared_span_items[1].rendered_char_end
+    assert all(item.source_spans[0].block_id == "block-002" for item in shared_span_items)
 
 
 @pytest.mark.asyncio

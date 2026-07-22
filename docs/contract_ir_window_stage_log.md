@@ -191,3 +191,18 @@
 - 全量回归：同一份 93 Block、12 Section、12 Window 合同继续使用并发 10 完整抽取，隔离 API 返回 `HTTP 200`；证明修复没有破坏其他 11 个 Window 的 Schema、Alignment、Coverage 或确定性合并
 - 隔离环境：源码同步并重启 `contract-ir-window-stage2-framework`，继续复用 `contract-ir-window-stage1-ui`；用户可直接在原测试页面复测；正式容器、正式环境和 Java 未修改
 - 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage54-window2-result.json`
+
+## 阶段 5.5：保留已验证项的增量重试与显式值补全
+
+- 状态：通过；原先反复失败的第 11 个 Window 定向验收一次成功，12 Window 全量回归成功
+- 开始前设计复读：已再次完整读取唯一联合冻结稿、Window 改造设计和本阶段记录；确认本次只调整 Framework 内部 Window 抽取、校验与局部重试，不修改 Java–Python API、OpenAPI、公开 DTO、状态机、Attempt、回调、Finding/Evidence 或 `schema_version=1.0`
+- 现场原因：旧逻辑把单次模型响应作为不可拆分的整体；任意一个抽取项未对齐或任意强指示类别缺失时，会丢弃同一响应中已经通过严格原文校验的其他项，第二次再要求模型重新生成全部内容。因此模型修好 `RIGHT` 时可能漏掉 `DATE`，修好日期后又可能漏掉其他类别，两个独立错误会依次耗尽两次局部执行机会
+- 增量重试实现：第一次响应逐项完成 Schema、字面对齐和 Source Span 映射；已通过项保存在当前 Window 的内存态；失败反馈只包含需要修复的抽取项和仍缺失的类别；第二次只接收增量结果，并按类别、渲染区间及真实 Block 字符区间确定性合并。后一次调用不能改写或覆盖前一次已经接受的语义项；第二次终检仍覆盖累计后的完整 Window 结果
+- 显式值补全：DATE 与 AMOUNT 使用通用原文字面模式生成 Source-backed 候选，不依赖模型重复召回；只识别数字/中文数字加时间单位、币种金额及百分数等明确文本，不硬编码合同条款号或本次样本值。候选直接继承 Offset Map、真实 Block 与 `[char_start,char_end)`；Python 只补中性 `时间约束为/数值约束为`，仅在 Span 能唯一确定关联时绑定业务项，不推断法律性质、不生成风险结论
+- 失败边界：两次执行后仍有错误时仍然失败并拒绝返回残缺 IR；没有放宽 Anchor、Coverage 或唯一定位规则；不使用语义相似、编辑距离、同义词或任选位置；已验证项只存在于单次 Window 执行内存中，不改变数据库和公开协议
+- 自动测试：Window 抽取与 Pipeline 定向测试 `42 passed`；合同相关回归 `60 passed`；Framework 全量排除依赖未启动独立 Smoke 服务的既有 `test_live_multi_capability.py` 后 `189 passed`。未排除时为 `189 passed, 1 failed`，唯一失败是连接该未启动服务被拒绝，与本次修改无关；`git diff --check` 通过
+- 第 11 个 Window 定向验收：真实 `deepseek-v4-pro` 第一次即成功，耗时 `8227 ms`，Coverage `4/4 Block`、`1/1 Section`、`1/1 Window`；得到 `12` 项 IR，其中 `RIGHT=3`、`OBLIGATION=2`、`PAYMENT=1`、`DATE=1`、`AMOUNT=2`；自动补出的 `DATE=一天` 精确定位到原始 Block `[16,18)`
+- 12 Window 全量回归：并发 `10`，总耗时 `16337 ms`，模型调用 `16` 次、局部重试 `4` 次；Coverage `93/93 Block`、`12/12 Section`、`12/12 Window`，失败 Window 为零，共得到 `101` 项 IR。第 7 个 Window 第一次保留 `9` 项并只补 `PAYMENT`，最终累计 `15` 项；第 10 个 Window 第一次保留 `3` 项并只补 `PAYMENT、DISPUTE`，最终累计 `5` 项，证明增量合并链路真实生效
+- 隔离环境：源码同步并重启 `contract-ir-window-stage2-framework`，继续复用 `contract-ir-window-stage1-ui`；测试页面和端口保持不变；正式容器、正式环境、Java、main 与 proof 分支均未修改
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage55-window11-result.json`、`/home/aituge/workspace/contract-review-dev/test-artifacts/stage55-full-window-result.json`
+- 后续观察：第 2、6 个 Window 的首项重复候选在尚未形成可保留项时仍会触发一次完整局部重试；本阶段已消除“已有正确结果被整体丢弃”的主要失败源，后续是否继续聚合全部 Alignment 错误应以真实失败率和质量数据决定，不继续堆叠 Prompt

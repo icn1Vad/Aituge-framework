@@ -20,13 +20,23 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 try:
     from services.contract.capabilities.window_extraction import (
         AlignedExtraction,
+        EXPLICIT_AMOUNT_PATTERN,
+        EXPLICIT_DATE_PATTERN,
+        ValueCanonicalization,
         WindowExtractionRequest,
         WindowExtractionResult,
     )
 except ModuleNotFoundError as exc:  # standalone capability mount in the runtime image
     if exc.name != "services":
         raise
-    from window_extraction import AlignedExtraction, WindowExtractionRequest, WindowExtractionResult
+    from window_extraction import (
+        AlignedExtraction,
+        EXPLICIT_AMOUNT_PATTERN,
+        EXPLICIT_DATE_PATTERN,
+        ValueCanonicalization,
+        WindowExtractionRequest,
+        WindowExtractionResult,
+    )
 
 
 IR_FIELD_BY_CLASS = {
@@ -55,14 +65,8 @@ _CATEGORY_CUES = {
     "PAYMENT": re.compile(r"付款|支付|价款|费用|结算|发票|税费|扣款|抵扣|抵销|冲抵"),
     "ACCEPTANCE": re.compile(r"验收"),
     "DISPUTE": re.compile(r"争议|仲裁|诉讼|管辖|人民法院"),
-    "DATE": re.compile(
-        r"(?:\d+|[零〇一二三四五六七八九十百千万两]+)(?:个)?"
-        r"(?:工作日|自然日|日|天|周|个月|月|年)"
-    ),
-    "AMOUNT": re.compile(
-        r"(?:人民币|￥|¥)?(?:\d[\d,.]*|[零〇一二三四五六七八九十百千万亿两]+)"
-        r"(?:元|万元|亿元|%|％)|百分之[零〇一二三四五六七八九十百千万两\d.]+"
-    ),
+    "DATE": EXPLICIT_DATE_PATTERN,
+    "AMOUNT": EXPLICIT_AMOUNT_PATTERN,
 }
 
 
@@ -355,6 +359,8 @@ class ContractIrWindowPipeline:
     ) -> WindowRunResult:
         attempts: list[WindowAttempt] = []
         retry_feedback: str | None = None
+        accepted_extractions: list[AlignedExtraction] = []
+        accepted_canonicalizations: list[ValueCanonicalization] = []
         for attempt_no in range(1, self.max_attempts_per_window + 1):
             started = self.clock()
             try:
@@ -364,7 +370,21 @@ class ContractIrWindowPipeline:
                     model_id=model_id,
                     retry_feedback=retry_feedback,
                 )
-                suspicious_empty = not extracted.extractions and _is_suspicious_empty(window)
+                accepted_extractions = _merge_aligned_extractions(
+                    accepted_extractions,
+                    extracted.extractions,
+                )
+                accepted_canonicalizations = _merge_value_canonicalizations(
+                    accepted_canonicalizations,
+                    extracted.value_canonicalizations,
+                )
+                accumulated = extracted.model_copy(
+                    update={
+                        "extractions": accepted_extractions,
+                        "value_canonicalizations": accepted_canonicalizations,
+                    }
+                )
+                suspicious_empty = not accumulated.extractions and _is_suspicious_empty(window)
                 duration_ms = round((self.clock() - started) * 1000)
                 if suspicious_empty:
                     attempts.append(
@@ -379,7 +399,7 @@ class ContractIrWindowPipeline:
                     )
                     retry_feedback = "关键条款 Window 返回空结果"
                     continue
-                missing_categories = _missing_expected_categories(window, extracted)
+                missing_categories = _missing_expected_categories(window, accumulated)
                 if missing_categories:
                     missing_text = "、".join(missing_categories)
                     attempts.append(
@@ -387,17 +407,17 @@ class ContractIrWindowPipeline:
                             attempt_no=attempt_no,
                             duration_ms=duration_ms,
                             status="SUSPICIOUS_CATEGORY",
-                            extraction_count=len(extracted.extractions),
+                            extraction_count=len(accumulated.extractions),
                             value_canonicalization_count=len(
-                                extracted.value_canonicalizations
+                                accumulated.value_canonicalizations
                             ),
                             ambiguous_value_count=sum(
                                 item.binding_status == "AMBIGUOUS"
-                                for item in extracted.value_canonicalizations
+                                for item in accumulated.value_canonicalizations
                             ),
                             unbound_value_count=sum(
                                 item.binding_status == "UNBOUND"
-                                for item in extracted.value_canonicalizations
+                                for item in accumulated.value_canonicalizations
                             ),
                             error_code="WINDOW_CATEGORY_MISSING",
                             error_message=f"强指示条款缺少类别：{missing_text}",
@@ -405,12 +425,13 @@ class ContractIrWindowPipeline:
                     )
                     retry_feedback = (
                         f"当前 source_text 明确包含 {missing_text} 类别指示，但结果缺少对应类别；"
-                        "类别可以共享同一 extraction_text，请补齐后返回完整结果"
+                        "类别可以共享同一 extraction_text；本次只返回缺少类别的增量项，"
+                        "不要重复已经通过校验的其他抽取项"
                     )
                     continue
                 mapped = [
                     _map_extraction(request, window, item)
-                    for item in extracted.extractions
+                    for item in accumulated.extractions
                 ]
                 attempts.append(
                     WindowAttempt(
@@ -419,15 +440,15 @@ class ContractIrWindowPipeline:
                         status="SUCCEEDED",
                         extraction_count=len(mapped),
                         value_canonicalization_count=len(
-                            extracted.value_canonicalizations
+                            accumulated.value_canonicalizations
                         ),
                         ambiguous_value_count=sum(
                             item.binding_status == "AMBIGUOUS"
-                            for item in extracted.value_canonicalizations
+                            for item in accumulated.value_canonicalizations
                         ),
                         unbound_value_count=sum(
                             item.binding_status == "UNBOUND"
-                            for item in extracted.value_canonicalizations
+                            for item in accumulated.value_canonicalizations
                         ),
                     )
                 )
@@ -441,6 +462,14 @@ class ContractIrWindowPipeline:
             except Exception as exc:  # the second failure is reported, never returned as partial IR
                 code = str(getattr(exc, "code", "WINDOW_EXECUTION_FAILED"))
                 message = str(exc)[:2_000]
+                accepted_extractions = _merge_aligned_extractions(
+                    accepted_extractions,
+                    list(getattr(exc, "accepted_extractions", [])),
+                )
+                accepted_canonicalizations = _merge_value_canonicalizations(
+                    accepted_canonicalizations,
+                    list(getattr(exc, "value_canonicalizations", [])),
+                )
                 attempts.append(
                     WindowAttempt(
                         attempt_no=attempt_no,
@@ -459,8 +488,17 @@ class ContractIrWindowPipeline:
                 if required_categories:
                     required_text = "、".join(required_categories)
                     retry_feedback = (
-                        f"{retry_feedback}；本次局部复查仍必须保留当前 Window 的完整结果，"
-                        f"并包含强指示类别：{required_text}"
+                        f"{retry_feedback}；本次局部复查必须包含强指示类别：{required_text}"
+                    )
+                if accepted_extractions:
+                    retry_feedback = (
+                        f"{retry_feedback}；已有 {len(accepted_extractions)} 项通过严格原文校验并由"
+                        "系统保留，本次只返回需要修复或补齐的增量项，不要重复已通过项"
+                    )
+                else:
+                    retry_feedback = (
+                        f"{retry_feedback}；当前没有可保留的已验证项，请重新返回当前 Window "
+                        "的完整抽取结果"
                     )
 
         return WindowRunResult(
@@ -473,6 +511,55 @@ class ContractIrWindowPipeline:
     @property
     def max_observed_concurrency(self) -> int:
         return self._max_observed_concurrency
+
+
+def _merge_aligned_extractions(
+    accepted: list[AlignedExtraction],
+    incoming: list[AlignedExtraction],
+) -> list[AlignedExtraction]:
+    """Merge retry deltas without allowing a later call to rewrite accepted IR."""
+
+    merged: dict[tuple[Any, ...], AlignedExtraction] = {}
+    for item in [*accepted, *incoming]:
+        key = (
+            item.extraction_class,
+            item.rendered_char_start,
+            item.rendered_char_end,
+            tuple(
+                (
+                    span.block_id,
+                    span.block_char_start,
+                    span.block_char_end,
+                )
+                for span in item.source_spans
+            ),
+        )
+        merged.setdefault(key, item)
+    return sorted(
+        merged.values(),
+        key=lambda item: (
+            item.rendered_char_start,
+            item.extraction_class,
+            item.extraction_text,
+        ),
+    )
+
+
+def _merge_value_canonicalizations(
+    accepted: list[ValueCanonicalization],
+    incoming: list[ValueCanonicalization],
+) -> list[ValueCanonicalization]:
+    merged: dict[tuple[Any, ...], ValueCanonicalization] = {}
+    for item in [*accepted, *incoming]:
+        key = (
+            item.extraction_class,
+            item.extraction_text,
+            item.predicate,
+            item.binding_status,
+            item.related_extraction_class,
+        )
+        merged.setdefault(key, item)
+    return list(merged.values())
 
 
 def _validate_structural_coverage(request: WindowPipelineRequest) -> PipelineCoverage:

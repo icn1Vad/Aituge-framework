@@ -123,7 +123,7 @@ class CategoryRetryExtractor(FakePipelineExtractor):
         classes = (
             ["OBLIGATION"]
             if self.call_counts[request.window_id] == 1
-            else ["OBLIGATION", "PAYMENT"]
+            else ["PAYMENT"]
         )
         return WindowExtractionResult(
             window_id=request.window_id,
@@ -156,6 +156,33 @@ class TargetedRetryExtractor(FakePipelineExtractor):
             window_id=request.window_id,
             model_id=model_id,
             extractions=[_aligned(request)],
+        )
+
+
+class PartialAlignmentRetryExtractor(FakePipelineExtractor):
+    async def extract(
+        self,
+        request: WindowExtractionRequest,
+        *,
+        tenant_id: str,
+        model_id: str,
+        retry_feedback: str | None = None,
+    ) -> WindowExtractionResult:
+        self.calls.append((request.window_id, retry_feedback))
+        self.call_counts[request.window_id] = self.call_counts.get(request.window_id, 0) + 1
+        if self.call_counts[request.window_id] == 1:
+            raise WindowExtractionError(
+                "WINDOW_ALIGNMENT_FAILED",
+                "RIGHT 未在当前 Window 原文中获得确定性字面匹配",
+                retry_feedback="RIGHT 必须改为连续原文",
+                accepted_extractions=[
+                    _aligned(request, extraction_class="OBLIGATION")
+                ],
+            )
+        return WindowExtractionResult(
+            window_id=request.window_id,
+            model_id=model_id,
+            extractions=[_aligned(request, extraction_class="RIGHT")],
         )
 
 
@@ -257,10 +284,10 @@ async def test_pipeline_runs_rolling_concurrency_ten_and_retries_only_failed_win
         "window-011": 1,
         "window-012": 1,
     }
-    assert [item for item in extractor.calls if item[0] == "window-002"] == [
-        ("window-002", None),
-        ("window-002", "WINDOW_OUTPUT_INVALID: first attempt failed"),
-    ]
+    window_two_calls = [item for item in extractor.calls if item[0] == "window-002"]
+    assert window_two_calls[0] == ("window-002", None)
+    assert "WINDOW_OUTPUT_INVALID: first attempt failed" in (window_two_calls[1][1] or "")
+    assert "当前没有可保留的已验证项" in (window_two_calls[1][1] or "")
     assert result.model_call_count == 13
     assert result.retry_count == 1
     assert result.coverage.valid is True
@@ -284,11 +311,32 @@ async def test_pipeline_uses_private_targeted_feedback_for_local_retry() -> None
     )
 
     assert result.coverage.valid is True
-    assert extractor.calls == [
-        ("window-001", None),
-        ("window-001", "请删除主体简称定义，或扩展为唯一的完整定义句"),
-    ]
+    assert extractor.calls[0] == ("window-001", None)
+    assert "请删除主体简称定义，或扩展为唯一的完整定义句" in (
+        extractor.calls[1][1] or ""
+    )
+    assert "当前没有可保留的已验证项" in (extractor.calls[1][1] or "")
     assert result.windows[0].attempts[0].error_message == "DEFINITION 存在多个候选位置"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_preserves_valid_items_and_merges_only_retry_delta() -> None:
+    extractor = PartialAlignmentRetryExtractor()
+
+    result = await ContractIrWindowPipeline(extractor=extractor).run(
+        _pipeline_request(count=1),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    assert result.coverage.valid is True
+    assert extractor.call_counts == {"window-001": 2}
+    feedback = extractor.calls[1][1] or ""
+    assert "RIGHT 必须改为连续原文" in feedback
+    assert "已有 1 项通过严格原文校验并由系统保留" in feedback
+    assert "只返回需要修复或补齐的增量项" in feedback
+    assert len(result.semantic_ir.obligations) == 1
+    assert len(result.semantic_ir.rights) == 1
 
 
 @pytest.mark.asyncio
@@ -452,6 +500,8 @@ async def test_pipeline_retries_strong_category_cue_missing_from_first_result() 
     assert result.windows[0].attempts[0].status == "SUSPICIOUS_CATEGORY"
     assert result.windows[0].attempts[0].error_code == "WINDOW_CATEGORY_MISSING"
     assert "PAYMENT" in (extractor.calls[1][1] or "")
+    assert "只返回缺少类别的增量项" in (extractor.calls[1][1] or "")
+    assert len(result.semantic_ir.obligations) == 1
     assert len(result.semantic_ir.payment_terms) == 1
 
 
