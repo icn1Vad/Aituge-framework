@@ -140,3 +140,17 @@
 - 质量门问题：现有五个下游风险 Stage 对同一语义生成了重复 Finding。短验收期/默示验收、验收标准未定义以及 IP 归属与提前解除冲突分别出现多条语义重合结果；当前 `merge_review_stage_results` 只能按结构和 ID 确定性合并，不能满足冻结稿“重复 Finding 已合并”的结果要求。该问题不说明 Window IR 遗漏，但会造成前端重复风险、计数虚高和人工复核负担
 - 后续门禁：在明确并实现跨 Stage Finding 合并规则，并至少用多份合同验证召回不下降前，不删除旧五个 IR Agent、不切换正式环境、不进入阶段 6。语义合并会改变法律审查结果，不能用未经确认的相似度阈值静默删除
 - 代码提交：本阶段功能提交和验收记录提交见 Git 历史
+
+## 阶段 5.1：跨 Stage Finding 语义合并
+
+- 状态：通过；仅完成内部 Finding 判重质量门，不删除 Legacy、不切换正式环境
+- 开始前设计复读：已重新完整阅读本设计、阶段记录以及联合冻结稿中 Framework 执行、Finding/Evidence、错误处理和冻结结论；确认本阶段不修改 Java–Python API、OpenAPI、状态机、Attempt、回调、公开 DTO 或 `schema_version=1.0`
+- Framework 实现：在现有 `verify_evidence` 网关内部构造候选 Finding 对；通过统一 `LlmRuntime`、`temperature=0`、`thinking_override=false` 做三态分类；正常一次调用，结构或覆盖失败最多修复一次；失败返回 `SKIPPED` 并保留全部 Finding
+- Contract Python 实现：新增严格内部判重 Artifact；按 `artifact_type + source_finding_id` 重新映射命名空间 Finding；只对同类别、同立场、同双方主体且组内两两 `SAME_RISK` 的结果执行确定性合并；选择最高风险和最完整保留项，Evidence 求并集后确定性去重；跨类别关系只记录不自动合并
+- 自动测试：Framework 合同相关回归 `57 passed`；Contract Python 全量 `107 passed, 10 skipped`；阶段定向测试先后为 Framework `18 passed`、Contract `7 passed`；`git diff --check` 通过
+- 隔离容器：重建并仅重启 `contract-review-dev-framework-1` 与 `contract-review-dev-ai-contract-1`；二者健康检查均为 `healthy`；Java、正式容器和正式数据库未修改
+- 上次结果重放：复用 Run `4a5c953e970e4da4a5c679053dad5489` 已持久化的五个风险 Stage Artifact，不重新解析合同、不重新执行五个风险 Agent；候选对 `36`，真实 `deepseek-v4-pro` 非思考调用 `1` 次、格式修复 `0` 次；结果为 `SAME_RISK=9`、`RELATED_DISTINCT=22`、`DISTINCT=5`
+- 确定性合并结果：原结果 Finding `19`、Evidence `27`；语义合并后 Finding `15`、Evidence `20`，删除安全重复 Finding `4`；剩余风险计数 `HIGH=4`、`MEDIUM=9`、`LOW=2`；保留项始终选择组内最高风险，Evidence 引用与归属完整性检查为 `true`
+- 安全边界验证：模型持续返回非法结果时两次调用后进入 `SKIPPED`；跨类别即使判为 `SAME_RISK` 也不自动合并；未知 Finding 引用和伪造 pair_id 被 Contract Python 拒绝；没有进入重复组的 Finding 不删除
+- 测试 Artifact：`stage51-source-review-artifacts.json`、`stage51-consolidation-decisions.json`、`stage51-finding-merge-replay.json`
+- 后续：跨 Stage 重复已不再阻塞现有完整链路；下一阶段单独设计风险审查层的输入裁剪、受控判断、并发和耗时优化，不在本阶段顺带修改五个风险 Agent

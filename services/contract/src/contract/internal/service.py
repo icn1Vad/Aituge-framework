@@ -10,6 +10,7 @@ from contract.callback.models import (
     CommercialTermsStageResult,
     EvidenceCandidate,
     EvidenceVerificationStageResult,
+    FindingConsolidationArtifact,
     FinalizeReviewStageResult,
     FrameworkTaskInput,
     LiabilityTerminationStageResult,
@@ -353,6 +354,7 @@ class ContractInternalService:
         artifacts: dict[str, dict[str, Any]],
     ) -> tuple[list[Finding], list[EvidenceCandidate]]:
         stages = []
+        finding_reference_ids: dict[tuple[str, str], str] = {}
         for artifact_type, model in REVIEW_ARTIFACT_MODELS.items():
             raw = artifacts.get(artifact_type)
             if raw is None:
@@ -361,8 +363,30 @@ class ContractInternalService:
                     f"Required review artifact '{artifact_type}' is missing",
                     status_code=422,
                 )
-            stages.append(namespace_review_stage_result(artifact_type, model.model_validate(raw)))
-        return merge_review_stage_results(stages)
+            source_stage = model.model_validate(raw)
+            namespaced_stage = namespace_review_stage_result(artifact_type, source_stage)
+            stages.append(namespaced_stage)
+            finding_reference_ids.update(
+                {
+                    (artifact_type, source.finding_id): namespaced.finding_id
+                    for source, namespaced in zip(
+                        source_stage.findings,
+                        namespaced_stage.findings,
+                        strict=True,
+                    )
+                }
+            )
+        raw_consolidation = artifacts.get("contract_finding_consolidation")
+        consolidation = (
+            FindingConsolidationArtifact.model_validate(raw_consolidation)
+            if raw_consolidation is not None
+            else None
+        )
+        return merge_review_stage_results(
+            stages,
+            consolidation=consolidation,
+            finding_reference_ids=finding_reference_ids,
+        )
 
     def _validate_evidence(
         self,

@@ -251,7 +251,8 @@ Shadow Compare 只按“相同 IR 类别 + 原文 Anchor”衡量来源一致性
 - [x] 阶段 3：并发调度（当前上限 10）、IR Mapper、合并、Coverage、局部重试；
 - [x] 阶段 3.4：测试旁路主体上下文接线与溯源隔离；
 - [x] 阶段 4：Legacy/Window Shadow Compare；
-- [ ] 阶段 5：独立测试环境完整 Finding/Evidence 回归（技术链路通过；跨 Stage 重复 Finding 质量门未通过，暂不进入阶段 6）。
+- [x] 阶段 5：独立测试环境完整 Finding/Evidence 回归；
+- [x] 阶段 5.1：跨 Stage Finding 三态判重与确定性合并（单份已保存结果重放通过；进入删除 Legacy 前仍需多合同回归）。
 
 ## 12. 验收指标
 
@@ -266,3 +267,39 @@ IR Prompt Token 相对当前约 155 万至少下降 70%
 ```
 
 完整审查达到约 3 分钟还需要下一阶段改造风险判断层，本次 IR 改造不对完整审查总耗时作不现实承诺。
+
+## 13. 跨 Stage Finding 语义合并
+
+五个风险审查 Stage 仍然并行产出各自的 `Finding` 和 `EvidenceCandidate`。在现有
+`verify_evidence` 网关内部增加隐藏的判重步骤，不新增公开 Stage，不改变 Java–Python
+API、OpenAPI、状态机、公开 Finding/Evidence DTO 或 `schema_version=1.0`。
+
+执行顺序固定为：
+
+```text
+五个风险 Stage Artifact
+→ Python 确定性筛选候选 Finding 对
+→ Framework LlmRuntime 一次非思考分类（超预算时按完整候选组分批）
+→ 输出 SAME_RISK / RELATED_DISTINCT / DISTINCT
+→ Contract Python 校验引用和 pair_id
+→ 确定性选择保留项、合并 Evidence、再次去重
+→ 现有 Evidence materialization 与 finalize_review
+```
+
+模型只接收候选对的 ID、类别、风险等级、标题、问题摘要和证据位置摘要；不接收完整合同、
+完整 IR、修改建议或历史对话。模型不得创建或删除 Finding，不得改写审查结论，不得修改
+风险等级、甲乙方、立场或 Evidence。正常规模只调用一次；严格 JSON 或候选覆盖校验失败时
+最多修复一次，仍失败则返回 `SKIPPED`，所有原 Finding 原样保留，不能使审查任务失败。
+
+第一版自动合并边界：
+
+- 只有同类别、同立场、同我方/相对方且模型判为 `SAME_RISK` 才允许合并；
+- 跨类别的 `SAME_RISK` 只记录，不自动删除，避免把相关但法律性质不同的风险合并；
+- 一个合并组中任意两项都必须有 `SAME_RISK` 判断，不依赖不安全的传递推断；
+- 保留项按风险等级、描述完整度和稳定序列确定，风险等级只能保持或提高；
+- Evidence 先求并集，再按类型、Block、字符区间或缺失范围确定性去重；
+- 未进入安全合并组的 Finding 必须全部保留。
+
+候选引用使用 `artifact_type + source_finding_id`，模型只回传稳定 `pair_id` 和三态关系。
+Contract Python 在命名空间转换后重新校验引用，旧 Stage 的局部 ID 不能误指向其他 Stage 的
+Finding。公开结果仍只保存最终 Finding/Evidence，不暴露内部候选对或模型分类过程。

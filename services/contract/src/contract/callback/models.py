@@ -139,6 +139,39 @@ class ReviewStageResult(StrictModel):
     evidences: list[EvidenceCandidate] = Field(default_factory=list)
 
 
+class FindingReference(StrictModel):
+    artifact_type: str = Field(min_length=1, max_length=160)
+    finding_id: str = Field(min_length=1, max_length=160)
+
+
+class FindingConsolidationDecision(StrictModel):
+    pair_id: str = Field(pattern=r"^pair-[0-9a-f]{32}$")
+    left: FindingReference
+    right: FindingReference
+    relation: Literal["SAME_RISK", "RELATED_DISTINCT", "DISTINCT"]
+
+
+class FindingConsolidationArtifact(StrictModel):
+    result_type: Literal["FINDING_CONSOLIDATION_V1"]
+    status: Literal["COMPLETED", "SKIPPED"]
+    candidate_count: int = Field(ge=0)
+    model_call_count: int = Field(ge=0)
+    decisions: list[FindingConsolidationDecision] = Field(default_factory=list)
+    skip_reason: str | None = Field(default=None, min_length=1, max_length=160)
+
+    @model_validator(mode="after")
+    def validate_result(self) -> "FindingConsolidationArtifact":
+        if self.status == "COMPLETED":
+            if self.skip_reason is not None or len(self.decisions) != self.candidate_count:
+                raise ValueError("Completed consolidation must cover every candidate")
+        elif self.decisions or self.skip_reason is None:
+            raise ValueError("Skipped consolidation requires a reason and no decisions")
+        pair_ids = [item.pair_id for item in self.decisions]
+        if len(pair_ids) != len(set(pair_ids)):
+            raise ValueError("Consolidation pair IDs must be unique")
+        return self
+
+
 class RightsObligationsStageResult(ReviewStageResult):
     result_type: Literal["RIGHTS_OBLIGATIONS_STAGE_V1"]
 

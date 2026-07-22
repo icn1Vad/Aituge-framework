@@ -15,6 +15,7 @@ from task_manager.pipeline.errors import StageExecutionError
 from task_manager.pipeline.stage_registry import StageExecutionContext, StageServiceResult
 from task_manager.result_sink import ResultSinkDelivery, ResultSinkRejectedError
 try:
+    from services.contract.capabilities.finding_consolidation import FindingConsolidationEngine
     from services.contract.capabilities.window_extraction import WindowExtractionEngine
     from services.contract.capabilities.window_pipeline import (
         ContractIrWindowPipeline,
@@ -24,6 +25,7 @@ try:
 except ModuleNotFoundError as exc:  # standalone capability mount in the runtime image
     if exc.name != "services":
         raise
+    from finding_consolidation import FindingConsolidationEngine
     from window_extraction import WindowExtractionEngine
     from window_pipeline import ContractIrWindowPipeline, WindowPipelineError, WindowPipelineRequest
 
@@ -979,9 +981,30 @@ def _result_sink_handler(base_url: str, token: str):
     return deliver
 
 
-def _stage_gateway_handler(base_url: str, token: str):
+def _stage_gateway_handler(
+    base_url: str,
+    token: str,
+    model_id: str = "deepseek-v4-pro",
+    consolidation_engine: FindingConsolidationEngine | None = None,
+):
+    engine = consolidation_engine or FindingConsolidationEngine()
+
     async def execute(context: StageExecutionContext) -> StageServiceResult:
         task_input = ContractTaskInput.model_validate(context.task.input_payload_json or {})
+        artifacts = dict(context.stage_input.get("artifacts", {}))
+        consolidation_metadata: dict[str, Any] = {}
+        if context.stage.stage_id == "verify_evidence":
+            consolidation = await engine.consolidate(
+                artifacts,
+                tenant_id=str(getattr(context.task, "tenant_id", None) or "0"),
+                model_id=model_id,
+            )
+            artifacts["contract_finding_consolidation"] = consolidation
+            consolidation_metadata = {
+                "finding_consolidation_status": consolidation["status"],
+                "finding_consolidation_candidates": consolidation["candidate_count"],
+                "finding_consolidation_model_calls": consolidation["model_call_count"],
+            }
         payload = {
             "schema_version": "1.0",
             "review_id": task_input.review_id,
@@ -990,7 +1013,7 @@ def _stage_gateway_handler(base_url: str, token: str):
             "framework_run_id": context.run.id,
             "stage_id": context.stage.stage_id,
             "task_input": task_input.model_dump(mode="json"),
-            "artifacts": context.stage_input.get("artifacts", {}),
+            "artifacts": artifacts,
         }
         try:
             async with httpx.AsyncClient(base_url=base_url, timeout=30) as client:
@@ -1043,7 +1066,7 @@ def _stage_gateway_handler(base_url: str, token: str):
                 code="FRAMEWORK_RUN_FAILED",
                 retryable=False,
             )
-        return StageServiceResult(output=body["data"])
+        return StageServiceResult(output=body["data"], metadata=consolidation_metadata)
 
     return execute
 
@@ -1134,7 +1157,7 @@ async def register(registry, settings) -> None:
         ],
     )
 
-    gateway_handler = _stage_gateway_handler(base_url, callback_token)
+    gateway_handler = _stage_gateway_handler(base_url, callback_token, model_id)
     registry.register_stage_handler(name="contract_stage_gateway_v1", handler=gateway_handler)
     registry.register_stage_handler(
         name="contract_ir_fragment_merge_v1",
