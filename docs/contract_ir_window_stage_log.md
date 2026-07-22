@@ -166,3 +166,15 @@
 - 自动测试：Window 抽取与 Pipeline 针对性测试 `34 passed`；Framework 回归排除未启动 Smoke 服务的既有 `test_live_multi_capability` 后 `181 passed`；未排除时为 `181 passed, 1 failed`，唯一失败是一次性测试容器无法连接独立 Smoke 服务，与本次修改无关；`git diff --check` 通过
 - 隔离环境：源码同步到 `python-ir-window-source`，复用并重启 `contract-ir-window-stage2-framework`；已确认新 Prompt 加载，`127.0.0.1:19320/openapi.json` 返回 `200`；测试页面 `127.0.0.1:19310/health` 返回 `UP`；正式容器、正式环境和 Java 未修改
 - 用户验收：继续使用原测试页面上传《服务外包协议之补充协议0829.docx》，填写规范化甲乙方名称并触发全量 Window 抽取；该真实模型结果完成后再补充本阶段最终 Artifact 和验收结论
+
+## 阶段 5.3：组合校验重试与显式值完整性
+
+- 状态：通过；原第 7 个失败 Window 已在隔离容器中使用真实模型复测成功，等待用户从原测试页面复跑全合同
+- 开始前设计复读：已完整重读唯一联合冻结稿和本阶段记录；确认只修 Framework 内部 Window 抽取质量门，不修改 Java–Python API、OpenAPI、公开 DTO、状态机、Attempt、回调或 `schema_version=1.0`
+- 现场原因：第 1 个 Window 的旧 `DEFINITION` 歧义已修复并首轮成功；新的第 7 个 Window 含两处“30个工作日”，首轮短 `DATE` 无法唯一定位，第二轮虽修好定位却漏掉 `PAYMENT`，两个独立校验依次耗尽两次局部执行机会
+- 实现：重复 `DATE/AMOUNT` 要求引用能唯一确定业务归属的完整连续条款，值保留在 `object`；任何异常重试同时附带当前 Window 的全部强指示类别，避免修复一种错误时丢失其他类别；明确时间值和金额值纳入强指示完整性门；甲乙方、已解析主体名称及“本合同/本协议”等非业务术语定义由确定性代码过滤，不再仅依赖 Prompt
+- 通用边界：没有硬编码本合同的条款号、30个工作日或30000元；时间门识别显式数字/中文数字加时间单位，金额门识别币种、元/万元/亿元、百分数；仍禁止任选重复位置和语义模糊定位，单 Window 仍最多两次调用
+- 自动测试：Window 抽取与 Pipeline `38 passed`；Framework 合同相关回归 `56 passed`；`git diff --check` 通过
+- 真实模型定向验收：只复测原失败的第 7 个 Window，不重跑全合同；总耗时 `34317 ms`，首轮 `19530 ms` 因缺少 `PAYMENT、DATE` 进入局部复查，第二轮 `14787 ms` 成功；Coverage `14/14 Block`、`1/1 Window`；最终得到 `PAYMENT=1`、`DATE=3`、`AMOUNT=1`，三项日期分别精确绑定“五个工作日”、逾期付款“30个工作日”和设备支持整改“30个工作日”，金额精确绑定“30000元”
+- 隔离环境：源码同步并重启 `contract-ir-window-stage2-framework`，继续复用 `contract-ir-window-stage1-ui`；正式容器、正式环境和 Java 未修改
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage53-window7-result.json`

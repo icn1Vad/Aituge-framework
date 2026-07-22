@@ -159,6 +159,34 @@ class TargetedRetryExtractor(FakePipelineExtractor):
         )
 
 
+class AlignmentThenPaymentExtractor(FakePipelineExtractor):
+    async def extract(
+        self,
+        request: WindowExtractionRequest,
+        *,
+        tenant_id: str,
+        model_id: str,
+        retry_feedback: str | None = None,
+    ) -> WindowExtractionResult:
+        self.calls.append((request.window_id, retry_feedback))
+        self.call_counts[request.window_id] = self.call_counts.get(request.window_id, 0) + 1
+        if self.call_counts[request.window_id] == 1:
+            raise WindowExtractionError(
+                "ALIGNMENT_AMBIGUOUS",
+                "DATE 存在多个候选位置",
+                retry_feedback="DATE 必须扩展为唯一的完整条款",
+            )
+        return WindowExtractionResult(
+            window_id=request.window_id,
+            model_id=model_id,
+            extractions=[
+                _aligned(request, extraction_class="OBLIGATION"),
+                _aligned(request, extraction_class="PAYMENT"),
+                _aligned(request, extraction_class="DATE"),
+            ],
+        )
+
+
 def _pipeline_request(count: int = 4, *, source: str = "履行事项") -> WindowPipelineRequest:
     expected_blocks = []
     expected_sections = []
@@ -261,6 +289,64 @@ async def test_pipeline_uses_private_targeted_feedback_for_local_retry() -> None
         ("window-001", "请删除主体简称定义，或扩展为唯一的完整定义句"),
     ]
     assert result.windows[0].attempts[0].error_message == "DEFINITION 存在多个候选位置"
+
+
+@pytest.mark.asyncio
+async def test_alignment_retry_also_requires_all_strong_categories() -> None:
+    extractor = AlignmentThenPaymentExtractor()
+
+    result = await ContractIrWindowPipeline(extractor=extractor).run(
+        _pipeline_request(count=1, source="甲方逾期付款超过30个工作日"),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    assert result.coverage.valid is True
+    assert extractor.call_counts == {"window-001": 2}
+    feedback = extractor.calls[1][1] or ""
+    assert "DATE 必须扩展为唯一的完整条款" in feedback
+    assert "强指示类别：PAYMENT、DATE" in feedback
+    assert len(result.semantic_ir.payment_terms) == 1
+    assert len(result.semantic_ir.dates) == 1
+
+
+@pytest.mark.asyncio
+async def test_pipeline_requires_explicit_amount_category() -> None:
+    class AmountRetryExtractor(FakePipelineExtractor):
+        async def extract(
+            self,
+            request: WindowExtractionRequest,
+            *,
+            tenant_id: str,
+            model_id: str,
+            retry_feedback: str | None = None,
+        ) -> WindowExtractionResult:
+            self.calls.append((request.window_id, retry_feedback))
+            self.call_counts[request.window_id] = self.call_counts.get(request.window_id, 0) + 1
+            classes = (
+                ["OBLIGATION"]
+                if self.call_counts[request.window_id] == 1
+                else ["OBLIGATION", "AMOUNT"]
+            )
+            return WindowExtractionResult(
+                window_id=request.window_id,
+                model_id=model_id,
+                extractions=[
+                    _aligned(request, extraction_class=extraction_class)
+                    for extraction_class in classes
+                ],
+            )
+
+    extractor = AmountRetryExtractor()
+    result = await ContractIrWindowPipeline(extractor=extractor).run(
+        _pipeline_request(count=1, source="乙方造成损失超过30000元"),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    assert extractor.call_counts == {"window-001": 2}
+    assert "AMOUNT 类别指示" in (extractor.calls[1][1] or "")
+    assert len(result.semantic_ir.amounts) == 1
 
 
 @pytest.mark.asyncio

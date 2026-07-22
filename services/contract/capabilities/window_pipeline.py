@@ -55,6 +55,14 @@ _CATEGORY_CUES = {
     "PAYMENT": re.compile(r"付款|支付|价款|费用|结算|发票|税费|扣款|抵扣|抵销|冲抵"),
     "ACCEPTANCE": re.compile(r"验收"),
     "DISPUTE": re.compile(r"争议|仲裁|诉讼|管辖|人民法院"),
+    "DATE": re.compile(
+        r"(?:\d+|[零〇一二三四五六七八九十百千万两]+)(?:个)?"
+        r"(?:工作日|自然日|日|天|周|个月|月|年)"
+    ),
+    "AMOUNT": re.compile(
+        r"(?:人民币|￥|¥)?(?:\d[\d,.]*|[零〇一二三四五六七八九十百千万亿两]+)"
+        r"(?:元|万元|亿元|%|％)|百分之[零〇一二三四五六七八九十百千万两\d.]+"
+    ),
 }
 
 
@@ -447,6 +455,13 @@ class ContractIrWindowPipeline:
                     getattr(exc, "retry_feedback", None)
                     or f"{code}: {message}"
                 )
+                required_categories = _expected_categories(window)
+                if required_categories:
+                    required_text = "、".join(required_categories)
+                    retry_feedback = (
+                        f"{retry_feedback}；本次局部复查仍必须保留当前 Window 的完整结果，"
+                        f"并包含强指示类别：{required_text}"
+                    )
 
         return WindowRunResult(
             window_id=window.window_id,
@@ -528,12 +543,17 @@ def _missing_expected_categories(
     window: PipelineWindowInput,
     extracted: WindowExtractionResult,
 ) -> list[str]:
-    searchable = "\n".join([*window.heading_path, *window.clause_nos, window.source_text])
+    expected = _expected_categories(window)
     actual = {item.extraction_class for item in extracted.extractions}
+    return [category for category in expected if category not in actual]
+
+
+def _expected_categories(window: PipelineWindowInput) -> list[str]:
+    searchable = "\n".join([*window.heading_path, *window.clause_nos, window.source_text])
     return [
         category
         for category, pattern in _CATEGORY_CUES.items()
-        if pattern.search(searchable) is not None and category not in actual
+        if pattern.search(searchable) is not None
     ]
 
 

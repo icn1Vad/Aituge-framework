@@ -52,6 +52,8 @@ ACCEPTANCE 只表示正式的验收标准、程序、期限、通过条件或不
 也不得重复 context_only 中的合同主体。term 填被定义的术语，meaning 填定义含义；
 DEFINITION 的 extraction_text 必须逐字复制同时包含 term 和 meaning 的完整定义性原文句段，
 且其规范化文本必须能在当前 source_text 中唯一定位，不得只返回重复出现的术语短词。
+DATE 和 AMOUNT 的 extraction_text 也必须引用能够唯一确定该值业务归属的完整连续原文句段；
+当同一个日期或数值在 source_text 中出现多次时，不得只返回重复的短值，object 只填写对应原文值。
 只输出一个 JSON 对象，不输出推理过程、解释、Markdown 或代码围栏。
 JSON 顶层只能包含 extractions。每项只能包含：extraction_class、extraction_text、
 subject、predicate、object、term、meaning、referenced_clause_nos。
@@ -219,7 +221,7 @@ class WindowExtractionEngine:
             temperature=0,
             thinking_override=False,
         )
-        envelope = _parse_envelope(content)
+        envelope = _remove_context_only_definitions(request, _parse_envelope(content))
         aligned = _align_extractions(request, envelope, self.resolver_factory())
         aligned, canonicalizations = _canonicalize_value_extractions(
             request.source_text,
@@ -277,6 +279,42 @@ def _parse_envelope(content: str) -> WindowExtractionEnvelope:
             "WINDOW_SCHEMA_INVALID",
             f"窗口抽取结果不符合严格 Schema：{exc.errors(include_url=False)}",
         ) from exc
+
+
+def _remove_context_only_definitions(
+    request: WindowExtractionRequest,
+    envelope: WindowExtractionEnvelope,
+) -> WindowExtractionEnvelope:
+    """Drop only schema-level party/document aliases that are never business terms."""
+
+    excluded = {
+        _normalize_alignment_text(item).text
+        for item in ("甲方", "乙方", "双方", "我方", "相对方", "本合同", "本协议")
+    }
+    for line in request.context_text.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key.strip() in {
+            "PARTY_A_NAME",
+            "PARTY_B_NAME",
+            "OUR_PARTY",
+            "COUNTERPARTY",
+        }:
+            normalized = _normalize_alignment_text(value).text
+            if normalized:
+                excluded.add(normalized)
+
+    filtered = [
+        item
+        for item in envelope.extractions
+        if not (
+            item.extraction_class == "DEFINITION"
+            and item.term
+            and _normalize_alignment_text(item.term).text in excluded
+        )
+    ]
+    if len(filtered) == len(envelope.extractions):
+        return envelope
+    return envelope.model_copy(update={"extractions": filtered})
 
 
 def _align_extractions(
@@ -424,13 +462,20 @@ def _canonicalize_value_extractions(
             if item.object and item.object != item.extraction_text
             else None
         )
+        grounded_value = (
+            model_matter
+            if model_matter
+            and _normalize_alignment_text(model_matter).text
+            in _normalize_alignment_text(item.extraction_text).text
+            else item.extraction_text
+        )
         subject = item.subject or model_matter or _related_matter(related)
         normalized_item = AlignedExtraction.model_validate(
             {
                 **item.model_dump(),
                 "subject": subject,
                 "predicate": predicate,
-                "object": item.extraction_text,
+                "object": grounded_value,
             }
         )
         normalized.append(normalized_item)

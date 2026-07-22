@@ -295,19 +295,19 @@ async def test_window_extractor_rejects_ambiguous_normalized_location() -> None:
 
 @pytest.mark.asyncio
 async def test_definition_ambiguity_produces_private_targeted_retry_feedback() -> None:
-    source = "甲方（发包方）：某公司（以下简称甲方）。甲方负责提出服务要求。"
+    source = "服务标准是指附件约定的质量要求。服务标准适用于全部交付物。"
     runtime = FakeRuntime(
         json.dumps(
             {
                 "extractions": [
                     {
                         "extraction_class": "DEFINITION",
-                        "extraction_text": "甲方",
+                        "extraction_text": "服务标准",
                         "subject": None,
                         "predicate": None,
                         "object": None,
-                        "term": "甲方",
-                        "meaning": "某公司",
+                        "term": "服务标准",
+                        "meaning": "附件约定的质量要求",
                         "referenced_clause_nos": [],
                     }
                 ]
@@ -325,11 +325,87 @@ async def test_definition_ambiguity_produces_private_targeted_retry_feedback() -
 
     error = exc_info.value
     assert error.code == "ALIGNMENT_AMBIGUOUS"
-    assert str(error) == "DEFINITION 规范化后在当前 Window 原文中存在 3 个候选位置"
-    assert "extraction_text=\"甲方\"" in (error.retry_feedback or "")
+    assert str(error) == "DEFINITION 规范化后在当前 Window 原文中存在 2 个候选位置"
+    assert "extraction_text=\"服务标准\"" in (error.retry_feedback or "")
     assert "请删除该 DEFINITION" in (error.retry_feedback or "")
     assert "完整连续定义性原文句段" in (error.retry_feedback or "")
-    assert "甲方" not in str(error)
+    assert "服务标准" not in str(error)
+
+
+@pytest.mark.asyncio
+async def test_window_extractor_drops_party_and_document_alias_definitions() -> None:
+    source = "双方签订本合同（以下简称“本合同”）。甲方应支付服务费用。"
+    runtime = FakeRuntime(
+        json.dumps(
+            {
+                "extractions": [
+                    {
+                        "extraction_class": "DEFINITION",
+                        "extraction_text": "双方签订本合同（以下简称“本合同”）",
+                        "subject": None,
+                        "predicate": None,
+                        "object": None,
+                        "term": "本合同",
+                        "meaning": "双方签订的合同",
+                        "referenced_clause_nos": [],
+                    },
+                    {
+                        "extraction_class": "PAYMENT",
+                        "extraction_text": "甲方应支付服务费用",
+                        "subject": "甲方",
+                        "predicate": "应支付",
+                        "object": "服务费用",
+                        "term": None,
+                        "meaning": None,
+                        "referenced_clause_nos": [],
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    result = await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+        _single_block_request(source),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    assert [item.extraction_class for item in result.extractions] == ["PAYMENT"]
+
+
+@pytest.mark.asyncio
+async def test_date_full_clause_preserves_model_value_during_canonicalization() -> None:
+    source = "甲方逾期付款超过30个工作日时，乙方有权解除合同。"
+    runtime = FakeRuntime(
+        json.dumps(
+            {
+                "extractions": [
+                    {
+                        "extraction_class": "DATE",
+                        "extraction_text": source,
+                        "subject": "甲方逾期付款",
+                        "predicate": None,
+                        "object": "30个工作日",
+                        "term": None,
+                        "meaning": None,
+                        "referenced_clause_nos": [],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    result = await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+        _single_block_request(source),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    assert result.extractions[0].predicate == "时间约束为"
+    assert result.extractions[0].object == "30个工作日"
+    assert result.extractions[0].extraction_text == source
 
 
 @pytest.mark.asyncio
