@@ -53,6 +53,19 @@
 - 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage3-synthetic-window-pipeline.json`；重复真实模型实验为 `stage3-synthetic-window-pipeline-repeat.json`
 - 遗留问题：确定性 Mapper 对完全相同的已对齐模型输出会生成相同 IR Hash，且同类别、同原文、同 Anchor 的技术 `item_id` 不受模型 predicate/object 措辞影响；但两次真实模型调用仍会在谓词措辞、DATE/RIGHT 分类和 Extraction 边界上产生变化，因此完整 `semantic_ir_hash` 不保证跨独立模型调用一致。该质量问题必须在阶段四 Shadow Compare 中量化并决定采用更严格分类规范、结果缓存或其他稳定化措施，不能通过隐藏式语义规则伪造一致。真实用户合同仍只用于本地 Parser/Window 覆盖，没有发送给外部模型
 
+## 阶段 3.1：300 Token Window与Contract IR关闭思考
+
+- 状态：通过，等待用户在测试页面补充真实合同模型结果
+- 开始前设计复读：已重新完整复读本设计、阶段记录以及联合冻结稿第 14～20、33～39 节；确认本次只调整 Contract IR Window，不修改风险判断等后续 Stage，不修改 Java–Python API、状态机、Attempt、回调和 `schema_version=1.0`
+- 实现：Window默认软/硬上限统一为 300 估算 Token，所有 Primary Window 的 `estimated_tokens<=300`；超长条款继续按子条款、段落、表格行和句界确定性拆分；`WindowExtractionEngine`显式请求关闭思考；Framework `LlmRuntime.complete()`增加可选 `thinking_override`，仅显式覆盖且命中官方 `api.deepseek.com/deepseek-v4-*` 时发送 `thinking.type=disabled`，其他调用保持原配置和兼容字段
+- 代码提交：`4ad506d 功能：合同IR窗口固定300 Token并关闭思考`
+- 自动测试：针对性 `24 passed`；Framework 全量 `157 passed, 2 deselected`，两项排除仍为一次性容器未接入 Smoke 服务与 Redis；Contract Python 全量 `103 passed, 10 skipped`；`git diff --check`通过；隔离镜像没有安装 Ruff，未为静态检查新增依赖
+- Window验收：原《服务外包协议之补充协议0829.docx》本地解析为 93 Block、12 Section、12 Window；单 Window 为 123～296 估算 Token，超过 300 的 Window 为 0；93/93 Block 覆盖有效，无遗漏、无重叠
+- 模型验收：无敏感合成合同 4 Window、并发 3，通过真实 `deepseek-v4-pro`完成；单次模型耗时 1933～3737 ms；一个 Window 首轮 Schema 失败后局部重试成功；模型调用 5 次、局部重试 1 次；4/4 Window、4/4 Section、4/4 Block 覆盖通过；合并得到 11 项 IR，覆盖 OBLIGATION、PAYMENT、DELIVERY、ACCEPTANCE、LIABILITY、TERMINATION、DISPUTE
+- 独立容器验收：继续复用 `contract-ir-window-stage1-ui` 和服务器本机 `127.0.0.1:19310`；页面镜像仍为 `contract-ir-window-stage3-contract:test`但已重建；模型助手仍为 `contract-ir-window-stage2-framework` 和 `127.0.0.1:19320`，已修正为优先加载只读 `/workspace` 新源码并继续使用原隔离模型配置卷；正式容器和正式环境未修改
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage31-window-inspection.json`、`stage31-synthetic-window-extraction.json`、`stage3-1-window-latency-matrix.json`、`stage3-1-window-quality-probe.json`、`stage3-1-window-latency-report.md`
+- 遗留问题：执行环境不允许代理将完整用户合同发送给外部模型，因此自动验收只对真实合同完成 Parser/Window/Coverage，对真实模型使用无敏感合成合同；用户可在已更新的测试页面自行触发真实合同抽取并补充结果。精简 Prompt 虽更快但会漏掉 PAYMENT、DELIVERY、ACCEPTANCE 等专属类别，当前未采用
+
 ## 阶段 4：Legacy/Window Shadow Compare
 
 - 状态：未开始
