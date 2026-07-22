@@ -147,6 +147,54 @@ def stage5_result() -> JSONResponse:
     return JSONResponse(content={"summary": summary, "result": result["data"]})
 
 
+@app.get("/api/stage51-result", include_in_schema=False)
+def stage51_result() -> JSONResponse:
+    """Expose the test-only before/after Finding consolidation replay."""
+
+    merge_path = Path(os.getenv("CONTRACT_STAGE51_MERGE_FILE", ""))
+    decisions_path = Path(os.getenv("CONTRACT_STAGE51_DECISIONS_FILE", ""))
+    if not merge_path.is_file() or not decisions_path.is_file():
+        raise HTTPException(status_code=404, detail="Stage 5.1 test result is not mounted")
+    try:
+        merge = json.loads(merge_path.read_text("utf-8"))
+        decisions = json.loads(decisions_path.read_text("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail="Stage 5.1 test result is invalid") from exc
+    required_merge_fields = {
+        "exact_merge_finding_count",
+        "exact_merge_evidence_count",
+        "semantic_merge_finding_count",
+        "semantic_merge_evidence_count",
+        "removed_duplicate_count",
+        "evidence_integrity_ok",
+        "surviving_findings",
+    }
+    if (
+        not isinstance(merge, dict)
+        or not required_merge_fields <= merge.keys()
+        or not isinstance(merge.get("surviving_findings"), list)
+        or not isinstance(decisions, dict)
+        or decisions.get("status") != "COMPLETED"
+        or not isinstance(decisions.get("decisions"), list)
+    ):
+        raise HTTPException(status_code=500, detail="Stage 5.1 result envelope is invalid")
+    relation_counts = {"SAME_RISK": 0, "RELATED_DISTINCT": 0, "DISTINCT": 0}
+    for item in decisions["decisions"]:
+        if isinstance(item, dict) and item.get("relation") in relation_counts:
+            relation_counts[item["relation"]] += 1
+    return JSONResponse(
+        content={
+            "merge": merge,
+            "classification": {
+                "status": decisions["status"],
+                "candidate_count": decisions.get("candidate_count", 0),
+                "model_call_count": decisions.get("model_call_count", 0),
+                "relation_counts": relation_counts,
+            },
+        }
+    )
+
+
 @app.post("/api/inspect", response_model=InspectionView)
 async def inspect_contract(file: UploadFile = File(...)) -> InspectionView:
     filename = Path(file.filename or "contract").name

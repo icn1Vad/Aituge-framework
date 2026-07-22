@@ -153,4 +153,5 @@
 - 确定性合并结果：原结果 Finding `19`、Evidence `27`；语义合并后 Finding `15`、Evidence `20`，删除安全重复 Finding `4`；剩余风险计数 `HIGH=4`、`MEDIUM=9`、`LOW=2`；保留项始终选择组内最高风险，Evidence 引用与归属完整性检查为 `true`
 - 安全边界验证：模型持续返回非法结果时两次调用后进入 `SKIPPED`；跨类别即使判为 `SAME_RISK` 也不自动合并；未知 Finding 引用和伪造 pair_id 被 Contract Python 拒绝；没有进入重复组的 Finding 不删除
 - 测试 Artifact：`stage51-source-review-artifacts.json`、`stage51-consolidation-decisions.json`、`stage51-finding-merge-replay.json`
+- 测试页面对比：保留阶段 5 的修改前完整结果按钮（Finding `19`、Evidence `27`），新增独立的“阶段 5.1 合并后对比”按钮（Finding `15`、Evidence `20`、安全删除重复项 `4`），同时展示候选对及 `SAME_RISK/RELATED_DISTINCT/DISTINCT` 判定统计和合并后保留项；只读取既有 Artifact，不重跑模型；`/health` 与 `/api/stage51-result` 均返回 `200`
 - 后续：跨 Stage 重复已不再阻塞现有完整链路；下一阶段单独设计风险审查层的输入裁剪、受控判断、并发和耗时优化，不在本阶段顺带修改五个风险 Agent

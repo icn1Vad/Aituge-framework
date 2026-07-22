@@ -57,6 +57,12 @@
     <div id="stage5-result" class="extract-result" hidden></div>
   </section>
   <section class="panel">
+    <div class="hint">阶段 5.1：保留上面的合并前结果，单独展示同一批风险 Stage Artifact 经语义判重和确定性合并后的对比。</div>
+    <button id="stage51-load">查看阶段 5.1 合并后对比</button>
+    <span id="stage51-state" class="hint"></span>
+    <div id="stage51-result" class="extract-result" hidden></div>
+  </section>
+  <section class="panel">
     <div class="hint">模拟正式链路已有的 resolve_parties 结果；仅作为模型理解上下文，不会写入 extraction_text、原文 Anchor 或 Evidence。</div>
     <div class="party-grid">
       <label>甲方名称<input id="party-a-name" type="text" placeholder="请输入合同中的甲方名称"></label>
@@ -101,6 +107,7 @@
   const extractAllButton = document.querySelector('#extract-all');
   const shadowButton = document.querySelector('#shadow-compare');
   const stage5Button = document.querySelector('#stage5-load');
+  const stage51Button = document.querySelector('#stage51-load');
   let inspection = null;
   let latestWindowResult = null;
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -130,6 +137,36 @@
       outputBox.innerHTML = `<span class="error">${escapeHtml(error.message)}</span>`;
       outputBox.hidden = false; stateBox.textContent = ' 失败';
     } finally { stage5Button.disabled = false; }
+  });
+
+  stage51Button.addEventListener('click', async () => {
+    const stateBox = document.querySelector('#stage51-state');
+    const outputBox = document.querySelector('#stage51-result');
+    stage51Button.disabled = true; stateBox.textContent = ' 加载中…'; outputBox.hidden = true;
+    try {
+      const response = await fetch('/api/stage51-result');
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || JSON.stringify(body));
+      const merge = body.merge || {};
+      const classification = body.classification || {};
+      const relationCounts = classification.relation_counts || {};
+      const rows = (merge.surviving_findings || []).map((item, index) =>
+        `<tr><td>${index + 1}</td><td>${escapeHtml(item.risk_level)}</td><td>${escapeHtml(item.category)}</td><td style="white-space:normal">${escapeHtml(item.title)}</td><td>${escapeHtml(item.evidence_count)}</td></tr>`
+      ).join('');
+      outputBox.innerHTML = `<div class="metrics">` +
+        `<div class="metric"><span>Finding</span>${escapeHtml(merge.exact_merge_finding_count)} → <b class="good">${escapeHtml(merge.semantic_merge_finding_count)}</b></div>` +
+        `<div class="metric"><span>Evidence</span>${escapeHtml(merge.exact_merge_evidence_count)} → <b class="good">${escapeHtml(merge.semantic_merge_evidence_count)}</b></div>` +
+        `<div class="metric"><span>安全删除重复项</span><b class="good">${escapeHtml(merge.removed_duplicate_count)}</b></div>` +
+        `<div class="metric"><span>Evidence完整性</span><b class="good">${merge.evidence_integrity_ok ? '通过' : '失败'}</b></div>` +
+        `</div><div class="meta">候选对 ${escapeHtml(classification.candidate_count)}；模型调用 ${escapeHtml(classification.model_call_count)} 次；` +
+        `SAME_RISK ${escapeHtml(relationCounts.SAME_RISK || 0)} / RELATED_DISTINCT ${escapeHtml(relationCounts.RELATED_DISTINCT || 0)} / DISTINCT ${escapeHtml(relationCounts.DISTINCT || 0)}</div>` +
+        `<div style="overflow:auto"><table><thead><tr><th>#</th><th>风险</th><th>类别</th><th>合并后保留标题</th><th>证据</th></tr></thead><tbody>${rows}</tbody></table></div>` +
+        `<details><summary>完整阶段 5.1 对比 JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
+      outputBox.hidden = false; stateBox.textContent = ' 完成';
+    } catch (error) {
+      outputBox.innerHTML = `<span class="error">${escapeHtml(error.message)}</span>`;
+      outputBox.hidden = false; stateBox.textContent = ' 失败';
+    } finally { stage51Button.disabled = false; }
   });
 
   function partyContext() {

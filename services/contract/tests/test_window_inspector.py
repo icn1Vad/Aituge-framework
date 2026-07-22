@@ -34,6 +34,7 @@ def test_window_inspector_renders_test_page() -> None:
     assert "Shadow Compare 只比较同类别的原文 Anchor" in response.text
     assert 'id="legacy-ir-file"' in response.text
     assert 'id="stage5-load"' in response.text
+    assert 'id="stage51-load"' in response.text
 
 
 def test_window_inspector_reads_only_mounted_stage5_artifacts(tmp_path, monkeypatch) -> None:
@@ -53,6 +54,56 @@ def test_window_inspector_reads_only_mounted_stage5_artifacts(tmp_path, monkeypa
     assert response.json() == {
         "summary": {"status": "SUCCEEDED", "finding_count": 1},
         "result": {"findings": [], "evidences": []},
+    }
+
+
+def test_window_inspector_reads_stage51_before_after_artifacts(tmp_path, monkeypatch) -> None:
+    merge_path = tmp_path / "merge.json"
+    decisions_path = tmp_path / "decisions.json"
+    merge_path.write_text(
+        json.dumps(
+            {
+                "exact_merge_finding_count": 19,
+                "exact_merge_evidence_count": 27,
+                "semantic_merge_finding_count": 15,
+                "semantic_merge_evidence_count": 20,
+                "removed_duplicate_count": 4,
+                "evidence_integrity_ok": True,
+                "surviving_findings": [],
+            }
+        ),
+        "utf-8",
+    )
+    decisions_path.write_text(
+        json.dumps(
+            {
+                "status": "COMPLETED",
+                "candidate_count": 2,
+                "model_call_count": 1,
+                "decisions": [
+                    {"relation": "SAME_RISK"},
+                    {"relation": "RELATED_DISTINCT"},
+                ],
+            }
+        ),
+        "utf-8",
+    )
+    monkeypatch.setenv("CONTRACT_STAGE51_MERGE_FILE", str(merge_path))
+    monkeypatch.setenv("CONTRACT_STAGE51_DECISIONS_FILE", str(decisions_path))
+
+    response = TestClient(app).get("/api/stage51-result")
+
+    assert response.status_code == 200
+    assert response.json()["merge"]["semantic_merge_finding_count"] == 15
+    assert response.json()["classification"] == {
+        "status": "COMPLETED",
+        "candidate_count": 2,
+        "model_call_count": 1,
+        "relation_counts": {
+            "SAME_RISK": 1,
+            "RELATED_DISTINCT": 1,
+            "DISTINCT": 0,
+        },
     }
 
 
