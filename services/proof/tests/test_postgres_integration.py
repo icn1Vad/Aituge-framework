@@ -18,7 +18,13 @@ DATABASE_URL = os.getenv("PROOF_TEST_DATABASE_URL", "")
 
 @pytest.mark.skipif(not DATABASE_URL, reason="PROOF_TEST_DATABASE_URL is not configured")
 def test_ingest_read_fetch_duplicate_and_atomic_failure(tmp_path) -> None:
-    service = ProofService(Settings(database_url=DATABASE_URL, storage_root=tmp_path))
+    service = ProofService(
+        Settings(
+            database_url=DATABASE_URL,
+            storage_root=tmp_path,
+            semantic_audit_enabled=False,
+        )
+    )
     marker = uuid.uuid4().hex
     content = f"""测试制度 {marker}
 第一章 总则
@@ -40,6 +46,14 @@ def test_ingest_read_fetch_duplicate_and_atomic_failure(tmp_path) -> None:
         run_ids.append(created["ingestion_run_id"])
         assert created["reused"] is False
         assert created["policy"]["normalized_title"] == "integration"
+        assert created["policy"]["level"] == {
+            "code": "peer",
+            "name": "二级制度",
+            "sort_rank": 200,
+        }
+        assert created["policy"]["category"]["code"] == "other"
+        assert created["policy"]["category"]["parent"] is None
+        assert created["policy"]["category"]["path_name"] == "其他制度"
         assert created["document"]["structure_profile"] == "article"
         assert [item["clause_ordinal"] for item in created["clauses"]] == [1, 2]
         assert [item["clause_no_raw"] for item in created["clauses"]] == ["第一条", "第一条"]
@@ -48,6 +62,10 @@ def test_ingest_read_fetch_duplicate_and_atomic_failure(tmp_path) -> None:
         assert clauses[0]["text"] == "第一条 第一段。\n第二段。"
         assert service.fetch_units([clauses[0]["id"]]) == []
         assert created["policy"]["status"] == "draft"
+        listed = service.list_policies(level_code="peer", category_code="other")
+        listed_policy = next(item for item in listed if item["id"] == policy_id)
+        assert listed_policy["level"] == created["policy"]["level"]
+        assert listed_policy["category"] == created["policy"]["category"]
         confirmed = service.confirm_policy(policy_id)
         assert confirmed["status"] == "effective"
         fetched = service.fetch_units([clauses[0]["id"]])[0]
@@ -177,6 +195,86 @@ def test_ingest_read_fetch_duplicate_and_atomic_failure(tmp_path) -> None:
             conn.commit()
 
 
+@pytest.mark.skipif(not DATABASE_URL, reason="PROOF_TEST_DATABASE_URL is not configured")
+def test_discard_draft_cascades_temporary_audit_data(tmp_path) -> None:
+    service = ProofService(
+        Settings(
+            database_url=DATABASE_URL,
+            storage_root=tmp_path,
+            semantic_audit_enabled=False,
+        )
+    )
+    marker = uuid.uuid4().hex
+    policy_id = ""
+    ingestion_run_id = ""
+    try:
+        created = service.ingest_policy(
+            content=(
+                f"草稿删除级联验收 {marker}\n"
+                "第一条 申请必须审批。\n"
+                "第二条 申请无需审批。\n"
+            ).encode(),
+            filename="discard-cascade.txt",
+            category_code="other",
+        )
+        policy_id = created["policy"]["id"]
+        ingestion_run_id = created["ingestion_run_id"]
+        document_id = created["document"]["id"]
+        audit_run_id = uuid.uuid4().hex
+        service.repository.create_audit_run(
+            audit_run_id=audit_run_id,
+            document_id=document_id,
+        )
+        units = service.repository.get_document_units(document_id)
+        profile = EmbeddingProfile(
+            id="discard-cascade-3d",
+            provider="test",
+            model="test",
+            dimensions=3,
+        )
+        service.repository.replace_draft_embeddings(
+            audit_run_id,
+            document_id,
+            units,
+            [[1.0, 0.0, 0.0], [0.9, 0.1, 0.0]],
+            profile,
+        )
+        service.repository.complete_intra_conflict_audit(
+            audit_run_id,
+            [
+                {
+                    "id": units[0]["id"],
+                    "candidate_ids": [units[1]["id"]],
+                    "conflict_type": "rule_reversal",
+                    "problem": "审批要求相反。",
+                    "suggestion": "统一审批要求。",
+                }
+            ],
+        )
+
+        assert _audit_data_counts(audit_run_id) == (1, 2, 1)
+        stored_file = tmp_path / created["document"]["storage_path"]
+        assert stored_file.is_file()
+
+        assert service.discard_policy(policy_id) == {
+            "id": policy_id,
+            "status": "discarded",
+        }
+        assert _audit_data_counts(audit_run_id) == (0, 0, 0)
+        assert service.repository.get_policy(policy_id) is None
+        assert not stored_file.exists()
+    finally:
+        with psycopg.connect(DATABASE_URL) as conn:
+            if policy_id:
+                conn.execute("DELETE FROM proof_policy WHERE id = %s", (policy_id,))
+            if ingestion_run_id:
+                conn.execute(
+                    "DELETE FROM proof_ingestion_run WHERE id = %s",
+                    (ingestion_run_id,),
+                )
+            conn.commit()
+
+
 def _row_counts() -> tuple[int, int, int, int]:
     with psycopg.connect(DATABASE_URL) as conn:
         return tuple(
@@ -195,3 +293,20 @@ def _row_counts() -> tuple[int, int, int, int]:
 def _run_count() -> int:
     with psycopg.connect(DATABASE_URL) as conn:
         return int(conn.execute("SELECT count(*) FROM proof_ingestion_run").fetchone()[0])
+
+
+def _audit_data_counts(audit_run_id: str) -> tuple[int, int, int]:
+    with psycopg.connect(DATABASE_URL) as conn:
+        return tuple(
+            conn.execute(
+                """
+                SELECT
+                  (SELECT count(*) FROM proof_audit_run WHERE id = %s),
+                  (SELECT count(*) FROM proof_draft_retrieval_embedding
+                   WHERE audit_run_id = %s),
+                  (SELECT count(*) FROM proof_intra_conflict_audit_finding
+                   WHERE audit_run_id = %s)
+                """,
+                (audit_run_id, audit_run_id, audit_run_id),
+            ).fetchone()
+        )

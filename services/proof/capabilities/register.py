@@ -62,6 +62,20 @@ class ProofConflictSearchInput(BaseModel):
         return normalized
 
 
+class ProofIntraConflictSearchInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    unit_id: str = Field(min_length=1, max_length=160)
+
+    @field_validator("unit_id")
+    @classmethod
+    def non_blank_unit_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("unit_id must not be blank")
+        return normalized
+
+
 class ProofSqlInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -234,6 +248,7 @@ class ProofAuditInput(BaseModel):
     summary_max_chars: int = Field(default=60_000, ge=1)
     semantic_items: list[ProofAuditBatch] = Field(min_length=1, max_length=2000)
     conflict_items: list[ProofConflictBatch] = Field(min_length=1, max_length=2000)
+    intra_conflict_items: list[ProofConflictBatch] = Field(min_length=1, max_length=2000)
     max_concurrency: int = Field(default=4, ge=1, le=8)
     failure_policy: Literal["fail_fast"] = "fail_fast"
     retry_per_item: int = Field(default=1, ge=0, le=3)
@@ -255,6 +270,15 @@ class ProofAuditInput(BaseModel):
             raise ValueError("Every conflict item audit_id must match the task audit_id.")
         if any(len(item.targets) != 1 for item in self.conflict_items):
             raise ValueError("The integrated conflict stage requires exactly one target per item.")
+        intra_ids = [
+            target.id for item in self.intra_conflict_items for target in item.targets
+        ]
+        if len(intra_ids) != len(set(intra_ids)) or set(intra_ids) != set(summary_ids):
+            raise ValueError("Intra-policy conflict items must cover every chunk exactly once.")
+        if any(item.audit_id != self.audit_id for item in self.intra_conflict_items):
+            raise ValueError("Every intra-policy conflict item audit_id must match the task audit_id.")
+        if any(len(item.targets) != 1 for item in self.intra_conflict_items):
+            raise ValueError("The intra-policy conflict stage requires exactly one target per item.")
         return self
 
 
@@ -355,6 +379,21 @@ async def register(registry, settings) -> None:
         timeout_seconds=45,
         max_response_chars=160_000,
     )
+    registry.register_http_tool(
+        tool_name="proof_intra_conflict_search",
+        provider="proof_http",
+        display_name="Proof Intra-policy Conflict Search",
+        description=(
+            "Return the ten most similar other Chunks from the same draft policy using "
+            "temporary audit embeddings."
+        ),
+        base_url=base_url,
+        path="/v1/internal/intra-conflict-retrieval",
+        method="POST",
+        input_model=ProofIntraConflictSearchInput,
+        timeout_seconds=45,
+        max_response_chars=160_000,
+    )
     registry.register_skill_package(
         package_name="proof-policy-qa-package",
         display_name="Proof Policy Q&A",
@@ -439,7 +478,7 @@ async def register(registry, settings) -> None:
     registry.register_task(
         task_type="proof.audit.run",
         name="Proof Policy Review Report",
-        description="Summarize a complete policy and run semantic and conflict audits in one pipeline.",
+        description="Summarize a policy and run semantic, cross-policy, and intra-policy audits in one pipeline.",
         handler="pipeline",
         pipeline_id="proof-audit-pipeline-v1",
         default_agent_id="proof-summary-agent",
@@ -453,11 +492,11 @@ async def register(registry, settings) -> None:
     )
     registry.register_pipeline(
         pipeline_id="proof-audit-pipeline-v1",
-        version="1.1",
+        version="1.2",
         task_type="proof.audit.run",
-        description="Run policy summary, semantic audit, and conflict audit concurrently, then merge artifacts.",
+        description="Run summary, semantic, cross-policy, and intra-policy audits concurrently.",
         final_artifact_type="proof_audit_result",
-        max_parallelism=3,
+        max_parallelism=4,
         stages=[
             {
                 "stage_id": "policy_summary",
@@ -502,10 +541,29 @@ async def register(registry, settings) -> None:
                 "failure_policy": "continue_with_warning",
             },
             {
+                "stage_id": "intra_conflict_audit",
+                "name": "Audit conflicts between Chunks in the current policy",
+                "stage_type": "batch",
+                "item_source": "intra_conflict_items",
+                "output_model": ProofAuditOutput,
+                "item_output_model": ProofConflictItemOutput,
+                "artifact_type": "proof_intra_conflict_audit",
+                "agent_id": "proof-intra-conflict-agent",
+                "skill_package": "proof-policy-intra-conflict-audit-package",
+                "tools": ["proof_intra_conflict_search"],
+                "timeout_seconds": 900,
+                "failure_policy": "fail_task",
+            },
+            {
                 "stage_id": "finalize_report",
                 "name": "Merge policy review artifacts",
                 "stage_type": "finalizer",
-                "depends_on": ["policy_summary", "semantic_audit", "conflict_audit"],
+                "depends_on": [
+                    "policy_summary",
+                    "semantic_audit",
+                    "conflict_audit",
+                    "intra_conflict_audit",
+                ],
                 "output_model": ProofAuditPipelineOutput,
                 "artifact_type": "proof_audit_result",
                 "service_handler": "merge_pipeline_artifacts",
@@ -534,6 +592,29 @@ async def register(registry, settings) -> None:
             "differences that can coexist, and return only IDs, conflict type, problem, and suggestion."
         ),
         default_tools=["proof_conflict_search"],
+        default_datasets=[],
+    )
+    registry.register_skill_package(
+        package_name="proof-policy-intra-conflict-audit-package",
+        display_name="Proof Intra-policy Chunk Conflict Audit",
+        description="Detect material conflicts between different Chunks of the current policy.",
+        tags=["proof", "policy", "audit", "intra-conflict", "rag"],
+        primary_skill="proof-policy-intra-conflict-audit",
+        auxiliary_skills=[],
+    )
+    registry.register_agent(
+        agent_id="proof-intra-conflict-agent",
+        name="Proof Intra-policy Chunk Conflict Audit Agent",
+        description="Checks the current source Chunk against same-policy vector candidates.",
+        agent_type="single",
+        model_id=conflict_model_id or "deepseek-v4-pro",
+        system_prompt=(
+            "You are the Proof intra-policy Chunk conflict audit agent. Follow the active "
+            "primary skill. Call proof_intra_conflict_search exactly once for the current "
+            "target, compare only different Chunks returned by the tool, copy IDs exactly, "
+            "suppress compatible differences, and return only the five finding fields."
+        ),
+        default_tools=["proof_intra_conflict_search"],
         default_datasets=[],
     )
     registry.register_task(

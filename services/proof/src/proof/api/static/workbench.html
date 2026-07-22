@@ -73,7 +73,7 @@
     .retrieval-result:first-child { border-top: 0; }
     .result-score { color: var(--brand); font-weight: 750; font-variant-numeric: tabular-nums; }
     .result-text { display: -webkit-box; overflow: hidden; color: #4f5e58; line-height: 1.55; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-    .repo-tools { display: grid; grid-template-columns: minmax(220px, 1fr) 180px auto; gap: 9px; padding: 13px; border-bottom: 1px solid var(--line); }
+    .repo-tools { display: grid; grid-template-columns: minmax(220px, 1fr) 160px 190px 180px auto; gap: 9px; padding: 13px; border-bottom: 1px solid var(--line); }
     .repo-tools input, .repo-tools select { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: #fff; }
     .secondary { border: 1px solid var(--line); background: #fff; color: #41514b; border-radius: 8px; padding: 8px 12px; }
     .secondary:hover { border-color: #a9beb6; background: #fafcfb; }
@@ -155,9 +155,10 @@
         <div class="field"><label for="policyFile">制度文件</label><input id="policyFile" name="file" type="file" accept=".pdf,.docx,.md,.txt" required></div>
         <div class="field"><label for="title">制度名称（可留空）</label><input id="title" name="title" placeholder="默认使用文件名"></div>
         <div class="field"><label for="version">版本</label><input id="version" name="version" value="1.0"></div>
+        <div class="field"><label for="level">制度层级</label><select id="level" name="level_code"><option value="">未指定</option></select></div>
         <div class="grid-2">
-          <div class="field"><label for="level">层级</label><select id="level" name="level_code"><option value="">未指定</option></select></div>
-          <div class="field"><label for="category">分类</label><select id="category" name="category_code"><option value="auto" selected>自动识别</option></select></div>
+          <div class="field"><label for="categoryParent">一级分类</label><select id="categoryParent"><option value="">自动识别</option></select></div>
+          <div class="field"><label for="category">二级分类</label><select id="category" name="category_code"><option value="auto" selected>自动识别</option></select></div>
         </div>
         <button class="primary" id="uploadButton" type="submit">上传并开始审校</button>
         <div class="pipeline" id="pipeline">
@@ -186,6 +187,8 @@
         <div class="panel-head"><h2>制度仓库</h2><span class="small" id="repoCount">正在读取…</span></div>
         <div class="repo-tools">
           <input id="search" type="search" placeholder="搜索制度名称">
+          <select id="repoParentCategoryFilter"><option value="">全部一级分类</option></select>
+          <select id="repoCategoryFilter"><option value="">全部二级分类</option></select>
           <select id="profileFilter"><option value="">全部结构</option><option value="article">第X条</option><option value="decimal_outline">小数层级</option><option value="chinese_outline">中文序号</option><option value="mixed">混合结构</option></select>
           <button class="secondary" id="refreshButton" type="button">刷新仓库</button>
         </div>
@@ -204,7 +207,7 @@
   </main>
 
   <script>
-    const state = { policies: [], selectedId: null, activeTab: "review", auditTimer: null, detail: null, auditResults: null };
+    const state = { policies: [], categories: [], categoryByCode: {}, selectedId: null, activeTab: "review", auditTimer: null, detail: null, auditResults: null };
     const $ = (id) => document.getElementById(id);
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[char]);
     const profileName = { article: "第X条", decimal_outline: "小数层级", chinese_outline: "中文序号", mixed: "混合结构" };
@@ -223,9 +226,61 @@
     }
 
     async function loadMetadata() {
-      const [levels, categories] = await Promise.all([api("/v1/meta/policy-levels"), api("/v1/categories")]);
+      const [levels, categories] = await Promise.all([api("/v1/categories/levels"), api("/v1/categories/policies")]);
       levels.forEach((item) => $("level").insertAdjacentHTML("beforeend", `<option value="${escapeHtml(item.code)}">${escapeHtml(item.name)}</option>`));
-      categories.forEach((item) => $("category").insertAdjacentHTML("beforeend", `<option value="${escapeHtml(item.code)}">${escapeHtml(item.name)}</option>`));
+      state.categories = categories;
+      state.categoryByCode = Object.fromEntries(categories.map((item) => [item.code, item]));
+      categories.filter((item) => !item.parent_code).forEach((item) => {
+        const option = `<option value="${escapeHtml(item.code)}">${escapeHtml(item.name)}</option>`;
+        $("categoryParent").insertAdjacentHTML("beforeend", option);
+        $("repoParentCategoryFilter").insertAdjacentHTML("beforeend", option);
+      });
+      populateUploadCategoryOptions();
+      populateRepositoryCategoryOptions();
+      if (state.policies.length) renderRepository();
+    }
+
+    function childCategories(parentCode) {
+      return state.categories.filter((item) => item.parent_code === parentCode);
+    }
+
+    function populateUploadCategoryOptions() {
+      const parentCode = $("categoryParent").value;
+      const select = $("category");
+      if (!parentCode) {
+        select.innerHTML = '<option value="auto">自动识别</option>';
+        select.required = false;
+        return;
+      }
+      const children = childCategories(parentCode);
+      if (!children.length) {
+        const parent = state.categoryByCode[parentCode];
+        select.innerHTML = `<option value="${escapeHtml(parentCode)}">${escapeHtml(parent?.name || parentCode)}（无二级分类）</option>`;
+        select.required = false;
+        return;
+      }
+      select.innerHTML = '<option value="">请选择二级分类</option>' + children.map((item) => `<option value="${escapeHtml(item.code)}">${escapeHtml(item.name)}</option>`).join("");
+      select.required = true;
+    }
+
+    function populateRepositoryCategoryOptions() {
+      const parentCode = $("repoParentCategoryFilter").value;
+      const children = parentCode ? childCategories(parentCode) : [];
+      $("repoCategoryFilter").innerHTML = '<option value="">全部二级分类</option>' + children.map((item) => `<option value="${escapeHtml(item.code)}">${escapeHtml(item.name)}</option>`).join("");
+      $("repoCategoryFilter").disabled = !children.length;
+    }
+
+    function categoryRootCode(code) {
+      const category = state.categoryByCode[code];
+      return category?.parent_code || category?.code || code;
+    }
+
+    function categoryPathLabel(code, fallback = "") {
+      const category = state.categoryByCode[code];
+      if (!category) return fallback || code || "未分类";
+      if (!category.parent_code) return category.name;
+      const parent = state.categoryByCode[category.parent_code];
+      return parent ? `${parent.name} / ${category.name}` : category.name;
     }
 
     async function loadRepository(selectId = null) {
@@ -242,9 +297,13 @@
 
     function renderRepository() {
       const query = $("search").value.trim().toLowerCase();
+      const parentCategory = $("repoParentCategoryFilter").value;
+      const category = $("repoCategoryFilter").value;
       const profile = $("profileFilter").value;
       const rows = state.policies.filter((item) => {
         if (query && !String(item.title).toLowerCase().includes(query)) return false;
+        if (parentCategory && (item.category?.parent?.code || item.category?.code) !== parentCategory) return false;
+        if (category && item.category?.code !== category) return false;
         if (profile && item.structure_profile !== profile) return false;
         return true;
       });
@@ -256,8 +315,8 @@
         <td class="title-cell">${escapeHtml(item.title)}</td>
         <td><span class="badge ${item.status === "effective" ? "brand" : "amber"}">${policyStatusName[item.status] || escapeHtml(item.status)}</span></td>
         <td>${escapeHtml(item.version)}</td>
-        <td>${escapeHtml(item.level_name || "未指定")}</td>
-        <td>${escapeHtml(item.category_name)}</td>
+        <td>${escapeHtml(item.level?.name || "未指定")}</td>
+        <td>${escapeHtml(item.category?.path_name || item.category?.name || "未分类")}</td>
         <td><span class="badge ${item.structure_profile === "mixed" ? "amber" : "brand"}">${profileName[item.structure_profile] || escapeHtml(item.structure_profile)}</span></td>
         <td class="num">${item.clause_count}</td>
       </tr>`).join("");
@@ -268,7 +327,7 @@
       clearTimeout(state.auditTimer);
       state.selectedId = policyId;
       state.detail = null;
-      state.auditResults = { summary: null, semantic: null, conflict: null };
+      state.auditResults = { summary: null, semantic: null, conflict: null, intraConflict: null };
       renderRepository();
       $("detailPanel").innerHTML = '<div class="loading">正在读取制度、Chunks 和审校状态…</div>';
       try {
@@ -298,6 +357,7 @@
       queue("summary", stages.policy_summary, `/v1/policies/${policyId}/policy-summary`);
       queue("semantic", stages.semantic_audit, `/v1/policies/${policyId}/semantic-findings`);
       queue("conflict", stages.conflict_audit, `/v1/policies/${policyId}/conflict-findings`);
+      queue("intraConflict", stages.intra_conflict_audit, `/v1/policies/${policyId}/intra-conflict-findings`);
       await Promise.all(requests);
     }
 
@@ -306,6 +366,7 @@
       const counts = auditStatus.counts || {};
       const semantic = state.auditResults.semantic;
       const conflict = state.auditResults.conflict;
+      const intraConflict = state.auditResults.intraConflict;
       return {
         clause_count: counts.clause_total ?? clauseCount,
         report_status: auditStatus.status,
@@ -329,6 +390,15 @@
           rule_reversal: counts.rule_reversal,
         },
         conflict_findings: conflict?.findings || [],
+        intra_conflict_audit: stages.intra_conflict_audit || { status: "pending", error_message: null },
+        intra_conflict_counts: {
+          total: counts.intra_conflict_total,
+          numeric_conflict: counts.intra_numeric_conflict,
+          authority_conflict: counts.intra_authority_conflict,
+          process_conflict: counts.intra_process_conflict,
+          rule_reversal: counts.intra_rule_reversal,
+        },
+        intra_conflict_findings: intraConflict?.findings || [],
       };
     }
 
@@ -353,8 +423,8 @@
         <div><h1>${escapeHtml(policy.title)}</h1><div class="meta">
           <span class="badge">版本 ${escapeHtml(policy.version)}</span>
           <span class="badge ${policy.status === "effective" ? "brand" : "amber"}">${policyStatusName[policy.status] || escapeHtml(policy.status)}</span>
-          <span class="badge">${escapeHtml(policy.level_name || "未指定层级")}</span>
-          <span class="badge">${escapeHtml(policy.category_name)}</span>
+          <span class="badge">${escapeHtml(policy.level?.name || "未指定层级")}</span>
+          <span class="badge">${escapeHtml(policy.category?.path_name || policy.category?.name || "未分类")}</span>
           <span class="badge ${policy.structure_profile === "mixed" ? "amber" : "brand"}">${profileName[policy.structure_profile] || escapeHtml(policy.structure_profile)}</span>
         </div></div>
         <div class="tabs"><button class="tab ${state.activeTab === "review" ? "active" : ""}" data-tab="review">审校结果</button><button class="tab ${state.activeTab === "chunks" ? "active" : ""}" data-tab="chunks">Chunks (${clauses.length})</button></div>
@@ -424,8 +494,25 @@
         <div class="finding-meta">当前 Chunk：${escapeHtml(item.id)}<br>冲突 Chunk：${renderConflictCandidates(item)}<br>建议：${escapeHtml(item.suggestion)}</div>
       </article>`).join("");
       const conflictResult = conflictFindings || (conflict.status === "completed" ? '<div class="report-ok">制度冲突审校已完成，未发现问题。</div>' : "");
+      const intraConflict = report.intra_conflict_audit || { status: "disabled" };
+      const intraCounts = report.intra_conflict_counts || {};
+      const intraState = `<div class="audit-state"><div><strong>${escapeHtml(conflictStatusName[intraConflict.status] || intraConflict.status)}</strong>${intraConflict.error_message ? `<div class="small">${escapeHtml(intraConflict.error_message)}</div>` : ""}</div><span class="badge ${intraConflict.status === "completed" ? "brand" : "amber"}">${escapeHtml(intraConflict.status)}</span></div>`;
+      const intraCards = `<div class="report-cards">
+        <div class="report-card"><div class="small">冲突总数</div><div class="value">${displayCount(intraCounts.total)}</div></div>
+        <div class="report-card"><div class="small">数值冲突</div><div class="value">${displayCount(intraCounts.numeric_conflict)}</div></div>
+        <div class="report-card"><div class="small">权责冲突</div><div class="value">${displayCount(intraCounts.authority_conflict)}</div></div>
+        <div class="report-card"><div class="small">流程冲突</div><div class="value">${displayCount(intraCounts.process_conflict)}</div></div>
+        <div class="report-card"><div class="small">规则反转</div><div class="value">${displayCount(intraCounts.rule_reversal)}</div></div>
+      </div>`;
+      const intraFindings = (report.intra_conflict_findings || []).map((item, index) => `<article class="finding">
+        <div class="finding-title">${index + 1}. ${escapeHtml({ numeric_conflict: "数值冲突", authority_conflict: "权责冲突", process_conflict: "流程冲突", rule_reversal: "规则反转" }[item.conflict_type] || item.conflict_type)}</div>
+        <div>${escapeHtml(item.problem)}</div>
+        <div class="finding-meta">当前 Chunk：${escapeHtml(item.id)}<br>冲突 Chunk：${renderConflictCandidates(item)}<br>建议：${escapeHtml(item.suggestion)}</div>
+      </article>`).join("");
+      const intraResult = intraFindings || (intraConflict.status === "completed" ? '<div class="report-ok">制度内 Chunk 冲突审校已完成，未发现问题。</div>' : "");
       return `<section class="review-section"><h3 class="review-heading">语义与可执行性审校</h3>${auditState}${semanticResult}</section>`
         + `<section class="review-section"><h3 class="review-heading">制度冲突审校</h3>${conflictState}${conflictCards}${conflictResult}</section>`
+        + `<section class="review-section"><h3 class="review-heading">制度内 Chunk 冲突审校</h3>${intraState}${intraCards}${intraResult}</section>`
         + `<section class="review-section"><h3 class="review-heading">结构检查</h3>${cards}${structureResult}</section>`
         + actions;
     }
@@ -461,12 +548,13 @@
       if (!actions || policy.status !== "draft") return;
       const auditStatus = report.semantic_audit?.status || "disabled";
       const conflictStatus = report.conflict_audit?.status || "disabled";
-      if (["completed", "disabled"].includes(auditStatus) && ["completed", "disabled"].includes(conflictStatus)) {
+      const intraConflictStatus = report.intra_conflict_audit?.status || "disabled";
+      if (["completed", "disabled"].includes(auditStatus) && ["completed", "disabled"].includes(conflictStatus) && ["completed", "disabled"].includes(intraConflictStatus)) {
         actions.insertAdjacentHTML("beforeend", '<button class="primary" id="confirmPolicyButton" type="button">确认入库</button>');
       }
       actions.insertAdjacentHTML("beforeend", '<button class="danger" id="discardPolicyButton" type="button">丢弃草稿</button>');
       $("confirmPolicyButton")?.addEventListener("click", async () => {
-        const findingCount = report.findings.length + (report.conflict_findings || []).length;
+        const findingCount = report.findings.length + (report.conflict_findings || []).length + (report.intra_conflict_findings || []).length;
         if (findingCount && !confirm(`仍有 ${findingCount} 条检查问题，确认继续入库吗？`)) return;
         await api(`/v1/policies/${policy.id}/confirm`, { method: "POST" });
         await loadRepository(policy.id);
@@ -556,7 +644,12 @@
       }
     });
 
-    ["search", "profileFilter"].forEach((id) => $(id).addEventListener(id === "search" ? "input" : "change", renderRepository));
+    $("categoryParent").addEventListener("change", populateUploadCategoryOptions);
+    $("repoParentCategoryFilter").addEventListener("change", () => {
+      populateRepositoryCategoryOptions();
+      renderRepository();
+    });
+    ["search", "profileFilter", "repoCategoryFilter"].forEach((id) => $(id).addEventListener(id === "search" ? "input" : "change", renderRepository));
     $("refreshButton").addEventListener("click", () => loadRepository(state.selectedId));
     $("agentLink").href = `${location.protocol}//${location.hostname}:8894/`;
     Promise.all([loadMetadata(), loadRepository()]).catch((error) => { $("repoRows").innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(error.message)}</td></tr>`; });

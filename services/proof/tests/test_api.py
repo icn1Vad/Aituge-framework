@@ -28,12 +28,40 @@ class FakeService:
                 details={"ingestion_run_id": "run-failed"},
             )
         return {
-            "policy": {"id": "policy-1", "status": "draft"},
+            "policy": self._policy(),
             "document": {"id": "document-1"},
             "clauses": [],
             "reused": False,
             "ingestion_run_id": "run-created",
         }
+
+    @staticmethod
+    def _policy():
+        return {
+            "id": "policy-1",
+            "status": "draft",
+            "level_code": "lower",
+            "level_name": "三级制度",
+            "category_code": "finance",
+            "category_name": "财务管理",
+            "level": {"code": "lower", "name": "三级制度", "sort_rank": 100},
+            "category": {
+                "code": "finance",
+                "name": "财务管理",
+                "description": "",
+                "level": 1,
+                "parent": None,
+                "path_name": "财务管理",
+            },
+        }
+
+    def list_policies(self, **filters):
+        return [self._policy()]
+
+    def get_policy(self, policy_id: str):
+        if policy_id != "policy-1":
+            raise ProofError("policy_not_found", "Policy not found.", status_code=404)
+        return self._policy()
 
     def get_ingestion_run(self, run_id: str):
         if run_id != "run-1":
@@ -60,6 +88,7 @@ class FakeService:
                 "policy_summary": {"status": "completed", "error_message": None},
                 "semantic_audit": {"status": "completed", "error_message": None},
                 "conflict_audit": {"status": "completed", "error_message": None},
+                "intra_conflict_audit": {"status": "completed", "error_message": None},
             },
             "counts": {
                 "clause_total": 4,
@@ -73,6 +102,11 @@ class FakeService:
                 "authority_conflict": 0,
                 "process_conflict": 0,
                 "rule_reversal": 0,
+                "intra_conflict_total": 1,
+                "intra_numeric_conflict": 1,
+                "intra_authority_conflict": 0,
+                "intra_process_conflict": 0,
+                "intra_rule_reversal": 0,
             },
         }
 
@@ -89,6 +123,14 @@ class FakeService:
         }
 
     def get_conflict_findings(self, policy_id: str):
+        self.get_audit_status(policy_id)
+        return {
+            "status": "completed",
+            "error_message": None,
+            "findings": [{"id": "unit-1", "conflict_type": "numeric_conflict"}],
+        }
+
+    def get_intra_conflict_findings(self, policy_id: str):
         self.get_audit_status(policy_id)
         return {
             "status": "completed",
@@ -192,6 +234,18 @@ class FakeService:
             "candidate_counts": {"returned": top_k},
         }
 
+    def retrieve_intra_conflict_candidates(self, unit_id: str):
+        return {
+            "source": {
+                "id": unit_id, "text": "报销时限为三十日。",
+                "clause_no_raw": "第一条", "clause_ordinal": 1,
+            },
+            "results": [{
+                "id": "unit-2", "text": "报销时限为十五日。",
+                "clause_no_raw": "第二条", "clause_ordinal": 2,
+            }],
+        }
+
     def execute_sql(self, **kwargs):
         return {
             "question": kwargs["question"],
@@ -207,12 +261,19 @@ class FakeService:
 def test_metadata_endpoints() -> None:
     client = TestClient(create_app(Settings(), FakeService()))
     assert client.get("/health").status_code == 200
-    assert [item["code"] for item in client.get("/v1/meta/policy-levels").json()["data"]] == [
+    assert [item["code"] for item in client.get("/v1/categories/levels").json()["data"]] == [
         "upper",
         "peer",
         "lower",
     ]
-    assert len(client.get("/v1/categories").json()["data"]) == 3
+    assert len(client.get("/v1/categories/policies").json()["data"]) == 3
+
+
+def test_legacy_category_endpoints_are_removed() -> None:
+    client = TestClient(create_app(Settings(), FakeService()))
+    assert client.get("/v1/meta/policy-levels").status_code == 404
+    assert client.get("/v1/categories").status_code == 404
+    assert client.post("/v1/categories", json={"code": "risk", "name": "风险管理"}).status_code == 404
 
 
 def test_embedding_endpoints_are_explicitly_unavailable() -> None:
@@ -252,10 +313,28 @@ def test_policy_upload_exposes_run_id_on_success_and_failure() -> None:
     created = client.post("/v1/policies", files={"file": ("policy.txt", b"valid", "text/plain")})
     assert created.status_code == 200
     assert created.json()["data"]["ingestion_run_id"] == "run-created"
+    assert created.json()["data"]["policy"]["level"]["name"] == "三级制度"
+    assert created.json()["data"]["policy"]["category"]["path_name"] == "财务管理"
+    assert "level_code" not in created.json()["data"]["policy"]
+    assert "level_name" not in created.json()["data"]["policy"]
+    assert "category_code" not in created.json()["data"]["policy"]
+    assert "category_name" not in created.json()["data"]["policy"]
 
     failed = client.post("/v1/policies", files={"file": ("policy.txt", b"invalid", "text/plain")})
     assert failed.status_code == 422
     assert failed.json()["details"]["ingestion_run_id"] == "run-failed"
+
+
+def test_policy_list_and_detail_use_compact_metadata_objects() -> None:
+    client = TestClient(create_app(Settings(), FakeService()))
+
+    listed = client.get("/v1/policies").json()["data"][0]
+    detail = client.get("/v1/policies/policy-1").json()["data"]
+    for policy in (listed, detail):
+        assert policy["level"] == {"code": "lower", "name": "三级制度", "sort_rank": 100}
+        assert policy["category"]["code"] == "finance"
+        assert policy["category"]["path_name"] == "财务管理"
+        assert not {"level_code", "level_name", "category_code", "category_name"} & policy.keys()
 
 
 def test_split_audit_result_endpoints() -> None:
@@ -268,6 +347,8 @@ def test_split_audit_result_endpoints() -> None:
 
     summary = client.get("/v1/policies/policy-1/policy-summary")
     assert summary.json()["data"]["content"]["plain_summary"] == "概览"
+    assert status.json()["data"]["stages"]["intra_conflict_audit"]["status"] == "completed"
+    assert status.json()["data"]["counts"]["intra_numeric_conflict"] == 1
 
     semantic = client.get("/v1/policies/policy-1/semantic-findings")
     assert "finding_counts" not in semantic.json()["data"]
@@ -278,6 +359,9 @@ def test_split_audit_result_endpoints() -> None:
 
     assert client.get("/v1/policies/policy-1/quality-report").status_code == 404
     assert client.post("/v1/policies/policy-1/semantic-audit").status_code == 404
+    intra = client.get("/v1/policies/policy-1/intra-conflict-findings")
+    assert intra.json()["data"]["findings"][0]["id"] == "unit-1"
+
 
 
 def test_dataset_page_and_audit_endpoints() -> None:
@@ -344,6 +428,11 @@ def test_workbench_and_experiment_policy_are_available() -> None:
     workbench = client.get("/workbench")
     assert workbench.status_code == 200
     assert "上传并开始审校" in workbench.text
+    assert 'id="categoryParent"' in workbench.text
+    assert 'id="repoParentCategoryFilter"' in workbench.text
+    assert 'id="repoCategoryFilter"' in workbench.text
+    assert "一级分类" in workbench.text
+    assert "二级分类" in workbench.text
     assert "确认入库" in workbench.text
     assert "关联制度已删除或不可用" in workbench.text
 
@@ -374,6 +463,23 @@ def test_internal_conflict_retrieval_endpoint() -> None:
     assert response.status_code == 200
     assert response.json()["data"]["source"]["id"] == "unit-1"
     assert response.json()["data"]["candidate_counts"]["returned"] == 7
+
+
+def test_internal_intra_conflict_retrieval_accepts_only_unit_id() -> None:
+    client = TestClient(create_app(Settings(), FakeService()))
+
+    response = client.post(
+        "/v1/internal/intra-conflict-retrieval",
+        json={"unit_id": " unit-1 "},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["source"]["id"] == "unit-1"
+    assert response.json()["data"]["results"][0]["id"] == "unit-2"
+    assert client.post(
+        "/v1/internal/intra-conflict-retrieval",
+        json={"unit_id": "unit-1", "top_k": 3},
+    ).status_code == 422
 
 
 def test_retrieval_fetch_returns_compact_chunks_in_requested_order() -> None:
@@ -417,11 +523,17 @@ def test_internal_conflict_retrieval_defaults_to_ten_results() -> None:
 def test_conflict_agent_view_preserves_service_order_and_removes_noisy_fields() -> None:
     payload = _conflict_agent_view(
         {
-            "source": {"id": "source", "text": "source", "citation": {"label": "source"}},
+            "source": {
+                "id": "source",
+                "text": "source",
+                "level_code": "lower",
+                "citation": {"label": "source"},
+            },
             "results": [
                 {
                     "id": "global",
                     "text": "global",
+                    "level_code": "upper",
                     "retrieval_sources": ["global"],
                     "branch_ranks": {"global": 1},
                     "rerank_rank": 7,
@@ -445,6 +557,10 @@ def test_conflict_agent_view_preserves_service_order_and_removes_noisy_fields() 
 
     assert [item["id"] for item in payload["results"]] == ["global"]
     assert payload["results"][0]["rerank_rank"] == 7
+    assert payload["source"]["level_name"] == "三级制度"
+    assert payload["source"]["level_rank"] == 100
+    assert payload["results"][0]["level_relation"] == "candidate_is_higher"
+    assert payload["policy_level_hierarchy"]["precedence"][0]["code"] == "upper"
     assert "source_block_ids" not in payload["results"][0]
     assert payload["candidate_counts"]["judge_returned"] == 1
 

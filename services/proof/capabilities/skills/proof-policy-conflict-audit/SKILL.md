@@ -51,6 +51,16 @@ description: Audit policy units for evidence-grounded numeric, authority, proces
 显式的上位规则、特别规定、授权例外或新版本替代关系可以消解表面差异；但下位制度违反上位
 强制规则、超越授权、擅自降低标准或把唯一权限交给另一主体时仍属于冲突。
 
+## 制度层级优先级
+
+工具明确提供 `level_code`、`level_name`、`level_rank` 和 `level_relation`。固定映射为
+`upper`（一级制度，300）、`peer`（二级制度，200）、`lower`（三级制度，100），优先级按
+`level_rank` 从高到低。
+
+层级关系只决定已成立冲突中的规则优先级，不能代替“同一事项、适用范围重叠、无法同时满足”
+三道判断。跨层级冲突的 `problem` 应说明双方层级、优先关系和实质冲突原因；`suggestion` 应
+指向需要调整的低优先级规则。层级未知时不得自行推断。
+
 ## 四类输出
 
 ### `numeric_conflict`

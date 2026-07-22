@@ -2,13 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
-
-
-class CategoryCreate(BaseModel):
-    code: str = Field(min_length=2, max_length=40, pattern=r"^[a-z][a-z0-9_]*$")
-    name: str = Field(min_length=1, max_length=80)
-    description: str = Field(default="", max_length=500)
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class RetrievalFetchRequest(BaseModel):
@@ -32,6 +26,20 @@ class RetrievalSearchRequest(BaseModel):
 class ConflictRetrievalRequest(BaseModel):
     unit_id: str = Field(min_length=1, max_length=160)
     top_k: int = Field(default=10, ge=1, le=20)
+
+    @field_validator("unit_id")
+    @classmethod
+    def normalize_unit_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("unit_id must not be blank")
+        return normalized
+
+
+class IntraConflictRetrievalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    unit_id: str = Field(min_length=1, max_length=160)
 
     @field_validator("unit_id")
     @classmethod

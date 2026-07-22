@@ -200,6 +200,17 @@ def test_conflict_items_cover_each_chunk_exactly_once() -> None:
     assert all(item["targets"][0]["id"] == item["targets"][0]["unit_id"] for item in items)
 
 
+def test_intra_conflict_items_cover_each_chunk_exactly_once() -> None:
+    repository = FakeAuditRepository()
+    service = PolicyAuditService(Settings(semantic_audit_enabled=True), repository)
+
+    items = service._build_intra_conflict_items("audit-1", repository.units)
+
+    assert [item["targets"][0]["id"] for item in items] == ["unit-1", "unit-2"]
+    assert all(len(item["targets"]) == 1 for item in items)
+    assert all(item["id"].startswith("audit-1:intra-conflict:") for item in items)
+
+
 def test_policy_summary_accepts_compact_identifier_free_outline() -> None:
     repository = FakeAuditRepository()
     service = PolicyAuditService(Settings(semantic_audit_enabled=True), repository)

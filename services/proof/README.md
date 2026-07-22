@@ -145,8 +145,8 @@ uv run python -m proof.tools.validate_dataset_chunks \
 - `GET /v1/dataset/audit`：扫描固定数据集口径并返回分类、chunk 计数和异常；
 - `GET /v1/dataset/files/{file_id}`：返回单个数据集文件的完整条款 chunk；
 - `GET /v1/files`、`GET /v1/files/{file_id}/content`、`GET /v1/files/{file_id}/chunks`：查看库内文件及其内容；
-- `GET /v1/meta/policy-levels`：三个固定层级；
-- `GET/POST /v1/categories`：查询或增加简单分类；
+- `GET /v1/categories/levels`：查询三个固定制度层级；
+- `GET /v1/categories/policies`：查询制度分类；
 - `POST /v1/documents/{document_id}/index`：调用外部 embedding 并写入 pgvector；
 - `POST /v1/retrieval/search`：按完整条款做混合、向量或中文全文检索，支持制度、层级和分类过滤；
 - `POST /v1/retrieval/fetch`：不依赖 embedding，按 unit ID 返回完整条款和 citation。

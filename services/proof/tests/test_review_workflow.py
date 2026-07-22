@@ -35,6 +35,7 @@ class AuditState:
     def __init__(self, status: str, conflict_status: str = "completed", summary_status: str = "completed") -> None:
         self.status = status
         self.conflict_status = conflict_status
+        self.intra_conflict_status = "completed"
         self.summary_status = summary_status
 
     def get_state(self, document_id):
@@ -51,11 +52,17 @@ class AuditState:
 
     def conflict_state(self, document_id):
         return {"status": self.conflict_status, "error_message": None}
+    def intra_conflict_state(self, document_id):
+        return {"status": self.intra_conflict_status, "error_message": None}
+
 
     def findings(self, document_id):
         return []
 
     def conflict_findings(self, document_id):
+        return []
+
+    def intra_conflict_findings(self, document_id):
         return []
 
 
@@ -120,6 +127,17 @@ def test_confirm_blocks_until_conflict_audit_completes() -> None:
     assert exc_info.value.code == "conflict_audit_incomplete"
 
 
+
+def test_confirm_blocks_until_intra_conflict_audit_completes() -> None:
+    service = service_for(audit_enabled=True, audit_status="completed")
+    service.policy_audit_service.intra_conflict_status = "failed"
+
+    with pytest.raises(ProofError) as exc_info:
+        service.confirm_policy("policy-1")
+
+    assert exc_info.value.code == "intra_conflict_audit_incomplete"
+
+
 def test_audit_status_is_lightweight_and_keeps_running_after_one_stage_fails() -> None:
     service = service_for(audit_enabled=True, audit_status="running")
     service.policy_audit_service.summary_status = "failed"
@@ -137,6 +155,7 @@ def test_audit_status_is_lightweight_and_keeps_running_after_one_stage_fails() -
             "policy_summary": {"status": "failed", "error_message": None},
             "semantic_audit": {"status": "running", "error_message": None},
             "conflict_audit": {"status": "completed", "error_message": None},
+            "intra_conflict_audit": {"status": "completed", "error_message": None},
         },
         "counts": {
             "clause_total": 0,
@@ -150,6 +169,11 @@ def test_audit_status_is_lightweight_and_keeps_running_after_one_stage_fails() -
             "authority_conflict": 0,
             "process_conflict": 0,
             "rule_reversal": 0,
+            "intra_conflict_total": 0,
+            "intra_numeric_conflict": 0,
+            "intra_authority_conflict": 0,
+            "intra_process_conflict": 0,
+            "intra_rule_reversal": 0,
         },
     }
 

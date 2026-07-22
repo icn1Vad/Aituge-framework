@@ -17,9 +17,16 @@ logger = logging.getLogger(__name__)
 class PolicyAuditService:
     """Coordinate policy summary, semantic review, and conflict review stages."""
 
-    def __init__(self, settings: Settings, repository) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        repository,
+        *,
+        intra_conflict_retrieval_service=None,
+    ) -> None:
         self.settings = settings
         self.repository = repository
+        self.intra_conflict_retrieval_service = intra_conflict_retrieval_service
 
     def ensure_dispatched(self, document_id: str) -> dict[str, Any]:
         if not self.settings.semantic_audit_enabled:
@@ -49,6 +56,7 @@ class PolicyAuditService:
             self.repository.mark_audit_failed(run["id"], message)
             self.repository.mark_audit_summary_failed(run["id"], message)
             self._mark_conflict_failed(run["id"], message)
+            self._mark_intra_conflict_failed(run["id"], message)
         return self.get_state(document_id)
 
     @staticmethod
@@ -59,6 +67,7 @@ class PolicyAuditService:
                 run.get("status"),
                 run.get("summary_status"),
                 run.get("conflict_status"),
+                run.get("intra_conflict_status"),
             )
         )
 
@@ -70,6 +79,7 @@ class PolicyAuditService:
                 run.get("status"),
                 run.get("summary_status"),
                 run.get("conflict_status"),
+                run.get("intra_conflict_status"),
             )
         )
 
@@ -84,6 +94,7 @@ class PolicyAuditService:
             run["status"] == "running"
             or run.get("summary_status") in {"pending", "running"}
             or run.get("conflict_status") in {"pending", "running"}
+            or run.get("intra_conflict_status") in {"pending", "running"}
         ):
             self._reconcile_framework_status(run)
             run = self.repository.get_audit_run(run["id"]) or run
@@ -122,11 +133,28 @@ class PolicyAuditService:
             return []
         return self.repository.list_conflict_audit_findings(run["id"])
 
+    def intra_conflict_state(self, document_id: str) -> dict[str, Any]:
+        run = self.repository.get_audit_run_for_document(document_id)
+        if run is None:
+            status = "disabled" if not self.settings.semantic_audit_enabled else "pending"
+            return {"status": status, "error_message": None}
+        return {
+            "status": run.get("intra_conflict_status") or "pending",
+            "error_message": run.get("intra_conflict_error_message"),
+        }
+
+    def intra_conflict_findings(self, document_id: str) -> list[dict[str, Any]]:
+        run = self.repository.get_audit_run_for_document(document_id)
+        if run is None or run.get("intra_conflict_status") != "completed":
+            return []
+        return self.repository.list_intra_conflict_audit_findings(run["id"])
+
     def accept_result(
         self,
         payload: dict[str, Any],
         *,
         conflict_output_validator: Callable[[dict[str, Any]], list[dict[str, Any]]] | None = None,
+        intra_conflict_output_validator: Callable[[dict[str, Any]], list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
         audit_id = str(payload.get("audit_id") or "").strip()
         task_id = str(payload.get("task_id") or "").strip()
@@ -157,6 +185,14 @@ class PolicyAuditService:
                     payload,
                     conflict_output_validator,
                 )
+            elif stage_id == "intra_conflict_audit":
+                result = self._accept_intra_conflict_callback(
+                    run,
+                    callback_status,
+                    output,
+                    payload,
+                    intra_conflict_output_validator,
+                )
             elif stage_id in {"", "finalize_report"}:
                 result = self._accept_pipeline_callback(
                     run,
@@ -164,6 +200,7 @@ class PolicyAuditService:
                     output,
                     payload,
                     conflict_output_validator,
+                    intra_conflict_output_validator,
                 )
             else:
                 raise ValueError(f"Unknown Framework pipeline stage: {stage_id}")
@@ -173,6 +210,8 @@ class PolicyAuditService:
                 self.repository.mark_audit_summary_failed(audit_id, message)
             elif stage_id == "conflict_audit":
                 self._mark_conflict_failed(audit_id, message)
+            elif stage_id == "intra_conflict_audit":
+                self._mark_intra_conflict_failed(audit_id, message)
             else:
                 self.repository.mark_audit_failed(audit_id, message)
             if isinstance(exc, ProofError):
@@ -216,12 +255,37 @@ class PolicyAuditService:
         self.repository.complete_conflict_audit(run["id"], findings)
         return {"stage_id": "conflict_audit", "status": "completed", "finding_count": len(findings)}
 
-    def _accept_pipeline_callback(self, run, status, output, payload, conflict_validator) -> dict[str, Any]:
+    def _accept_intra_conflict_callback(
+        self,
+        run,
+        status,
+        output,
+        payload,
+        validator,
+    ) -> dict[str, Any]:
+        if status == "failed":
+            message = str(payload.get("error_message") or "Intra-policy conflict audit stage failed.")
+            self._mark_intra_conflict_failed(run["id"], message)
+            return {"stage_id": "intra_conflict_audit", "status": "failed"}
+        if validator is None:
+            raise ValueError("Intra-policy conflict result validator is not configured.")
+        findings = validator({**payload, "output": output})
+        self.repository.complete_intra_conflict_audit(run["id"], findings)
+        return {
+            "stage_id": "intra_conflict_audit",
+            "status": "completed",
+            "finding_count": len(findings),
+        }
+
+    def _accept_pipeline_callback(
+        self, run, status, output, payload, conflict_validator, intra_conflict_validator
+    ) -> dict[str, Any]:
         if status == "failed":
             message = str(payload.get("error_message") or "Policy review pipeline failed.")
             self.repository.mark_audit_failed(run["id"], message)
             self.repository.mark_audit_summary_failed(run["id"], message)
             self._mark_conflict_failed(run["id"], message)
+            self._mark_intra_conflict_failed(run["id"], message)
             return {"status": "failed"}
         if not isinstance(output, dict):
             raise ValueError("Framework final callback output must be an object.")
@@ -284,6 +348,38 @@ class PolicyAuditService:
                     run["id"],
                     str(conflict_stage.get("error_message") or "Conflict audit stage failed."),
                 )
+
+        current = self.repository.get_audit_run(run["id"]) or current
+        intra_output = artifacts.get("intra_conflict_audit")
+        intra_stage = stages.get("intra_conflict_audit") or {}
+        if current.get("intra_conflict_status") != "completed":
+            if intra_output is not None:
+                if intra_conflict_validator is None:
+                    self._mark_intra_conflict_failed(
+                        run["id"], "Intra-policy conflict result validator is not configured."
+                    )
+                else:
+                    try:
+                        findings = intra_conflict_validator(
+                            {
+                                "task_type": "proof.audit.run",
+                                "audit_id": run["id"],
+                                "output": intra_output,
+                            }
+                        )
+                        self.repository.complete_intra_conflict_audit(run["id"], findings)
+                    except Exception as exc:
+                        self._mark_intra_conflict_failed(
+                            run["id"], self._error_message(exc)
+                        )
+            elif intra_stage.get("status") in {"failed", "cancelled"}:
+                self._mark_intra_conflict_failed(
+                    run["id"],
+                    str(
+                        intra_stage.get("error_message")
+                        or "Intra-policy conflict audit stage failed."
+                    ),
+                )
         final = self.repository.get_audit_run(run["id"]) or current
         return {"status": final["status"]}
 
@@ -298,8 +394,13 @@ class PolicyAuditService:
         too_long = [item["id"] for item in units if len(item["text"]) > self.settings.audit_max_chunk_chars]
         if too_long:
             raise ValueError(f"Chunks exceed PROOF_AUDIT_MAX_CHUNK_CHARS: {', '.join(too_long)}")
+        if self.intra_conflict_retrieval_service is not None:
+            self.intra_conflict_retrieval_service.prepare(
+                run["id"], run["document_id"], units
+            )
         semantic_items = self._build_batches(run["id"], units)
         conflict_items = self._build_conflict_items(run["id"], units)
+        intra_conflict_items = self._build_intra_conflict_items(run["id"], units)
         headers = self._headers()
         dispatch_key = uuid.uuid4().hex
         create_payload = {
@@ -312,6 +413,7 @@ class PolicyAuditService:
                 "summary_max_chars": self.settings.summary_max_chars,
                 "semantic_items": semantic_items,
                 "conflict_items": conflict_items,
+                "intra_conflict_items": intra_conflict_items,
                 "max_concurrency": self.settings.audit_max_concurrency,
                 "failure_policy": "fail_fast",
                 "retry_per_item": 1,
@@ -378,6 +480,29 @@ class PolicyAuditService:
         return [
             {
                 "id": f"{audit_id}:conflict:{index:04d}",
+                "audit_id": audit_id,
+                "check": "conflict",
+                "targets": [
+                    {
+                        "id": unit["id"],
+                        "unit_id": unit["id"],
+                        "text": unit["text"],
+                        "clause_no": unit.get("clause_no_raw") or "",
+                        "heading_path": unit.get("heading_path") or [],
+                    }
+                ],
+            }
+            for index, unit in enumerate(units, start=1)
+        ]
+
+    def _build_intra_conflict_items(
+        self,
+        audit_id: str,
+        units: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": f"{audit_id}:intra-conflict:{index:04d}",
                 "audit_id": audit_id,
                 "check": "conflict",
                 "targets": [
@@ -520,6 +645,10 @@ class PolicyAuditService:
                 self._mark_conflict_failed(
                     run["id"], "Framework task ended without delivering a valid conflict audit result."
                 )
+            if run.get("intra_conflict_status") in {"pending", "running"}:
+                self._mark_intra_conflict_failed(
+                    run["id"], "Framework task ended without delivering a valid intra-policy conflict audit result."
+                )
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -529,6 +658,11 @@ class PolicyAuditService:
 
     def _mark_conflict_failed(self, audit_id: str, message: str) -> None:
         handler = getattr(self.repository, "mark_conflict_audit_failed", None)
+        if handler is not None:
+            handler(audit_id, message)
+
+    def _mark_intra_conflict_failed(self, audit_id: str, message: str) -> None:
+        handler = getattr(self.repository, "mark_intra_conflict_audit_failed", None)
         if handler is not None:
             handler(audit_id, message)
 
@@ -548,6 +682,10 @@ class PolicyAuditService:
             "conflict_audit": {
                 "status": run.get("conflict_status") or "pending",
                 "error_message": run.get("conflict_error_message"),
+            },
+            "intra_conflict_audit": {
+                "status": run.get("intra_conflict_status") or "pending",
+                "error_message": run.get("intra_conflict_error_message"),
             },
         }
 

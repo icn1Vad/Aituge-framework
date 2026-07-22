@@ -47,3 +47,33 @@ def test_alias_is_not_recorded_without_legacy_migration() -> None:
     _record_legacy_migration_aliases(connection)
 
     assert connection.versions == {}
+
+
+def test_intra_conflict_migration_has_minimal_temp_vectors_and_cascades() -> None:
+    sql = (MIGRATIONS_DIR / "011_intra_conflict_audit.sql").read_text("utf-8")
+
+    assert "intra_conflict_status" in sql
+    assert "intra_conflict_error_message" in sql
+    assert "CREATE TABLE proof_draft_retrieval_embedding" in sql
+    table_sql = sql.split(
+        "CREATE TABLE proof_draft_retrieval_embedding", maxsplit=1
+    )[1].split(");", maxsplit=1)[0]
+    for column in (
+        "audit_run_id", "retrieval_unit_id", "profile_id",
+        "dimensions", "embedding", "created_at",
+    ):
+        assert column in table_sql
+    assert "PRIMARY KEY (audit_run_id, retrieval_unit_id)" in table_sql
+    assert table_sql.count("ON DELETE CASCADE") == 2
+    assert "CREATE TABLE proof_intra_conflict_audit_finding" in sql
+    assert "expires_at" not in sql
+
+
+def test_policy_level_name_migration_keeps_stable_codes() -> None:
+    sql = (MIGRATIONS_DIR / "012_policy_level_names.sql").read_text("utf-8")
+
+    assert "WHEN 'upper' THEN '一级制度'" in sql
+    assert "WHEN 'peer' THEN '二级制度'" in sql
+    assert "WHEN 'lower' THEN '三级制度'" in sql
+    assert "INSERT" not in sql
+    assert "DELETE" not in sql

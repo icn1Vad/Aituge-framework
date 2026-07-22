@@ -8,8 +8,8 @@ from fastapi import Body, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from proof.api.schemas import (
-    CategoryCreate,
     ConflictRetrievalRequest,
+    IntraConflictRetrievalRequest,
     PolicySqlRequest,
     RetrievalFetchRequest,
     RetrievalSearchRequest,
@@ -22,6 +22,12 @@ from proof.errors import ProofError
 DATASET_PAGE = Path(__file__).with_name("static") / "dataset.html"
 WORKBENCH_PAGE = Path(__file__).with_name("static") / "workbench.html"
 EXAMPLE_POLICY = Path(__file__).parents[3] / "examples" / "采购管理制度（试行）.txt"
+POLICY_LEVEL_HIERARCHY = (
+    {"code": "upper", "name": "一级制度", "rank": 300},
+    {"code": "peer", "name": "二级制度", "rank": 200},
+    {"code": "lower", "name": "三级制度", "rank": 100},
+)
+POLICY_LEVEL_BY_CODE = {item["code"]: item for item in POLICY_LEVEL_HIERARCHY}
 
 
 def create_app(settings: Settings | None = None, service: ProofService | None = None) -> FastAPI:
@@ -161,6 +167,11 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
         data = await asyncio.to_thread(_service(request).get_conflict_findings, policy_id)
         return {"success": True, "data": data}
 
+    @app.get("/v1/policies/{policy_id}/intra-conflict-findings")
+    async def get_intra_conflict_findings(policy_id: str, request: Request):
+        data = await asyncio.to_thread(_service(request).get_intra_conflict_findings, policy_id)
+        return {"success": True, "data": data}
+
     @app.post("/v1/policies/{policy_id}/confirm")
     async def confirm_policy(policy_id: str, request: Request):
         data = await asyncio.to_thread(_service(request).confirm_policy, policy_id)
@@ -196,23 +207,13 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
         data = await asyncio.to_thread(_service(request).get_dataset_file, file_id)
         return {"success": True, "data": data}
 
-    @app.get("/v1/meta/policy-levels")
+    @app.get("/v1/categories/levels")
     async def list_levels(request: Request):
         return {"success": True, "data": await asyncio.to_thread(_service(request).list_levels)}
 
-    @app.get("/v1/categories")
+    @app.get("/v1/categories/policies")
     async def list_categories(request: Request):
         return {"success": True, "data": await asyncio.to_thread(_service(request).list_categories)}
-
-    @app.post("/v1/categories")
-    async def create_category(payload: CategoryCreate, request: Request):
-        data = await asyncio.to_thread(
-            _service(request).create_category,
-            payload.code,
-            payload.name,
-            payload.description,
-        )
-        return {"success": True, "data": data}
 
     @app.post("/v1/documents/{document_id}/index")
     async def index_document(document_id: str, request: Request):
@@ -248,6 +249,16 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
         )
         return {"success": True, "data": _conflict_agent_view(data)}
 
+    @app.post("/v1/internal/intra-conflict-retrieval", include_in_schema=False)
+    async def retrieve_intra_conflict_candidates(
+        payload: IntraConflictRetrievalRequest, request: Request
+    ):
+        data = await asyncio.to_thread(
+            _service(request).retrieve_intra_conflict_candidates,
+            payload.unit_id,
+        )
+        return {"success": True, "data": data}
+
     @app.post("/v1/query/sql")
     async def execute_sql(payload: PolicySqlRequest, request: Request):
         data = await asyncio.to_thread(
@@ -275,6 +286,7 @@ def _conflict_agent_view(data: dict, *, limit: int | None = None) -> dict:
     results = list(data.get("results") or [])
 
     def compact(item: dict, *, result: bool = False) -> dict:
+        level = POLICY_LEVEL_BY_CODE.get(str(item.get("level_code") or ""), {})
         payload = {
             "id": item.get("id"),
             "text": item.get("text"),
@@ -282,6 +294,8 @@ def _conflict_agent_view(data: dict, *, limit: int | None = None) -> dict:
             "policy_title": item.get("policy_title"),
             "policy_version": item.get("policy_version"),
             "level_code": item.get("level_code"),
+            "level_name": item.get("level_name") or level.get("name"),
+            "level_rank": item.get("level_rank") or level.get("rank"),
             "category_code": item.get("category_code"),
             "clause_no_raw": item.get("clause_no_raw"),
             "clause_ordinal": item.get("clause_ordinal"),
@@ -306,14 +320,30 @@ def _conflict_agent_view(data: dict, *, limit: int | None = None) -> dict:
             )
         return payload
 
+    compact_source = compact(source)
     compact_results = [compact(item, result=True) for item in results]
+    source_rank = compact_source.get("level_rank")
+    for item in compact_results:
+        candidate_rank = item.get("level_rank")
+        if not source_rank or not candidate_rank:
+            item["level_relation"] = "unknown"
+        elif candidate_rank > source_rank:
+            item["level_relation"] = "candidate_is_higher"
+        elif candidate_rank < source_rank:
+            item["level_relation"] = "candidate_is_lower"
+        else:
+            item["level_relation"] = "same_level"
     if limit is not None:
         compact_results = compact_results[: max(1, limit)]
     candidate_counts = dict(data.get("candidate_counts") or {})
     candidate_counts["judge_returned"] = len(compact_results)
     return {
-        "source": compact(source),
+        "source": compact_source,
         "results": compact_results,
+        "policy_level_hierarchy": {
+            "precedence": [dict(item) for item in POLICY_LEVEL_HIERARCHY],
+            "rule": "一级制度 > 二级制度 > 三级制度；跨层级冲突以上级制度为准。",
+        },
         "candidate_counts": candidate_counts,
         "branch_metadata": data.get("branch_metadata") or {},
         "reranker_used": bool(data.get("reranker_used")),

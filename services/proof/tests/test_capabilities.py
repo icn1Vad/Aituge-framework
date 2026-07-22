@@ -111,14 +111,18 @@ def test_proof_capability_declares_minimal_qa_runtime():
     assert (skill_root / "proof-policy-semantic-audit" / "SKILL.md").is_file()
     pipeline = registry.calls["pipeline"][0]
     stages = {stage["stage_id"]: stage for stage in pipeline["stages"]}
-    assert pipeline["max_parallelism"] == 3
+    assert pipeline["max_parallelism"] == 4
     assert stages["semantic_audit"]["item_source"] == "semantic_items"
     assert stages["conflict_audit"]["item_source"] == "conflict_items"
     assert stages["conflict_audit"]["agent_id"] == "proof-conflict-agent"
     assert stages["conflict_audit"]["artifact_type"] == "proof_conflict_audit"
+    assert stages["intra_conflict_audit"]["item_source"] == "intra_conflict_items"
+    assert stages["intra_conflict_audit"]["agent_id"] == "proof-intra-conflict-agent"
+    assert stages["intra_conflict_audit"]["tools"] == ["proof_intra_conflict_search"]
     assert set(stages["finalize_report"]["depends_on"]) == {
-        "policy_summary", "semantic_audit", "conflict_audit"
+        "policy_summary", "semantic_audit", "conflict_audit", "intra_conflict_audit"
     }
+    assert not any(task["task_type"] == "proof.intra.conflict.audit" for task in registry.calls["task"])
     conflict_task = registry.calls["task"][2]
     conflict_agent = agents["proof-conflict-agent"]
     conflict_package = packages["proof-policy-conflict-audit-package"]
@@ -135,6 +139,14 @@ def test_proof_capability_declares_minimal_qa_runtime():
     assert conflict_package["primary_skill"] == "proof-policy-conflict-audit"
     assert tools["proof_conflict_search"]["path"] == "/v1/internal/conflict-retrieval"
     assert (skill_root / "proof-policy-conflict-audit" / "SKILL.md").is_file()
+    assert agents["proof-intra-conflict-agent"]["default_tools"] == [
+        "proof_intra_conflict_search"
+    ]
+    assert packages["proof-policy-intra-conflict-audit-package"]["primary_skill"] == (
+        "proof-policy-intra-conflict-audit"
+    )
+    assert tools["proof_intra_conflict_search"]["path"] == "/v1/internal/intra-conflict-retrieval"
+    assert (skill_root / "proof-policy-intra-conflict-audit" / "SKILL.md").is_file()
 
 
 def test_proof_search_input_matches_retrieval_api_contract():
@@ -311,6 +323,12 @@ def test_audit_contract_rejects_duplicate_targets_and_findings():
             "check": "conflict",
             "targets": [{"id": "unit-1", "unit_id": "unit-1", "text": "相关部门应及时处理。"}],
         }],
+        intra_conflict_items=[{
+            "id": "intra-1",
+            "audit_id": "audit-1",
+            "check": "conflict",
+            "targets": [{"id": "unit-1", "unit_id": "unit-1", "text": "相关部门应及时处理。"}],
+        }],
     )
     assert payload.failure_policy == "fail_fast"
 
@@ -322,6 +340,12 @@ def test_audit_contract_rejects_duplicate_targets_and_findings():
             semantic_items=[batch, {**batch, "id": "batch-2"}],
             conflict_items=[{
                 "id": "conflict-1",
+                "audit_id": "audit-1",
+                "check": "conflict",
+                "targets": [{"id": "unit-1", "unit_id": "unit-1"}],
+            }],
+            intra_conflict_items=[{
+                "id": "intra-1",
                 "audit_id": "audit-1",
                 "check": "conflict",
                 "targets": [{"id": "unit-1", "unit_id": "unit-1"}],

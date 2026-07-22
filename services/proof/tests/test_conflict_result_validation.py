@@ -22,6 +22,7 @@ class _Repository:
                 "clause_ordinal": 1,
                 "heading_path": [],
                 "text": "报销申请应当在三十日内提交。",
+                "level_code": "lower",
             },
             "candidate-unit": {
                 "id": "candidate-unit",
@@ -34,6 +35,7 @@ class _Repository:
                 "clause_ordinal": 2,
                 "heading_path": [],
                 "text": "报销申请应当在十五日内提交。",
+                "level_code": "upper",
             },
         }
 
@@ -79,6 +81,15 @@ def test_conflict_result_sink_validates_chunk_ids() -> None:
     result = _service().accept_conflict_audit_result(_payload())
 
     assert result == {"audit_id": "audit-1", "status": "validated", "finding_count": 1}
+
+
+def test_cross_level_conflict_problem_is_annotated_with_precedence() -> None:
+    findings = _service()._validate_conflict_output(_payload())
+
+    assert findings[0]["problem"].startswith(
+        "层级关系：当前制度为三级制度，候选 Chunk candidate-unit 为一级制度；"
+        "按一级制度 > 二级制度 > 三级制度，一级制度优先。"
+    )
 
 
 @pytest.mark.parametrize(

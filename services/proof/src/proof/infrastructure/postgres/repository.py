@@ -234,35 +234,19 @@ class ProofRepository:
 
     def list_levels(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
-            return list(conn.execute("SELECT code, name, sort_rank FROM proof_policy_level ORDER BY sort_rank DESC"))
+            return list(conn.execute("SELECT code, name FROM proof_policy_level ORDER BY sort_rank DESC"))
 
     def list_categories(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
             return list(
                 conn.execute(
                     """
-                    SELECT code, name, description, parent_code, level
+                    SELECT code, name, parent_code
                     FROM proof_category
                     ORDER BY level, parent_code NULLS FIRST, created_at, code
                     """
                 )
             )
-
-    def create_category(self, code: str, name: str, description: str) -> dict[str, Any]:
-        try:
-            with self.connect() as conn:
-                row = conn.execute(
-                    """
-                    INSERT INTO proof_category (code, name, description)
-                    VALUES (%s, %s, %s)
-                    RETURNING code, name, description
-                    """,
-                    (code, name, description),
-                ).fetchone()
-                conn.commit()
-                return dict(row)
-        except psycopg.errors.UniqueViolation as exc:
-            raise ProofError("category_exists", f"Category '{code}' already exists.", status_code=409) from exc
 
     def get_by_content_hash(self, content_hash: str) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -666,12 +650,14 @@ class ProofRepository:
                        u.page_start, u.page_end, u.text_hash,
                        p.title AS policy_title, p.normalized_title,
                        p.version AS policy_version, p.status AS policy_status,
-                       p.level_code, p.category_code,
+                       p.level_code, l.name AS level_name, l.sort_rank AS level_rank,
+                       p.category_code,
                        c.name AS category_name, c.parent_code AS parent_category_code,
                        c.level AS category_level, d.original_name
                 FROM proof_retrieval_unit u
                 JOIN proof_policy p ON p.id = u.policy_id
                 JOIN proof_document d ON d.id = u.document_id
+                LEFT JOIN proof_policy_level l ON l.code = p.level_code
                 JOIN proof_category c ON c.code = p.category_code
                 WHERE u.id = %s
                 """,
@@ -903,7 +889,10 @@ class ProofRepository:
 
         with self.connect() as conn:
             run = conn.execute(
-                "SELECT status, summary_status, conflict_status FROM proof_audit_run WHERE id = %s FOR UPDATE",
+                """
+                SELECT status, summary_status, conflict_status, intra_conflict_status
+                FROM proof_audit_run WHERE id = %s FOR UPDATE
+                """,
                 (audit_run_id,),
             ).fetchone()
             if run is None:
@@ -911,7 +900,8 @@ class ProofRepository:
             semantic_incomplete = run["status"] != "completed"
             summary_incomplete = run["summary_status"] != "completed"
             conflict_incomplete = run["conflict_status"] != "completed"
-            if not any((semantic_incomplete, summary_incomplete, conflict_incomplete)):
+            intra_conflict_incomplete = run["intra_conflict_status"] != "completed"
+            if not any((semantic_incomplete, summary_incomplete, conflict_incomplete, intra_conflict_incomplete)):
                 return False
 
             conn.execute(
@@ -934,6 +924,12 @@ class ProofRepository:
                     conflict_error_message = CASE
                       WHEN conflict_status = 'completed' THEN conflict_error_message ELSE NULL
                     END,
+                    intra_conflict_status = CASE
+                      WHEN intra_conflict_status = 'completed' THEN intra_conflict_status ELSE 'pending'
+                    END,
+                    intra_conflict_error_message = CASE
+                      WHEN intra_conflict_status = 'completed' THEN intra_conflict_error_message ELSE NULL
+                    END,
                     framework_task_id = NULL, framework_run_id = NULL, updated_at = now()
                 WHERE id = %s
                 """,
@@ -944,6 +940,11 @@ class ProofRepository:
             if conflict_incomplete:
                 conn.execute(
                     "DELETE FROM proof_conflict_audit_finding WHERE audit_run_id = %s",
+                    (audit_run_id,),
+                )
+            if intra_conflict_incomplete:
+                conn.execute(
+                    "DELETE FROM proof_intra_conflict_audit_finding WHERE audit_run_id = %s",
                     (audit_run_id,),
                 )
             conn.commit()
@@ -974,6 +975,12 @@ class ProofRepository:
                     conflict_error_message = CASE
                       WHEN conflict_status = 'pending' THEN NULL ELSE conflict_error_message
                     END,
+                    intra_conflict_status = CASE
+                      WHEN intra_conflict_status = 'pending' THEN 'running' ELSE intra_conflict_status
+                    END,
+                    intra_conflict_error_message = CASE
+                      WHEN intra_conflict_status = 'pending' THEN NULL ELSE intra_conflict_error_message
+                    END,
                     updated_at = now()
                 WHERE id = %s
                 """,
@@ -989,6 +996,7 @@ class ProofRepository:
                 SET framework_task_id = %s, updated_at = now()
                 WHERE id = %s AND (
                   status = 'pending' OR summary_status = 'pending' OR conflict_status = 'pending'
+                  OR intra_conflict_status = 'pending'
                 )
                 """,
                 (framework_task_id, audit_run_id),
@@ -1111,6 +1119,82 @@ class ProofRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def complete_intra_conflict_audit(
+        self,
+        audit_run_id: str,
+        findings: list[dict[str, Any]],
+    ) -> None:
+        with self.connect() as conn:
+            run = conn.execute(
+                "SELECT id FROM proof_audit_run WHERE id = %s FOR UPDATE",
+                (audit_run_id,),
+            ).fetchone()
+            if not run:
+                raise ProofError("audit_run_not_found", "Audit run not found.", status_code=404)
+            conn.execute(
+                "DELETE FROM proof_intra_conflict_audit_finding WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            if findings:
+                with conn.cursor() as cursor:
+                    cursor.executemany(
+                        """
+                        INSERT INTO proof_intra_conflict_audit_finding (
+                          audit_run_id, source_unit_id, candidate_ids, conflict_type,
+                          problem, suggestion
+                        ) VALUES (%s, %s, %s::jsonb, %s, %s, %s)
+                        """,
+                        [
+                            (
+                                audit_run_id,
+                                item["id"],
+                                Jsonb(item["candidate_ids"]),
+                                item["conflict_type"],
+                                item["problem"],
+                                item["suggestion"],
+                            )
+                            for item in findings
+                        ],
+                    )
+            conn.execute(
+                """
+                UPDATE proof_audit_run
+                SET intra_conflict_status = 'completed', intra_conflict_error_message = NULL,
+                    updated_at = now()
+                WHERE id = %s
+                """,
+                (audit_run_id,),
+            )
+            conn.commit()
+
+    def mark_intra_conflict_audit_failed(self, audit_run_id: str, error_message: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE proof_audit_run
+                SET intra_conflict_status = 'failed', intra_conflict_error_message = %s,
+                    updated_at = now()
+                WHERE id = %s AND intra_conflict_status <> 'completed'
+                """,
+                (error_message[:2000], audit_run_id),
+            )
+            conn.commit()
+
+    def list_intra_conflict_audit_findings(self, audit_run_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT f.source_unit_id AS id, f.candidate_ids, f.conflict_type,
+                       f.problem, f.suggestion
+                FROM proof_intra_conflict_audit_finding f
+                JOIN proof_retrieval_unit u ON u.id = f.source_unit_id
+                WHERE f.audit_run_id = %s
+                ORDER BY u.clause_ordinal, f.id
+                """,
+                (audit_run_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def complete_audit(self, audit_run_id: str, findings: list[dict[str, str]]) -> None:
         with self.connect() as conn:
             run = conn.execute(
@@ -1176,6 +1260,16 @@ class ProofRepository:
                     "UPDATE proof_policy SET status = 'effective', updated_at = now() WHERE id = %s",
                     (policy_id,),
                 )
+                conn.execute(
+                    """
+                    DELETE FROM proof_draft_retrieval_embedding
+                    WHERE audit_run_id IN (
+                      SELECT ar.id FROM proof_audit_run ar
+                      JOIN proof_document d ON d.id = ar.document_id WHERE d.policy_id = %s
+                    )
+                    """,
+                    (policy_id,),
+                )
             conn.commit()
         return self.get_policy(policy_id)
 
@@ -1202,6 +1296,111 @@ class ProofRepository:
             conn.execute("DELETE FROM proof_policy WHERE id = %s", (policy_id,))
             conn.commit()
         return dict(row)
+
+    def draft_embeddings_ready(
+        self,
+        audit_run_id: str,
+        document_id: str,
+        unit_ids: list[str],
+        profile: EmbeddingProfile,
+    ) -> bool:
+        if not unit_ids:
+            return False
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT e.retrieval_unit_id
+                FROM proof_draft_retrieval_embedding e
+                JOIN proof_retrieval_unit u ON u.id = e.retrieval_unit_id
+                JOIN proof_audit_run ar ON ar.id = e.audit_run_id
+                WHERE e.audit_run_id = %s AND ar.document_id = %s
+                  AND u.document_id = %s AND e.profile_id = %s AND e.dimensions = %s
+                """,
+                (audit_run_id, document_id, document_id, profile.id, profile.dimensions),
+            ).fetchall()
+        return {str(row["retrieval_unit_id"]) for row in rows} == set(unit_ids)
+
+    def replace_draft_embeddings(
+        self,
+        audit_run_id: str,
+        document_id: str,
+        units: list[dict[str, Any]],
+        vectors: list[list[float]],
+        profile: EmbeddingProfile,
+    ) -> None:
+        if len(units) != len(vectors):
+            raise ValueError("Draft embedding units and vectors must have the same length.")
+        with self.connect() as conn:
+            run = conn.execute(
+                "SELECT document_id FROM proof_audit_run WHERE id = %s FOR UPDATE",
+                (audit_run_id,),
+            ).fetchone()
+            if run is None:
+                raise ProofError("audit_run_not_found", "Audit run not found.", status_code=404)
+            if str(run["document_id"]) != document_id:
+                raise ProofError("audit_document_mismatch", "Audit run document does not match.", status_code=422)
+            if any(str(unit.get("document_id") or document_id) != document_id for unit in units):
+                raise ProofError("audit_document_mismatch", "Draft embedding unit belongs to another document.", status_code=422)
+            conn.execute(
+                "DELETE FROM proof_draft_retrieval_embedding WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            if units:
+                with conn.cursor() as cursor:
+                    cursor.executemany(
+                        """
+                        INSERT INTO proof_draft_retrieval_embedding (
+                          audit_run_id, retrieval_unit_id, profile_id, dimensions, embedding
+                        ) VALUES (%s, %s, %s, %s, %s::vector)
+                        """,
+                        [
+                            (
+                                audit_run_id,
+                                unit["id"],
+                                profile.id,
+                                profile.dimensions,
+                                _vector_text(vector),
+                            )
+                            for unit, vector in zip(units, vectors, strict=True)
+                        ],
+                    )
+            conn.commit()
+
+    def retrieve_intra_conflict_candidates(
+        self,
+        unit_id: str,
+        profile: EmbeddingProfile,
+        *,
+        top_k: int = 10,
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        source = self.get_conflict_source_unit(unit_id)
+        if source is None:
+            return None, []
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                WITH source_embedding AS (
+                  SELECT e.audit_run_id, e.embedding
+                  FROM proof_draft_retrieval_embedding e
+                  JOIN proof_audit_run ar ON ar.id = e.audit_run_id
+                  JOIN proof_retrieval_unit u ON u.id = e.retrieval_unit_id
+                  WHERE e.retrieval_unit_id = %s AND e.profile_id = %s
+                    AND e.dimensions = %s AND ar.document_id = u.document_id
+                )
+                SELECT u.id, u.text, u.clause_no_raw, u.clause_ordinal,
+                       1 - (e.embedding <=> s.embedding) AS score
+                FROM source_embedding s
+                JOIN proof_draft_retrieval_embedding e ON e.audit_run_id = s.audit_run_id
+                JOIN proof_retrieval_unit u ON u.id = e.retrieval_unit_id
+                JOIN proof_audit_run ar ON ar.id = e.audit_run_id
+                WHERE u.document_id = ar.document_id AND u.id <> %s
+                  AND e.profile_id = %s AND e.dimensions = %s
+                ORDER BY e.embedding <=> s.embedding, u.clause_ordinal
+                LIMIT %s
+                """,
+                (unit_id, profile.id, profile.dimensions, unit_id, profile.id, profile.dimensions, top_k),
+            ).fetchall()
+        return source, [dict(row) for row in rows]
 
     def replace_embeddings(
         self,
@@ -1298,7 +1497,7 @@ class ProofRepository:
                        u.page_start, u.page_end, u.paragraph_start, u.paragraph_end,
                        u.text_hash,
                        p.title AS policy_title, p.version AS policy_version,
-                       p.level_code, l.name AS level_name,
+                       p.level_code, l.name AS level_name, l.sort_rank AS level_rank,
                        p.category_code, c.name AS category_name, d.original_name,
                        1 - (e.embedding <=> %s::vector) AS score
                 FROM proof_retrieval_embedding e
@@ -1346,7 +1545,7 @@ class ProofRepository:
                        u.page_start, u.page_end, u.paragraph_start, u.paragraph_end,
                        u.text_hash,
                        p.title AS policy_title, p.version AS policy_version,
-                       p.level_code, l.name AS level_name,
+                       p.level_code, l.name AS level_name, l.sort_rank AS level_rank,
                        p.category_code, c.name AS category_name, d.original_name,
                        ts_rank_cd(u.search_vector, q.value, 32) AS score
                 FROM proof_retrieval_unit u
