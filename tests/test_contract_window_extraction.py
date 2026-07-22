@@ -224,7 +224,61 @@ async def test_window_extractor_rejects_ungrounded_or_paraphrased_text() -> None
             model_id="contract-model",
         )
 
-    assert exc_info.value.code == "WINDOW_ALIGNMENT_FAILED"
+    error = exc_info.value
+    assert error.code == "WINDOW_ALIGNMENT_FAILED"
+    assert str(error) == "OBLIGATION 未在当前 Window 原文中获得确定性字面匹配"
+    assert "OBLIGATION extraction_text=\"乙方需要尽快交付成果\"" in (
+        error.retry_feedback or ""
+    )
+    assert "如果原文没有对应依据就删除该项" in (error.retry_feedback or "")
+    assert "乙方需要尽快交付成果" not in str(error)
+
+
+@pytest.mark.asyncio
+async def test_window_extractor_reports_all_unaligned_items_in_private_feedback() -> None:
+    runtime = FakeRuntime(
+        json.dumps(
+            {
+                "extractions": [
+                    _semantic_item(
+                        "OBLIGATION",
+                        "乙方需要尽快交付成果",
+                        subject="乙方",
+                        predicate="需要交付",
+                        object_="成果",
+                    ),
+                    _semantic_item(
+                        "PAYMENT",
+                        "甲方随后把费用付清",
+                        subject="甲方",
+                        predicate="支付",
+                        object_="费用",
+                    ),
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    with pytest.raises(WindowExtractionError) as exc_info:
+        await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+            _request(),
+            tenant_id="tenant-001",
+            model_id="contract-model",
+        )
+
+    error = exc_info.value
+    assert error.code == "WINDOW_ALIGNMENT_FAILED"
+    assert str(error) == "2 条抽取项未在当前 Window 原文中获得确定性字面匹配"
+    assert "1. OBLIGATION extraction_text=\"乙方需要尽快交付成果\"" in (
+        error.retry_feedback or ""
+    )
+    assert "2. PAYMENT extraction_text=\"甲方随后把费用付清\"" in (
+        error.retry_feedback or ""
+    )
+    assert "禁止摘要、改写、补字或拼接不连续句段" in (error.retry_feedback or "")
+    assert "乙方需要尽快交付成果" not in str(error)
+    assert "甲方随后把费用付清" not in str(error)
 
 
 @pytest.mark.asyncio

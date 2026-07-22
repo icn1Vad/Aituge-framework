@@ -178,3 +178,16 @@
 - 真实模型定向验收：只复测原失败的第 7 个 Window，不重跑全合同；总耗时 `34317 ms`，首轮 `19530 ms` 因缺少 `PAYMENT、DATE` 进入局部复查，第二轮 `14787 ms` 成功；Coverage `14/14 Block`、`1/1 Window`；最终得到 `PAYMENT=1`、`DATE=3`、`AMOUNT=1`，三项日期分别精确绑定“五个工作日”、逾期付款“30个工作日”和设备支持整改“30个工作日”，金额精确绑定“30000元”
 - 隔离环境：源码同步并重启 `contract-ir-window-stage2-framework`，继续复用 `contract-ir-window-stage1-ui`；正式容器、正式环境和 Java 未修改
 - 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage53-window7-result.json`
+
+## 阶段 5.4：随机改写的定向对齐重试
+
+- 状态：通过；本次第 2 个失败 Window 已定向复现并修复，12 Window 全量回归返回 `HTTP 200`
+- 开始前设计复读：已再次完整读取唯一联合冻结稿和本阶段记录；确认只修 Framework 内部 Window 局部纠错，不修改 Java–Python API、OpenAPI、公开 DTO、状态机、Attempt、回调或 `schema_version=1.0`
+- 现场原因：同一份合同重复运行时失败 Window 数量和位置会变化；本次只有第 2 个 Window 失败，上次有两个其他 Window 失败。模型偶发将 `OBLIGATION.extraction_text` 改写或拼接为非连续文本；第一次严格对齐正确拒绝，但旧的第二次调用只收到通用错误码和类别，不知道上一轮具体哪段文本未对齐，因此可能重复返回同一错误
+- 实现：对一次模型响应中的所有零候选抽取项先统一预检；只把类别和失败的 `extraction_text` 作为同一 Window 第二次调用的私有反馈，明确要求改为当前 `source_text` 的完整连续原文或删除无依据项；反馈最多列出 6 项且总长度限制 1500 字符；公开 Attempt、HTTP 错误和日志仍只记录类别/数量，不泄露合同原文
+- 安全边界：没有放宽 Anchor 校验，没有使用语义相似、编辑距离、同义词、拼音或任选候选位置；第二次结果仍必须通过相同的精确/排版规范化字面匹配，否则整个 Window 和 IR Stage 继续失败；成功 Window 不进入该反馈路径
+- 自动测试：Window 抽取与 Pipeline `39 passed`；Framework 合同相关回归 `54 passed`；覆盖单条改写、一次响应多条改写、私有反馈内容、公开错误脱敏以及既有 Pipeline 重试转发；本地 `git diff --check` 通过
+- 真实模型定向验收：第 2 个 Window 首轮 `3746 ms` 返回 `WINDOW_ALIGNMENT_FAILED`，第二轮收到定向反馈后 `3866 ms` 成功；总耗时 `7612 ms`、模型调用 `2` 次、局部重试 `1` 次；Coverage `6/6 Block`、`2/2 Section`、`1/1 Window`，得到 `OBLIGATION=3`、`DATE=1`，全部保存真实 Block、字符区间和逐字 `quoted_text`
+- 全量回归：同一份 93 Block、12 Section、12 Window 合同继续使用并发 10 完整抽取，隔离 API 返回 `HTTP 200`；证明修复没有破坏其他 11 个 Window 的 Schema、Alignment、Coverage 或确定性合并
+- 隔离环境：源码同步并重启 `contract-ir-window-stage2-framework`，继续复用 `contract-ir-window-stage1-ui`；用户可直接在原测试页面复测；正式容器、正式环境和 Java 未修改
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage54-window2-result.json`
