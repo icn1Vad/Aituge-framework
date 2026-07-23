@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from enum import Enum
 from typing import Literal
 
@@ -193,6 +194,67 @@ class RiskSourceExcerpt(StrictModel):
     heading_path: list[str] = Field(default_factory=list)
 
 
+class RiskEvidenceSource(StrictModel):
+    source_id: str = Field(pattern=r"^risk-es-[0-9a-f]{32}$")
+    generation_id: str = Field(min_length=1, max_length=160)
+    ir_item_id: str = Field(min_length=1, max_length=160)
+    anchor_id: str = Field(min_length=1, max_length=160)
+    block_id: str = Field(min_length=1, max_length=160)
+    page_number: int | None = Field(default=None, ge=1)
+    char_start: int = Field(ge=0)
+    char_end: int = Field(gt=0)
+    quoted_text: str = Field(min_length=1)
+    quoted_text_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    evidence_type: Literal["TEXT_QUOTE", "CONTEXT"]
+    ir_type: IrField
+    subject: str | None = None
+    predicate: str = Field(min_length=1)
+    object: str | None = None
+    heading_path: list[str] = Field(default_factory=list)
+    allowed_check_codes: list[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_literal_source(self) -> "RiskEvidenceSource":
+        if self.char_end - self.char_start != len(self.quoted_text):
+            raise ValueError("Evidence Source offsets must match quoted_text length")
+        expected = "sha256:" + hashlib.sha256(
+            self.quoted_text.encode("utf-8")
+        ).hexdigest()
+        if self.quoted_text_hash != expected:
+            raise ValueError("Evidence Source quoted_text_hash is invalid")
+        if len(self.allowed_check_codes) != len(set(self.allowed_check_codes)):
+            raise ValueError("Evidence Source allowed_check_codes must be unique")
+        return self
+
+
+class RiskAbsenceEvidenceSource(StrictModel):
+    source_id: str = Field(pattern=r"^risk-as-[0-9a-f]{32}$")
+    generation_id: str = Field(min_length=1, max_length=160)
+    check_code: str = Field(pattern=r"^[A-Z]{2,3}-[0-9]{3}$")
+    checked_scope: str = Field(min_length=1, max_length=500)
+    verification_method: str = Field(min_length=1, max_length=2000)
+    present_ir_types: list[IrField]
+    missing_target: str = Field(min_length=1, max_length=500)
+
+
+class RiskCheckEvidencePolicy(StrictModel):
+    check_code: str = Field(pattern=r"^[A-Z]{2,3}-[0-9]{3}$")
+    allowed_evidence_source_ids: list[str] = Field(default_factory=list)
+    allowed_absence_source_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_unique_sources(self) -> "RiskCheckEvidencePolicy":
+        if len(self.allowed_evidence_source_ids) != len(
+            set(self.allowed_evidence_source_ids)
+        ):
+            raise ValueError("allowed_evidence_source_ids must be unique")
+        if len(self.allowed_absence_source_ids) != len(
+            set(self.allowed_absence_source_ids)
+        ):
+            raise ValueError("allowed_absence_source_ids must be unique")
+        return self
+
+
 class RiskClauseCatalogItem(StrictModel):
     block_id: str = Field(min_length=1, max_length=160)
     block_no: int = Field(ge=1)
@@ -300,6 +362,13 @@ class RiskReviewContext(StrictModel):
     clause_catalog: list[RiskClauseCatalogItem] = Field(default_factory=list)
     source_excerpts: list[RiskSourceExcerpt] = Field(default_factory=list)
     source_anchor_index: list[RiskSourceExcerpt] = Field(default_factory=list)
+    evidence_sources: list[RiskEvidenceSource] = Field(default_factory=list)
+    absence_evidence_sources: list[RiskAbsenceEvidenceSource] = Field(
+        default_factory=list
+    )
+    check_evidence_policies: list[RiskCheckEvidencePolicy] = Field(
+        default_factory=list
+    )
     present_ir_types: list[IrField]
     missing_ir_types: list[IrField]
     coverage_summary: RiskCoverageSummary

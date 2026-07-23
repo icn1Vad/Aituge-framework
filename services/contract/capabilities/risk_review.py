@@ -17,6 +17,13 @@ from task_manager.output_parser import parse_json_output
 
 COMMERCIAL_UNIT_ID = "commercial_financial"
 COMMERCIAL_CHECK_CODES = tuple(f"CF-{index:03d}" for index in range(1, 9))
+BASE_UNIT_ID_PATTERN = (
+    r"^(formation_validity_authority|commercial_financial|performance_obligations|"
+    r"ip_confidentiality_data|liability_remedies_exit)$"
+)
+BASE_CHECK_CODE_PATTERN = (
+    r"^(FVA-00[1-5]|CF-00[1-8]|PO-00[1-7]|ICD-00[1-6]|LRE-00[1-8])$"
+)
 
 _SYSTEM_PROMPT = """你是合同商务财务风险直接审查器。
 只审查输入分配的CF检查，禁止工具和其他领域；严格站在our_party立场，以NEUTRAL标准识别有原文依据的实质风险。
@@ -405,10 +412,26 @@ class EvidenceCandidate(StrictModel):
 
 class FindingDraft(StrictModel):
     finding_local_id: str = Field(pattern=r"^finding-[0-9a-f]{32}$")
-    source_unit_id: Literal["commercial_financial"]
-    domain: Literal["commercial_financial"]
-    check_code: str = Field(pattern=r"^CF-00[1-8]$")
-    category: Literal["PAYMENT", "DELIVERY", "ACCEPTANCE"]
+    source_unit_id: str = Field(pattern=BASE_UNIT_ID_PATTERN)
+    domain: str = Field(pattern=BASE_UNIT_ID_PATTERN)
+    check_code: str = Field(pattern=BASE_CHECK_CODE_PATTERN)
+    category: Literal[
+        "PARTY_IDENTIFICATION",
+        "RIGHTS_OBLIGATIONS_IMBALANCE",
+        "PAYMENT",
+        "DELIVERY",
+        "ACCEPTANCE",
+        "BREACH",
+        "LIABILITY",
+        "TERMINATION",
+        "CONFIDENTIALITY",
+        "INTELLECTUAL_PROPERTY",
+        "DISPUTE_RESOLUTION",
+        "MISSING_CLAUSE",
+        "AMBIGUITY",
+        "INTERNAL_CONFLICT",
+        "OTHER",
+    ]
     risk_type: str = Field(min_length=1, max_length=160)
     risk_level: Literal["HIGH", "MEDIUM", "LOW", "INFO"]
     title: str = Field(min_length=1, max_length=300)
@@ -422,7 +445,7 @@ class FindingDraft(StrictModel):
 
 
 class CheckCoverageResult(StrictModel):
-    check_code: str = Field(pattern=r"^CF-00[1-8]$")
+    check_code: str = Field(pattern=BASE_CHECK_CODE_PATTERN)
     status: Literal["REVIEWED", "NOT_APPLICABLE", "FAILED"]
     reason_code: ReasonCode
     decision_note: str = Field(min_length=1, max_length=1000)
@@ -430,7 +453,7 @@ class CheckCoverageResult(StrictModel):
 
 
 class LlmCallMetric(StrictModel):
-    review_unit_id: Literal["commercial_financial"]
+    review_unit_id: str = Field(pattern=BASE_UNIT_ID_PATTERN)
     repair_no: int = Field(ge=0, le=1)
     prompt_tokens: int | None = Field(default=None, ge=0)
     cached_tokens: int | None = Field(default=None, ge=0)
@@ -444,10 +467,10 @@ class LlmCallMetric(StrictModel):
 
 
 class ReviewUnitResult(StrictModel):
-    unit_id: Literal["commercial_financial"]
-    domain: Literal["commercial_financial"]
+    unit_id: str = Field(pattern=BASE_UNIT_ID_PATTERN)
+    domain: str = Field(pattern=BASE_UNIT_ID_PATTERN)
     status: Literal["COMPLETED"]
-    check_results: list[CheckCoverageResult] = Field(min_length=8, max_length=8)
+    check_results: list[CheckCoverageResult] = Field(min_length=1, max_length=8)
     findings: list[FindingDraft] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     model_call_count: int = Field(ge=1, le=2)
@@ -464,7 +487,7 @@ class ReviewUnitResult(StrictModel):
     schema_normalization_applied: bool = False
     schema_normalization_type: Literal["TOP_LEVEL_CHECKS_TO_CHECK_RESULTS"] | None = None
     attempt_diagnostics: list[LlmAttemptDiagnostic] = Field(min_length=1, max_length=2)
-    cf005_candidate: Cf005Candidate
+    cf005_candidate: Cf005Candidate | None = None
     reason_code_enrichment_count: int = Field(ge=0, le=8)
     reason_code_rule_version: Literal["1.0"]
     ignored_model_reason_code_count: int = Field(ge=0, le=8)

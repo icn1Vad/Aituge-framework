@@ -246,6 +246,28 @@ Contract Python构建内部图：Clause、IR Item、Definition、DATE、AMOUNT�
 
 三个Check均遵循：Finding只表示对我方不利的实质风险；有利、中性或一般说明不得作为LOW/INFO Finding。输出Category均为`PAYMENT`，风险等级按材料性、金额暴露和可执行性固定，不得因措辞风格改变根因或等级。
 
+### 8.4 ip_confidentiality_data确定性边界
+
+`ICD-001～ICD-006`复用“确定性Candidate → 最小模型Decision → Python Evidence/Severity → Canonical Root → 确定性Finding”链路。每个Check拥有独立的文本Source规则、合法Absence规则、Candidate类型、Control Code、Severity Factor证据门和Finding模板；模型不得创建Candidate、Primary Evidence、Category、Risk Type、Risk Level、主体或正式Finding文案。
+
+六项检查分别覆盖：项目成果权属、背景知识产权许可、第三方知识产权保证与救济、保密机制、数据处理与安全、数据返还删除留存。只有合同技术文本存在对应业务场景时才允许生成缺失型Candidate；未出现知识产权、数据处理或返还删除场景时不得凭一般服务关系推断缺失风险。文本Candidate与缺失Candidate默认是不同Canonical Root，不因同一Check自动合并。
+
+`ICD-004`必须先执行立场前置门。若Primary Evidence仅要求相对方保护我方商业秘密，且没有同时对我方施加不利保密负担，则该文本Candidate由Python确定性返回`NO_RISK`；保密定义、例外、允许披露对象、法定披露程序和期限是否完整，继续由独立、合法的Absence Candidate审查。不得让模型把有利保护条款本身反转为我方风险，也不得因此跳过完整性检查。
+
+Severity Factor只允许从当前Check和Candidate的闭集选择。模型返回值是提议，Python按文本或合法Absence Source逐项验证；`MISSING_CORE_MECHANISM`、权属不清、超范围转让、排他/不可撤销、无限范围、终止后影响、单方保护、第三方暴露、无返还删除、安全标准缺失和事件通知缺失均须有对应证据。财务、进度、履行和救济影响继续使用严格因果门。未通过的Factor只过滤并审计，不进入最终等级，也不触发Repair。
+
+扩展Playbook可以向`ip_confidentiality_data`增加新的Check。未登记在一期`ICD-001～006` Source Registry中的扩展Check继续以自身`required_ir_types`投影Source，并使用通用缺失规则；不得因固定ICD Registry查找而失败。扩展Check若要采用更严格的领域词形或完整性规则，应单独冻结并注册。
+
+### 8.5 liability_remedies_exit确定性边界
+
+`LRE-001～LRE-008`继续复用“确定性Candidate → 最小模型Decision → Python Evidence/Severity → Canonical Root → 确定性Finding”链路。八项检查覆盖违约触发和责任成立、违约金及损失计算、责任上限和免责、赔偿与第三方索赔、解除终止、终止后结算返还、不可抗力，以及适用法律和争议管辖。义务本身不平衡归PO；知识产权、保密和数据根因归ICD；LRE只处理违反义务后的责任、赔偿、解除、退出和争议机制。
+
+责任缺失、责任上限缺失、终止结算缺失、不可抗力缺失和争议解决缺失只能由合法`RiskAbsenceEvidenceSource`支撑。责任上限被绕过必须同时存在上限文本和可能绕过上限的责任文本。Primary Evidence由Python固定；Supporting和Counter严格限定在当前Candidate白名单内。模型不得借用同一Canonical Root中其他Candidate的Source；当Supporting白名单为空时必须返回空数组。LRE判`NO_RISK`时允许将当前Candidate的Primary Source作为明确Counter，Python负责去重和角色校验。
+
+Severity Factor为封闭Registry。模型只提议，Python逐项验证文本信号、因果关系和Absence类型；未经验证的Factor过滤并留痕，不进入等级。累计金钱救济本身固定为`MEDIUM`，一般`FINANCIAL_IMPACT`属于该风险的内生后果，不重复升级；无上限责任、间接损失或上限绕过由独立`UNBOUNDED_LIABILITY_EXPOSURE` Root计算`HIGH`。固定Fixture中不可抗力与争议解决Absence Source已确定性证明核心机制和救济路径缺失，因此二者固定包含`MISSING_CORE_MECHANISM`和`NO_EFFECTIVE_REMEDY`，不依赖模型是否重复提议。
+
+只有Registry明确允许、Root Type一致且核心Evidence指向同一法律后果的Candidate才能合并。`BROAD_BREACH_TRIGGER_REVIEW`、开放赔偿、间接损失和责任上限缺失可以共同形成`UNBOUNDED_LIABILITY_EXPOSURE`；累计救济、不可抗力缺失和争议解决缺失继续保持独立Root。Candidate层允许合法Control Code子集变化，但最终Canonical Root的分组、等级、Core Evidence和Control Code集合必须稳定。
+
 ## 9. Direct调用、并发和预算
 
 正常调用：Tool=0、模型调用=1、`temperature=0`、`thinking=false`、严格Pydantic。仅JSON、Schema或Check覆盖错误允许修复当前Unit一次；第二次失败则Unit失败。网络、超时和拒绝不得伪装为空Findings。
@@ -263,6 +285,38 @@ Contract Python构建内部图：Clause、IR Item、Definition、DATE、AMOUNT�
 优化只能移除重复技术字段、按IR类型投影、只带候选Excerpt；不得删除Check。预计超过硬上限时，Plan Builder按`check_code`确定性拆Batch，不允许静默截断。模型不得复述合同、输出分析过程、重复输出相同Evidence，也不得生成Python能确定性补全的ID、页码、Hash和技术字段。
 
 常规合同正常调用5～7次；最多两个Specialist后正常硬上限9次；Schema修复只重试失败Unit，不得因一个Unit失败重跑全部Unit；每Unit最多一次修复，18次仅是异常理论硬上限。同一时刻最多7个模型调用，Specialist等待槽位。七个固定Unit支持同时启动；无候选横向Unit立即完成。并发由隐藏执行单元内部Semaphore控制，不修改Framework全局并发3。
+
+## 9.1 五领域基础 Bundle 执行边界
+
+阶段 6.3 的基础风险审查固定为 5 个 Review Unit、7 个模型 Batch 和 34 个
+Check。`formation_validity_authority`、`commercial_financial`、
+`ip_confidentiality_data`各 1 个 Batch，`performance_obligations`和
+`liability_remedies_exit`各 2 个 Batch。7 个 Batch 之间没有业务依赖，必须
+一次性受控并发启动，不得形成分批屏障；Bundle 层不增加模型总结、合并或复核
+调用。
+
+Bundle 只负责调度、权威身份一致性、Unit 结果收集、指标汇总、原子失败和最终
+封装，不重新解释 Candidate Verdict、Canonical Root、Risk Level、Primary
+Evidence 或 Finding。所有 Batch 必须共享同一 review、document、generation、
+contract hash、schema、视角、双方主体、审查态度、Fixture、Plan ID 和 Plan
+Hash。任一 Batch、Unit、Check、Evidence 或身份门禁失败时，Bundle 返回严格
+`FAILED`诊断对象，不返回可消费的部分 Findings；已完成 Batch 只进入诊断
+Artifact。
+
+跨 Unit 只做技术身份和同 Check 重复硬门禁。不同领域共享 Evidence 只记录为
+`cross_unit_overlap_candidates`，不自动合并或删除，阶段 5.1 语义合并仍由后续
+授权单独接入。
+
+稳定性比较继续执行各领域已经冻结的 Oracle。Commercial 按阶段 6.2 的既有
+边界处理：CF-003、CF-004 状态以及 CF-005 风险根因、等级、付款文本 Source 和
+履约保障 ABSENCE 必须稳定；CF-007、CF-008 等非核心附加 Finding 可以合法
+变化，必须披露但不能仅因数量变化判 Bundle 失败。PO、ICD、LRE 继续严格比较
+Candidate、Canonical Root、等级和 Primary/Core Evidence。
+
+Bundle 指标固定记录排队耗时、Batch 启动偏移、Batch/Unit/Bundle 墙钟、TTFT、
+四类 Token、Repair、Tool、最慢 Batch、最慢 Unit 和峰值并发。固定 Fixture
+验收要求`peak_concurrency=7`、每轮 7 次正常模型调用、`Repair=0`、`Tool=0`，
+Bundle 墙钟目标不超过 30 秒、允许不超过 45 秒、硬上限 60 秒。
 
 ## 10. complete_with_usage观测协议
 

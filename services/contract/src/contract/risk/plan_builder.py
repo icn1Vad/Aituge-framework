@@ -7,6 +7,16 @@ from typing import Iterable
 
 from contract.application.idempotency import canonical_json
 from contract.errors import ContractError
+from contract.risk.icd_source_policy import (
+    ICD_ABSENCE_POLICIES,
+    icd_mechanism_is_complete,
+    icd_item_matches_check,
+)
+from contract.risk.lre_source_policy import (
+    LRE_ABSENCE_POLICIES,
+    lre_item_matches_check,
+    lre_mechanism_is_complete,
+)
 from contract.risk.models import (
     CheckSpec,
     DeterministicCheckResult,
@@ -14,9 +24,12 @@ from contract.risk.models import (
     ReviewBatchSpec,
     ReviewUnitSpec,
     ReviewUnitType,
+    RiskAbsenceEvidenceSource,
     RiskClauseCatalogItem,
+    RiskCheckEvidencePolicy,
     RiskCoverageSummary,
     RiskDomain,
+    RiskEvidenceSource,
     RiskHorizontalCandidate,
     RiskProjectedIrItem,
     RiskReviewContext,
@@ -33,6 +46,7 @@ from contract.risk.playbooks import (
     PlaybookRouter,
     build_default_registry,
 )
+from contract.risk.po_source_policy import po_item_matches_check
 
 
 ZERO_HASH = "sha256:" + "0" * 64
@@ -482,6 +496,25 @@ class RiskReviewPlanBuilder:
         missing = sorted(set(required) - set(present))
         definitions = [item for item in projected if item.ir_type == "definitions"]
         other_items = [item for item in projected if item.ir_type != "definitions"]
+        evidence_sources = self._evidence_sources(
+            value.generation_id,
+            unit_id,
+            checks,
+            projected,
+            excerpts,
+        )
+        absence_sources = self._absence_evidence_sources(
+            value.generation_id,
+            unit_id,
+            checks,
+            present,
+            evidence_sources,
+        )
+        evidence_policies = self._check_evidence_policies(
+            checks,
+            evidence_sources,
+            absence_sources,
+        )
         raw = RiskReviewContext(
             review_id=value.review_id,
             document_id=value.document_id,
@@ -501,6 +534,9 @@ class RiskReviewPlanBuilder:
             clause_catalog=self._clause_catalog(excerpts),
             source_excerpts=list(excerpts),
             source_anchor_index=list(excerpts),
+            evidence_sources=evidence_sources,
+            absence_evidence_sources=absence_sources,
+            check_evidence_policies=evidence_policies,
             present_ir_types=present,
             missing_ir_types=missing,
             coverage_summary=RiskCoverageSummary(
@@ -516,6 +552,226 @@ class RiskReviewPlanBuilder:
             context_hash=ZERO_HASH,
         )
         return raw
+
+    @classmethod
+    def _evidence_sources(
+        cls,
+        generation_id: str,
+        unit_id: RiskDomain,
+        checks: tuple[CheckSpec, ...],
+        projected: tuple[RiskProjectedIrItem, ...],
+        excerpts: tuple[RiskSourceExcerpt, ...],
+    ) -> list[RiskEvidenceSource]:
+        excerpts_by_anchor = {item.anchor_id: item for item in excerpts}
+        result: list[RiskEvidenceSource] = []
+        for item in projected:
+            item_excerpts = [
+                excerpts_by_anchor[anchor.anchor_id]
+                for anchor in item.source_anchors
+                if anchor.anchor_id in excerpts_by_anchor
+            ]
+            if len(item_excerpts) != len(item.source_anchors):
+                raise ContractError(
+                    "RISK_SOURCE_INVALID",
+                    "Evidence Source references an Anchor outside the Batch",
+                    status_code=422,
+                )
+            allowed_check_codes = [
+                check.check_code
+                for check in checks
+                if (
+                    po_item_matches_check(item, item_excerpts, check)
+                    if unit_id == "performance_obligations"
+                    else (
+                        icd_item_matches_check(item, item_excerpts, check)
+                        if unit_id == "ip_confidentiality_data"
+                        else (
+                            lre_item_matches_check(item, item_excerpts, check)
+                            if unit_id == "liability_remedies_exit"
+                            else item.ir_type in check.required_ir_types
+                        )
+                    )
+                )
+            ]
+            if not allowed_check_codes:
+                continue
+            for anchor in item.source_anchors:
+                excerpt = excerpts_by_anchor.get(anchor.anchor_id)
+                if excerpt is None:
+                    raise ContractError(
+                        "RISK_SOURCE_INVALID",
+                        "Evidence Source references an Anchor outside the Batch",
+                        status_code=422,
+                    )
+                source_id = cls._stable_id(
+                    "risk-es",
+                    {
+                        "generation_id": generation_id,
+                        "ir_item_id": item.item_id,
+                        "anchor_id": excerpt.anchor_id,
+                        "char_start": excerpt.char_start,
+                        "char_end": excerpt.char_end,
+                        "evidence_type": "TEXT_QUOTE",
+                    },
+                )
+                result.append(
+                    RiskEvidenceSource(
+                        source_id=source_id,
+                        generation_id=generation_id,
+                        ir_item_id=item.item_id,
+                        anchor_id=excerpt.anchor_id,
+                        block_id=excerpt.block_id,
+                        page_number=excerpt.page_number,
+                        char_start=excerpt.char_start,
+                        char_end=excerpt.char_end,
+                        quoted_text=excerpt.quoted_text,
+                        quoted_text_hash=excerpt.quoted_text_hash,
+                        evidence_type="TEXT_QUOTE",
+                        ir_type=item.ir_type,
+                        subject=item.subject,
+                        predicate=item.predicate,
+                        object=item.object,
+                        heading_path=excerpt.heading_path,
+                        allowed_check_codes=allowed_check_codes,
+                    )
+                )
+        source_ids = [item.source_id for item in result]
+        bindings = [
+            (item.ir_item_id, item.anchor_id, item.evidence_type)
+            for item in result
+        ]
+        if len(source_ids) != len(set(source_ids)) or len(bindings) != len(
+            set(bindings)
+        ):
+            raise ContractError(
+                "RISK_SOURCE_INVALID",
+                "Evidence Source IDs and IR/Anchor bindings must be unique",
+                status_code=422,
+            )
+        return sorted(
+            result,
+            key=lambda item: (
+                item.ir_type,
+                item.ir_item_id,
+                item.anchor_id,
+                item.source_id,
+            ),
+        )
+
+    @classmethod
+    def _absence_evidence_sources(
+        cls,
+        generation_id: str,
+        unit_id: RiskDomain,
+        checks: tuple[CheckSpec, ...],
+        present_ir_types: list[IrField],
+        evidence_sources: list[RiskEvidenceSource],
+    ) -> list[RiskAbsenceEvidenceSource]:
+        result = []
+        for check in checks:
+            if (
+                unit_id == "ip_confidentiality_data"
+                and check.check_code in ICD_ABSENCE_POLICIES
+            ):
+                if icd_mechanism_is_complete(
+                    check.check_code,
+                    evidence_sources,
+                ):
+                    continue
+                (
+                    checked_target,
+                    verification_method,
+                    missing_target,
+                ) = ICD_ABSENCE_POLICIES[check.check_code]
+                checked_scope = (
+                    f"当前Batch全部ICD领域IR与Source Excerpt；"
+                    f"检查项{check.check_code}；检查范围：{checked_target}"
+                )
+                verification_method = (
+                    verification_method
+                    + "；仅证明当前合同技术文本中未定位到该机制，"
+                    "不推断外部制度、系统或现实履行事实。"
+                )
+            elif unit_id == "liability_remedies_exit":
+                if check.check_code not in LRE_ABSENCE_POLICIES:
+                    continue
+                if lre_mechanism_is_complete(
+                    check.check_code,
+                    evidence_sources,
+                ):
+                    continue
+                (
+                    checked_target,
+                    verification_method,
+                    missing_target,
+                ) = LRE_ABSENCE_POLICIES[check.check_code]
+                checked_scope = (
+                    f"当前Batch全部LRE领域IR与Source Excerpt；"
+                    f"检查项{check.check_code}；检查范围：{checked_target}"
+                )
+                verification_method = (
+                    verification_method
+                    + "；仅证明当前合同文本中未定位到该机制，"
+                    "不推断合同外事实。"
+                )
+            else:
+                checked_scope = (
+                    f"当前Batch投影的合同IR与Source Excerpt；检查项{check.check_code}"
+                )
+                verification_method = (
+                    "Python按CheckSpec.required_ir_types及确定性候选扫描当前Batch；"
+                    "仅证明本次合同文本投影中未定位到目标条款，不推断外部事实。"
+                )
+                missing_target = check.review_question
+            source_id = cls._stable_id(
+                "risk-as",
+                {
+                    "generation_id": generation_id,
+                    "check_code": check.check_code,
+                    "checked_scope": checked_scope,
+                    "verification_method": verification_method,
+                    "present_ir_types": present_ir_types,
+                    "missing_target": missing_target,
+                },
+            )
+            result.append(
+                RiskAbsenceEvidenceSource(
+                    source_id=source_id,
+                    generation_id=generation_id,
+                    check_code=check.check_code,
+                    checked_scope=checked_scope,
+                    verification_method=verification_method,
+                    present_ir_types=present_ir_types,
+                    missing_target=missing_target,
+                )
+            )
+        return result
+
+    @staticmethod
+    def _check_evidence_policies(
+        checks: tuple[CheckSpec, ...],
+        evidence_sources: list[RiskEvidenceSource],
+        absence_sources: list[RiskAbsenceEvidenceSource],
+    ) -> list[RiskCheckEvidencePolicy]:
+        absence_by_check = {
+            item.check_code: item.source_id for item in absence_sources
+        }
+        return [
+            RiskCheckEvidencePolicy(
+                check_code=check.check_code,
+                allowed_evidence_source_ids=[
+                    item.source_id
+                    for item in evidence_sources
+                    if check.check_code in item.allowed_check_codes
+                ],
+                allowed_absence_source_ids=(
+                    [absence_by_check[check.check_code]]
+                    if check.check_code in absence_by_check
+                    else []
+                ),
+            )
+            for check in checks
+        ]
 
     @staticmethod
     def _clause_catalog(
