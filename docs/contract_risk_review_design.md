@@ -138,6 +138,18 @@ Reviewer只接收本Unit相关投影，不读取全文。Source Excerpt必须携
 
 每个`check_result`包含`check_code`、`status: REVIEWED / NOT_APPLICABLE / FAILED`、`reason_code`和`finding_local_ids`。
 
+Direct Reviewer采用严格的Raw/Final两层模型。模型Raw层负责`check_code`、`status`、`decision_note`、`findings`和`evidence`；为兼容模型残留输出，Raw层允许`reason_code: str | null`，但该值始终不可信、不得进入最终结果，也不因缺失、空值或任意值触发模型修复。除该兼容字段外，Raw层继续`extra=forbid`。
+
+Python在完成Raw Pydantic、Check覆盖、Finding和Evidence语义校验后，确定性生成Final层的非空封闭枚举`reason_code`：
+
+- `REVIEWED`且有Finding：`RISK_IDENTIFIED`；
+- `REVIEWED`且无Finding：`NO_RISK_IDENTIFIED`；
+- `NOT_APPLICABLE`：`NOT_APPLICABLE`；
+- `FAILED`：`CHECK_FAILED`；
+- 已产生候选但Evidence不足以完成判断：`INSUFFICIENT_EVIDENCE`。
+
+Final层保持严格Pydantic并拒绝`null`和空字符串。补全不得改变模型产生的Finding数量、风险等级、Evidence、Check状态或`decision_note`。具体法律风险根因继续由`FindingDraft.risk_type`、`FindingDraft.issue`和`decision_note`表达，通用`reason_code`不得无限扩展。每个Unit记录`reason_code_enrichment_count`、`reason_code_rule_version`和`ignored_model_reason_code_count`；该确定性补全不计作模型修复，也不增加模型调用。
+
 ### 5.8 RiskReviewBundle
 
 字段：`bundle_version`、任务和Generation身份、`plan_id`、`plan_hash`、`unit_results`、`findings`、`evidence_candidates`、`internal_relationships`、`deterministic_check_results`、`completed_unit_ids`、`metrics`、`bundle_hash`。
@@ -224,6 +236,16 @@ Contract Python构建内部图：Clause、IR Item、Definition、DATE、AMOUNT�
 
 无候选时MAC检查确定性返回`REVIEWED`或`NOT_APPLICABLE`且模型调用0；有候选时模型只裁决候选，不得重新扫描全文。
 
+### 8.3 commercial_financial稳定判定补充
+
+`CF-003`只审查发票类型、含税口径、税负承担、开票时限及其与付款条件的先后关系。付款早于合法发票、含税/税负不明可能增加我方价款、发票条件冲突或不可控时触发；总价明确含税且对方应在付款前提供约定发票，以及仅缺少具体税率但不增加我方暴露，不构成风险。现有条款风险引用原文，纯缺失风险使用合法ABSENCE。基础价款归CF-001、付款时点归CF-002、调价抵扣归CF-004、预付款保障归CF-005。
+
+`CF-004`只审查调价、考核扣款、抵销、费用扣减和结算调整。对方可单方提高我方付款、调整机制缺少触发条件/公式/后果、条款冲突导致重复付款或无法结算时触发；完整且有利于我方的扣款/抵销权、固定总价无调整、仅缺少一般抵销条款不构成风险。Finding必须引用具体调整或结算原文，不允许仅凭ABSENCE生成。基础价款、期限、发票和预付款保障分别归CF-001/002/003/005。
+
+`CF-005`固定两阶段判断：先确认我方是否在主要履约、交付或验收前支付全部或绝大部分价款，再确认是否存在履约保函、保证金、分期/里程碑、验收挂钩、退款返还、托管、担保或等效保障。提前支付全部或至少70%且无有效保障时必须输出HIGH；30%至不足70%无保障或保障明显不足时输出MEDIUM。风险Evidence必须同时包含付款时点/比例的文本证据和检查不到保障的ABSENCE。存在有效保障时返回`REVIEWED + findings=[]`，并在`decision_note`说明保障类型。CF-002审付款时间，CF-005独立审付款后的履约或返还保障；同一原文可以同时支撑二者。
+
+三个Check均遵循：Finding只表示对我方不利的实质风险；有利、中性或一般说明不得作为LOW/INFO Finding。输出Category均为`PAYMENT`，风险等级按材料性、金额暴露和可执行性固定，不得因措辞风格改变根因或等级。
+
 ## 9. Direct调用、并发和预算
 
 正常调用：Tool=0、模型调用=1、`temperature=0`、`thinking=false`、严格Pydantic。仅JSON、Schema或Check覆盖错误允许修复当前Unit一次；第二次失败则Unit失败。网络、超时和拒绝不得伪装为空Findings。
@@ -235,6 +257,8 @@ Contract Python构建内部图：Clause、IR Item、Definition、DATE、AMOUNT�
 | 单横向Unit输入（目标1,000～3,000） | 4,000 | 5,000 | 按check_code确定性拆Batch，仍超限则失败 |
 | 单Specialist输入（目标2,000～4,000） | 5,000 | 6,000 | 按check_code确定性拆Batch，仍超限则失败 |
 | 单Unit输出（目标不超过1,500） | 2,500 | 4,000 | Unit失败，不截断 |
+
+性能门禁：`commercial_financial`无修复目标不超过30秒；发生一次合法局部Schema修复允许不超过50秒；单Unit硬上限60秒。五个基础Reviewer并行后，Risk Review正常路径目标不超过35秒，偶发局部修复允许不超过60秒。完整合同审查正常路径尽量不超过60秒，偶发局部修复允许不超过90秒。
 
 优化只能移除重复技术字段、按IR类型投影、只带候选Excerpt；不得删除Check。预计超过硬上限时，Plan Builder按`check_code`确定性拆Batch，不允许静默截断。模型不得复述合同、输出分析过程、重复输出相同Evidence，也不得生成Python能确定性补全的ID、页码、Hash和技术字段。
 
@@ -277,14 +301,14 @@ CONTRACT_RISK_REVIEW_PLAYBOOKS=base_neutral,software_ip
 
 ## 14. 可观测指标
 
-Plan记录`plan_build_ms/context_build_ms/plan_hash/selected_playbooks/unit_count/specialist_count`。每Unit记录排队、TTFT、模型、解析、修复、总耗时，模型/修复/Tool次数，四类Token，Check状态计数，Finding/Evidence数量及Trace。Bundle记录墙钟、峰值并发、总调用、失败Unit、5.1前后重复数和Evidence通过率。
+Plan记录`plan_build_ms/context_build_ms/plan_hash/selected_playbooks/unit_count/specialist_count`。每Unit记录排队、TTFT、模型、解析、修复、总耗时，模型/修复/Tool次数，四类Token，Check状态计数，Finding/Evidence数量及Trace，以及`reason_code_enrichment_count/reason_code_rule_version/ignored_model_reason_code_count`。Bundle记录墙钟、峰值并发、总调用、失败Unit、5.1前后重复数和Evidence通过率。
 
 ## 15. 阶段6.1～6.9门禁
 
 | 阶段 | 修改范围 | 测试门禁 | 质量/性能门禁 |
 |---|---|---|---|
 | 6.1 | 模型、基础Manifest、Router、Plan Hash、隐藏接口 | 确定性、Applicability、Specialist上限、预算、公开OpenAPI不变 | Plan P95<=1s，相同输入相同Hash |
-| 6.2 | `commercial_financial` Direct A/B、Usage | Tool=0、正常1调用、一次修复、Token归属 | Reviewer P95<=30s，Evidence 100%，关键商务召回不降 |
+| 6.2 | `commercial_financial` Direct A/B、Usage | Tool=0、正常1调用、一次修复、Token归属 | 无修复<=30s、一次修复<=50s、硬上限60s，Evidence 100%，关键商务召回稳定 |
 | 6.3 | 五基础Unit、Bundle校验 | 五路并发、Check覆盖、REQUIRED失败、预算超限 | 无固定4条截断，质量不低于Legacy |
 | 6.4 | 两横向候选和条件裁决 | 无候选0调用、有候选1调用、候选外输出拒绝 | 不读全文、不伪造关系、不重复基础风险 |
 | 6.5 | `software_ip`样例 | 适用/不适用、注入、调用数不增 | 不改DAG、Adapter、DTO |
