@@ -287,6 +287,7 @@ def test_required_stage_sink_rejection_retries_before_artifact_commit(monkeypatc
         )
         handler_calls = 0
         sink_calls = 0
+        sink_stage_ids: list[str | None] = []
         artifact_calls = 0
 
         async def handler(_context):
@@ -297,6 +298,7 @@ def test_required_stage_sink_rejection_retries_before_artifact_commit(monkeypatc
         async def deliver(*_args, **_kwargs):
             nonlocal sink_calls
             sink_calls += 1
+            sink_stage_ids.append(_kwargs.get("stage_id"))
             if sink_calls == 1:
                 try:
                     raise ResultSinkRejectedError("source anchor rejected")
@@ -345,6 +347,7 @@ def test_required_stage_sink_rejection_retries_before_artifact_commit(monkeypatc
 
         assert handler_calls == 2
         assert sink_calls == 2
+        assert sink_stage_ids == ["validated-stage", "validated-stage"]
         assert artifact_calls == 1
         assert artifacts[stage.stage_id].content_json == {"attempt": 2}
         assert "stage_retrying" in {event.event_type for event in events}

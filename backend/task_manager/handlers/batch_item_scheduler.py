@@ -33,6 +33,7 @@ class BatchItemSchedulerHandler:
         *,
         context: TaskExecutionContext,
         item_type: str | None = None,
+        deliver_result: bool = True,
     ) -> AsyncIterator[TaskHandlerEvent]:
         task = context.task
         definition = context.task_type
@@ -67,7 +68,8 @@ class BatchItemSchedulerHandler:
             final = _summarize_results(
                 await item_store.load_item_results(task.id, item_type=item_type)
             )
-            await _deliver_result(task, definition, final)
+            if deliver_result:
+                await _deliver_result(task, definition, final)
             yield TaskHandlerEvent(
                 event_type="batch_succeeded",
                 stage="batch_item_scheduler",
@@ -119,7 +121,8 @@ class BatchItemSchedulerHandler:
         results = await item_store.load_item_results(task.id, item_type=item_type)
         final = _summarize_results(results)
         if final["summary"]["failed"] and config["failure_policy"] == "fail_fast":
-            await _deliver_result(task, definition, final)
+            if deliver_result:
+                await _deliver_result(task, definition, final)
             yield TaskHandlerEvent(
                 event_type="batch_failed",
                 stage="batch_item_scheduler",
@@ -131,7 +134,8 @@ class BatchItemSchedulerHandler:
             )
             raise ValueError("Batch item scheduler failed with failure_policy=fail_fast.")
 
-        await _deliver_result(task, definition, final)
+        if deliver_result:
+            await _deliver_result(task, definition, final)
         yield TaskHandlerEvent(
             event_type="batch_succeeded",
             stage="batch_item_scheduler",

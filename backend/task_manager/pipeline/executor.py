@@ -550,6 +550,7 @@ class PipelineExecutor:
         async for event in BatchItemSchedulerHandler(self.options).stream(
             context=batch_context,
             item_type=stage_item_type,
+            deliver_result=False,
         ):
             if event.final_content:
                 parsed = parse_json_output(event.final_content)
