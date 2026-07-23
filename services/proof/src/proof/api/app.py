@@ -257,7 +257,7 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
             _service(request).retrieve_intra_conflict_candidates,
             payload.unit_id,
         )
-        return {"success": True, "data": data}
+        return {"success": True, "data": _intra_conflict_agent_view(data)}
 
     @app.post("/v1/query/sql")
     async def execute_sql(payload: PolicySqlRequest, request: Request):
@@ -279,6 +279,29 @@ def _service(request: Request) -> ProofService:
     return service
 
 
+def _intra_conflict_agent_view(data: dict) -> dict:
+    """Expose short refs to the model while keeping real Chunk IDs server-side."""
+
+    source = data.get("source") or {}
+    results = list(data.get("results") or [])
+    return {
+        "source": {
+            "text": source.get("text"),
+            "clause_no_raw": source.get("clause_no_raw"),
+            "clause_ordinal": source.get("clause_ordinal"),
+        },
+        "results": [
+            {
+                "ref": item.get("ref"),
+                "text": item.get("text"),
+                "clause_no_raw": item.get("clause_no_raw"),
+                "clause_ordinal": item.get("clause_ordinal"),
+            }
+            for item in results
+        ],
+    }
+
+
 def _conflict_agent_view(data: dict, *, limit: int | None = None) -> dict:
     """Give the Judge a compact view without changing the retrieval service's order."""
 
@@ -288,9 +311,7 @@ def _conflict_agent_view(data: dict, *, limit: int | None = None) -> dict:
     def compact(item: dict, *, result: bool = False) -> dict:
         level = POLICY_LEVEL_BY_CODE.get(str(item.get("level_code") or ""), {})
         payload = {
-            "id": item.get("id"),
             "text": item.get("text"),
-            "policy_id": item.get("policy_id"),
             "policy_title": item.get("policy_title"),
             "policy_version": item.get("policy_version"),
             "level_code": item.get("level_code"),
@@ -304,6 +325,7 @@ def _conflict_agent_view(data: dict, *, limit: int | None = None) -> dict:
         if result:
             payload.update(
                 {
+                    "ref": item.get("ref"),
                     "retrieval_sources": item.get("retrieval_sources") or [],
                     "branch_ranks": item.get("branch_ranks") or {},
                 }
@@ -314,7 +336,6 @@ def _conflict_agent_view(data: dict, *, limit: int | None = None) -> dict:
         else:
             payload.update(
                 {
-                    "requested_unit_id": item.get("requested_unit_id"),
                     "unit_id_corrected": bool(item.get("unit_id_corrected")),
                 }
             )

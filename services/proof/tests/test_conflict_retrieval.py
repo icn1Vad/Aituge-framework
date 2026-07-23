@@ -152,6 +152,7 @@ def test_conflict_retrieval_runs_four_vector_branches_with_one_embedding() -> No
         "deduplicated": 5,
         "returned": 5,
     }
+    assert [item["ref"] for item in result.results] == ["C01", "C02", "C03", "C04", "C05"]
     shared = result.results[0]
     assert shared["retrieval_sources"] == ["same_title", "leaf_category"]
     assert shared["branch_ranks"] == {"same_title": 1, "leaf_category": 1}
@@ -171,6 +172,7 @@ def test_conflict_retrieval_falls_back_to_stable_branch_priority() -> None:
     assert result.degraded is True
     assert "reranker:RuntimeError" in result.degradation_reasons
     assert [item["id"] for item in result.results] == ["same-1", "same-2"]
+    assert [item["ref"] for item in result.results] == ["C01", "C02"]
 
 
 def test_conflict_retrieval_gives_all_slots_to_reranker_without_same_title_policy() -> None:
@@ -203,6 +205,7 @@ def test_conflict_retrieval_falls_back_when_reranker_returns_partial_results() -
     assert result.degraded is True
     assert "reranker:reranker_invalid_response" in result.degradation_reasons
     assert [item["id"] for item in result.results] == ["same-1", "same-2"]
+    assert [item["ref"] for item in result.results] == ["C01", "C02"]
 
 
 def test_conflict_retrieval_rejects_unknown_source_unit() -> None:

@@ -100,7 +100,7 @@ def test_retrieve_uses_fixed_top_ten_and_returns_only_agent_fields():
             "clause_no_raw": "第一条", "clause_ordinal": 1,
         },
         "results": [{
-            "id": "unit-2", "text": "十五日内提交",
+            "ref": "C01", "id": "unit-2", "text": "十五日内提交",
             "clause_no_raw": "第二条", "clause_ordinal": 2,
         }],
     }

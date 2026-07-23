@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
-
 from typing import Any, Literal
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -101,13 +103,24 @@ class ProofAuditTarget(BaseModel):
     heading_path: list[str] = Field(default_factory=list, max_length=30)
 
 
+class ProofSemanticAuditTarget(ProofAuditTarget):
+    ref: str = Field(pattern=r"^T0[1-8]$")
+
+
 class ProofAuditBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(min_length=1, max_length=240)
     audit_id: str = Field(min_length=1, max_length=160)
     check: Literal["semantic"] = "semantic"
-    targets: list[ProofAuditTarget] = Field(min_length=1, max_length=100)
+    targets: list[ProofSemanticAuditTarget] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_target_refs(self):
+        expected_refs = [f"T{index:02d}" for index in range(1, len(self.targets) + 1)]
+        if [target.ref for target in self.targets] != expected_refs:
+            raise ValueError("Semantic target refs must be sequential T01 through T08.")
+        return self
 
 
 class ProofPolicySummaryInput(BaseModel):
@@ -128,22 +141,27 @@ class ProofPolicySummaryInput(BaseModel):
 class ProofSemanticFinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: str = Field(min_length=1, max_length=160)
+    target_ref: str = Field(pattern=r"^T0[1-8]$")
     category: Literal["semantic_ambiguity", "executability_gap"]
     problem: str = Field(min_length=1, max_length=4000)
     suggestion: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("target_ref", mode="before")
+    @classmethod
+    def normalize_target_ref(cls, value: str) -> str:
+        return str(value).strip().upper()
 
 
 class ProofAuditItemOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    findings: list[ProofSemanticFinding] = Field(default_factory=list)
+    findings: list[ProofSemanticFinding] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
-    def validate_one_finding_per_chunk(self):
-        ids = [item.id for item in self.findings]
-        if len(ids) != len(set(ids)):
-            raise ValueError("Each chunk may return at most one finding.")
+    def validate_unique_target_refs(self):
+        refs = [finding.target_ref for finding in self.findings]
+        if len(refs) != len(set(refs)):
+            raise ValueError("Each semantic target ref may return at most one finding.")
         return self
 
 
@@ -203,7 +221,7 @@ class ProofConflictBatch(BaseModel):
     id: str = Field(min_length=1, max_length=240)
     audit_id: str = Field(min_length=1, max_length=160)
     check: Literal["conflict"] = "conflict"
-    targets: list[ProofConflictTarget] = Field(min_length=1, max_length=2)
+    targets: list[ProofConflictTarget] = Field(min_length=1, max_length=1)
 
     @model_validator(mode="after")
     def validate_target_ids(self):
@@ -285,8 +303,7 @@ class ProofAuditInput(BaseModel):
 class ProofConflictFinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: str = Field(min_length=1, max_length=160)
-    candidate_ids: list[str] = Field(min_length=1, max_length=4)
+    candidate_refs: list[str] = Field(min_length=1, max_length=4)
     conflict_type: Literal[
         "numeric_conflict",
         "authority_conflict",
@@ -296,15 +313,40 @@ class ProofConflictFinding(BaseModel):
     problem: str = Field(min_length=1, max_length=4000)
     suggestion: str = Field(min_length=1, max_length=4000)
 
-    @model_validator(mode="after")
-    def normalize_candidate_ids(self):
-        self.candidate_ids = list(dict.fromkeys(self.candidate_ids))
-        if self.id in self.candidate_ids:
-            raise ValueError("Conflict candidate IDs must not contain the source target ID.")
-        return self
+    @field_validator("candidate_refs")
+    @classmethod
+    def validate_candidate_refs(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip().upper() for value in values]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("Conflict candidate refs must be unique.")
+        if any(
+            len(value) != 3
+            or not value.startswith("C")
+            or not value[1:].isdigit()
+            or not 1 <= int(value[1:]) <= 10
+            for value in normalized
+        ):
+            raise ValueError("Conflict candidate refs must be C01 through C10.")
+        return normalized
 
 
 class ProofConflictItemOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    findings: list[ProofConflictFinding] = Field(default_factory=list, max_length=3)
+
+    @model_validator(mode="after")
+    def validate_unique_findings(self):
+        keys = [
+            (tuple(sorted(finding.candidate_refs)), finding.conflict_type)
+            for finding in self.findings
+        ]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Duplicate conflict findings are not allowed.")
+        return self
+
+
+class ProofIntraConflictItemOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     findings: list[ProofConflictFinding] = Field(default_factory=list, max_length=6)
@@ -312,17 +354,67 @@ class ProofConflictItemOutput(BaseModel):
     @model_validator(mode="after")
     def validate_unique_findings(self):
         keys = [
-            (finding.id, tuple(sorted(finding.candidate_ids)), finding.conflict_type)
+            (tuple(sorted(finding.candidate_refs)), finding.conflict_type)
             for finding in self.findings
         ]
         if len(keys) != len(set(keys)):
-            raise ValueError("Duplicate conflict findings are not allowed.")
-        counts: dict[str, int] = {}
-        for finding in self.findings:
-            counts[finding.id] = counts.get(finding.id, 0) + 1
-        if any(count > 3 for count in counts.values()):
-            raise ValueError("Each target may return at most three conflict findings.")
+            raise ValueError("Duplicate intra-policy conflict findings are not allowed.")
         return self
+
+
+def _proof_result_sink_handler(base_url: str):
+    async def deliver(delivery: Any) -> None:
+        task_input = delivery.task.input_payload_json or {}
+        payload: dict[str, Any] = {
+            "task_id": delivery.task.id,
+            "run_id": delivery.task.current_run_id,
+            "task_type": delivery.task.task_type,
+            "audit_id": str(task_input.get("audit_id") or ""),
+            "status": delivery.status,
+            "output": delivery.output,
+        }
+        if delivery.stage_id:
+            payload["stage_id"] = delivery.stage_id
+        if delivery.error_message:
+            payload["error_message"] = delivery.error_message
+        if delivery.error_code:
+            payload["error_code"] = delivery.error_code
+        if delivery.error_details is not None:
+            payload["error_details"] = delivery.error_details
+
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(base_url=base_url, timeout=15) as client:
+                    response = await client.post(
+                        "/v1/internal/semantic-audits/result",
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                return
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 422:
+                    try:
+                        body = exc.response.json()
+                    except ValueError:
+                        body = {}
+                    message = str(body.get("detail") or exc.response.text or exc)
+                    details = body.get("details")
+                    from task_manager.result_sink import ResultSinkRejectedError
+                    raise ResultSinkRejectedError(
+                        message[:2000],
+                        code=str(body.get("error") or "invalid_audit_result"),
+                        retryable=True,
+                        details=details if isinstance(details, dict) else None,
+                    ) from exc
+                last_error = exc
+            except (httpx.RequestError, ValueError) as exc:
+                last_error = exc
+            if attempt < 2:
+                await asyncio.sleep(0.1)
+        raise RuntimeError(f"Proof result sink failed: {last_error}") from last_error
+
+    return deliver
 
 
 async def register(registry, settings) -> None:
@@ -333,6 +425,11 @@ async def register(registry, settings) -> None:
     audit_model_id = settings.get("PROOF_AUDIT_MODEL_ID", "deepseek-v4-pro").strip()
     conflict_model_id = settings.get("PROOF_CONFLICT_MODEL_ID", audit_model_id).strip()
 
+    registry.register_result_sink(
+        task_type="proof.audit.run",
+        handler=_proof_result_sink_handler(base_url),
+        required=True,
+    )
     registry.register_skill_root(CAPABILITY_DIR / "skills")
     registry.register_http_tool(
         tool_name="proof_search",
@@ -370,7 +467,8 @@ async def register(registry, settings) -> None:
         display_name="Proof Conflict Evidence Search",
         description=(
             "Retrieve one source policy unit and cross-policy conflict candidates through "
-            "same-title, leaf-category, parent-category, and global vector branches, then rerank."
+            "same-title, leaf-category, parent-category, and global vector branches, then rerank. "
+            "Each candidate is identified by a short C01-C10 ref."
         ),
         base_url=base_url,
         path="/v1/internal/conflict-retrieval",
@@ -385,7 +483,7 @@ async def register(registry, settings) -> None:
         display_name="Proof Intra-policy Conflict Search",
         description=(
             "Return the ten most similar other Chunks from the same draft policy using "
-            "temporary audit embeddings."
+            "temporary audit embeddings. Each result has a short C01-C10 candidate ref."
         ),
         base_url=base_url,
         path="/v1/internal/intra-conflict-retrieval",
@@ -469,8 +567,8 @@ async def register(registry, settings) -> None:
         model_id=audit_model_id or "deepseek-v4-pro",
         system_prompt=(
             "You are the Proof policy clarity and executability audit agent. Follow the active primary skill. "
-            "Inspect only target chunks, return strict JSON, return no finding for clear text, "
-            "and identify findings only by the supplied target chunk IDs."
+            "Inspect only the supplied target chunks, return strict JSON, return no finding for clear text, "
+            "never return a Chunk ID, and identify findings only with T01-T08 target refs."
         ),
         default_tools=[],
         default_datasets=[],
@@ -492,7 +590,7 @@ async def register(registry, settings) -> None:
     )
     registry.register_pipeline(
         pipeline_id="proof-audit-pipeline-v1",
-        version="1.2",
+        version="1.5",
         task_type="proof.audit.run",
         description="Run summary, semantic, cross-policy, and intra-policy audits concurrently.",
         final_artifact_type="proof_audit_result",
@@ -524,7 +622,8 @@ async def register(registry, settings) -> None:
                 "agent_id": "proof-audit-agent",
                 "skill_package": "proof-policy-semantic-audit-package",
                 "timeout_seconds": 900,
-                "failure_policy": "fail_task",
+                "item_failure_policy": "continue",
+                "failure_policy": "continue_with_warning",
             },
             {
                 "stage_id": "conflict_audit",
@@ -538,6 +637,7 @@ async def register(registry, settings) -> None:
                 "skill_package": "proof-policy-conflict-audit-package",
                 "tools": ["proof_conflict_search"],
                 "timeout_seconds": 900,
+                "item_failure_policy": "continue",
                 "failure_policy": "continue_with_warning",
             },
             {
@@ -546,13 +646,14 @@ async def register(registry, settings) -> None:
                 "stage_type": "batch",
                 "item_source": "intra_conflict_items",
                 "output_model": ProofAuditOutput,
-                "item_output_model": ProofConflictItemOutput,
+                "item_output_model": ProofIntraConflictItemOutput,
                 "artifact_type": "proof_intra_conflict_audit",
                 "agent_id": "proof-intra-conflict-agent",
                 "skill_package": "proof-policy-intra-conflict-audit-package",
                 "tools": ["proof_intra_conflict_search"],
                 "timeout_seconds": 900,
-                "failure_policy": "fail_task",
+                "item_failure_policy": "continue",
+                "failure_policy": "continue_with_warning",
             },
             {
                 "stage_id": "finalize_report",
@@ -587,9 +688,10 @@ async def register(registry, settings) -> None:
         model_id=conflict_model_id or "deepseek-v4-pro",
         system_prompt=(
             "You are the Proof policy conflict audit agent. Follow the active primary skill. "
-            "Call proof_conflict_search exactly once for every target unit, compare only supplied "
-            "source-grounded rules, copy source/result chunk IDs exactly from tool output, suppress "
-            "differences that can coexist, and return only IDs, conflict type, problem, and suggestion."
+            "Call proof_conflict_search exactly once for the current target, compare only supplied "
+            "source-grounded rules, return only C01-C10 candidate refs, never return Chunk IDs, "
+            "suppress differences that can coexist, and return only candidate_refs, conflict type, "
+            "problem, and suggestion."
         ),
         default_tools=["proof_conflict_search"],
         default_datasets=[],
@@ -611,8 +713,9 @@ async def register(registry, settings) -> None:
         system_prompt=(
             "You are the Proof intra-policy Chunk conflict audit agent. Follow the active "
             "primary skill. Call proof_intra_conflict_search exactly once for the current "
-            "target, compare only different Chunks returned by the tool, copy IDs exactly, "
-            "suppress compatible differences, and return only the five finding fields."
+            "target, compare only different Chunks returned by the tool, return only C01-C10 "
+            "candidate refs, never return Chunk IDs, suppress compatible differences, and "
+            "return only candidate_refs, conflict_type, problem, and suggestion."
         ),
         default_tools=["proof_intra_conflict_search"],
         default_datasets=[],

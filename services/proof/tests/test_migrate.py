@@ -69,6 +69,18 @@ def test_intra_conflict_migration_has_minimal_temp_vectors_and_cascades() -> Non
     assert "expires_at" not in sql
 
 
+def test_intra_conflict_warning_migration_is_structured_and_cascades():
+    sql = (
+        MIGRATIONS_DIR / "013_intra_conflict_audit_warnings.sql"
+    ).read_text("utf-8")
+
+    assert "CREATE TABLE proof_intra_conflict_audit_warning" in sql
+    assert "target_unit_id" in sql
+    assert "finding_index" in sql
+    assert "details jsonb" in sql
+    assert sql.count("ON DELETE CASCADE") == 2
+
+
 def test_policy_level_name_migration_keeps_stable_codes() -> None:
     sql = (MIGRATIONS_DIR / "012_policy_level_names.sql").read_text("utf-8")
 

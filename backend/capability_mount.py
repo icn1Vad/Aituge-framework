@@ -303,6 +303,9 @@ class CapabilityRegistry:
                     tools=tuple(_dedupe(list(raw.get("tools") or []))),
                     datasets=tuple(_dedupe(list(raw.get("datasets") or []))),
                     item_output_schema=item_schema,
+                    item_failure_policy=(
+                        str(raw.get("item_failure_policy") or "").strip() or None
+                    ),
                 )
             definitions.append(
                 StageDefinition(

@@ -524,12 +524,11 @@ class PipelineExecutor:
         # Build a fresh transient task view for this stage instead.
         stage_task = TaskEntity(**context.task.model_dump())
         stage_task.agent_id = config.agent_id
-        stage_task.input_payload_json = {
-            key: value
-            for key, value in (context.task.input_payload_json or {}).items()
-            if not key.endswith("_items")
-        }
-        stage_task.input_payload_json["items"] = raw_items
+        stage_task.input_payload_json = _batch_stage_input_payload(
+            context.task.input_payload_json or {},
+            raw_items=raw_items,
+            item_failure_policy=config.item_failure_policy,
+        )
         batch_definition = TaskType(
             task_type=context.task.task_type,
             name=stage.name,
@@ -753,6 +752,23 @@ async def _artifacts_by_stage(run_id: str) -> dict[str, TaskArtifactEntity]:
         if stage_run is not None:
             result[stage_run.stage_id] = artifact
     return result
+
+
+def _batch_stage_input_payload(
+    task_payload: dict[str, Any],
+    *,
+    raw_items: list[dict[str, Any]],
+    item_failure_policy: str | None,
+) -> dict[str, Any]:
+    payload = {
+        key: value
+        for key, value in task_payload.items()
+        if not key.endswith("_items")
+    }
+    payload["items"] = raw_items
+    if item_failure_policy is not None:
+        payload["failure_policy"] = item_failure_policy
+    return payload
 
 
 def _stage_message(

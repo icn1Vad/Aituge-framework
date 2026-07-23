@@ -43,9 +43,25 @@ class _Repository:
         return self.units.get(unit_id)
 
 
-def _service() -> ProofService:
+def _service(repository=None) -> ProofService:
+    repository = repository or _Repository()
     service = object.__new__(ProofService)
-    service.repository = _Repository()
+    service.repository = repository
+    service.conflict_retrieval_calls = []
+
+    def retrieve(unit_id: str, *, top_k: int = 10):
+        service.conflict_retrieval_calls.append((unit_id, top_k))
+        source = repository.get_conflict_source_unit(unit_id)
+        candidate = repository.get_conflict_source_unit("candidate-unit")
+        return {
+            "source": dict(source) if source else None,
+            "results": [
+                {"ref": "C01", **dict(candidate)}
+            ] if candidate else [],
+            "candidate_counts": {"returned": min(top_k, 1)},
+        }
+
+    service.retrieve_conflict_candidates = retrieve
     return service
 
 
@@ -62,8 +78,7 @@ def _payload() -> dict:
                         "result": {
                             "findings": [
                                 {
-                                    "id": "source-unit",
-                                    "candidate_ids": ["candidate-unit"],
+                                    "candidate_refs": ["C01"],
                                     "conflict_type": "numeric_conflict",
                                     "problem": "同一报销申请不能同时按三十日和十五日执行。",
                                     "suggestion": "统一报销申请提交期限。",
@@ -77,10 +92,29 @@ def _payload() -> dict:
     }
 
 
-def test_conflict_result_sink_validates_chunk_ids() -> None:
-    result = _service().accept_conflict_audit_result(_payload())
+def test_conflict_result_sink_maps_short_refs_to_chunk_ids() -> None:
+    service = _service()
+    result = service.accept_conflict_audit_result(_payload())
+    findings = service._validate_conflict_output(_payload())
 
     assert result == {"audit_id": "audit-1", "status": "validated", "finding_count": 1}
+    assert findings[0]["id"] == "source-unit"
+    assert findings[0]["candidate_ids"] == ["candidate-unit"]
+    assert "candidate_refs" not in findings[0]
+
+
+def test_multiple_findings_share_one_candidate_mapping_lookup() -> None:
+    service = _service()
+    payload = _payload()
+    first = payload["output"]["items"][0]["result"]["result"]["findings"][0]
+    payload["output"]["items"][0]["result"]["result"]["findings"].append(
+        {**first, "conflict_type": "process_conflict"}
+    )
+
+    findings = service._validate_conflict_output(payload)
+
+    assert len(findings) == 2
+    assert service.conflict_retrieval_calls == [("source-unit", 10)]
 
 
 def test_cross_level_conflict_problem_is_annotated_with_precedence() -> None:
@@ -93,21 +127,25 @@ def test_cross_level_conflict_problem_is_annotated_with_precedence() -> None:
 
 
 @pytest.mark.parametrize(
-    ("mutation", "error_code"),
+    "mutation",
     [
-        (lambda finding: finding.update(id="wrong-unit"), "conflict_target_mismatch"),
-        (lambda finding: finding.update(candidate_ids=["missing-unit"]), "conflict_unit_not_found"),
+        lambda finding: finding.update(id="source-unit"),
+        lambda finding: finding.update(candidate_refs=["C02"]),
     ],
 )
-def test_conflict_result_sink_rejects_invalid_chunk_ids(mutation, error_code) -> None:
+def test_conflict_result_sink_degrades_invalid_ids_and_unknown_refs(mutation) -> None:
     payload = _payload()
     finding = payload["output"]["items"][0]["result"]["result"]["findings"][0]
     mutation(finding)
+    service = _service()
 
-    with pytest.raises(ProofError) as exc_info:
-        _service().accept_conflict_audit_result(payload)
+    validation = service._validate_conflict_output(payload)
+    result = service.accept_conflict_audit_result(payload)
 
-    assert exc_info.value.code == error_code
+    assert validation.findings == []
+    assert validation.warning_count == 1
+    assert validation.warning_message == "1 条模型引用无法解析"
+    assert result == {"audit_id": "audit-1", "status": "validated", "finding_count": 0}
 
 
 class _IntegratedRepository(_Repository):
@@ -137,9 +175,10 @@ class _IntegratedRepository(_Repository):
             return []
         return [{"id": "source-unit", "text": self.units["source-unit"]["text"]}]
 
-    def complete_conflict_audit(self, audit_id, findings):
+    def complete_conflict_audit(self, audit_id, findings, *, warning_message=None):
         self.saved_conflicts = findings
         self.run["conflict_status"] = "completed"
+        self.conflict_error = warning_message
 
     def mark_conflict_audit_failed(self, audit_id, message):
         self.conflict_error = message
@@ -155,15 +194,13 @@ def _integrated_payload() -> dict:
         stage_id="conflict_audit",
         status="completed",
     )
-    finding = payload["output"]["items"][0]["result"]["result"]["findings"][0]
     return payload
 
 
 def test_integrated_conflict_callback_persists_validated_findings() -> None:
     repository = _IntegratedRepository()
     semantic = PolicyAuditService(Settings(semantic_audit_enabled=True), repository)
-    proof = object.__new__(ProofService)
-    proof.repository = repository
+    proof = _service(repository)
 
     result = semantic.accept_result(
         _integrated_payload(),
@@ -184,8 +221,7 @@ def test_integrated_conflict_callback_rejects_non_effective_candidate() -> None:
     repository = _IntegratedRepository()
     repository.units["candidate-unit"]["policy_status"] = "draft"
     semantic = PolicyAuditService(Settings(semantic_audit_enabled=True), repository)
-    proof = object.__new__(ProofService)
-    proof.repository = repository
+    proof = _service(repository)
 
     with pytest.raises(ProofError) as exc_info:
         semantic.accept_result(
@@ -206,7 +242,8 @@ def test_integrated_conflict_stage_failure_is_recorded_separately() -> None:
 
     result = semantic.accept_result(payload, conflict_output_validator=lambda value: [])
 
-    assert result["status"] == "failed"
+    assert result["status"] == "completed"
+    assert result["finding_count"] == 0
     assert repository.run["status"] == "completed"
-    assert repository.run["conflict_status"] == "failed"
+    assert repository.run["conflict_status"] == "completed"
     assert repository.conflict_error == "conflict agent timeout"

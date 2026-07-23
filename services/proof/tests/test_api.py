@@ -230,7 +230,7 @@ class FakeService:
     def retrieve_conflict_candidates(self, unit_id: str, *, top_k: int = 10):
         return {
             "source": {"id": unit_id, "text": "报销时限为三十日。"},
-            "results": [{"id": "unit-2", "text": "报销时限为十五日。"}],
+            "results": [{"ref": "C01", "id": "unit-2", "text": "报销时限为十五日。"}],
             "candidate_counts": {"returned": top_k},
         }
 
@@ -241,7 +241,7 @@ class FakeService:
                 "clause_no_raw": "第一条", "clause_ordinal": 1,
             },
             "results": [{
-                "id": "unit-2", "text": "报销时限为十五日。",
+                "ref": "C01", "id": "unit-2", "text": "报销时限为十五日。",
                 "clause_no_raw": "第二条", "clause_ordinal": 2,
             }],
         }
@@ -348,6 +348,9 @@ def test_split_audit_result_endpoints() -> None:
     summary = client.get("/v1/policies/policy-1/policy-summary")
     assert summary.json()["data"]["content"]["plain_summary"] == "概览"
     assert status.json()["data"]["stages"]["intra_conflict_audit"]["status"] == "completed"
+    assert set(status.json()["data"]["stages"]["intra_conflict_audit"]) == {
+        "status", "error_message"
+    }
     assert status.json()["data"]["counts"]["intra_numeric_conflict"] == 1
 
     semantic = client.get("/v1/policies/policy-1/semantic-findings")
@@ -361,6 +364,7 @@ def test_split_audit_result_endpoints() -> None:
     assert client.post("/v1/policies/policy-1/semantic-audit").status_code == 404
     intra = client.get("/v1/policies/policy-1/intra-conflict-findings")
     assert intra.json()["data"]["findings"][0]["id"] == "unit-1"
+    assert set(intra.json()["data"]) == {"status", "error_message", "findings"}
 
 
 
@@ -461,8 +465,11 @@ def test_internal_conflict_retrieval_endpoint() -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["data"]["source"]["id"] == "unit-1"
-    assert response.json()["data"]["candidate_counts"]["returned"] == 7
+    data = response.json()["data"]
+    assert "id" not in data["source"]
+    assert data["results"][0]["ref"] == "C01"
+    assert "id" not in data["results"][0]
+    assert data["candidate_counts"]["returned"] == 7
 
 
 def test_internal_intra_conflict_retrieval_accepts_only_unit_id() -> None:
@@ -474,8 +481,11 @@ def test_internal_intra_conflict_retrieval_accepts_only_unit_id() -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["data"]["source"]["id"] == "unit-1"
-    assert response.json()["data"]["results"][0]["id"] == "unit-2"
+    data = response.json()["data"]
+    assert data["source"]["text"] == "报销时限为三十日。"
+    assert "id" not in data["source"]
+    assert data["results"][0]["ref"] == "C01"
+    assert "id" not in data["results"][0]
     assert client.post(
         "/v1/internal/intra-conflict-retrieval",
         json={"unit_id": "unit-1", "top_k": 3},
@@ -531,6 +541,7 @@ def test_conflict_agent_view_preserves_service_order_and_removes_noisy_fields() 
             },
             "results": [
                 {
+                    "ref": "C01",
                     "id": "global",
                     "text": "global",
                     "level_code": "upper",
@@ -541,6 +552,7 @@ def test_conflict_agent_view_preserves_service_order_and_removes_noisy_fields() 
                     "source_block_ids": ["noise"],
                 },
                 {
+                    "ref": "C02",
                     "id": "same",
                     "text": "same",
                     "retrieval_sources": ["same_title", "leaf_category"],
@@ -555,7 +567,9 @@ def test_conflict_agent_view_preserves_service_order_and_removes_noisy_fields() 
         limit=1,
     )
 
-    assert [item["id"] for item in payload["results"]] == ["global"]
+    assert [item["ref"] for item in payload["results"]] == ["C01"]
+    assert "id" not in payload["source"]
+    assert "id" not in payload["results"][0]
     assert payload["results"][0]["rerank_rank"] == 7
     assert payload["source"]["level_name"] == "三级制度"
     assert payload["source"]["level_rank"] == 100

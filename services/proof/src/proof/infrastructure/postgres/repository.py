@@ -947,6 +947,10 @@ class ProofRepository:
                     "DELETE FROM proof_intra_conflict_audit_finding WHERE audit_run_id = %s",
                     (audit_run_id,),
                 )
+                conn.execute(
+                    "DELETE FROM proof_intra_conflict_audit_warning WHERE audit_run_id = %s",
+                    (audit_run_id,),
+                )
             conn.commit()
         return True
 
@@ -1015,16 +1019,22 @@ class ProofRepository:
             )
             conn.commit()
 
-    def complete_audit_summary(self, audit_run_id: str, content: dict[str, Any]) -> None:
+    def complete_audit_summary(
+        self,
+        audit_run_id: str,
+        content: dict[str, Any],
+        *,
+        warning_message: str | None = None,
+    ) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
                 UPDATE proof_audit_run
                 SET summary_status = 'completed', summary_content = %s::jsonb,
-                    summary_error_message = NULL, updated_at = now()
+                    summary_error_message = %s, updated_at = now()
                 WHERE id = %s
                 """,
-                (Jsonb(content), audit_run_id),
+                (Jsonb(content), warning_message[:2000] if warning_message else None, audit_run_id),
             )
             conn.commit()
 
@@ -1045,6 +1055,8 @@ class ProofRepository:
         self,
         audit_run_id: str,
         findings: list[dict[str, Any]],
+        *,
+        warning_message: str | None = None,
     ) -> None:
         with self.connect() as conn:
             run = conn.execute(
@@ -1083,11 +1095,11 @@ class ProofRepository:
             conn.execute(
                 """
                 UPDATE proof_audit_run
-                SET conflict_status = 'completed', conflict_error_message = NULL,
+                SET conflict_status = 'completed', conflict_error_message = %s,
                     updated_at = now()
                 WHERE id = %s
                 """,
-                (audit_run_id,),
+                (warning_message[:2000] if warning_message else None, audit_run_id),
             )
             conn.commit()
 
@@ -1123,6 +1135,9 @@ class ProofRepository:
         self,
         audit_run_id: str,
         findings: list[dict[str, Any]],
+        *,
+        warnings: list[dict[str, Any]] | None = None,
+        warning_message: str | None = None,
     ) -> None:
         with self.connect() as conn:
             run = conn.execute(
@@ -1131,8 +1146,15 @@ class ProofRepository:
             ).fetchone()
             if not run:
                 raise ProofError("audit_run_not_found", "Audit run not found.", status_code=404)
+            warnings = list(warnings or [])
+            if warning_message is None and warnings:
+                warning_message = f"{len(warnings)} 条模型引用无法解析"
             conn.execute(
                 "DELETE FROM proof_intra_conflict_audit_finding WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            conn.execute(
+                "DELETE FROM proof_intra_conflict_audit_warning WHERE audit_run_id = %s",
                 (audit_run_id,),
             )
             if findings:
@@ -1156,14 +1178,37 @@ class ProofRepository:
                             for item in findings
                         ],
                     )
+            if warnings:
+                with conn.cursor() as cursor:
+                    cursor.executemany(
+                        """
+                        INSERT INTO proof_intra_conflict_audit_warning (
+                          audit_run_id, target_unit_id, finding_index, code, message, details
+                        ) VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                        """,
+                        [
+                            (
+                                audit_run_id,
+                                item["target_id"],
+                                item.get("finding_index"),
+                                item["code"],
+                                item["message"],
+                                Jsonb({
+                                    "reason_code": item.get("reason_code"),
+                                    "item_index": item.get("item_index"),
+                                }),
+                            )
+                            for item in warnings
+                        ],
+                    )
             conn.execute(
                 """
                 UPDATE proof_audit_run
-                SET intra_conflict_status = 'completed', intra_conflict_error_message = NULL,
+                SET intra_conflict_status = 'completed', intra_conflict_error_message = %s,
                     updated_at = now()
                 WHERE id = %s
                 """,
-                (audit_run_id,),
+                (warning_message[:2000] if warning_message else None, audit_run_id),
             )
             conn.commit()
 
@@ -1180,6 +1225,21 @@ class ProofRepository:
             )
             conn.commit()
 
+    def list_intra_conflict_audit_warnings(
+        self, audit_run_id: str
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT target_unit_id AS target_id, finding_index, code, message, details
+                FROM proof_intra_conflict_audit_warning
+                WHERE audit_run_id = %s
+                ORDER BY id
+                """,
+                (audit_run_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_intra_conflict_audit_findings(self, audit_run_id: str) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -1195,7 +1255,13 @@ class ProofRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def complete_audit(self, audit_run_id: str, findings: list[dict[str, str]]) -> None:
+    def complete_audit(
+        self,
+        audit_run_id: str,
+        findings: list[dict[str, str]],
+        *,
+        warning_message: str | None = None,
+    ) -> None:
         with self.connect() as conn:
             run = conn.execute(
                 "SELECT id FROM proof_audit_run WHERE id = %s FOR UPDATE",
@@ -1226,10 +1292,10 @@ class ProofRepository:
             conn.execute(
                 """
                 UPDATE proof_audit_run
-                SET status = 'completed', error_message = NULL, updated_at = now()
+                SET status = 'completed', error_message = %s, updated_at = now()
                 WHERE id = %s
                 """,
-                (audit_run_id,),
+                (warning_message[:2000] if warning_message else None, audit_run_id),
             )
             conn.commit()
 

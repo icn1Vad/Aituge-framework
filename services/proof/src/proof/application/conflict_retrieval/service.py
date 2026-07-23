@@ -7,6 +7,7 @@ from proof.application.conflict_retrieval.models import (
     ConflictRetrievalLimits,
     ConflictRetrievalResult,
 )
+from proof.application.short_refs import attach_short_refs
 from proof.errors import ProofError
 
 
@@ -112,7 +113,10 @@ class ConflictRetrievalService:
         elif self.reranker is None and non_same_title_candidates:
             degradation_reasons.append("reranker:unconfigured")
 
-        results = [_with_citation(item) for item in ranked[:requested_top_k]]
+        results = attach_short_refs(
+            (_with_citation(item) for item in ranked[:requested_top_k]),
+            prefix="C",
+        )
         source_payload = _with_citation(
             {
                 **source,

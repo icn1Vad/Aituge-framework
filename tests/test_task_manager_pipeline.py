@@ -14,9 +14,10 @@ from db.models.llm import LlmModelEntity
 import service.agent.single_agent_runner as runner_mod
 import task_manager.pipeline.executor as pipeline_executor_mod
 from task_manager.handlers.base import TaskHandlerEvent
-from task_manager.pipeline.executor import PipelineExecutor
+from task_manager.pipeline.executor import PipelineExecutor, _batch_stage_input_payload
 from task_manager.pipeline.models import (
     AgentStageConfig,
+    BatchStageConfig,
     PipelineDefinition,
     RetryPolicy,
     StageDefinition,
@@ -108,6 +109,49 @@ def test_executor_lock_prevents_duplicate_run(monkeypatch):
             assert released is True
 
     asyncio.run(run())
+
+
+def test_batch_stage_item_failure_policy_overrides_parent_fail_fast():
+    payload = _batch_stage_input_payload(
+        {
+            "audit_id": "audit-1",
+            "failure_policy": "fail_fast",
+            "semantic_items": [{"id": "semantic-1"}],
+        },
+        raw_items=[{"id": "intra-1"}],
+        item_failure_policy="continue",
+    )
+
+    assert payload == {
+        "audit_id": "audit-1",
+        "failure_policy": "continue",
+        "items": [{"id": "intra-1"}],
+    }
+
+
+def test_pipeline_definition_rejects_invalid_batch_item_failure_policy():
+    definition = PipelineDefinition(
+        pipeline_id="invalid-item-policy",
+        version="1",
+        task_type="invalid.item.policy",
+        stages=(
+            StageDefinition(
+                stage_id="batch",
+                name="Batch",
+                stage_type="batch",
+                batch_config=BatchStageConfig(
+                    agent_id="agent", item_failure_policy="ignore"
+                ),
+            ),
+        ),
+    )
+
+    try:
+        validate_pipeline_definition(definition)
+    except ValueError as exc:
+        assert "invalid item failure policy" in str(exc)
+    else:
+        raise AssertionError("Invalid batch item failure policy should fail.")
 
 
 def test_pipeline_definition_rejects_dependency_cycles():

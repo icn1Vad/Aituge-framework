@@ -15,7 +15,12 @@ from proof.application.ingestion import PolicyIngestionPipeline
 from proof.application.intra_conflict_retrieval import IntraConflictRetrievalService
 from proof.application.quality_report import build_policy_quality_report
 from proof.application.retrieval import HybridPolicyRetriever, RetrievalFilters
-from proof.application.semantic_audit import PolicyAuditService
+from proof.application.semantic_audit import (
+    FindingValidationResult,
+    IntraConflictValidationResult,
+    PolicyAuditService,
+)
+from proof.application.short_refs import ref_id_map
 from proof.application.sql_query import PolicySqlQueryService
 from proof.config import Settings
 from proof.errors import ProofError
@@ -28,6 +33,12 @@ from proof.infrastructure.retrieval import PgvectorPolicyRetriever, PostgresKeyw
 logger = logging.getLogger(__name__)
 POLICY_LEVEL_NAMES = {"upper": "一级制度", "peer": "二级制度", "lower": "三级制度"}
 POLICY_LEVEL_RANKS = {"upper": 300, "peer": 200, "lower": 100}
+INTRA_CONFLICT_TYPES = {
+    "numeric_conflict",
+    "authority_conflict",
+    "process_conflict",
+    "rule_reversal",
+}
 
 
 class ProofService:
@@ -581,7 +592,81 @@ class ProofService:
             "finding_count": len(findings),
         }
 
-    def _validate_conflict_output(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    def _load_conflict_candidate_ref_map(self, source_id: str) -> dict[str, str]:
+        retrieval = self.retrieve_conflict_candidates(source_id, top_k=10)
+        source = retrieval.get("source") if isinstance(retrieval, dict) else None
+        if not isinstance(source, dict) or str(source.get("id") or "") != source_id:
+            raise ProofError(
+                "conflict_retrieval_mismatch",
+                "Cross-policy retrieval source does not match the current item target.",
+                status_code=422,
+                details={"target_id": source_id},
+            )
+        try:
+            return ref_id_map(retrieval.get("results") or [])
+        except ValueError as exc:
+            raise ProofError(
+                "invalid_conflict_retrieval_refs",
+                str(exc),
+                status_code=422,
+                details={"target_id": source_id},
+            ) from exc
+
+    def _resolve_conflict_candidate_refs(
+        self,
+        source_id: str,
+        raw_refs: Any,
+        *,
+        ref_mapping: dict[str, str] | None = None,
+    ) -> list[str]:
+        if not isinstance(raw_refs, list):
+            raise ProofError(
+                "invalid_conflict_result",
+                "Cross-policy candidate_refs must be a list.",
+                status_code=422,
+            )
+        candidate_refs = [str(value).strip().upper() for value in raw_refs]
+        if (
+            not candidate_refs
+            or len(candidate_refs) > 4
+            or len(candidate_refs) != len(set(candidate_refs))
+            or any(
+                len(value) != 3
+                or not value.startswith("C")
+                or not value[1:].isdigit()
+                or not 1 <= int(value[1:]) <= 10
+                for value in candidate_refs
+            )
+        ):
+            raise ProofError(
+                "invalid_conflict_result",
+                "Candidate refs must be unique values from C01 through C10.",
+                status_code=422,
+                details={"target_id": source_id, "candidate_refs": candidate_refs},
+            )
+
+        mapping = (
+            ref_mapping
+            if ref_mapping is not None
+            else self._load_conflict_candidate_ref_map(source_id)
+        )
+        invalid_refs = [value for value in candidate_refs if value not in mapping]
+        if invalid_refs:
+            raise ProofError(
+                "conflict_candidate_ref_not_found",
+                "Candidate refs must come from the current target retrieval results.",
+                status_code=422,
+                details={
+                    "target_id": source_id,
+                    "invalid_refs": invalid_refs,
+                    "allowed_refs": sorted(mapping),
+                },
+            )
+        return [mapping[value] for value in candidate_refs]
+
+    def _validate_conflict_output(
+        self, payload: dict[str, Any]
+    ) -> FindingValidationResult:
         task_type = payload.get("task_type")
         if task_type not in {None, "proof.conflict.audit", "proof.audit.run"}:
             raise ProofError("invalid_conflict_result", "Unexpected conflict task type.", status_code=422)
@@ -605,11 +690,12 @@ class ProofService:
         validated_findings: list[dict[str, Any]] = []
         covered_source_ids: list[str] = []
         finding_keys: set[tuple[str, tuple[str, ...], str]] = set()
+        warning_count = 0
         for item in output["items"]:
-            if not isinstance(item, dict) or item.get("status") != "succeeded":
+            if not isinstance(item, dict):
                 raise ProofError(
                     "invalid_conflict_result",
-                    "Every conflict audit item must succeed.",
+                    "Each conflict audit item must be an object.",
                     status_code=422,
                 )
             target_items = ((item.get("input") or {}).get("targets") or [])
@@ -624,28 +710,58 @@ class ProofService:
                     "Each integrated conflict item must contain exactly one source Chunk.",
                     status_code=422,
                 )
-            target_ids = set(target_id_list)
+            source_id = target_id_list[0]
+            target_ids = {source_id}
             covered_source_ids.extend(target_id_list)
-            findings = (((item.get("result") or {}).get("result") or {}).get("findings") or [])
+            if item.get("status") != "succeeded":
+                warning_count += 1
+                continue
+            result_wrapper = item.get("result") or {}
+            result = result_wrapper.get("result") if isinstance(result_wrapper, dict) else None
+            findings = result.get("findings") if isinstance(result, dict) else None
             if not isinstance(findings, list):
-                raise ProofError("invalid_conflict_result", "Conflict findings must be a list.", status_code=422)
+                warning_count += 1
+                continue
+            ref_mapping = self._load_conflict_candidate_ref_map(source_id) if findings else {}
             for finding in findings:
-                normalized = self._validate_conflict_finding(
-                    finding,
-                    target_ids=target_ids,
-                    expected_document_id=expected_document_id,
-                )
+                expected_fields = {
+                    "candidate_refs", "conflict_type", "problem", "suggestion"
+                }
+                if not isinstance(finding, dict) or set(finding) != expected_fields:
+                    warning_count += 1
+                    continue
+                try:
+                    candidate_ids = self._resolve_conflict_candidate_refs(
+                        source_id, finding.get("candidate_refs"), ref_mapping=ref_mapping
+                    )
+                    normalized = self._validate_conflict_finding(
+                        {
+                            "id": source_id,
+                            "candidate_ids": candidate_ids,
+                            "conflict_type": finding.get("conflict_type"),
+                            "problem": finding.get("problem"),
+                            "suggestion": finding.get("suggestion"),
+                        },
+                        target_ids=target_ids,
+                        expected_document_id=expected_document_id,
+                    )
+                except ProofError as exc:
+                    if exc.code not in {
+                        "invalid_conflict_result",
+                        "conflict_candidate_ref_not_found",
+                        "conflict_target_mismatch",
+                    }:
+                        raise
+                    warning_count += 1
+                    continue
                 key = (
                     normalized["id"],
                     tuple(sorted(normalized["candidate_ids"])),
                     str(normalized.get("conflict_type") or ""),
                 )
                 if key in finding_keys:
-                    raise ProofError(
-                        "invalid_conflict_result",
-                        "Duplicate conflict findings are not allowed.",
-                        status_code=422,
-                    )
+                    warning_count += 1
+                    continue
                 finding_keys.add(key)
                 validated_findings.append(normalized)
         if expected_source_ids is not None and (
@@ -657,7 +773,11 @@ class ProofService:
                 "Conflict audit items did not cover every source Chunk exactly once.",
                 status_code=422,
             )
-        return validated_findings
+        return FindingValidationResult(
+            findings=validated_findings,
+            warning_count=warning_count,
+            warning_label="模型引用无法解析",
+        )
 
     def _validate_conflict_finding(
         self,
@@ -754,9 +874,192 @@ class ProofService:
             "suggestion": str(finding["suggestion"]).strip(),
         }
 
+    def _load_intra_conflict_candidate_ref_map(
+        self, source_id: str
+    ) -> dict[str, str]:
+        retrieval = self.intra_conflict_retrieval_service.retrieve_for_unit(source_id)
+        source = retrieval.get("source") if isinstance(retrieval, dict) else None
+        if not isinstance(source, dict) or str(source.get("id") or "") != source_id:
+            raise ProofError(
+                "intra_conflict_retrieval_mismatch",
+                "Intra-policy retrieval source does not match the current item target.",
+                status_code=422,
+                details={"target_id": source_id},
+            )
+        try:
+            return ref_id_map(retrieval.get("results") or [])
+        except ValueError as exc:
+            raise ProofError(
+                "invalid_intra_conflict_retrieval_refs",
+                str(exc),
+                status_code=422,
+                details={"target_id": source_id},
+            ) from exc
+
+    def _resolve_intra_conflict_candidate_refs(
+        self,
+        source_id: str,
+        raw_refs: Any,
+        *,
+        ref_mapping: dict[str, str] | None = None,
+    ) -> list[str]:
+        if not isinstance(raw_refs, list):
+            raise ProofError(
+                "invalid_intra_conflict_result",
+                "Intra-policy candidate_refs must be a list.",
+                status_code=422,
+            )
+        candidate_refs = [str(value).strip().upper() for value in raw_refs]
+        if (
+            not candidate_refs
+            or len(candidate_refs) > 4
+            or len(candidate_refs) != len(set(candidate_refs))
+            or any(
+                len(value) != 3
+                or not value.startswith("C")
+                or not value[1:].isdigit()
+                or not 1 <= int(value[1:]) <= 10
+                for value in candidate_refs
+            )
+        ):
+            raise ProofError(
+                "invalid_intra_conflict_result",
+                "Candidate refs must be unique values from C01 through C10.",
+                status_code=422,
+                details={"target_id": source_id, "candidate_refs": candidate_refs},
+            )
+        mapping = (
+            ref_mapping
+            if ref_mapping is not None
+            else self._load_intra_conflict_candidate_ref_map(source_id)
+        )
+        invalid_refs = [value for value in candidate_refs if value not in mapping]
+        if invalid_refs:
+            raise ProofError(
+                "intra_conflict_candidate_ref_not_found",
+                "Candidate refs must come from the current target retrieval results.",
+                status_code=422,
+                details={
+                    "target_id": source_id,
+                    "invalid_refs": invalid_refs,
+                    "allowed_refs": sorted(mapping),
+                },
+            )
+        return [mapping[value] for value in candidate_refs]
+
+    @staticmethod
+    def _unresolved_intra_conflict_warning(
+        *,
+        target_id: str,
+        item_index: int,
+        finding_index: int | None,
+        reason: ProofError,
+    ) -> dict[str, Any]:
+        return {
+            "code": "model_reference_unresolved",
+            "message": "模型引用无法解析",
+            "reason_code": reason.code,
+            "target_id": target_id,
+            "item_index": item_index,
+            "finding_index": finding_index,
+        }
+
+    def _normalize_intra_conflict_finding(
+        self,
+        *,
+        target_id: str,
+        finding: dict[str, Any],
+        expected_ids: set[str],
+        ordinal_by_id: dict[str, int],
+        ref_mapping: dict[str, str] | None,
+        document_id: str,
+    ) -> dict[str, Any]:
+        fields = set(finding)
+        ref_contract = {
+            "candidate_refs", "conflict_type", "problem", "suggestion"
+        }
+        legacy_contract = {
+            "id", "candidate_ids", "conflict_type", "problem", "suggestion"
+        }
+        if fields == ref_contract:
+            source_id = target_id
+            candidate_ids = self._resolve_intra_conflict_candidate_refs(
+                source_id,
+                finding.get("candidate_refs"),
+                ref_mapping=ref_mapping,
+            )
+        elif fields == legacy_contract:
+            source_id = str(finding.get("id") or "")
+            raw_candidates = finding.get("candidate_ids")
+            if source_id != target_id or not isinstance(raw_candidates, list):
+                raise ProofError(
+                    "intra_conflict_target_mismatch",
+                    "Finding id must match the current item target.",
+                    status_code=422,
+                )
+            candidate_ids = [str(value) for value in raw_candidates]
+            if (
+                not candidate_ids
+                or len(candidate_ids) > 4
+                or len(candidate_ids) != len(set(candidate_ids))
+                or source_id in candidate_ids
+            ):
+                raise ProofError(
+                    "invalid_intra_conflict_result",
+                    "Candidate IDs must be non-empty, unique, and exclude the source ID.",
+                    status_code=422,
+                )
+        else:
+            raise ProofError(
+                "invalid_intra_conflict_result",
+                "Each intra-policy conflict finding must use the ref contract.",
+                status_code=422,
+                details={"fields": sorted(fields), "target_id": target_id},
+            )
+
+        all_ids = {source_id, *candidate_ids}
+        unexpected_ids = sorted(all_ids - expected_ids)
+        if unexpected_ids:
+            raise ProofError(
+                "intra_conflict_unit_not_found",
+                "All finding Chunk IDs must belong to the audited document.",
+                status_code=422,
+                details={
+                    "document_id": document_id,
+                    "target_id": target_id,
+                    "unexpected_ids": unexpected_ids,
+                },
+            )
+        conflict_type = str(finding.get("conflict_type") or "")
+        if conflict_type not in INTRA_CONFLICT_TYPES:
+            raise ProofError(
+                "invalid_intra_conflict_result",
+                "Invalid conflict type.",
+                status_code=422,
+            )
+        if any(
+            not str(finding.get(field) or "").strip()
+            for field in ("problem", "suggestion")
+        ):
+            raise ProofError(
+                "invalid_intra_conflict_result",
+                "Conflict text fields must not be blank.",
+                status_code=422,
+            )
+        ordered_ids = sorted(
+            all_ids, key=lambda value: (ordinal_by_id[value], value)
+        )
+        return {
+            "id": ordered_ids[0],
+            "candidate_ids": ordered_ids[1:],
+            "conflict_type": conflict_type,
+            "problem": str(finding["problem"]).strip(),
+            "suggestion": str(finding["suggestion"]).strip(),
+        }
+
     def _validate_intra_conflict_output(
         self, payload: dict[str, Any]
-    ) -> list[dict[str, Any]]:
+    ) -> IntraConflictValidationResult:
         if payload.get("task_type") not in {None, "proof.audit.run"}:
             raise ProofError(
                 "invalid_intra_conflict_result",
@@ -766,7 +1069,9 @@ class ProofService:
         audit_id = str(payload.get("audit_id") or "")
         run = self.repository.get_audit_run(audit_id)
         if run is None:
-            raise ProofError("audit_run_not_found", "Audit run not found.", status_code=404)
+            raise ProofError(
+                "audit_run_not_found", "Audit run not found.", status_code=404
+            )
         output = payload.get("output")
         if not isinstance(output, dict) or not isinstance(output.get("items"), list):
             raise ProofError(
@@ -775,7 +1080,8 @@ class ProofService:
                 status_code=422,
             )
 
-        units = self.repository.get_document_units(str(run["document_id"]))
+        document_id = str(run["document_id"])
+        units = self.repository.get_document_units(document_id)
         expected_ids = {str(unit["id"]) for unit in units}
         ordinal_by_id = {
             str(unit["id"]): (
@@ -786,19 +1092,16 @@ class ProofService:
             for unit in units
         }
         covered_ids: list[str] = []
-        normalized_by_key: dict[tuple[tuple[str, ...], str], dict[str, Any]] = {}
-        allowed_types = {
-            "numeric_conflict",
-            "authority_conflict",
-            "process_conflict",
-            "rule_reversal",
-        }
+        normalized_by_key: dict[
+            tuple[tuple[str, ...], str], dict[str, Any]
+        ] = {}
+        warnings: list[dict[str, Any]] = []
 
-        for item in output["items"]:
-            if not isinstance(item, dict) or item.get("status") != "succeeded":
+        for item_index, item in enumerate(output["items"]):
+            if not isinstance(item, dict):
                 raise ProofError(
                     "invalid_intra_conflict_result",
-                    "Every intra-policy conflict audit item must succeed.",
+                    "Every intra-policy conflict audit item must be an object.",
                     status_code=422,
                 )
             targets = ((item.get("input") or {}).get("targets") or [])
@@ -807,80 +1110,89 @@ class ProofService:
                 for target in targets
                 if isinstance(target, dict) and target.get("id")
             ]
-            if len(target_ids) != 1:
+            if len(target_ids) != 1 or target_ids[0] not in expected_ids:
                 raise ProofError(
                     "invalid_intra_conflict_result",
-                    "Each intra-policy conflict item must contain exactly one source Chunk.",
+                    "Each intra-policy conflict item must contain exactly one audited source Chunk.",
                     status_code=422,
                 )
             target_id = target_ids[0]
             covered_ids.append(target_id)
-            findings = (((item.get("result") or {}).get("result") or {}).get("findings"))
-            if not isinstance(findings, list):
-                raise ProofError(
-                    "invalid_intra_conflict_result",
-                    "Intra-policy conflict findings must be a list.",
-                    status_code=422,
-                )
-            for finding in findings:
-                if not isinstance(finding, dict) or set(finding) != {
-                    "id", "candidate_ids", "conflict_type", "problem", "suggestion"
-                }:
-                    raise ProofError(
-                        "invalid_intra_conflict_result",
-                        "Each intra-policy conflict finding must use the five-field contract.",
-                        status_code=422,
-                    )
-                source_id = str(finding.get("id") or "")
-                raw_candidates = finding.get("candidate_ids")
-                if source_id != target_id or not isinstance(raw_candidates, list):
-                    raise ProofError(
-                        "intra_conflict_target_mismatch",
-                        "Finding id must match the current item target.",
-                        status_code=422,
-                    )
-                candidate_ids = [str(value) for value in raw_candidates]
-                if (
-                    not candidate_ids
-                    or len(candidate_ids) > 4
-                    or len(candidate_ids) != len(set(candidate_ids))
-                    or source_id in candidate_ids
-                ):
-                    raise ProofError(
-                        "invalid_intra_conflict_result",
-                        "Candidate IDs must be non-empty, unique, and exclude the source ID.",
-                        status_code=422,
-                    )
-                all_ids = {source_id, *candidate_ids}
-                if not all_ids.issubset(expected_ids):
-                    raise ProofError(
-                        "intra_conflict_unit_not_found",
-                        "All finding Chunk IDs must belong to the audited document.",
-                        status_code=422,
-                    )
-                conflict_type = str(finding.get("conflict_type") or "")
-                if conflict_type not in allowed_types:
-                    raise ProofError(
-                        "invalid_intra_conflict_result", "Invalid conflict type.", status_code=422
-                    )
-                if any(not str(finding.get(field) or "").strip() for field in ("problem", "suggestion")):
-                    raise ProofError(
-                        "invalid_intra_conflict_result",
-                        "Conflict text fields must not be blank.",
-                        status_code=422,
-                    )
-                ordered_ids = sorted(all_ids, key=lambda value: (ordinal_by_id[value], value))
-                key = (tuple(sorted(all_ids)), conflict_type)
-                normalized_by_key.setdefault(
-                    key,
+
+            if item.get("status") != "succeeded":
+                warnings.append(
                     {
-                        "id": ordered_ids[0],
-                        "candidate_ids": ordered_ids[1:],
-                        "conflict_type": conflict_type,
-                        "problem": str(finding["problem"]).strip(),
-                        "suggestion": str(finding["suggestion"]).strip(),
-                    },
+                        "code": "model_reference_unresolved",
+                        "message": "模型引用无法解析",
+                        "reason_code": str(
+                            (item.get("error") or {}).get("code")
+                            or "model_item_failed"
+                        ),
+                        "target_id": target_id,
+                        "item_index": item_index,
+                        "finding_index": None,
+                    }
                 )
+                continue
+
+            findings = (
+                ((item.get("result") or {}).get("result") or {}).get("findings")
+            )
+            if not isinstance(findings, list):
+                warnings.append(
+                    {
+                        "code": "model_reference_unresolved",
+                        "message": "模型引用无法解析",
+                        "reason_code": "invalid_intra_conflict_result",
+                        "target_id": target_id,
+                        "item_index": item_index,
+                        "finding_index": None,
+                    }
+                )
+                continue
+
+            ref_mapping: dict[str, str] | None = None
+            for finding_index, finding in enumerate(findings):
+                if not isinstance(finding, dict):
+                    warnings.append(
+                        self._unresolved_intra_conflict_warning(
+                            target_id=target_id,
+                            item_index=item_index,
+                            finding_index=finding_index,
+                            reason=ProofError(
+                                "invalid_intra_conflict_result",
+                                "Each intra-policy conflict finding must be an object.",
+                                status_code=422,
+                            ),
+                        )
+                    )
+                    continue
+                if set(finding) == {
+                    "candidate_refs", "conflict_type", "problem", "suggestion"
+                } and ref_mapping is None:
+                    ref_mapping = self._load_intra_conflict_candidate_ref_map(target_id)
+                try:
+                    normalized = self._normalize_intra_conflict_finding(
+                        target_id=target_id,
+                        finding=finding,
+                        expected_ids=expected_ids,
+                        ordinal_by_id=ordinal_by_id,
+                        ref_mapping=ref_mapping,
+                        document_id=document_id,
+                    )
+                except ProofError as exc:
+                    warnings.append(
+                        self._unresolved_intra_conflict_warning(
+                            target_id=target_id,
+                            item_index=item_index,
+                            finding_index=finding_index,
+                            reason=exc,
+                        )
+                    )
+                    continue
+                all_ids = {normalized["id"], *normalized["candidate_ids"]}
+                key = (tuple(sorted(all_ids)), normalized["conflict_type"])
+                normalized_by_key.setdefault(key, normalized)
 
         if len(covered_ids) != len(set(covered_ids)) or set(covered_ids) != expected_ids:
             raise ProofError(
@@ -888,7 +1200,10 @@ class ProofService:
                 "Intra-policy conflict items must cover every Chunk exactly once.",
                 status_code=422,
             )
-        return list(normalized_by_key.values())
+        return IntraConflictValidationResult(
+            findings=list(normalized_by_key.values()),
+            warnings=warnings,
+        )
 
     def execute_sql(self, *, question: str, sql: str) -> dict[str, Any]:
         return self.sql_query_service.execute(question=question, sql=sql)

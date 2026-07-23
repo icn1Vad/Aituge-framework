@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from proof.application.short_refs import attach_short_refs
 from proof.config import Settings
 from proof.errors import ProofError
 from proof.infrastructure.embedding import OpenAICompatibleEmbeddingClient
@@ -76,13 +77,16 @@ class IntraConflictRetrievalService:
             "clause_no_raw": source.get("clause_no_raw"),
             "clause_ordinal": source.get("clause_ordinal"),
         }
-        compact_results = [
-            {
-                "id": item.get("id"),
-                "text": item.get("text"),
-                "clause_no_raw": item.get("clause_no_raw"),
-                "clause_ordinal": item.get("clause_ordinal"),
-            }
-            for item in results
-        ]
+        compact_results = attach_short_refs(
+            (
+                {
+                    "id": item.get("id"),
+                    "text": item.get("text"),
+                    "clause_no_raw": item.get("clause_no_raw"),
+                    "clause_ordinal": item.get("clause_ordinal"),
+                }
+                for item in results
+            ),
+            prefix="C",
+        )
         return {"source": compact_source, "results": compact_results}

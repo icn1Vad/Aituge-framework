@@ -32,6 +32,7 @@ class _Registry:
             "skill_root": [],
             "http_tool": [],
             "pipeline": [],
+            "result_sink": [],
         }
 
     def register_task(self, **kwargs) -> None:
@@ -52,6 +53,9 @@ class _Registry:
     def register_pipeline(self, **kwargs) -> None:
         self.calls["pipeline"].append(kwargs)
 
+    def register_result_sink(self, **kwargs) -> None:
+        self.calls["result_sink"].append(kwargs)
+
 
 def test_proof_capability_declares_minimal_qa_runtime():
     registry = _Registry()
@@ -69,6 +73,10 @@ def test_proof_capability_declares_minimal_qa_runtime():
         )
     )
 
+    sink = registry.calls["result_sink"][0]
+    assert sink["task_type"] == "proof.audit.run"
+    assert sink["required"] is True
+    assert callable(sink["handler"])
     task = registry.calls["task"][0]
     agent = registry.calls["agent"][0]
     package = registry.calls["skill_package"][0]
@@ -116,9 +124,18 @@ def test_proof_capability_declares_minimal_qa_runtime():
     assert stages["conflict_audit"]["item_source"] == "conflict_items"
     assert stages["conflict_audit"]["agent_id"] == "proof-conflict-agent"
     assert stages["conflict_audit"]["artifact_type"] == "proof_conflict_audit"
+    assert stages["semantic_audit"]["item_failure_policy"] == "continue"
+    assert stages["semantic_audit"]["failure_policy"] == "continue_with_warning"
+    assert stages["conflict_audit"]["item_failure_policy"] == "continue"
+    assert stages["conflict_audit"]["failure_policy"] == "continue_with_warning"
     assert stages["intra_conflict_audit"]["item_source"] == "intra_conflict_items"
+    assert stages["intra_conflict_audit"]["item_output_model"] is (
+        proof_capability.ProofIntraConflictItemOutput
+    )
     assert stages["intra_conflict_audit"]["agent_id"] == "proof-intra-conflict-agent"
     assert stages["intra_conflict_audit"]["tools"] == ["proof_intra_conflict_search"]
+    assert stages["intra_conflict_audit"]["item_failure_policy"] == "continue"
+    assert stages["intra_conflict_audit"]["failure_policy"] == "continue_with_warning"
     assert set(stages["finalize_report"]["depends_on"]) == {
         "policy_summary", "semantic_audit", "conflict_audit", "intra_conflict_audit"
     }
@@ -299,7 +316,8 @@ def test_audit_skill_defines_production_clarity_and_executability_rules():
     assert "不是封闭清单" in content
     assert "每个有问题的 target 最多返回一条" in content
     assert '"findings"' in content
-    assert '"id"' in content
+    assert '"target_ref"' in content
+    assert '"id"' not in content
     assert '"quote"' not in content
     assert '"problem"' in content
     assert '"suggestion"' in content
@@ -310,12 +328,12 @@ def test_audit_contract_rejects_duplicate_targets_and_findings():
         "id": "batch-1",
         "audit_id": "audit-1",
         "check": "semantic",
-        "targets": [{"id": "unit-1", "text": "相关部门应及时处理。"}],
+        "targets": [{"id": "unit-1", "ref": "T01", "text": "相关部门应及时处理。"}],
     }
     payload = proof_capability.ProofAuditInput(
         audit_id="audit-1",
         document_id="document-1",
-        summary_chunks=batch["targets"],
+        summary_chunks=[{"id": "unit-1", "text": "相关部门应及时处理。"}],
         semantic_items=[batch],
         conflict_items=[{
             "id": "conflict-1",
@@ -336,7 +354,7 @@ def test_audit_contract_rejects_duplicate_targets_and_findings():
         proof_capability.ProofAuditInput(
             audit_id="audit-1",
             document_id="document-1",
-            summary_chunks=batch["targets"],
+            summary_chunks=[{"id": "unit-1", "text": "相关部门应及时处理。"}],
             semantic_items=[batch, {**batch, "id": "batch-2"}],
             conflict_items=[{
                 "id": "conflict-1",
@@ -354,13 +372,76 @@ def test_audit_contract_rejects_duplicate_targets_and_findings():
     with pytest.raises(ValidationError):
         proof_capability.ProofAuditItemOutput(
             findings=[
-                {"id": "unit-1", "category": "semantic_ambiguity", "problem": "主体不明", "suggestion": "明确部门"},
-                {"id": "unit-1", "category": "semantic_ambiguity", "problem": "时限不明", "suggestion": "明确时限"},
+                {"target_ref": "T01", "category": "semantic_ambiguity", "problem": "主体不明", "suggestion": "明确部门"},
+                {"target_ref": "T01", "category": "semantic_ambiguity", "problem": "时限不明", "suggestion": "明确时限"},
             ]
         )
 
 
-def test_conflict_contract_and_skill_define_joint_id_judge():
+def test_semantic_contract_uses_short_refs_without_chunk_ids():
+    output = proof_capability.ProofAuditItemOutput(
+        findings=[{
+            "target_ref": " t01 ",
+            "category": "semantic_ambiguity",
+            "problem": "责任主体不明确。",
+            "suggestion": "明确责任部门。",
+        }]
+    )
+
+    assert output.findings[0].target_ref == "T01"
+    dumped = output.model_dump()["findings"][0]
+    assert set(dumped) == {"target_ref", "category", "problem", "suggestion"}
+    assert "id" not in dumped
+
+    with pytest.raises(ValidationError):
+        proof_capability.ProofAuditItemOutput(
+            findings=[{
+                "target_ref": "T09",
+                "category": "semantic_ambiguity",
+                "problem": "责任主体不明确。",
+                "suggestion": "明确责任部门。",
+            }]
+        )
+
+
+def test_intra_conflict_contract_uses_short_refs_without_chunk_ids():
+    output = proof_capability.ProofIntraConflictItemOutput(
+        findings=[{
+            "candidate_refs": ["c01"],
+            "conflict_type": "numeric_conflict",
+            "problem": "相同事项的期限不同。",
+            "suggestion": "统一期限。",
+        }]
+    )
+
+    assert output.findings[0].candidate_refs == ["C01"]
+    dumped = output.model_dump()
+    assert "candidate_refs" in str(dumped)
+    assert "candidate_ids" not in str(dumped)
+    assert "id" not in dumped["findings"][0]
+
+    with pytest.raises(ValidationError):
+        proof_capability.ProofIntraConflictItemOutput(
+            findings=[{
+                "candidate_refs": ["C11"],
+                "conflict_type": "numeric_conflict",
+                "problem": "相同事项的期限不同。",
+                "suggestion": "统一期限。",
+            }]
+        )
+
+    content = (
+        Path(proof_capability.__file__).resolve().parent
+        / "skills"
+        / "proof-policy-intra-conflict-audit"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "candidate_refs" in content
+    assert "C01 到 C10" in content
+    assert "不要输出当前 target ID 或任何 Chunk ID" in content
+
+
+def test_conflict_contract_and_skill_define_short_ref_joint_judge():
     batch = {
         "id": "batch-1",
         "audit_id": "audit-1",
@@ -377,8 +458,7 @@ def test_conflict_contract_and_skill_define_joint_id_judge():
     finding = proof_capability.ProofConflictItemOutput(
         findings=[
             {
-                "id": "unit-1",
-                "candidate_ids": ["unit-2"],
+                "candidate_refs": ["C01"],
                 "conflict_type": "numeric_conflict",
                 "problem": "同一期限分别要求三十日和十五日。",
                 "suggestion": "统一期限并明确适用版本。",
@@ -386,6 +466,9 @@ def test_conflict_contract_and_skill_define_joint_id_judge():
         ]
     )
     assert finding.findings[0].conflict_type == "numeric_conflict"
+    dumped = finding.model_dump()["findings"][0]
+    assert set(dumped) == {"candidate_refs", "conflict_type", "problem", "suggestion"}
+    assert "id" not in dumped
 
     with pytest.raises(ValidationError):
         proof_capability.ProofConflictAuditInput(
@@ -403,5 +486,6 @@ def test_conflict_contract_and_skill_define_joint_id_judge():
     assert "同一事项" in content
     assert "适用范围重叠" in content
     assert "无法同时满足" in content
-    assert "candidate_ids" in content
+    assert "candidate_refs" in content
+    assert "不要输出当前 target ID 或任何 Chunk ID" in content
     assert '"findings"' in content
