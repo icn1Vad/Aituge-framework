@@ -1034,11 +1034,118 @@ Tokenizer估算伪造Provider Token。
 为Provider硬上限后，既有三轮结果满足政策2.0。FVA状态为`SOFT_WARNING`且不阻塞
 阶段6.3。阶段6.3通过；阶段6.4尚未授权。
 
-## 阶段 6.4：横向候选与 Specialist
+## 阶段 6.4：合同横向一致性与缺失完整性审查
 
-状态：未开始。
+状态：进行中；只实现`cross_clause_consistency`和
+`missing_ambiguity_completeness`，不实现或接入Specialist。
 
-目标：实现两个横向维度的确定性候选生成、无候选0调用、按需裁决和最多两次Specialist约束。
+### 开始前核对单
+
+```text
+当前阶段：6.4
+当前工作目录：D:\contract-risk-review-v1
+当前工作树：D:\contract-risk-review-v1
+当前分支：feat/contract-risk-review-playbook-v1
+开始前HEAD：034693b53a91898354cd45544ec6916a5746a874
+本地/跟踪引用/GitHub真实HEAD：一致
+开始前工作树：干净
+外部备份：E:\MyProjects\Newestcontract\backups\stage64-start-20260724-111516
+允许修改：两个横向Unit、内部扩展Bundle、内部测试、设计和阶段记录
+禁止修改：五基础领域规则及Oracle、Java、公开OpenAPI、正式DTO、
+  schema_version、Result Sink/Hash、Window IR、阶段5.1模型合并、
+  Playbook、Specialist、旧Stage Adapter、正式Pipeline及正式环境
+必须复用：RiskReviewPlan、Direct Reviewer最小裁决协议、
+  Evidence/Absence Source、Severity Factor Policy、Canonical Root、
+  Python Finding物化、Bundle原子性和Prompt预算政策2.0
+固定Fixture：服务器risk-review-input目录中的101项IR Fixture
+模型调用：完成无模型门禁后才允许；Consistency和Completeness各5轮，
+  Extended Bundle 3轮；每Batch正常1次，Repair=0，Tool=0
+配置和正式容器：禁止修改或重启
+本阶段通过后提交：功能：实现合同横向一致性与完整性审查
+通过后：推送并停止；后续阶段尚未授权
+失败后：不提交、不推送，保存Artifact并停止
+```
+
+开始前已完整复核联合冻结稿、阶段6设计稿和阶段日志，并读取阶段6.1至
+6.3的Registry、Plan、Direct Reviewer、Evidence/Absence、Severity、
+Canonical Root、Finding物化、Bundle原子性、Prompt预算政策2.0及阶段5.1
+确定性合并基础。阶段5.1模型语义合并不在本阶段接入范围。
+
+### 当前子门禁结果
+
+- 横向无模型专项：`11 passed`。
+- Consistency真实验收：5/5通过；每轮2个Batch并发、2次模型调用，
+  Repair=0、Tool=0；两个稳定Root为
+  `EFFECTIVE_DATE_CHRONOLOGY_CONFLICT/MEDIUM`和
+  `PARTY_TERM_IDENTITY_CONFLICT/MEDIUM`；墙钟
+  `3,173～4,365ms`。
+- Completeness真实验收：5/5通过；每轮1个Batch、1次模型调用，
+  Repair=0、Tool=0；稳定Root为
+  `REFERENCED_ATTACHMENT_MISSING/MEDIUM`；墙钟
+  `2,371～4,889ms`。MAC-001、MAC-002、MAC-004、MAC-006由
+  `BASE_DOMAIN`所有权链接基础Finding，未重复物化；MAC-003在固定
+  Fixture无确定性Candidate。
+- Extended Bundle从第1轮重新执行时，基础阶段FVA-002返回了人员资质/
+  履约能力范围材料，既有硬门禁以
+  `RISK_FVA002_SCOPE_LEAKAGE`拒绝。Fail Fast已生效：横向阶段未启动，
+  第2、3轮未执行，无部分正式扩展Bundle结果。
+
+当前结论：阶段6.4未通过。按照冻结门禁，本轮停止；不提交、不推送，
+保留工作树和Artifact，等待是否重新授权从Extended Bundle第1轮验收。
+
+### 阶段6.4 FVA回归修复与最终验收
+
+状态：阶段6.4全部门禁通过，已完成FVA输入隔离、Extended Bundle三轮、失败注入和最终回归；后续阶段未开始。
+
+#### FVA输入差异审计与根因
+
+- 阶段6.3基础Bundle与阶段6.4失败轮在修复前重建得到相同Plan ID/Hash：`risk-plan-1b7e91b139dcbc0700d28a7ac41da7db` / `sha256:1b7e91b139dcbc0700d28a7ac41da7db45a50da95865b1cd5e800c763283457b`。Extended Bundle复用同一`RiskReviewPlanBuilder`和`execute_base_risk_review_bundle`，横向Plan只在基础阶段成功后构建，因此不存在横向阶段修改基础输入的证据。
+- 根因分类为B：FVA输入与阶段6.3一致，模型偶发把同Batch其他FVA Check可见的非授权领域材料写入FVA-002。原最终领域门正确以`RISK_FVA002_SCOPE_LEAKAGE`拒绝；该门保持不变。
+- 结构缺口是FVA此前只在输出后做领域门，模型调用前仍使用Batch级IR/Evidence池。未发现模块级当前Unit/Check状态、共享Candidate列表、浅复制追加或横向Plan原地修改。
+
+#### FVA输入级隔离
+
+- FVA Candidate生成和Evidence Source Policy按Check主题确定性选源；整个FVA Batch先移除人员资质、劳动合同、社保、团队配置、技术能力、项目经验和一般履约能力材料。
+- Prompt改为`assigned_checks[]`逐Check携带Candidate、允许Evidence及允许Absence；不再暴露Batch全局IR/Evidence池。相同来源不再重复序列化为一份IR正文和一份Evidence正文。
+- FVA-002增加允许IR/Candidate/Source、禁止语义主题及三态前置门。文本无明确主体/签署/授权冲突时只能为`EXTERNAL_VERIFICATION_REQUIRED`或`NO_VISIBLE_ISSUE`；固定Fixture Oracle仍为外部核验、`INSUFFICIENT_EVIDENCE`、Finding=0。
+- 保留旧错误输出离线拒绝：含人员资质或履约能力断言的FVA-002结果仍触发`RISK_FVA002_SCOPE_LEAKAGE`，没有删除、改写或猜测模型原意。
+- 增加`batch_context_hash`、`assigned_checks_hash`、`candidate_set_hash`、`evidence_policy_hash`、System/User/Serialized Prompt Hash。7个基础Batch并发构建100轮稳定，横向Plan构建前后基础Plan不变。
+- 初次Check级实现重复携带IR和Evidence，Provider Prompt为12,004，正确触发7,000硬门并Fail Fast。去除重复载荷并按Check法律主题投影后，Prompt由26,136字符降至9,768字符；FVA真实Provider Prompt稳定为4,155。
+
+#### FVA定向三轮
+
+| Run | 耗时 | Provider Prompt/Cached/Completion | Assessment | 调用/Repair/Tool |
+| --: | --: | -- | -- | -- |
+| 1 | 6,686ms | 4,155 / 256 / 439 | EXTERNAL_VERIFICATION_REQUIRED，Finding=0 | 1 / 0 / 0 |
+| 2 | 6,353ms | 4,155 / 4,096 / 462 | EXTERNAL_VERIFICATION_REQUIRED，Finding=0 | 1 / 0 / 0 |
+| 3 | 5,999ms | 4,155 / 4,096 / 455 | EXTERNAL_VERIFICATION_REQUIRED，Finding=0 | 1 / 0 / 0 |
+
+三轮的Serialized Prompt Hash均为`sha256:8d192f487bdd997632b59f42d6bc7543fd7caca4a8bb82e2c32e421fcf472a08`，Candidate和Evidence Policy Hash完全一致，人员资质越界为0。
+
+#### Extended Bundle三轮
+
+| Run | 基础阶段 | 横向候选构建 | 横向阶段 | 总墙钟 | 基础/横向峰值并发 | 调用/Repair/Tool |
+| --: | --: | --: | --: | --: | -- | -- |
+| 1 | 18,562ms | 5ms | 2,820ms | 21,387ms | 7 / 2 | 10 / 0 / 0 |
+| 2 | 16,931ms | 5ms | 2,881ms | 19,817ms | 7 / 2 | 10 / 0 / 0 |
+| 3 | 21,056ms | 5ms | 2,977ms | 24,038ms | 7 / 2 | 10 / 0 / 0 |
+
+- 7个Unit、45项Check三轮完整；FVA-002保持外部核验且Finding=0，CF-005保持HIGH，PO保持6个Root，ICD保持1个Root，LRE保持4个Root。
+- Consistency保持2个横向Finding，Completeness保持1个横向Finding；核心Root、等级、所有权和Primary Evidence三轮一致。
+- Commercial非核心附加Finding数量为3/1/3，符合阶段6.2已冻结的允许变化范围；CF-005核心风险、等级和Evidence稳定。
+- 三轮Provider Prompt硬失败0、Repair=0、Tool=0；总墙钟`min/median/max=19,817/21,387/24,038ms`，低于50秒目标。
+
+#### 原子性、Artifact和回归
+
+- 无模型失败注入覆盖基础Unit失败、横向Candidate构建失败、Consistency Batch失败、Completeness超时、Finding所有权冲突、横向Evidence跨Generation和45项Check缺失；全部为FAILED且无正式部分Finding。
+- FVA Artifact：`stage64-fva-regression-three-run.json`，SHA-256=`a2fa0198f2779b50ac46b1b983d0bb80b8cf3c50be12cf8d1fb4592d629ae689`；Attempt SHA-256=`f95551472a61049f442e384837deece83363dc326142d63ec4279bfcc635bb8a`。
+- Extended Artifact：`stage64-extended-bundle-three-run.json`，SHA-256=`1547c76313cb7a84143bbe8106770a339c229ee5693ea117b81b84971b69b44b`；Attempt SHA-256=`681aa60d7c118a118f836c835388169a460f2fa77e7174dd73194e91ed819c95`。
+- 失败注入Artifact：`stage64-extended-bundle-failure-injection.json`，SHA-256=`f4f2bef87c95cb64d539e4dde55eac2980741afb26b7cb4b897c0f1b3cf559b4`。
+- Consistency与Completeness既有5/5 Artifact继续有效，未修改其Candidate、Prompt或业务规则。
+- 横向及失败注入专项：18 passed。Framework无实时服务最终回归：427 passed、2 skipped。Contract Python全量：117 passed、10 skipped。独立Smoke HTTP服务未启动的`test_live_multi_capability.py`单列为现场连接条件，不掩盖业务断言。
+- 固定OpenAPI一致性和隐藏接口检查包含在Contract Python通过结果中；公开OpenAPI、正式DTO、`schema_version=1.0`、Window IR、Result Sink/Hash、Java和正式Pipeline均未修改。
+
+结论：阶段6.4通过；允许按本阶段授权提交并推送。后续阶段尚未授权。
 
 ## 阶段 6.5：领域扩展示例
 

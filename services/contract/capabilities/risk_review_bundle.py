@@ -130,7 +130,7 @@ CHECK_DECISION_RULES = {
         "董事会/股东会批准、营业执照或内部审批，判EXTERNAL_VERIFICATION_REQUIRED，"
         "不生成Finding，只说明需要核验的外部材料；"
         "4.如文本一致且没有特别的外部核验线索，判NO_VISIBLE_ISSUE且不生成Finding。"
-        "不得把人员资质、劳动用工、履约能力或缺少附件本身当作代表权风险。"
+        "不得使用source_policy禁止的非授权领域材料，也不得把缺少附件本身当作代表权风险。"
     ),
     "FVA-003": "检查合同约定或文本结构所需的签字、盖章及签署形式是否明确完整。",
     "FVA-004": "检查生效时间、条件、追溯安排和前置条件是否明确且不冲突。",
@@ -294,7 +294,10 @@ class GenericReviewRequest(StrictModel):
             for anchor in item.source_anchors
         ):
             raise ValueError("Projected IR references an unknown source Anchor")
-        if self.unit_id in {
+        if (
+            self.unit_id == "formation_validity_authority"
+            and self.check_evidence_policies
+        ) or self.unit_id in {
             "performance_obligations",
             "ip_confidentiality_data",
             "liability_remedies_exit",
@@ -1328,6 +1331,7 @@ class GenericAttemptArtifact(StrictModel):
     semantic_preservation_passed: bool | None = None
     accepted: bool
     acceptance_reason: str = Field(min_length=1, max_length=500)
+    input_diagnostics: dict[str, Any] | None = None
 
 
 class GenericAttemptArtifactSink(Protocol):
@@ -1391,6 +1395,7 @@ class GenericBaseDirectReviewer:
                 attempt_artifact_sink=attempt_artifact_sink,
             )
         prompt, ir_refs, anchor_refs = _generic_prompt(request)
+        input_diagnostics = generic_input_diagnostics(request, prompt)
         po_catalog: PoEvidenceCatalog | None = None
         if request.unit_id in {
             "performance_obligations",
@@ -1489,6 +1494,7 @@ class GenericBaseDirectReviewer:
                     semantic_preservation_passed=None,
                     accepted=False,
                     acceptance_reason="MODEL_CALL_FAILED",
+                    input_diagnostics=input_diagnostics,
                 )
                 raise
             calls.append(completion)
@@ -1542,6 +1548,7 @@ class GenericBaseDirectReviewer:
                     semantic_preservation_passed=semantic_preservation_passed,
                     accepted=True,
                     acceptance_reason="ACCEPTED",
+                    input_diagnostics=input_diagnostics,
                 )
                 accepted_normalization = parsed.normalization
                 break
@@ -1600,6 +1607,7 @@ class GenericBaseDirectReviewer:
                     acceptance_reason=(
                         "REPAIR_REQUIRED" if will_repair else exc.code
                     ),
+                    input_diagnostics=input_diagnostics,
                 )
                 if not will_repair:
                     exc.attempt_diagnostics = diagnostics
@@ -4325,7 +4333,7 @@ def _generic_prompt(
         "reason_code由Python生成，模型禁止输出",
         "FVA-002必须先输出assessment_type和external_verification_required，再按三态一致性决定是否有Finding",
         "FVA-002缺少外部材料只能判外部核验或无可见问题，禁止断言现实中无资格或无授权",
-        "FVA-002不得讨论员工、上岗人员、劳动合同、社保、履约能力或服务能力",
+        "FVA-002不得讨论或复述source_policy.disallowed_semantic_topics",
         "deterministic_candidates只是待裁决假设，不得不经Evidence判断直接转为Finding",
         "PO只允许审履行范围、交付进度、质量/验收、配合、变更、质保和权利义务平衡",
         "PO不得输出授权签署、劳动社保、外部资质、知识产权保密数据、责任终止争议或纯付款税费风险",
@@ -4426,7 +4434,7 @@ def _generic_prompt(
                     "decision_note": (
                         "说明需要核验法定代表人证明、授权委托书、董事会/股东会批准、"
                         "营业执照或内部审批；不得声称已经无权或未授权；"
-                        "不得加入员工/上岗人员资质、劳动用工或履约能力材料"
+                        "不得加入或复述source_policy禁止的非授权领域材料"
                     ),
                 },
                 "NO_VISIBLE_ISSUE": {
@@ -4489,6 +4497,148 @@ def _generic_prompt(
             },
         },
     }
+    if (
+        request.unit_id == "formation_validity_authority"
+        and request.check_evidence_policies
+    ):
+        specs = {
+            item.check_code: item for item in request.assigned_check_specs
+        }
+        policies = {
+            item.check_code: item for item in request.check_evidence_policies
+        }
+        source_by_id = {
+            item.source_id: item for item in request.evidence_sources
+        }
+        absence_by_id = {
+            item.source_id: item for item in request.absence_evidence_sources
+        }
+        ir_ref_by_item_id = {
+            item.item_id: ref for ref, item in ir_refs.items()
+        }
+        evidence_ref_by_anchor_id = {
+            item.anchor_id: ref for ref, item in anchor_refs.items()
+        }
+        payload["assigned_checks"] = []
+        for check_code in (
+            item.check_code for item in request.assigned_check_specs
+        ):
+            policy = policies[check_code]
+            allowed_sources = [
+                source_by_id[source_id]
+                for source_id in policy.allowed_evidence_source_ids
+                if source_id in source_by_id
+            ]
+            payload["assigned_checks"].append(
+                {
+                    "check_code": check_code,
+                    "decision_rule": CHECK_DECISION_RULES[check_code],
+                    "category": specs[check_code].allowed_categories[0],
+                    "risk_type": specs[check_code].allowed_risk_types[0],
+                    "deterministic_candidates": [
+                        [
+                            item.candidate_id,
+                            item.candidate_type,
+                            item.trigger_reason,
+                            item.candidate_ir_refs,
+                            item.candidate_evidence_refs,
+                            item.requires_model_decision,
+                        ]
+                        for item in candidates
+                        if item.check_code == check_code
+                    ],
+                    "allowed_evidence_sources": [
+                        [
+                            source.source_id,
+                            ir_ref_by_item_id[source.ir_item_id],
+                            evidence_ref_by_anchor_id[source.anchor_id],
+                            source.ir_type,
+                            source.subject,
+                            source.predicate,
+                            source.object,
+                            source.quoted_text,
+                        ]
+                        for source in allowed_sources
+                    ],
+                    "allowed_absence_sources": [
+                        absence_by_id[source_id].model_dump(mode="json")
+                        for source_id in policy.allowed_absence_source_ids
+                        if source_id in absence_by_id
+                    ],
+                    **(
+                        {
+                            "source_policy": {
+                                "allowed_ir_types": ["rights", "obligations"],
+                                "allowed_candidate_types": [
+                                    "PROJECTED_IR_REVIEW",
+                                    "MISSING_EXPECTED_IR",
+                                ],
+                                "allowed_evidence_source_ids": list(
+                                    policy.allowed_evidence_source_ids
+                                ),
+                                "allowed_absence_source_ids": list(
+                                    policy.allowed_absence_source_ids
+                                ),
+                                "disallowed_semantic_topics": [
+                                    "PERSONNEL_QUALIFICATION",
+                                    "PROJECT_STAFF_CAPABILITY",
+                                    "EMPLOYMENT_RELATIONSHIP",
+                                    "SOCIAL_INSURANCE",
+                                    "STAFFING_LEVEL",
+                                    "DELIVERY_TEAM_CONFIGURATION",
+                                    "TECHNICAL_CAPABILITY",
+                                    "PROJECT_EXPERIENCE",
+                                    "GENERAL_PERFORMANCE_CAPABILITY",
+                                ],
+                            },
+                            "deterministic_precondition": {
+                                "textual_authority_conflict_visible": any(
+                                    re.search(
+                                        r"(无权|越权|无授权|授权范围不足|"
+                                        r"签署主体.{0,12}(不一致|冲突)|"
+                                        r"代表人.{0,12}(不一致|冲突))",
+                                        source.quoted_text,
+                                    )
+                                    for source in allowed_sources
+                                ),
+                                "allowed_assessment_types": (
+                                    ["TEXTUAL_AUTHORITY_RISK"]
+                                    if any(
+                                        re.search(
+                                            r"(无权|越权|无授权|授权范围不足|"
+                                            r"签署主体.{0,12}(不一致|冲突)|"
+                                            r"代表人.{0,12}(不一致|冲突))",
+                                            source.quoted_text,
+                                        )
+                                        for source in allowed_sources
+                                    )
+                                    else [
+                                        "EXTERNAL_VERIFICATION_REQUIRED",
+                                        "NO_VISIBLE_ISSUE",
+                                    ]
+                                ),
+                            },
+                        }
+                        if check_code == "FVA-002"
+                        else {}
+                    ),
+                }
+            )
+        payload.pop("assigned_check_legend")
+        payload.pop("deterministic_candidate_legend")
+        payload.pop("deterministic_candidates")
+        payload.pop("projected_ir_legend")
+        payload.pop("projected_ir")
+        payload.pop("source_excerpt_legend")
+        payload.pop("source_excerpts")
+        payload["output_contract"]["rules"].extend(
+            [
+                "每个FVA Check只能读取自身allowed_evidence_sources"
+                "和allowed_absence_sources",
+                "即使同Batch其他Check拥有某项Source，当前Check未列出时也禁止使用",
+                "FVA-002输入只允许主体、签署、代表权、授权、签章和生效审批材料",
+            ]
+        )
     if po_catalog is not None:
         payload.pop("projected_ir_legend")
         payload.pop("projected_ir")
@@ -4586,6 +4736,80 @@ def _generic_prompt(
         ir_refs,
         anchor_refs,
     )
+
+
+def generic_input_diagnostics(
+    request: GenericReviewRequest,
+    prompt: str | None = None,
+) -> dict[str, Any]:
+    """Return hashes only; never persist the complete model prompt."""
+    if prompt is None:
+        prompt, ir_refs, anchor_refs = _generic_prompt(request)
+    else:
+        excerpts = sorted(
+            request.source_excerpts,
+            key=lambda item: (item.block_no, item.char_start, item.anchor_id),
+        )
+        anchor_refs = {
+            f"A{index:03d}": item for index, item in enumerate(excerpts, 1)
+        }
+        anchor_ref_by_id = {
+            item.anchor_id: ref for ref, item in anchor_refs.items()
+        }
+        ir_items = [*request.definitions, *request.projected_ir_items]
+        ir_refs = {
+            f"I{index:03d}": item for index, item in enumerate(ir_items, 1)
+        }
+    candidates = _build_generic_candidates(
+        request,
+        ir_refs,
+        {item.anchor_id: ref for ref, item in anchor_refs.items()},
+    )
+
+    def digest(value: Any) -> str:
+        text = (
+            value
+            if isinstance(value, str)
+            else json.dumps(
+                value,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+        return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    return {
+        "batch_context_hash": request.context_hash,
+        "assigned_checks_hash": digest(
+            [item.model_dump(mode="json") for item in request.assigned_check_specs]
+        ),
+        "candidate_set_hash": digest(
+            [item.model_dump(mode="json") for item in candidates]
+        ),
+        "evidence_policy_hash": digest(
+            {
+                "policies": [
+                    item.model_dump(mode="json")
+                    for item in request.check_evidence_policies
+                ],
+                "evidence_source_ids": [
+                    item.source_id for item in request.evidence_sources
+                ],
+                "absence_source_ids": [
+                    item.source_id for item in request.absence_evidence_sources
+                ],
+            }
+        ),
+        "system_prompt_hash": digest(_GENERIC_SYSTEM_PROMPT),
+        "user_prompt_hash": digest(prompt),
+        "serialized_prompt_hash": digest(
+            [
+                {"role": "system", "content": _GENERIC_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ]
+        ),
+    }
 
 
 def _po_candidate_prompt(
@@ -4837,9 +5061,28 @@ def _build_generic_candidates(
     if request.unit_id == "liability_remedies_exit":
         return _build_lre_candidates(request, ir_refs, anchor_ref_by_id)
     candidates = []
+    policies = {
+        item.check_code: item for item in request.check_evidence_policies
+    }
+    source_by_id = {item.source_id: item for item in request.evidence_sources}
     for spec in request.assigned_check_specs:
+        policy = policies.get(spec.check_code)
+        allowed_item_ids = {
+            source_by_id[source_id].ir_item_id
+            for source_id in (
+                policy.allowed_evidence_source_ids if policy is not None else []
+            )
+            if source_id in source_by_id
+        }
         refs = sorted(
-            ref for ref, item in ir_refs.items() if item.ir_type in spec.required_ir_types
+            ref
+            for ref, item in ir_refs.items()
+            if item.ir_type in spec.required_ir_types
+            and (
+                request.unit_id != "formation_validity_authority"
+                or policy is None
+                or item.item_id in allowed_item_ids
+            )
         )
         evidence_refs = sorted(
             {
@@ -7585,6 +7828,7 @@ def _materialize_generic(
                     for item in findings
                     if item.check_code == "FVA-002"
                 ],
+                request,
             )
             fva_assessments.append(fva_assessment)
         if check.status == "REVIEWED":
@@ -7749,6 +7993,7 @@ def _resolve_finding_fields(
 def _validate_fva002_assessment(
     check: GenericModelCheckResultRaw,
     findings: list[FindingDraft],
+    request: GenericReviewRequest,
 ) -> FvaAssessmentResult:
     assessment = check.assessment_type
     external_required = check.external_verification_required
@@ -7769,6 +8014,34 @@ def _validate_fva002_assessment(
             "RISK_FVA002_SCOPE_LEAKAGE",
             "FVA-002 cannot use personnel qualification, employment, or "
             "performance-capability material",
+        )
+    fva002_policy = next(
+        (
+            item
+            for item in request.check_evidence_policies
+            if item.check_code == "FVA-002"
+        ),
+        None,
+    )
+    source_by_id = {item.source_id: item for item in request.evidence_sources}
+    textual_conflict_visible = fva002_policy is not None and any(
+        re.search(
+            r"(无权|越权|无授权|授权范围不足|"
+            r"签署主体.{0,12}(不一致|冲突)|"
+            r"代表人.{0,12}(不一致|冲突))",
+            source_by_id[source_id].quoted_text,
+        )
+        for source_id in fva002_policy.allowed_evidence_source_ids
+        if source_id in source_by_id
+    )
+    if (
+        fva002_policy is not None
+        and textual_conflict_visible != (assessment == "TEXTUAL_AUTHORITY_RISK")
+    ):
+        raise DirectReviewError(
+            "RISK_FVA002_PRECONDITION_MISMATCH",
+            "FVA-002 assessment conflicts with the deterministic textual-authority gate",
+            repairable=True,
         )
     if assessment == "TEXTUAL_AUTHORITY_RISK":
         if external_required or not findings:
@@ -8683,6 +8956,7 @@ def _emit_generic_attempt_artifact(
     semantic_preservation_passed: bool | None,
     accepted: bool,
     acceptance_reason: str,
+    input_diagnostics: dict[str, Any] | None = None,
 ) -> None:
     if sink is None:
         return
@@ -8737,6 +9011,7 @@ def _emit_generic_attempt_artifact(
             semantic_preservation_passed=semantic_preservation_passed,
             accepted=accepted,
             acceptance_reason=acceptance_reason,
+            input_diagnostics=input_diagnostics,
         )
     )
 

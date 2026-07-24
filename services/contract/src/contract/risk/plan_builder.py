@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from collections import defaultdict
 from typing import Iterable
 
@@ -51,6 +52,63 @@ from contract.risk.po_source_policy import po_item_matches_check
 
 ZERO_HASH = "sha256:" + "0" * 64
 ZERO_PLAN_ID = "risk-plan-" + "0" * 32
+
+_FVA002_ALLOWED_PATTERN = re.compile(
+    r"(合同主体|签约主体|签署主体|签署人|代表人|法定代表人|代理人|"
+    r"代表权|授权|签字|盖章|签章|审批|决议|营业执照|生效条件)"
+)
+_FVA002_DISALLOWED_PATTERN = re.compile(
+    r"(人员专业资质|项目人员|员工|上岗资格|劳动合同|社会保险|社保|"
+    r"人员数量|履约团队|技术能力|项目经验|履约能力|服务能力)"
+)
+_FVA_CHECK_SOURCE_PATTERNS = {
+    "FVA-001": re.compile(
+        r"(甲方|乙方|委托方|受托方|合同主体|签约主体|签署主体|公司|企业|"
+        r"名称|简称|统一社会信用代码|住所|地址)"
+    ),
+    "FVA-003": re.compile(
+        r"(签字|签名|签署|盖章|签章|公章|合同章|法定代表人|授权代表|"
+        r"一式|文本|书面形式)"
+    ),
+    "FVA-004": re.compile(
+        r"(生效|有效期|合同期限|起始|终止|签订日|签署日|日期|追溯|"
+        r"前置条件|审批|批准|决议|条件成就)"
+    ),
+    "FVA-005": re.compile(
+        r"(法律|法规|强制性|禁止|不得|无效|效力|公序良俗|公共利益|"
+        r"行政许可|审批|备案|监管)"
+    ),
+}
+
+
+def fva_item_matches_check(
+    item: RiskProjectedIrItem,
+    excerpts: list[RiskSourceExcerpt],
+    check: CheckSpec,
+) -> bool:
+    """Apply Check-level FVA source isolation before prompt construction."""
+    if item.ir_type not in check.required_ir_types:
+        return False
+    text = " ".join(
+        filter(
+            None,
+            (
+                item.subject,
+                item.predicate,
+                item.object,
+                *(excerpt.quoted_text for excerpt in excerpts),
+            ),
+        )
+    )
+    # All FVA checks share one model call. Remove non-FVA personnel and
+    # performance material from the whole Batch so FVA-002 cannot observe it
+    # through a sibling Check.
+    if _FVA002_DISALLOWED_PATTERN.search(text):
+        return False
+    if check.check_code == "FVA-002":
+        return bool(_FVA002_ALLOWED_PATTERN.search(text))
+    pattern = _FVA_CHECK_SOURCE_PATTERNS.get(check.check_code)
+    return pattern is None or bool(pattern.search(text))
 
 
 class RiskReviewPlanBuilder:
@@ -588,7 +646,15 @@ class RiskReviewPlanBuilder:
                         else (
                             lre_item_matches_check(item, item_excerpts, check)
                             if unit_id == "liability_remedies_exit"
-                            else item.ir_type in check.required_ir_types
+                            else (
+                                fva_item_matches_check(
+                                    item,
+                                    item_excerpts,
+                                    check,
+                                )
+                                if unit_id == "formation_validity_authority"
+                                else item.ir_type in check.required_ir_types
+                            )
                         )
                     )
                 )

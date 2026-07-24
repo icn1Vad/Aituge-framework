@@ -400,6 +400,23 @@ Plan记录`plan_build_ms/context_build_ms/plan_hash/selected_playbooks/unit_coun
 
 任何阶段门禁失败立即停止，不进入下一阶段。每阶段独立测试、中文提交、推送和验收。
 
+## 18. 阶段6.4横向审查冻结实现
+
+阶段6.4在五个基础Review Unit之后执行两个横向Unit：
+
+```text
+cross_clause_consistency
+missing_ambiguity_completeness
+```
+
+执行顺序固定为基础7 Batch并发完成并确定性合并后，Python构建关系索引、横向Candidate和Finding所有权，再并发执行横向Batch。两个横向Unit覆盖11项Check，与基础34项合计45项。横向层只处理跨条款冲突、定义与引用关系、程序链和必要机制缺失，不重新解释或修改基础Candidate、Root、等级和Primary Evidence。
+
+横向Finding所有权由Python按`BASE_DOMAIN`、`HORIZONTAL`和`SHARED_CONTEXT_ONLY`确定。基础领域已完整表达的风险只建立链接，不重复物化Finding；阶段5.1模型语义合并不在本阶段接入。所有横向Evidence和Absence Source必须属于当前Generation；跨Generation Source在Extended Bundle封装前以`EXTENDED_HORIZONTAL_EVIDENCE_STALE`失败。
+
+FVA五项Check虽然共用一个模型Batch，但输入按Check独立投影。FVA-002只允许主体、签署、代表权、授权和生效审批材料；人员资质、劳动用工、社保、团队配置、技术能力、项目经验和一般履约能力在Candidate生成、Evidence Source Policy、Check级Prompt和最终领域门四层隔离。每个Batch输入均记录上下文、Check、Candidate、Evidence Policy和Prompt哈希，不保存完整Prompt到普通日志。相同Plan并发构建必须保持哈希稳定，横向Candidate构建不得修改基础Plan。
+
+Extended Bundle实行结果原子性：任一基础Batch/Unit、横向Candidate构建、横向Batch/Unit、所有权、Evidence或45项Check门禁失败时，不返回可消费的部分Finding集合。Prompt预算继续使用政策2.0；Provider Prompt不超过6,000为目标内，6,001至7,000为软告警，超过7,000为硬失败。
+
 ## 16. 文件级计划
 
 6.1以后预计新增/修改：Contract Python的`risk_models.py/playbooks.py/plan_builder.py`及隐藏接口；Framework的`risk_review.py/register.py`；`LlmRuntime.complete_with_usage()`；内部Stage状态映射；对应Framework和Contract测试。

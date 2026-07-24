@@ -23,10 +23,12 @@ COMMERCIAL_UNIT_ID = "commercial_financial"
 COMMERCIAL_CHECK_CODES = tuple(f"CF-{index:03d}" for index in range(1, 9))
 BASE_UNIT_ID_PATTERN = (
     r"^(formation_validity_authority|commercial_financial|performance_obligations|"
-    r"ip_confidentiality_data|liability_remedies_exit)$"
+    r"ip_confidentiality_data|liability_remedies_exit|cross_clause_consistency|"
+    r"missing_ambiguity_completeness)$"
 )
 BASE_CHECK_CODE_PATTERN = (
-    r"^(FVA-00[1-5]|CF-00[1-8]|PO-00[1-7]|ICD-00[1-6]|LRE-00[1-8])$"
+    r"^(FVA-00[1-5]|CF-00[1-8]|PO-00[1-7]|ICD-00[1-6]|LRE-00[1-8]|"
+    r"CCC-00[1-5]|MAC-00[1-6])$"
 )
 
 _SYSTEM_PROMPT = """你是合同商务财务风险直接审查器。
