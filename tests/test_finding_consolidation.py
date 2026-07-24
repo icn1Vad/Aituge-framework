@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 
+from service.conversation.llm_runner import LlmCompletionResult
 from services.contract.capabilities.finding_consolidation import (
     FindingConsolidationEngine,
+    _candidate_batches,
     build_candidate_pairs,
 )
 
@@ -17,6 +19,33 @@ class FakeRuntime:
     async def complete(self, messages, **kwargs):
         self.calls.append({"messages": messages, **kwargs})
         return self.responses.pop(0)
+
+
+class FakeUsageRuntime:
+    def __init__(self, response: str, prompt_tokens: int) -> None:
+        self.response = response
+        self.prompt_tokens = prompt_tokens
+        self.calls: list[dict] = []
+
+    async def complete_with_usage(self, messages, **kwargs):
+        self.calls.append({"messages": messages, **kwargs})
+        return LlmCompletionResult(
+            content=self.response,
+            prompt_tokens=self.prompt_tokens,
+            cached_tokens=100,
+            completion_tokens=20,
+            total_tokens=self.prompt_tokens + 20,
+            time_to_first_token_ms=10,
+            model_duration_ms=20,
+            trace_id="trace-test",
+            provider_request_id="request-test",
+            finish_reason="stop",
+            review_unit_id="finding_consolidation",
+            review_id=None,
+            framework_run_id=None,
+            attempt_no=None,
+            repair_no=kwargs["repair_no"],
+        )
 
 
 def test_builds_candidate_pairs_for_same_category_and_overlapping_evidence() -> None:
@@ -102,6 +131,120 @@ def test_preserves_all_findings_when_model_output_stays_invalid() -> None:
     assert len(runtime.calls) == 2
 
 
+def test_usage_metrics_use_provider_tokens_and_do_not_double_count_cache() -> None:
+    artifacts = _artifacts()
+    candidate = build_candidate_pairs(artifacts)[0]
+    runtime = FakeUsageRuntime(
+        json.dumps(
+            {
+                "decisions": [
+                    {"pair_id": candidate.pair_id, "relation": "DISTINCT"}
+                ]
+            }
+        ),
+        prompt_tokens=6_145,
+    )
+    engine = FindingConsolidationEngine(runtime_factory=lambda _tenant: runtime)
+
+    run = asyncio.run(
+        engine.consolidate_with_metrics(
+            artifacts,
+            tenant_id="tenant-1",
+            model_id="contract-model",
+        )
+    )
+
+    assert run["artifact"]["status"] == "COMPLETED"
+    assert len(runtime.calls) == 1
+    metric = run["call_metrics"][0]
+    assert metric["prompt_tokens"] == 6_145
+    assert metric["cached_tokens"] == 100
+    assert metric["prompt_budget"]["provider_prompt_tokens"] == 6_145
+    assert metric["prompt_budget"]["budget_status"] == "SOFT_WARNING"
+
+
+def test_provider_hard_limit_skips_without_schema_repair() -> None:
+    artifacts = _artifacts()
+    candidate = build_candidate_pairs(artifacts)[0]
+    runtime = FakeUsageRuntime(
+        json.dumps(
+            {
+                "decisions": [
+                    {"pair_id": candidate.pair_id, "relation": "DISTINCT"}
+                ]
+            }
+        ),
+        prompt_tokens=7_001,
+    )
+    engine = FindingConsolidationEngine(runtime_factory=lambda _tenant: runtime)
+
+    run = asyncio.run(
+        engine.consolidate_with_metrics(
+            artifacts,
+            tenant_id="tenant-1",
+            model_id="contract-model",
+        )
+    )
+
+    assert run["artifact"]["status"] == "SKIPPED"
+    assert run["artifact"]["model_call_count"] == 1
+    assert len(runtime.calls) == 1
+    assert run["call_metrics"][0]["prompt_budget"]["budget_status"] == (
+        "HARD_LIMIT_EXCEEDED"
+    )
+
+
+def test_candidate_batches_are_deterministic_and_never_drop_pairs() -> None:
+    candidates = build_candidate_pairs(_many_artifacts())
+
+    first = _candidate_batches(
+        candidates,
+        max_pairs=60,
+        max_estimated_prompt_tokens=400,
+    )
+    second = _candidate_batches(
+        candidates,
+        max_pairs=60,
+        max_estimated_prompt_tokens=400,
+    )
+
+    assert [[item.pair_id for item in batch] for batch in first] == [
+        [item.pair_id for item in batch] for batch in second
+    ]
+    assert [item.pair_id for batch in first for item in batch] == [
+        item.pair_id for item in candidates
+    ]
+    assert len(first) > 1
+
+
+def test_internal_compatibility_context_is_visible_without_changing_pair_id() -> None:
+    artifacts = _artifacts()
+    baseline = build_candidate_pairs(artifacts)[0]
+    contexts = {
+        baseline.left.key: {
+            "source_check_code": "CF-008",
+            "risk_type": "ACCEPTANCE_RISK",
+        },
+        baseline.right.key: {
+            "source_check_code": "PO-004",
+            "risk_type": "SERVICE_LEVEL_RISK",
+        },
+    }
+
+    enriched = build_candidate_pairs(
+        artifacts,
+        finding_contexts=contexts,
+    )[0]
+
+    assert enriched.pair_id == baseline.pair_id
+    assert enriched.left_summary["compatibility_context"] == contexts[
+        enriched.left.key
+    ]
+    assert enriched.right_summary["compatibility_context"] == contexts[
+        enriched.right.key
+    ]
+
+
 def _artifacts() -> dict:
     first = _finding("finding-a", "No acceptance standard")
     second = _finding("finding-b", "Acceptance procedure is absent")
@@ -114,6 +257,23 @@ def _artifacts() -> dict:
             "findings": [second],
             "evidences": [_evidence("evidence-b", "finding-b")],
         },
+    }
+
+
+def _many_artifacts() -> dict:
+    findings = [
+        _finding(f"finding-{index}", f"Acceptance risk {index}")
+        for index in range(5)
+    ]
+    evidence = [
+        _evidence(f"evidence-{index}", f"finding-{index}")
+        for index in range(5)
+    ]
+    return {
+        "commercial_terms_review_result": {
+            "findings": findings,
+            "evidences": evidence,
+        }
     }
 
 

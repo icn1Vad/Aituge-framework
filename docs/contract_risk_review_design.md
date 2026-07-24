@@ -357,9 +357,61 @@ Bundle Builder确定性生成稳定Finding/Evidence ID。五个Adapter按第7节
 
 之后原样复用阶段5.1、Contract Python `_merge_review_artifacts`、Evidence Validator和Finalizer。公开`relationships`仍为空。
 
+### 11.1 旧五类正式Artifact冻结表
+
+阶段6.5从现有Callback模型、Framework Pipeline、内部Stage Gateway和固定OpenAPI
+核对出的正式兼容边界如下。五个Artifact均为必需输入；即使没有Finding，也必须
+生成对应的严格空Artifact，Java、前端和正式Result Sink不理解Review Unit、
+Candidate、Canonical Root或横向所有权。
+
+| Legacy Stage ID | Artifact类型/正式Pydantic模型 | 兼容Category范围 | 旧审查职责 | 下游用途 |
+|---|---|---|---|---|
+| `rights_obligations_review` | `rights_obligations_review_result` / `RightsObligationsStageResult` (`RIGHTS_OBLIGATIONS_STAGE_V1`) | `PARTY_IDENTIFICATION`、`RIGHTS_OBLIGATIONS_IMBALANCE`，以及仅FVA-005允许的`OTHER` | 主体、授权、权利义务和单方控制 | 阶段5.1候选对、`verify_evidence`合并 |
+| `commercial_terms_review` | `commercial_terms_review_result` / `CommercialTermsStageResult` (`COMMERCIAL_TERMS_STAGE_V1`) | `PAYMENT`、`DELIVERY`、`ACCEPTANCE` | 价款、支付、交付和验收 | 阶段5.1候选对、`verify_evidence`合并 |
+| `liability_termination_review` | `liability_termination_review_result` / `LiabilityTerminationStageResult` (`LIABILITY_TERMINATION_STAGE_V1`) | `BREACH`、`LIABILITY`、`TERMINATION`、`CONFIDENTIALITY`、`INTELLECTUAL_PROPERTY`、`DISPUTE_RESOLUTION` | 责任、赔偿、退出、保密、知识产权和争议 | 阶段5.1候选对、`verify_evidence`合并 |
+| `missing_ambiguous_clauses` | `missing_ambiguous_clauses_result` / `MissingAmbiguityStageResult` (`MISSING_AMBIGUITY_STAGE_V1`) | `MISSING_CLAUSE`、`AMBIGUITY` | 缺失、歧义和程序完整性 | 阶段5.1候选对、`verify_evidence`合并 |
+| `relation_extraction` | `relation_extraction_result` / `RelationExtractionStageResult` (`RELATION_EXTRACTION_STAGE_V1`) | `INTERNAL_CONFLICT`，必要时承载同一横向根因的兼容Finding | 跨条款关系、冲突、引用和优先级 | 阶段5.1候选对、`verify_evidence`合并；公开`relationships`仍为空 |
+
+兼容路由版本固定为`1.0`。路由以`check_code`、`category`、`risk_type`、
+Canonical Root和横向所有权为确定性输入，不使用标题或Issue关键词，不调用模型，
+也没有默认Artifact兜底。`BASE_DOMAIN`和`SHARED_CONTEXT_ONLY`横向Candidate不再
+物化正式Finding；`HORIZONTAL` Finding只能进入一个旧Artifact。
+
+### 11.2 阶段6.5兼容链冻结实现
+
+`FindingCompatibilityRouter`逐Finding读取45项冻结Registry中的
+`legacy_artifact_type`，再校验Category、允许的Risk Type、来源Unit和横向所有权。
+FVA-005使用唯一精确规则
+`FVA-005 + MANDATORY_RULE_OR_VALIDITY_RISK + OTHER`映射到
+`rights_obligations_review_result`；其他`OTHER`、未知Check/Risk Type、无映射或
+多Artifact映射全部硬失败。路由版本为`1.0`，兼容Finding/Evidence ID由路由版本、
+源Root/Finding和Evidence来源确定性生成。
+
+`LegacyRiskArtifactAdapter`固定生成五个严格Pydantic Artifact，包括无Finding的
+空Artifact；相同输入重复100次时Artifact JSON Hash必须一致。适配后运行完整性门，
+确认每个源Finding恰好一个路由记录、兼容Finding只出现于一个Artifact、Evidence ID
+全局唯一，且ABSENCE Evidence不丢失。
+
+阶段5.1继续使用既有`FindingConsolidationEngine`和
+`merge_review_stage_results`，但兼容层把`source_check_code`、`risk_type`、
+`source_root_id`和所有权作为只读分类上下文，避免仅因共享Evidence把不同法律根因
+误判为`SAME_RISK`。这些字段不进入正式Artifact DTO。候选对保持既有筛选规则，不
+删除、不截断；按保守本地预算确定性拆Batch，Provider `usage.prompt_tokens`继续是
+政策2.0的最终权威口径。共享Evidence、同一履约链或标题相近本身不足以合并；
+SAME_RISK仍要求核心法律根因、主要后果和核心控制措施一致。
+
+兼容链完成五Artifact适配、阶段5.1和`materialize_evidence_set`逐Block验证后，才
+调用既有`compute_result_hash`生成结果Hash。阶段5.1模型不可用时为`SKIPPED`并保留
+全部原Finding；兼容路由、Artifact完整性或Evidence验证错误仍为整体硬失败。
+
 ## 12. Playbook样例和回滚
 
-首个样例为`software_ip`，阶段6.5只实现`DETERMINISTIC + EXTEND_DOMAIN`，不启用Specialist。新增Playbook不得修改DAG、公开Stage、五Adapter或正式DTO。
+动态Playbook已正式暂缓，不作为Direct主链路兼容接入或上线前置条件。本阶段不实现
+`software_ip`、`construction`、`privacy`或其他动态Playbook，也不实现
+Specialist Reviewer。默认扩展状态为`playbooks=[]`和
+`specialist_reviewers=[]`；基础`base_neutral`检查包继续作为固定45项内部检查
+清单。Registry和Plan Builder只保留未来扩展接口。未来启用动态Playbook时仍复用
+同一Finding Compatibility Router，不得重新修改Java、正式Stage或Artifact协议。
 
 计划开关：
 
@@ -392,9 +444,8 @@ Plan记录`plan_build_ms/context_build_ms/plan_hash/selected_playbooks/unit_coun
 | 6.2 | `commercial_financial` Direct A/B、Usage | Tool=0、正常1调用、一次修复、Token归属 | 无修复<=30s、一次修复<=50s、硬上限60s，Evidence 100%，关键商务召回稳定 |
 | 6.3 | 五基础Unit、Bundle校验 | 五路并发、Check覆盖、REQUIRED失败、预算超限 | 无固定4条截断，质量不低于Legacy |
 | 6.4 | 两横向候选和条件裁决 | 无候选0调用、有候选1调用、候选外输出拒绝 | 不读全文、不伪造关系、不重复基础风险 |
-| 6.5 | `software_ip`样例 | 适用/不适用、注入、调用数不增 | 不改DAG、Adapter、DTO |
-| 6.6 | Bundle映射和现有5.1 | 重放19→15、SKIPPED、跨Category不合并、全集守恒 | 5.1安全边界不变 |
-| 6.7 | Legacy/Direct Shadow | 质量集、耗时、Token、Evidence、Check覆盖 | 关键风险零漏报、Evidence 100%、Risk P95<=35s |
+| 6.5 | Bundle映射和现有5.1（原计划6.6；动态Playbook暂缓） | 五Artifact、SKIPPED、跨Category不合并、全集守恒 | 5.1安全边界不变 |
+| 6.7 | Legacy/Direct Shadow（须另行授权） | 质量集、耗时、Token、Evidence、Check覆盖 | 关键风险零漏报、Evidence 100%、Risk P95<=35s |
 | 6.8 | 仅测试环境切Direct | Java→Python→Framework、状态、取消、Attempt、Sink、Hash | OpenAPI一致、完整任务P95<=60s、可回滚 |
 | 6.9 | 正式切换后单独清理Legacy | 全量回归和镜像验证 | 多类型验收、性能稳定、用户单独确认 |
 

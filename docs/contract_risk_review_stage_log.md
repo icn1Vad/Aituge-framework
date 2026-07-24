@@ -1147,17 +1147,143 @@ Canonical Root、Finding物化、Bundle原子性、Prompt预算政策2.0及阶�
 
 结论：阶段6.4通过；允许按本阶段授权提交并推送。后续阶段尚未授权。
 
-## 阶段 6.5：领域扩展示例
+## 阶段 6.5：七Review Unit兼容旧五类Artifact并接入阶段5.1
 
-状态：未开始。
+状态：通过，已完成代码、真实验收和回归，待本提交创建并推送。该阶段对应原计划阶段6.6；动态Playbook已正式暂缓，不作为本阶段
+或Direct主链路上线的前置条件。
 
-目标：实现`software_ip` Playbook样例，验证适用性、注入和调用预算，不修改DAG、Adapter或正式DTO。
+目标：将Extended Bundle的七个Review Unit和45项Check逐Finding确定性映射为
+五类旧Artifact，接入既有阶段5.1语义合并，再执行现有Evidence验证和稳定Hash。
+本阶段只建设内部兼容结果和测试入口，不切换正式Pipeline。
 
-## 阶段 6.6：Bundle Adapter 与现有合并
+### 开始前核对单
 
-状态：未开始。
+```text
+当前阶段：6.5（原计划6.6）
+主设计决策：动态Playbook暂缓；playbooks=[]；specialist_reviewers=[]
+当前工作目录/工作树：D:\contract-risk-review-v1
+当前分支：feat/contract-risk-review-playbook-v1
+开始前HEAD：66e5e493a0cc974923bed2939825d5a67d4d31ba
+本地/跟踪引用/GitHub真实HEAD：一致
+开始前工作树：干净
+工作树外备份：E:\MyProjects\Newestcontract\backups\stage65-start-20260724-131607
+允许修改：内部Finding Compatibility Router、Legacy Artifact Adapter、
+  阶段5.1内部接线和观测、内部兼容结果/Hash、隐藏测试入口、测试、设计和阶段记录
+禁止修改：Java、公开OpenAPI、schema_version=1.0、正式Finding/Evidence DTO、
+  Result Sink/正式Result Hash规则、Window IR、任务状态机、正式Stage/Artifact类型、
+  七Unit业务结果、动态Playbook、Specialist、正式Pipeline及正式环境
+必须复用：阶段6.4 Extended Bundle、45项Registry、正式五Artifact Pydantic、
+  既有FindingConsolidationEngine、merge_review_stage_results、
+  materialize_evidence_set/validate_evidence_set和正式Hash规范化规则
+固定输入：阶段6.4最终Extended Bundle Artifact；不得重新执行七Unit模型
+本阶段模型调用：只有阶段5.1候选Pair分类；五轮串行；Router/Adapter调用为0
+Prompt预算：政策2.0；Provider <=6000目标内，6001～7000软告警，>7000硬失败
+本阶段提交：功能：兼容旧风险Artifact并接入跨阶段语义合并
+通过后：提交、推送并停止；Shadow Compare尚未授权
+失败后：不提交、不推送，保存工作树和Artifact并停止
+```
 
-目标：将Bundle逐Finding确定性映射回五类旧Artifact并接入现有阶段5.1合并；验证全集守恒和安全边界。
+### 开始前真实边界核对
+
+- 已重新完整读取联合冻结稿、阶段6设计稿和本阶段日志；阶段6.4基线、本地跟踪
+  引用和GitHub真实远程均为`66e5e493a0cc974923bed2939825d5a67d4d31ba`。
+- 五个正式Stage ID依次为`rights_obligations_review`、
+  `commercial_terms_review`、`liability_termination_review`、
+  `missing_ambiguous_clauses`和`relation_extraction`；对应正式Artifact及
+  Pydantic模型保持原样。
+- 既有阶段5.1实现为`FindingConsolidationEngine`候选对分类加
+  `merge_review_stage_results`确定性合并；模型失败为`SKIPPED`并保留全部
+  Finding，跨Category不自动合并，未知Finding和伪造Pair ID继续硬失败。
+- `verify_evidence`真实入口仍要求五个Artifact齐全，先命名空间化后合并，
+  再由`materialize_evidence_set`逐Block回查字符区间、逐字原文和Hash。
+- 固定阶段6.4 Extended Bundle Artifact为服务器隔离目录中的
+  `stage64-extended-bundle-three-run.json`，SHA-256=
+  `1547c76313cb7a84143bbe8106770a339c229ee5693ea117b81b84971b69b44b`；
+  本阶段只读取既有结果，不重新运行10个基础/横向模型Batch。
+
+### 实现与离线路由
+
+- 新增内部`FindingCompatibilityRouter`和`LegacyRiskArtifactAdapter`，路由版本
+  `1.0`；逐Finding按Check Registry、Category、Risk Type、Canonical Root和所有权
+  路由，模型调用0，无标题/Issue关键词路由和默认兜底。
+- 固定Fixture的17条正式Finding全部唯一承载：权义6、商务3、责任5、缺失1、
+  关系2；Evidence分别为28、4、9、2、4，共45条；横向正式Finding为3条，
+  BASE_DOMAIN/SHARED_CONTEXT_ONLY内部Candidate未重复物化。
+- FVA-005唯一`OTHER`规则、未知Check/Risk Type、非法Category、无路由、多Artifact
+  路由、Finding/Evidence ID冲突均设为确定性硬门。
+- 适配耗时2ms，适配模型调用0；相同Extended Bundle重复构建100次，Artifact Set
+  Hash始终为`dbe1d129f2f70039e1a39da6e5453a188e940b3019015f508539b90ec175f63b`。
+- 路由Artifact：
+  `stage65-compatibility-routing.json`，SHA-256=
+  `171cf468ab80695cd8a2786baccb7302b94f430bc760c783c57e0bd688c9f835`。
+- 路由Oracle：
+  `stage65-compatibility-routing-oracle.json`，SHA-256=
+  `b61eb580b40e1192dcf0923d4a18f6dd05ef80b721611c052756985d5c0a9b3b`。
+
+### 阶段5.1预算与语义边界修订
+
+- 首次真实调用前的租户配置错误在模型调用前Fail Fast，调用数0，仅作为诊断保留；
+  统一为阶段6.4使用的租户`0`后重新开始验收。
+- 旧阶段5.1把24个候选对一次性发送，Provider Prompt为19,248 Token，正确触发
+  政策2.0硬门并`SKIPPED`。修订为不截断的确定性预算拆批；最终为7个Batch，
+  每批2～5对，本地估算2,398～5,186 Token。
+- 仅提供正式Artifact文案时，模型对共享Evidence的PO-001/PO-002及PO-001/PO-006
+  出现SAME_RISK波动。兼容层随后只读注入`check_code/risk_type/root/ownership`
+  内部上下文，并冻结通用边界：共享Evidence或同一履约链本身不足以合并；履行范围、
+  变更程序、服务标准和验收程序为不同法律根因时应保持关联但独立。
+- 上述内部元数据不进入正式Artifact/DTO，不修改候选Pair ID、正式Finding或Evidence，
+  不改变阶段5.1的SAME_RISK/RELATED_DISTINCT/DISTINCT语义。
+
+### 最终五轮真实验收
+
+五轮均只执行已保存Extended Bundle的兼容适配、阶段5.1分类、确定性合并和
+Evidence验证；未重新调用七Review Unit。
+
+| 轮次 | 总兼容链 | 模型调用/Repair/Tool | Prompt/Cached/Completion | SAME/RELATED/DISTINCT | Finding/Evidence | Result Hash |
+|---:|---:|---:|---:|---:|---:|---|
+| 1 | 16,166ms | 7/0/0 | 24,938/24,448/1,093 | 0/20/4 | 17/45 | `sha256:fb36b910936bc30dd18c4be5d8e134546025f5dab9d3f0ba81a87c00447c69c2` |
+| 2 | 15,458ms | 7/0/0 | 24,938/24,448/1,069 | 0/19/5 | 17/45 | 同上 |
+| 3 | 16,659ms | 7/0/0 | 24,938/24,448/1,069 | 0/19/5 | 17/45 | 同上 |
+| 4 | 17,240ms | 7/0/0 | 24,938/24,448/1,069 | 0/19/5 | 17/45 | 同上 |
+| 5 | 16,530ms | 7/0/0 | 24,938/24,448/1,069 | 0/19/5 | 17/45 | 同上 |
+
+- 总墙钟`min/median/max=15,458/16,530/17,240ms`，低于35秒目标；Adapter低于
+  1秒目标。所有35次Pair Batch调用的Provider Prompt均为`WITHIN_TARGET`，
+  Repair=0、Tool=0。
+- 24个候选Pair集合、SAME_RISK集合（空）、最终风险根因、最高等级、Primary
+  Evidence、17条Finding、45条Evidence和Result Hash五轮一致。
+  `RELATED_DISTINCT/DISTINCT`有一个非合并型分类在第1轮与后四轮不同，但没有改变
+  任何正式结果；按冻结门禁作为合法非核心表达差异披露。
+- 五轮Artifact：
+  `stage65-semantic-merge-five-run.json`，SHA-256=
+  `5b5ba6ca567cf6f1f05acdd7c6da7e3283e14c651482899427b4caf9e1720931`。
+- 完整Attempt Artifact：
+  `stage65-semantic-merge-five-run-attempts.json`，SHA-256=
+  `151056a6b9d76fe517e7583b1236136e5dd775e0e41635ba307f4f8e802b3df9`。
+
+### 失败注入与回归
+
+- 12类失败注入全部通过：未知Check、非法OTHER、Finding ID冲突、横向Finding
+  多Artifact承载、Evidence ID冲突、无效Block/跨Generation、Artifact Schema失败、
+  阶段5.1超时/Schema/语义守恒失败及Result Hash稳定性。
+- Compatibility硬错误均整体失败且不产生可消费结果；阶段5.1三类模型错误均
+  `SKIPPED`并保留17条原Finding后继续通过Evidence验证；Evidence错误整体失败。
+- 失败注入Artifact：
+  `stage65-compatibility-failure-injection.json`，SHA-256=
+  `500a868fc8ef7dc8d23b770216d30dff21e3b90cbb32ecfdc5ee269a1c0bddc6`。
+- 兼容、阶段5.1、Evidence/Hash、预算、基础与横向Bundle定向回归：
+  `184 passed, 42 skipped`；最终新增专项：`23 passed`。
+- Framework无实时服务全量：`390 passed, 43 skipped`；日志SHA-256=
+  `9fd2b95d999e00511cdb33737a8b37fd99a91f3423984270abab5a870c8244de`。
+  单独的`test_live_multi_capability.py`因独立Smoke HTTP服务未启动而连接失败，
+  与业务改动无关且按既有规则单列。
+- Contract Python专用镜像全量（新增兼容专项已在Framework组合镜像单独通过）：
+  `116 passed, 11 skipped`；日志SHA-256=
+  `e4799edd25c3c51798d043b27d572de4dd3784a6b0d52c851f747df46aa95d62`。
+- 固定OpenAPI测试包含在Contract全量中；本阶段没有新增路由，内部脚本未进入公开
+  OpenAPI。`git diff --check`通过。
+
+结论：阶段6.5门禁通过；允许按本阶段授权创建中文提交并推送。Shadow Compare尚未授权。
 
 ## 阶段 6.7：Shadow Compare
 
