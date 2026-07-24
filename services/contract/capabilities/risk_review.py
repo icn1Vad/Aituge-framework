@@ -16,6 +16,10 @@ from services.contract.capabilities.prompt_budget import (
     PromptBudgetResult,
     evaluate_prompt_budget,
 )
+from services.contract.capabilities.party_roles import (
+    contract_party_roles,
+    text_names_role,
+)
 from task_manager.output_parser import parse_json_output
 
 
@@ -355,6 +359,7 @@ class Cf005Candidate(StrictModel):
     )
     substantial_prepayment: bool
     payment_before_performance: bool
+    payer_role_status: Literal["OUR_PARTY", "COUNTERPARTY", "AMBIGUOUS"]
     installment_payment: bool
     milestone_linked: bool
     acceptance_linked: bool
@@ -855,9 +860,15 @@ _CF005_SECURITY_KEYWORDS = {
 
 
 def _build_cf005_candidate(
+    request: CommercialReviewRequest,
     ir_refs: dict[str, CommercialIrItem],
     anchor_ref_by_id: dict[str, str],
 ) -> Cf005Candidate:
+    roles = contract_party_roles(
+        perspective=request.perspective,
+        our_party=request.our_party,
+        counterparty=request.counterparty,
+    )
     relevant: list[tuple[str, CommercialIrItem, str]] = []
     all_text_parts: list[str] = []
     for ref, item in ir_refs.items():
@@ -872,8 +883,24 @@ def _build_cf005_candidate(
 
     substantial_refs: list[str] = []
     before_performance_refs: list[str] = []
-    for ref, _item, text in relevant:
+    payer_statuses: list[str] = []
+    for ref, item, text in relevant:
         has_payment = any(word in text for word in _CF005_PAYMENT_WORDS)
+        payer_subject = item.subject or ""
+        our_payer = text_names_role(
+            payer_subject, roles.aliases_for_our_party()
+        )
+        counterparty_payer = text_names_role(
+            payer_subject, roles.aliases_for_counterparty()
+        )
+        if our_payer and not counterparty_payer:
+            payer_status = "OUR_PARTY"
+        elif counterparty_payer and not our_payer:
+            payer_status = "COUNTERPARTY"
+        else:
+            payer_status = "AMBIGUOUS"
+        if has_payment:
+            payer_statuses.append(payer_status)
         percentages = [
             float(value)
             for value in re.findall(r"(?<!\d)(\d{1,3}(?:\.\d+)?)\s*%", text)
@@ -908,6 +935,16 @@ def _build_cf005_candidate(
     return Cf005Candidate(
         substantial_prepayment=bool(substantial_refs),
         payment_before_performance=bool(before_performance_refs),
+        payer_role_status=(
+            "OUR_PARTY"
+            if "OUR_PARTY" in payer_statuses
+            else (
+                "COUNTERPARTY"
+                if payer_statuses
+                and set(payer_statuses) == {"COUNTERPARTY"}
+                else "AMBIGUOUS"
+            )
+        ),
         installment_payment="INSTALLMENT_PAYMENT" in mechanisms,
         milestone_linked="MILESTONE_PAYMENT" in mechanisms,
         acceptance_linked="ACCEPTANCE_LINKAGE" in mechanisms,
@@ -946,12 +983,27 @@ def _prompt(
                 ],
             }
         )
-    cf005_candidate = _build_cf005_candidate(ir_refs, anchor_ref_by_id)
+    cf005_candidate = _build_cf005_candidate(
+        request, ir_refs, anchor_ref_by_id
+    )
+    roles = contract_party_roles(
+        perspective=request.perspective,
+        our_party=request.our_party,
+        counterparty=request.counterparty,
+    )
     payload: dict[str, object] = {
         "review_context": {
             "perspective": request.perspective,
             "our_party": request.our_party,
             "counterparty": request.counterparty,
+            "party_a": roles.party_a_name,
+            "party_b": roles.party_b_name,
+            "our_contract_role": roles.our_role,
+            "counterparty_contract_role": roles.counterparty_role,
+            "party_role_rule": (
+                "甲方、乙方由上述party_a和party_b固定；不得根据付款方、"
+                "履约方或参数顺序重新猜测，不得在Finding描述中倒置主体"
+            ),
             "contract_type": request.contract_type,
             "review_attitude": request.review_attitude,
         },
@@ -1345,9 +1397,16 @@ def _validate_cf005_candidate_decision(
     ir_refs: dict[str, CommercialIrItem],
     anchor_refs: dict[str, CommercialSourceExcerpt],
 ) -> None:
+    if check.findings and candidate.payer_role_status != "OUR_PARTY":
+        raise DirectReviewError(
+            "RISK_CF005_PAYER_PERSPECTIVE_INVALID",
+            "CF-005 Finding requires deterministic evidence that our_party is the payer",
+            repairable=True,
+        )
     strong_unsecured_candidate = (
         candidate.substantial_prepayment
         and candidate.payment_before_performance
+        and candidate.payer_role_status == "OUR_PARTY"
         and not candidate.identified_security_mechanisms
     )
     if strong_unsecured_candidate and check.candidate_decision != "RISK_CONFIRMED":

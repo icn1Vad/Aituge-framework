@@ -58,6 +58,7 @@ from services.contract.capabilities.legacy_compatibility import (
     LegacyRiskArtifactAdapter,
     finalize_legacy_compatible_result,
 )
+from services.contract.capabilities.party_roles import contract_party_roles
 from services.contract.capabilities.risk_review_bundle import (
     execute_base_risk_review_bundle,
 )
@@ -113,6 +114,11 @@ def _raw_inputs(fixture_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 def _compatibility_context(value, contract_hash: str) -> LegacyCompatibilityContext:
+    roles = contract_party_roles(
+        perspective=value.perspective,
+        our_party=value.our_party,
+        counterparty=value.counterparty,
+    )
     return LegacyCompatibilityContext(
         review_id=value.review_id,
         business_task_id="stage66-direct-e2e-business-task",
@@ -121,8 +127,8 @@ def _compatibility_context(value, contract_hash: str) -> LegacyCompatibilityCont
         contract_hash=contract_hash,
         contract_profile=ContractProfile(
             contract_type=value.contract_type,
-            party_a={"name": value.our_party},
-            party_b={"name": value.counterparty},
+            party_a={"name": roles.party_a_name},
+            party_b={"name": roles.party_b_name},
             perspective=value.perspective,
             our_party=value.our_party,
             counterparty=value.counterparty,

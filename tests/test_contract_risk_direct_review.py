@@ -820,13 +820,18 @@ def test_cf005_candidate_detects_full_prepayment_without_security() -> None:
         "本合同签订后十日内，甲方应一次性支付全部合同价款。"
     )
 
-    _text, _ir_refs, _anchor_refs, candidate = _prompt(request)
+    text, _ir_refs, _anchor_refs, candidate = _prompt(request)
+    payload = json.loads(text.split("\n", 1)[1])
 
     assert candidate.substantial_prepayment is True
     assert candidate.payment_before_performance is True
     assert candidate.identified_security_mechanisms == []
     assert candidate.candidate_ir_refs == ["I001"]
     assert candidate.candidate_evidence_refs == ["A001"]
+    assert candidate.payer_role_status == "OUR_PARTY"
+    assert payload["review_context"]["party_a"] == request.our_party
+    assert payload["review_context"]["party_b"] == request.counterparty
+    assert payload["review_context"]["our_contract_role"] == "甲方"
 
 
 def test_cf005_candidate_detects_installment_and_acceptance_linkage() -> None:

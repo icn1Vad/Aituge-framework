@@ -28,6 +28,7 @@ from services.contract.capabilities.prompt_budget import (
     PromptBudgetResult,
     evaluate_prompt_budget,
 )
+from services.contract.capabilities.party_roles import contract_party_roles
 from services.contract.capabilities.risk_review import EvidenceCandidate, FindingDraft
 from services.contract.capabilities.risk_review_bundle import BaseRiskReviewBundle
 from task_manager.output_parser import parse_json_output
@@ -694,6 +695,11 @@ def build_horizontal_plan(
     value: RiskReviewPlanInput,
     base_bundle: BaseRiskReviewBundle,
 ) -> HorizontalReviewPlan:
+    roles = contract_party_roles(
+        perspective=value.perspective,
+        our_party=value.our_party,
+        counterparty=value.counterparty,
+    )
     index, evidence_sources = build_relationship_index(value)
     source_by_node = {
         _stable_id(
@@ -788,14 +794,11 @@ def build_horizontal_plan(
         if declared_match is None:
             continue
         declared = declared_match.group(1).strip()
+        declared_role = alias_match.group(1) if alias_match else None
         expected_name = (
-            value.our_party
-            if alias_match and alias_match.group(1) == "甲方"
-            else (
-                value.counterparty
-                if alias_match and alias_match.group(1) == "乙方"
-                else ""
-            )
+            roles.name_for_role(declared_role)
+            if declared_role in {"甲方", "乙方"}
+            else ""
         )
         if expected_name and _normalize(declared) != _normalize(expected_name):
             source = block_source(node.block_id, "party_declaration")
@@ -823,7 +826,7 @@ def build_horizontal_plan(
                     check_code="CCC-005",
                     candidate_type="PARTY_NAME_CONFLICT",
                     candidate_strength="HARD_RULE",
-                    normalized_topic="甲方主体全称",
+                    normalized_topic=f"{declared_role}主体全称",
                     primary_left=[source.source_id],
                     primary_right=[corroborating_source.source_id],
                     left_claim=declared,
@@ -1211,6 +1214,12 @@ def _risk_level(candidate: HorizontalCandidate, decision: HorizontalDecision) ->
 
 
 def _finding_text(candidate: HorizontalCandidate) -> tuple[str, str, str, str]:
+    party_role = "合同主体"
+    if candidate.candidate_type == "PARTY_NAME_CONFLICT":
+        if candidate.normalized_topic.startswith("甲方"):
+            party_role = "甲方"
+        elif candidate.normalized_topic.startswith("乙方"):
+            party_role = "乙方"
     templates = {
         "DATE_CHRONOLOGY_CONFLICT": (
             "合同履行起始日早于签订日且追溯效力未明确",
@@ -1220,7 +1229,7 @@ def _finding_text(candidate: HorizontalCandidate) -> tuple[str, str, str, str]:
         ),
         "PARTY_NAME_CONFLICT": (
             "合同主体全称存在异常字符且与审查主体不一致",
-            "合同中的甲方全称与已确认审查主体存在字面差异，可能影响主体识别。",
+            f"合同中的{party_role}全称与已确认的对应主体存在字面差异，可能影响主体识别。",
             "可能造成合同相对方、签署主体或权利义务归属争议。",
             "核对营业执照和签署信息，统一合同全部位置的主体全称并删除异常字符。",
         ),

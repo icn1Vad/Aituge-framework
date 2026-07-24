@@ -42,6 +42,7 @@ from services.contract.capabilities.legacy_compatibility import (
     LegacyRiskArtifactAdapter,
     finalize_legacy_compatible_result,
 )
+from services.contract.capabilities.party_roles import contract_party_roles
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -106,6 +107,11 @@ def _load_extended_bundle(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 
 def _context_and_blocks(fixture_dir: Path, bundle: dict[str, Any]):
     value = load_fixed_risk_plan_input(fixture_dir)
+    roles = contract_party_roles(
+        perspective=value.perspective,
+        our_party=value.our_party,
+        counterparty=value.counterparty,
+    )
     fixture = json.loads(
         (
             fixture_dir
@@ -121,8 +127,8 @@ def _context_and_blocks(fixture_dir: Path, bundle: dict[str, Any]):
         contract_hash=contract_hash,
         contract_profile=ContractProfile(
             contract_type=value.contract_type,
-            party_a={"name": value.our_party},
-            party_b={"name": value.counterparty},
+            party_a={"name": roles.party_a_name},
+            party_b={"name": roles.party_b_name},
             perspective=value.perspective,
             our_party=value.our_party,
             counterparty=value.counterparty,

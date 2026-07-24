@@ -27,6 +27,10 @@ from services.contract.capabilities.prompt_budget import (
     evaluate_prompt_budget,
     summarize_prompt_budgets,
 )
+from services.contract.capabilities.party_roles import (
+    contract_party_roles,
+    text_names_role,
+)
 from contract.risk.icd_source_policy import ICD_SOURCE_PATTERN_RULES
 from contract.risk.lre_source_policy import (
     LRE_ABSENCE_POLICIES,
@@ -3394,8 +3398,13 @@ def _lre_factor_has_required_evidence(
             r"(扣分|退款).{0,20}(违约金|赔偿))"
         ), "REQUIRED_TEXT_SIGNAL_MISSING"
     if factor_code == "UNILATERAL_TERMINATION":
-        our_role = "甲方"
-        counterparty_role = "乙方"
+        roles = contract_party_roles(
+            perspective=request.perspective,
+            our_party=request.our_party,
+            counterparty=request.counterparty,
+        )
+        our_role = roles.our_role
+        counterparty_role = roles.counterparty_role
         subjects = " ".join(source.subject or "" for source in text_sources)
         # A one-party literal is only a signal. The Candidate still supplies
         # both parties' complete termination source pool for model comparison.
@@ -4143,7 +4152,12 @@ def _validate_po_perspective_language(
             finding.suggestion,
         )
     )
-    opposite = "乙方" if request.perspective == "PARTY_A" else "甲方"
+    roles = contract_party_roles(
+        perspective=request.perspective,
+        our_party=request.our_party,
+        counterparty=request.counterparty,
+    )
+    opposite = roles.counterparty_role
     patterns = (
         f"我方（{opposite}）",
         f"我方({opposite})",
@@ -4360,11 +4374,20 @@ def _generic_prompt(
             "多条款Finding可选择多个source_id；Python从Source确定性派生全部技术Evidence",
             "PO-003不能仅凭乙方保证材料真实认定甲方配合义务缺失；若证明双方义务不对等，须选择分别直接支持该关系的多个合法Source",
         ]
+    roles = contract_party_roles(
+        perspective=request.perspective,
+        our_party=request.our_party,
+        counterparty=request.counterparty,
+    )
     payload = {
         "review_context": {
             "perspective": request.perspective,
             "our_party": request.our_party,
             "counterparty": request.counterparty,
+            "party_a": roles.party_a_name,
+            "party_b": roles.party_b_name,
+            "our_contract_role": roles.our_role,
+            "counterparty_contract_role": roles.counterparty_role,
             "contract_type": request.contract_type,
             "review_attitude": request.review_attitude,
         },
@@ -4842,16 +4865,25 @@ def _po_candidate_prompt(
             for source_id, source in catalog.absence_sources.items()
         }
     )
+    roles = contract_party_roles(
+        perspective=request.perspective,
+        our_party=request.our_party,
+        counterparty=request.counterparty,
+    )
     payload = {
         "review_context": {
             "perspective": request.perspective,
             "our_party": request.our_party,
             "counterparty": request.counterparty,
+            "party_a": roles.party_a_name,
+            "party_b": roles.party_b_name,
+            "our_contract_role": roles.our_role,
+            "counterparty_contract_role": roles.counterparty_role,
             "contract_type": request.contract_type,
             "review_attitude": request.review_attitude,
             "party_role_rule": (
-                "PARTY_A表示我方是合同甲方，PARTY_B表示我方是合同乙方；"
-                "不得在标题、issue、impact或decision_note中把我方写成另一方"
+                "甲方、乙方由party_a和party_b固定；不得根据付款方、"
+                "履约方或参数顺序重新猜测，不得在任何输出中倒置主体"
             ),
         },
         "unit": {
@@ -5955,7 +5987,7 @@ _PO_FINDING_TEMPLATES: dict[str, dict[str, str]] = {
     "SCOPE_EXPANSION": {
         "title": "履行范围存在开放式扩张风险",
         "issue": "合同履行安排存在“{fact}”。Primary Evidence显示：{evidence}。",
-        "impact": "{our_party}可能在缺少同步确认和对价调整的情况下承担新增履行内容；风险因素为：{severity}。",
+        "impact": "履行范围可能在缺少同步确认和对价调整的情况下扩张，进而影响{our_party}的履约权益、成本或交易预期；风险因素为：{severity}。",
     },
     "DELIVERY_SCHEDULE_REVIEW": {
         "title": "交付期限或责任边界不够明确",
@@ -5965,7 +5997,7 @@ _PO_FINDING_TEMPLATES: dict[str, dict[str, str]] = {
     "RIGHTS_OBLIGATIONS_IMBALANCE": {
         "title": "权利义务和单方控制安排不平衡",
         "issue": "合同权利义务安排存在“{fact}”。Primary Evidence显示：{evidence}。",
-        "impact": "{our_party}可能受到{counterparty}单方控制且缺少对等程序保障；风险因素为：{severity}。",
+        "impact": "单方控制权的主体、条件或救济边界不清，可能使{our_party}缺少对等程序保障；风险因素为：{severity}。",
     },
     "COOPERATION_DEPENDENCY": {
         "title": "履约依赖与配合责任边界不清",
@@ -5980,17 +6012,17 @@ _PO_FINDING_TEMPLATES: dict[str, dict[str, str]] = {
     "QUALITY_STANDARD_UNMEASURABLE": {
         "title": "服务标准缺少可衡量指标",
         "issue": "合同质量或服务标准存在“{fact}”。Primary Evidence显示：{evidence}。",
-        "impact": "{our_party}可能面对主观或不可验证的质量评价；风险因素为：{severity}。",
+        "impact": "{our_party}可能因缺少客观、可验证的质量标准而难以主张或证明履约是否合格；风险因素为：{severity}。",
     },
     "ACCEPTANCE_MECHANISM_REVIEW": {
         "title": "验收机制存在不完整风险",
         "issue": "合同验收安排存在“{fact}”。Primary Evidence显示：{evidence}。",
-        "impact": "{our_party}可能因验收标准、期限、整改或复验机制不清而承担交付争议；风险因素为：{severity}。",
+        "impact": "{our_party}可能因验收标准、期限、整改或复验机制不清而面临交付、接收或结算争议；风险因素为：{severity}。",
     },
     "ACCEPTANCE_MECHANISM_ABSENT": {
         "title": "合同缺少完整验收机制",
         "issue": "合同文本检查发现“{fact}”。检查依据为：{evidence}。",
-        "impact": "{our_party}完成履行后可能无法通过明确程序确认验收和结算条件；风险因素为：{severity}。",
+        "impact": "{our_party}可能因缺少明确验收程序而无法稳定确认交付、接收和结算条件；风险因素为：{severity}。",
     },
     "ASSIGNMENT_SUBCONTRACT_REVIEW": {
         "title": "转委托、分包或转让安排需要限制",
@@ -6000,7 +6032,7 @@ _PO_FINDING_TEMPLATES: dict[str, dict[str, str]] = {
     "CHANGE_CONTROL_REVIEW": {
         "title": "变更控制和费用工期联动不足",
         "issue": "合同变更安排存在“{fact}”。Primary Evidence显示：{evidence}。",
-        "impact": "{our_party}可能在变更未经双方确认时承担额外工作、费用或进度压力；风险因素为：{severity}。",
+        "impact": "变更未经双方确认时，{our_party}的工作范围、价款、资源或进度权益可能受到影响；风险因素为：{severity}。",
     },
     "CHANGE_CONTROL_ABSENT": {
         "title": "合同缺少书面变更控制机制",
@@ -6010,7 +6042,7 @@ _PO_FINDING_TEMPLATES: dict[str, dict[str, str]] = {
     "WARRANTY_SUPPORT_REVIEW": {
         "title": "质保、整改或支持机制不完整",
         "issue": "合同质保或支持安排存在“{fact}”。Primary Evidence显示：{evidence}。",
-        "impact": "{our_party}可能因支持范围、期限、整改和复验责任不清承担持续履约风险；风险因素为：{severity}。",
+        "impact": "{our_party}可能因支持范围、期限、整改和复验责任不清而面临质量缺陷处理及持续履约争议；风险因素为：{severity}。",
     },
     "WARRANTY_SUPPORT_ABSENT": {
         "title": "合同缺少质保、整改或支持机制",
@@ -6411,10 +6443,13 @@ def _icd_confidentiality_perspective_precondition(
     ]
     if not sources:
         return None
-    our_role = "甲方" if request.perspective == "PARTY_A" else "乙方"
-    counterparty_role = "乙方" if request.perspective == "PARTY_A" else "甲方"
-    our_aliases = (our_role, request.our_party)
-    counterparty_aliases = (counterparty_role, request.counterparty)
+    roles = contract_party_roles(
+        perspective=request.perspective,
+        our_party=request.our_party,
+        counterparty=request.counterparty,
+    )
+    our_aliases = roles.aliases_for_our_party()
+    counterparty_aliases = roles.aliases_for_counterparty()
 
     def contains_alias(text: str, aliases: tuple[str, str]) -> bool:
         return any(alias and alias in text for alias in aliases)
@@ -6793,6 +6828,25 @@ def _build_lre_candidates(
     """Build the finite, source-bound LRE Candidate set."""
     candidates: list[DeterministicRiskCandidate] = []
     specs = {item.check_code: item for item in request.assigned_check_specs}
+    roles = contract_party_roles(
+        perspective=request.perspective,
+        our_party=request.our_party,
+        counterparty=request.counterparty,
+    )
+
+    def only_our_exposure(refs: list[str]) -> list[str]:
+        relevant_refs: list[str] = []
+        for ref in refs:
+            item = ir_refs[ref]
+            subject = item.subject or ""
+            is_our = text_names_role(subject, roles.aliases_for_our_party())
+            is_counterparty_only = (
+                text_names_role(subject, roles.aliases_for_counterparty())
+                and not is_our
+            )
+            if not is_counterparty_only:
+                relevant_refs.append(ref)
+        return relevant_refs
 
     def add(
         check_code: str,
@@ -6811,6 +6865,15 @@ def _build_lre_candidates(
             check_code=check_code,
             pattern=pattern,
         )
+        if candidate_type in {
+            "BROAD_BREACH_TRIGGER_REVIEW",
+            "OVERBROAD_LOSS_SCOPE_REVIEW",
+            "CUMULATIVE_REMEDIES_REVIEW",
+            "LIABILITY_CAP_ABSENT",
+            "LIABILITY_CAP_BYPASS_REVIEW",
+            "OVERBROAD_INDEMNITY_REVIEW",
+        }:
+            refs = only_our_exposure(refs)
         if check_code == "LRE-005":
             termination_refs = [
                 ref
@@ -6878,6 +6941,8 @@ def _build_lre_candidates(
             check_code="LRE-003",
             pattern=r"(全部赔偿|所有损失|不受.{0,10}(上限|限制)|同时.{0,8}主张)",
         )
+        cap_refs = only_our_exposure(cap_refs)
+        bypass_refs = only_our_exposure(bypass_refs)
         if cap_refs and bypass_refs:
             candidates.append(
                 _lre_candidate(
@@ -6947,6 +7012,7 @@ def _build_po_candidates(
     specs = {item.check_code: item for item in request.assigned_check_specs}
     for check_code, spec in specs.items():
         matched_for_check = False
+        role_filtered_for_check = False
         allowed_item_ids = {
             source.ir_item_id
             for source in request.evidence_sources
@@ -6965,6 +7031,14 @@ def _build_po_candidates(
             ]
             if not refs:
                 continue
+            if not _po_candidate_has_adverse_role_binding(
+                request,
+                candidate_type=candidate_type,
+                refs=refs,
+                ir_refs=ir_refs,
+            ):
+                role_filtered_for_check = True
+                continue
             candidates.append(
                 _po_candidate(
                     request,
@@ -6978,6 +7052,9 @@ def _build_po_candidates(
                 )
             )
             matched_for_check = True
+
+        if role_filtered_for_check and not matched_for_check:
+            continue
 
         missing_types = set(spec.required_ir_types) - {
             item.ir_type for item in ir_refs.values()
@@ -7076,6 +7153,59 @@ def _matching_po_ir_refs(
             re.search(pattern, " ".join(filter(None, (item.subject, item.predicate, item.object))))
             for pattern in patterns
         )
+    )
+
+
+_PO_DIRECTIONAL_CANDIDATE_TYPES = {
+    "SCOPE_EXPANSION",
+    "RIGHTS_OBLIGATIONS_IMBALANCE",
+    "CHANGE_CONTROL_REVIEW",
+}
+
+
+def _po_item_burdens_our_party(
+    request: GenericReviewRequest,
+    item: CommercialIrItem,
+) -> bool:
+    roles = contract_party_roles(
+        perspective=request.perspective,
+        our_party=request.our_party,
+        counterparty=request.counterparty,
+    )
+    subject = item.subject or ""
+    text = " ".join(filter(None, (item.subject, item.predicate, item.object)))
+    our_subject = text_names_role(subject, roles.aliases_for_our_party())
+    counterparty_subject = text_names_role(
+        subject, roles.aliases_for_counterparty()
+    )
+    obligation_like = item.ir_type in {
+        "obligations",
+        "prohibitions",
+        "delivery_terms",
+        "payment_terms",
+        "termination_terms",
+    } or bool(re.search(r"(应|须|必须|不得|负责|承担|保证|完成|交付)", text))
+    control_like = item.ir_type == "rights" or bool(
+        re.search(r"(有权|可自行|单方|随时.{0,8}(要求|检查|调整|决定))", text)
+    )
+    return bool(
+        (our_subject and obligation_like)
+        or (counterparty_subject and control_like)
+    )
+
+
+def _po_candidate_has_adverse_role_binding(
+    request: GenericReviewRequest,
+    *,
+    candidate_type: str,
+    refs: list[str],
+    ir_refs: dict[str, CommercialIrItem],
+) -> bool:
+    if candidate_type not in _PO_DIRECTIONAL_CANDIDATE_TYPES:
+        return True
+    return any(
+        _po_item_burdens_our_party(request, ir_refs[ref])
+        for ref in refs
     )
 
 
@@ -7297,7 +7427,12 @@ def _po003_candidate_precondition(
             unmet_conditions=unmet,
         )
 
-    counterparty_alias = "乙方" if request.perspective == "PARTY_A" else "甲方"
+    roles = contract_party_roles(
+        perspective=request.perspective,
+        our_party=request.our_party,
+        counterparty=request.counterparty,
+    )
+    counterparty_alias = roles.counterparty_role
     cooperation_action = re.compile(
         r"(配合|协助|提供.{0,12}(资料|材料|设备|场地|接口|人员|技术支持)|"
         r"(审批|确认|验收|反馈)|协调.{0,8}第三方)"

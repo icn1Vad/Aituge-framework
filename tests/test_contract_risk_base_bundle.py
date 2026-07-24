@@ -178,22 +178,25 @@ def _po_request(
     extra_po001_support: bool = False,
     delivery_object: str = "项目交付",
     po003_mode: str = "OUR_PARTY_DUTY",
+    perspective: str = "PARTY_B",
 ) -> GenericReviewRequest:
+    our_role = "甲方" if perspective == "PARTY_A" else "乙方"
+    counterparty_role = "乙方" if perspective == "PARTY_A" else "甲方"
     scope_object = "甲方在履行中提出的其他要求"
     if shared_po001_anchor:
         scope_object += "并完成项目交付"
     cooperation_row = (
         "cooperation",
         "obligations",
-        "甲方",
+        our_role,
         "应配合提供资料",
-        "甲方延迟仍不顺延乙方工期",
+        f"{our_role}延迟仍不顺延{counterparty_role}工期",
     )
     if po003_mode == "COUNTERPARTY_NO_CONSEQUENCE":
         cooperation_row = (
             "cooperation",
             "obligations",
-            "乙方",
+            counterparty_role,
             "应配合提供资料",
             "资料应真实有效",
         )
@@ -201,9 +204,9 @@ def _po_request(
         cooperation_row = (
             "cooperation",
             "obligations",
-            "乙方",
-            "应配合提供资料，甲方履行依赖该资料，若未提供将导致",
-            "甲方延期且甲方仍承担违约责任",
+            counterparty_role,
+            f"应配合提供资料，{our_role}履行依赖该资料，若未提供将导致",
+            f"{our_role}延期且{our_role}仍承担违约责任",
         )
     rows = [
         ("scope", "obligations", "乙方", "应予执行", scope_object),
@@ -367,9 +370,17 @@ def _po_request(
         context_hash="sha256:" + "5" * 64,
         unit_id="performance_obligations",
         batch_id="risk-batch-" + "6" * 32,
-        perspective="PARTY_A",
-        our_party="甲方教育科技有限公司",
-        counterparty="乙方人工智能科技有限公司",
+        perspective=perspective,
+        our_party=(
+            "甲方教育科技有限公司"
+            if perspective == "PARTY_A"
+            else "乙方人工智能科技有限公司"
+        ),
+        counterparty=(
+            "乙方人工智能科技有限公司"
+            if perspective == "PARTY_A"
+            else "甲方教育科技有限公司"
+        ),
         contract_type="SERVICE",
         review_attitude="NEUTRAL",
         assigned_check_specs=[
@@ -1792,6 +1803,9 @@ def test_po_candidates_cover_frozen_business_hypotheses() -> None:
         "Primary Evidence" in item
         for item in payload["output_contract"]["rules"]
     )
+    assert payload["review_context"]["party_a"] == "甲方教育科技有限公司"
+    assert payload["review_context"]["party_b"] == "乙方人工智能科技有限公司"
+    assert payload["review_context"]["our_contract_role"] == "乙方"
     assert any(
         "每个required_candidate_id必须返回一次且仅一次" in item
         for item in payload["output_contract"]["rules"]
@@ -1821,6 +1835,25 @@ def test_po_candidates_cover_frozen_business_hypotheses() -> None:
         in {"PAYMENT", "INVOICE", "TAX", "AUTHORITY", "INTELLECTUAL_PROPERTY"}
         for item in candidates
     )
+
+
+def test_po_directional_candidates_follow_selected_review_side() -> None:
+    party_a_request = _po_request(perspective="PARTY_A")
+    _text, ir_refs, anchor_refs = _generic_prompt(party_a_request)
+    party_a_candidates = _build_generic_candidates(
+        party_a_request,
+        ir_refs,
+        {item.anchor_id: ref for ref, item in anchor_refs.items()},
+    )
+
+    assert not {
+        "SCOPE_EXPANSION",
+        "RIGHTS_OBLIGATIONS_IMBALANCE",
+        "CHANGE_CONTROL_REVIEW",
+    } & {item.candidate_type for item in party_a_candidates}
+    assert "DELIVERY_SCHEDULE_REVIEW" in {
+        item.candidate_type for item in party_a_candidates
+    }
 
 
 def test_po_prompt_isolates_sources_by_check_code() -> None:
@@ -2486,7 +2519,7 @@ def test_po_wrong_party_summary_is_audited_but_cannot_pollute_final_finding() ->
         if item["verdict"] == "RISK"
         and "UNILATERAL_CONTROL" in item["severity_factors"]
     )
-    target["decision_summary"] = "我方作为乙方受到甲方单方变更安排影响。"
+    target["decision_summary"] = "我方作为甲方受到乙方单方变更安排影响。"
     runtime = FakeRuntime(
         [
             _completion(
@@ -2514,7 +2547,7 @@ def test_po_wrong_party_summary_is_audited_but_cannot_pollute_final_finding() ->
         )
     )
     assert result.decision_summary_perspective_warning_count >= 1
-    assert "我方作为乙方" not in formal_text
+    assert "我方作为甲方" not in formal_text
     assert request.our_party in finding.impact_to_our_party
     assert finding.perspective == request.perspective
     assert finding.our_party == request.our_party
