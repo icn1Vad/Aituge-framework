@@ -424,7 +424,7 @@ class RiskReviewPlanBuilder:
             if mask not in valid_masks:
                 raise ContractError(
                     "RISK_CONTEXT_BUDGET_EXCEEDED",
-                    f"A single check exceeds the {unit_id} hard input budget",
+                    f"A single check exceeds the {unit_id} Business Context budget",
                     status_code=422,
                     details={
                         "check_code": check.check_code,
@@ -450,7 +450,7 @@ class RiskReviewPlanBuilder:
             if not candidates_for_state:
                 raise ContractError(
                     "RISK_CONTEXT_BUDGET_EXCEEDED",
-                    f"Checks in {unit_id} cannot be partitioned within the hard input budget",
+                    f"Checks in {unit_id} cannot be partitioned within the Business Context budget",
                     status_code=422,
                 )
 

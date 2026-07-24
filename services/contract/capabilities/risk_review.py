@@ -12,6 +12,10 @@ from typing import Any, Callable, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from service.conversation.llm_runner import LlmCompletionResult, LlmRuntime
+from services.contract.capabilities.prompt_budget import (
+    PromptBudgetResult,
+    evaluate_prompt_budget,
+)
 from task_manager.output_parser import parse_json_output
 
 
@@ -524,6 +528,29 @@ class DirectReviewError(RuntimeError):
         self.cf005_candidate: Cf005Candidate | None = None
 
 
+def enforce_provider_prompt_budget(
+    completion: LlmCompletionResult,
+    request: CommercialReviewRequest | Any,
+) -> PromptBudgetResult:
+    budget = evaluate_prompt_budget(
+        unit_id=request.unit_id,
+        batch_id=request.batch_id,
+        estimated_business_context_tokens=request.estimated_input_tokens,
+        provider_prompt_tokens=completion.prompt_tokens,
+        provider_cached_tokens=completion.cached_tokens,
+    )
+    if budget.budget_status == "HARD_LIMIT_EXCEEDED":
+        raise DirectReviewError(
+            "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED",
+            (
+                f"{request.unit_id}/{request.batch_id} provider prompt token "
+                f"count {budget.provider_prompt_tokens} exceeded hard limit "
+                f"{budget.hard_limit_tokens}"
+            ),
+        )
+    return budget
+
+
 @dataclass(frozen=True, slots=True)
 class ParsedModelOutput:
     response: ModelCommercialReviewResponseRaw
@@ -638,6 +665,7 @@ class CommercialFinancialDirectReviewer:
             )
             calls.append(completion)
             try:
+                enforce_provider_prompt_budget(completion, request)
                 parsed = _parse_model_output(completion.content)
                 semantic_preservation_passed: bool | None = None
                 if repair_no and first_semantic_snapshot is not None:

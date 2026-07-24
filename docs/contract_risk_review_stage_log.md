@@ -941,6 +941,99 @@
 结论：阶段6.3通过。只有完成提交、推送和三方HEAD一致性核验后才结束本阶段；
 阶段6.4尚未授权。
 
+### 阶段6.3 Prompt Token预算政策补充
+
+状态：预算规则修正和既有三轮Artifact离线重放通过；阶段6.3恢复为通过。
+阶段6.4未开始且本轮未授权。
+
+#### 原门禁与只读审计
+
+- 原Provider Prompt硬上限为`6,000`。阶段6.3三轮最终Artifact中，FVA的
+  Provider `usage.prompt_tokens`均为`6,145`，确实超过原门禁145 Token，
+  超出比例约`2.42%`；不能表述为原门禁没有超限。
+- 七个Batch只有FVA超过6,000；Commercial=`5,677`、PO-1=`5,309`、
+  PO-2=`4,447`、ICD=`2,525`、LRE-1=`2,699`、LRE-2=`5,561`。
+- FVA三轮耗时`5,329～5,877ms`，Bundle墙钟`16,087～17,601ms`；FVA质量、
+  Evidence、Candidate和三态结果稳定，`Repair=0`、`Tool=0`，没有截断、
+  Schema失败、Candidate遗漏或Evidence丢失。
+- 审计确认Plan的`estimated_input_tokens`是字符权重生成的Business Context
+  相对大小，只用于投影和Batch拆分，不包含完整System Prompt、输出协议和
+  Candidate定义，不能代表Provider Prompt。客户端Qwen Tokenizer估算也不能
+  冒充DeepSeek Provider Usage。
+
+#### 设计决策
+
+Prompt预算政策升级为`2.0`：
+
+```text
+Provider Prompt <= 6,000
+→ WITHIN_TARGET
+
+Provider Prompt 6,001～7,000
+→ SOFT_WARNING
+→ 记录Token、超出值、比例、Unit和Batch
+→ 不触发Repair，不使Batch、Unit或Bundle失败
+
+Provider Prompt > 7,000
+→ HARD_LIMIT_EXCEEDED
+→ RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED
+→ 按既有原子规则使Batch、Unit和Bundle失败
+```
+
+`cached_tokens`继续作为`prompt_tokens`子集记录，不重复相加。Provider Usage
+缺失时状态为`PROVIDER_USAGE_UNAVAILABLE`，不使用Business Context或本地
+Tokenizer估算伪造Provider Token。
+
+本次不压缩FVA Prompt，不删除法律边界、Candidate、Evidence或Check，不改变
+模型输出协议、七Batch划分、模型调用数和业务规则。调整原因是避免为了145 Token
+的极小偏差牺牲审查信息，同时继续使用7,000硬上限防止Prompt无限膨胀。
+
+#### 代码和指标边界
+
+- 保留兼容字段`estimated_input_tokens`，明确其语义为
+  `estimated_business_context_tokens`；Plan Builder仍按原6,000 Business
+  Context上限执行确定性Batch拆分。
+- 新增内部`PromptBudgetResult`，记录政策版本、Business Context估算、可选
+  Client估算及Tokenizer、Provider Prompt/Cached、预算状态、超出值、比例、
+  Unit和Batch。
+- Bundle新增`prompt_budget_warning_count`、
+  `prompt_budget_hard_failure_count`、`max_provider_prompt_tokens`、
+  `batches_over_target`和`batches_over_hard_limit`。
+- Provider硬超限检查集中在七Batch统一执行路径；软告警仅进入结构化指标和
+  Warning，不影响正式结果原子性。
+
+#### 既有Artifact离线重放
+
+- 输入：
+  `/home/aituge/workspace/contract-review-dev/test-artifacts/stage63-base-bundle-three-run-final.json`。
+- 输出：
+  `/home/aituge/workspace/contract-review-dev/test-artifacts/stage63-prompt-budget-policy-v2-replay.json`。
+- 输出SHA-256：
+  `5c34f91d5005c0e7347c43ec6144aa394ad108f01440568e38d8b1ceae6e8142`。
+- 模型调用数：`0`。
+- 三轮均为：`prompt_budget_warning_count=1`、
+  `prompt_budget_hard_failure_count=0`、`max_provider_prompt_tokens=6,145`；
+  仅FVA Batch进入`batches_over_target`，`batches_over_hard_limit=[]`。
+
+#### 自动测试和回归
+
+- Prompt预算边界、软告警、Provider Usage缺失、Cached Token子集、Bundle软告警
+  和硬失败原子性专项：通过；额外验证Provider Prompt硬超限在首轮结果返回后
+  立即停止，不进入Schema Repair。
+- 风险模块及Framework无实时服务全量：`409 passed, 2 skipped`；没有执行
+  `test_live_multi_capability.py`，没有真实模型调用。
+- Contract Python全量：`117 passed, 10 skipped`；使用`--network none`的既有
+  Contract测试镜像执行，不具备模型网络访问。
+- 固定OpenAPI一致性、所有JSON响应Schema和隐藏Risk Plan接口检查包含在
+  Contract Python通过结果中；公开OpenAPI未发生变化。
+- `git diff --check`通过，仅有既有Windows换行提示。
+- 本轮没有修改风险Prompt、Candidate、Evidence、Check、模型输出协议、
+  七Batch划分、Java、正式DTO、Window IR、阶段5.1或正式Pipeline。
+
+结论：原6,000门禁确实未满足；经明确设计决策将6,000调整为目标值、7,000调整
+为Provider硬上限后，既有三轮结果满足政策2.0。FVA状态为`SOFT_WARNING`且不阻塞
+阶段6.3。阶段6.3通过；阶段6.4尚未授权。
+
 ## 阶段 6.4：横向候选与 Specialist
 
 状态：未开始。

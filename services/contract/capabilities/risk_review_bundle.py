@@ -21,6 +21,12 @@ from contract.risk.models import (
     RiskEvidenceSource,
     RiskReviewPlan,
 )
+from services.contract.capabilities.prompt_budget import (
+    PROMPT_BUDGET_POLICY_VERSION,
+    PromptBudgetResult,
+    evaluate_prompt_budget,
+    summarize_prompt_budgets,
+)
 from contract.risk.icd_source_policy import ICD_SOURCE_PATTERN_RULES
 from contract.risk.lre_source_policy import (
     LRE_ABSENCE_POLICIES,
@@ -49,6 +55,7 @@ from services.contract.capabilities.risk_review import (
     _stable_id,
     _sum_optional,
     commercial_request_from_context,
+    enforce_provider_prompt_budget,
 )
 from task_manager.output_parser import parse_json_output
 
@@ -1057,6 +1064,7 @@ class ReviewBatchResult(StrictModel):
     cached_tokens: int | None = Field(default=None, ge=0)
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
+    prompt_budget: PromptBudgetResult | None = None
     duration_ms: int = Field(ge=0)
     trace_ids: list[str] = Field(min_length=1, max_length=2)
     call_metrics: list[LlmCallMetric] = Field(min_length=1, max_length=2)
@@ -1165,6 +1173,7 @@ class BaseBundleBatchMetric(StrictModel):
     cached_tokens: int | None = Field(default=None, ge=0)
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
+    prompt_budget: PromptBudgetResult | None = None
     model_call_count: int = Field(ge=1, le=2)
     repair_count: int = Field(ge=0, le=1)
     tool_call_count: Literal[0] = 0
@@ -1205,6 +1214,12 @@ class BaseBundleMetrics(StrictModel):
     cached_tokens: int | None = Field(default=None, ge=0)
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
+    prompt_budget_policy_version: Literal["2.0"] = PROMPT_BUDGET_POLICY_VERSION
+    prompt_budget_warning_count: int = Field(default=0, ge=0, le=7)
+    prompt_budget_hard_failure_count: int = Field(default=0, ge=0, le=7)
+    max_provider_prompt_tokens: int | None = Field(default=None, ge=0)
+    batches_over_target: list[str] = Field(default_factory=list, max_length=7)
+    batches_over_hard_limit: list[str] = Field(default_factory=list, max_length=7)
     slowest_batch_id: str = Field(pattern=r"^risk-batch-[0-9a-f]{32}$")
     slowest_batch_duration_ms: int = Field(ge=0)
     slowest_unit_id: str = Field(pattern=BASE_UNIT_ID_PATTERN)
@@ -1478,6 +1493,7 @@ class GenericBaseDirectReviewer:
                 raise
             calls.append(completion)
             try:
+                enforce_provider_prompt_budget(completion, request)
                 parsed = _parse_generic_output(completion.content, expected_codes)
                 semantic_preservation_passed: bool | None = None
                 if repair_no and first_snapshot is not None:
@@ -1790,6 +1806,7 @@ async def _review_po_candidate_batch(
             raise
         calls.append(completion)
         try:
+            enforce_provider_prompt_budget(completion, request)
             response, parsed_object = _parse_po_candidate_output(
                 completion.content,
                 expected_ids=expected_ids,
@@ -8745,6 +8762,43 @@ def _generic_metric(value: LlmCompletionResult, unit_id: str) -> LlmCallMetric:
     )
 
 
+def _apply_prompt_budget(
+    context: Any,
+    result: ReviewBatchResult,
+) -> ReviewBatchResult:
+    budgets = [
+        evaluate_prompt_budget(
+            unit_id=result.unit_id,
+            batch_id=result.batch_id,
+            estimated_business_context_tokens=context.estimated_input_tokens,
+            provider_prompt_tokens=metric.prompt_tokens,
+            provider_cached_tokens=metric.cached_tokens,
+        )
+        for metric in result.call_metrics
+    ]
+    budget = summarize_prompt_budgets(budgets)
+    if budget.budget_status == "HARD_LIMIT_EXCEEDED":
+        raise DirectReviewError(
+            "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED",
+            (
+                f"{result.unit_id}/{result.batch_id} provider prompt token count "
+                f"{budget.provider_prompt_tokens} exceeded hard limit "
+                f"{budget.hard_limit_tokens}"
+            ),
+        )
+    warnings = list(result.warnings)
+    if budget.budget_status == "SOFT_WARNING":
+        warnings.append("RISK_PROMPT_TOKEN_TARGET_EXCEEDED")
+    elif budget.budget_status == "PROVIDER_USAGE_UNAVAILABLE":
+        warnings.append("RISK_PROMPT_TOKEN_USAGE_UNAVAILABLE")
+    return result.model_copy(
+        update={
+            "warnings": list(dict.fromkeys(warnings)),
+            "prompt_budget": budget,
+        }
+    )
+
+
 def _commercial_batch(
     context: BaseModel | dict[str, Any],
     result: ReviewUnitResult,
@@ -9232,6 +9286,7 @@ async def execute_base_risk_review_bundle(
                     invoke(),
                     timeout=batch_timeout_seconds,
                 )
+                result = _apply_prompt_budget(context, result)
                 results[batch_id] = result
                 states[batch_id] = "COMPLETED"
                 return result
@@ -9393,6 +9448,7 @@ async def execute_base_risk_review_bundle(
             cached_tokens=by_batch[batch_id].cached_tokens,
             completion_tokens=by_batch[batch_id].completion_tokens,
             total_tokens=by_batch[batch_id].total_tokens,
+            prompt_budget=by_batch[batch_id].prompt_budget,
             model_call_count=by_batch[batch_id].model_call_count,
             repair_count=by_batch[batch_id].repair_count,
             tool_call_count=by_batch[batch_id].tool_call_count,
@@ -9432,6 +9488,26 @@ async def execute_base_risk_review_bundle(
         unit_metrics,
         key=lambda item: (item.wall_duration_ms, item.unit_id),
     )
+    prompt_budgets = [
+        item.prompt_budget
+        for item in completed
+        if item.prompt_budget is not None
+    ]
+    provider_prompt_values = [
+        item.provider_prompt_tokens
+        for item in prompt_budgets
+        if item.provider_prompt_tokens is not None
+    ]
+    batches_over_target = [
+        item.batch_id
+        for item in prompt_budgets
+        if item.budget_status == "SOFT_WARNING"
+    ]
+    batches_over_hard_limit = [
+        item.batch_id
+        for item in prompt_budgets
+        if item.budget_status == "HARD_LIMIT_EXCEEDED"
+    ]
     return BaseRiskReviewBundle(
         bundle_id=bundle_id,
         identity=identity,
@@ -9453,6 +9529,13 @@ async def execute_base_risk_review_bundle(
                 item.completion_tokens for item in completed
             ),
             total_tokens=_sum_optional(item.total_tokens for item in completed),
+            prompt_budget_warning_count=len(batches_over_target),
+            prompt_budget_hard_failure_count=len(batches_over_hard_limit),
+            max_provider_prompt_tokens=(
+                max(provider_prompt_values) if provider_prompt_values else None
+            ),
+            batches_over_target=batches_over_target,
+            batches_over_hard_limit=batches_over_hard_limit,
             slowest_batch_id=slowest.batch_id,
             slowest_batch_duration_ms=slowest.duration_ms,
             slowest_unit_id=slowest_unit.unit_id,

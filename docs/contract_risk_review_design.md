@@ -272,13 +272,34 @@ Severity Factor为封闭Registry。模型只提议，Python逐项验证文本信
 
 正常调用：Tool=0、模型调用=1、`temperature=0`、`thinking=false`、严格Pydantic。仅JSON、Schema或Check覆盖错误允许修复当前Unit一次；第二次失败则Unit失败。网络、超时和拒绝不得伪装为空Findings。
 
-| 项目 | 软限制 | 硬限制 | 超限处理 |
+Plan Builder中的输入估算是`Business Context`确定性相对大小，不是模型服务的
+真实Prompt Token。它继续用于IR/Evidence投影、Batch拆分和防止上下文无限增长；
+兼容字段`estimated_input_tokens`的准确语义为
+`estimated_business_context_tokens`。
+
+| Business Context项目 | 软限制 | 硬限制 | 超限处理 |
 |---|---:|---:|---|
 | 公共上下文 | 600 tokens | 800 tokens | Plan失败 |
-| 单基础Unit输入（目标2,000～4,000） | 5,000 | 6,000 | 按check_code确定性拆Batch，仍超限则失败 |
-| 单横向Unit输入（目标1,000～3,000） | 4,000 | 5,000 | 按check_code确定性拆Batch，仍超限则失败 |
-| 单Specialist输入（目标2,000～4,000） | 5,000 | 6,000 | 按check_code确定性拆Batch，仍超限则失败 |
+| 单基础Unit上下文（目标2,000～4,000） | 5,000 | 6,000 | 按check_code确定性拆Batch，仍超限则Plan失败 |
+| 单横向Unit上下文（目标1,000～3,000） | 4,000 | 5,000 | 按check_code确定性拆Batch，仍超限则Plan失败 |
+| 单Specialist上下文（目标2,000～4,000） | 5,000 | 6,000 | 按check_code确定性拆Batch，仍超限则Plan失败 |
 | 单Unit输出（目标不超过1,500） | 2,500 | 4,000 | Unit失败，不截断 |
+
+Provider Prompt预算政策版本固定为`2.0`，权威口径只能是模型服务返回的
+`usage.prompt_tokens`：
+
+| Provider Prompt Token | 预算状态 | 运行处理 |
+|---:|---|---|
+| `<= 6,000` | `WITHIN_TARGET` | 正常通过 |
+| `6,001～7,000` | `SOFT_WARNING` | 记录结构化告警，Batch、Unit和Bundle仍可成功 |
+| `> 7,000` | `HARD_LIMIT_EXCEEDED` | `RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED`，按既有原子规则使Batch、Unit和Bundle失败 |
+| Provider Usage缺失 | `PROVIDER_USAGE_UNAVAILABLE` | 保留诊断，不使用本地估算伪造Provider Token |
+
+`cached_tokens`是`prompt_tokens`的子集，不得重复相加。本地
+`Qwen3-32B-Tokenizer`对System Prompt与User Prompt的估算仅记录为
+`client_estimated_prompt_tokens/client_tokenizer_name`，用于调用前诊断、相对变化
+监控和异常膨胀预警；由于本地Tokenizer与Provider Tokenizer不同，不得据此触发
+Provider硬失败。
 
 性能门禁：`commercial_financial`无修复目标不超过30秒；发生一次合法局部Schema修复允许不超过50秒；单Unit硬上限60秒。五个基础Reviewer并行后，Risk Review正常路径目标不超过35秒，偶发局部修复允许不超过60秒。完整合同审查正常路径尽量不超过60秒，偶发局部修复允许不超过90秒。
 
@@ -318,6 +339,12 @@ Bundle 指标固定记录排队耗时、Batch 启动偏移、Batch/Unit/Bundle �
 验收要求`peak_concurrency=7`、每轮 7 次正常模型调用、`Repair=0`、`Tool=0`，
 Bundle 墙钟目标不超过 30 秒、允许不超过 45 秒、硬上限 60 秒。
 
+Bundle同时记录`prompt_budget_policy_version`、
+`prompt_budget_warning_count`、`prompt_budget_hard_failure_count`、
+`max_provider_prompt_tokens`、`batches_over_target`和
+`batches_over_hard_limit`。软告警不改变结果原子性；任一Provider Prompt硬超限
+仍按必需Batch失败处理，不返回部分正式Finding。
+
 ## 10. complete_with_usage观测协议
 
 保持`LlmRuntime.complete() -> str`兼容，新增`complete_with_usage() -> LlmCompletionResult`，至少返回：`content`、`prompt_tokens`、`cached_tokens`、`completion_tokens`、`total_tokens`、`time_to_first_token_ms`、`model_duration_ms`、`trace_id`、`provider_request_id`、`finish_reason`。
@@ -355,7 +382,7 @@ CONTRACT_RISK_REVIEW_PLAYBOOKS=base_neutral,software_ip
 
 ## 14. 可观测指标
 
-Plan记录`plan_build_ms/context_build_ms/plan_hash/selected_playbooks/unit_count/specialist_count`。每Unit记录排队、TTFT、模型、解析、修复、总耗时，模型/修复/Tool次数，四类Token，Check状态计数，Finding/Evidence数量及Trace，以及`reason_code_enrichment_count/reason_code_rule_version/ignored_model_reason_code_count`。Bundle记录墙钟、峰值并发、总调用、失败Unit、5.1前后重复数和Evidence通过率。
+Plan记录`plan_build_ms/context_build_ms/plan_hash/selected_playbooks/unit_count/specialist_count`及`estimated_business_context_tokens`。每Unit记录排队、TTFT、模型、解析、修复、总耗时，模型/修复/Tool次数，四类Token，Provider Prompt预算结果，Check状态计数，Finding/Evidence数量及Trace，以及`reason_code_enrichment_count/reason_code_rule_version/ignored_model_reason_code_count`。Bundle记录墙钟、峰值并发、总调用、失败Unit、Prompt预算软告警/硬失败、最大Provider Prompt、5.1前后重复数和Evidence通过率。
 
 ## 15. 阶段6.1～6.9门禁
 

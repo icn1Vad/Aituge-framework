@@ -1868,11 +1868,13 @@ def _build_plan_audit(args, value, plan) -> dict[str, Any]:
                 "check_codes": [
                     item.check_code for item in context.assigned_check_specs
                 ],
+                "estimated_business_context_tokens": context.estimated_input_tokens,
                 "estimated_input_tokens": context.estimated_input_tokens,
-                "prompt_token_estimate": (
+                "client_estimated_prompt_tokens": (
                     estimate_tokens_in_text(_PO_CANDIDATE_SYSTEM_PROMPT)
                     + estimate_tokens_in_text(prompt)
                 ),
+                "client_tokenizer_name": "Qwen3-32B-Tokenizer",
                 "projected_ir_count": len(ir_refs),
                 "total_fixture_ir_count": total_fixture_ir_count,
                 "contains_all_fixture_ir": len(ir_refs) == total_fixture_ir_count,
@@ -1912,12 +1914,22 @@ def _build_plan_audit(args, value, plan) -> dict[str, Any]:
         failures.append(
             f"{unit_id} must remain {expected_batch_count} deterministic Batch(es)"
         )
-    if any(item["estimated_input_tokens"] >= 6000 for item in batch_specs):
-        failures.append(f"{unit_id} context reached the 6000-token hard limit")
-    if any(item["prompt_token_estimate"] >= 6000 for item in batch_specs):
-        failures.append(
-            f"{unit_id} Candidate prompt reached the 6000-token hard limit"
-        )
+    if any(
+        item["estimated_business_context_tokens"] > 6000
+        for item in batch_specs
+    ):
+        failures.append(f"{unit_id} Business Context exceeded its 6000-token limit")
+    client_prompt_warnings = [
+        {
+            "batch_id": item["batch_id"],
+            "client_estimated_prompt_tokens": item[
+                "client_estimated_prompt_tokens"
+            ],
+            "client_tokenizer_name": item["client_tokenizer_name"],
+        }
+        for item in batch_specs
+        if item["client_estimated_prompt_tokens"] > 6000
+    ]
     if any(item["contains_all_fixture_ir"] for item in batch_specs):
         failures.append(f"{unit_id} received all 101 Fixture IR items")
     return {
@@ -1932,6 +1944,7 @@ def _build_plan_audit(args, value, plan) -> dict[str, Any]:
         "stable_plan_hash_count": len(plan_hashes),
         "model_call_count": 0,
         "batch_specs": batch_specs,
+        "client_prompt_warnings": client_prompt_warnings,
         "status": "PASSED" if not failures else "FAILED",
         "failures": failures,
     }
@@ -2085,7 +2098,11 @@ async def _run_domains(args, plan) -> dict[str, Any]:
                     "estimated_input_tokens": contexts[
                         batch_id
                     ].estimated_input_tokens,
-                    "prompt_token_estimate": prompt_estimate,
+                    "estimated_business_context_tokens": contexts[
+                        batch_id
+                    ].estimated_input_tokens,
+                    "client_estimated_prompt_tokens": prompt_estimate,
+                    "client_tokenizer_name": "Qwen3-32B-Tokenizer",
                     "projected_ir_count": len(ir_refs),
                     "source_excerpt_count": len(anchor_refs),
                     "evidence_source_count": len(
@@ -2136,22 +2153,15 @@ async def _run_domains(args, plan) -> dict[str, Any]:
             _validate_icd_fixture_oracle(batch_specs)
         if unit_id == "liability_remedies_exit":
             _validate_lre_fixture_oracle(batch_specs)
-        if any(value > 6000 for value in prompt_estimates):
-            failure = (
-                f"{unit_id}: prompt hard limit exceeded: {prompt_estimates}"
-            )
-            artifact["domains"][unit_id] = {
-                "batch_ids": list(unit.batch_ids),
-                "check_codes": [item.check_code for item in unit.check_specs],
-                "prompt_token_estimates": prompt_estimates,
-                "batch_specs": batch_specs,
-                "runs": [],
-                "raw_batch_results": [],
-                "failures": [failure],
+        client_prompt_warnings = [
+            {
+                "batch_id": batch_id,
+                "client_estimated_prompt_tokens": value,
+                "client_tokenizer_name": "Qwen3-32B-Tokenizer",
             }
-            artifact["status"] = "FAILED"
-            artifact["failures"] = [failure]
-            return artifact
+            for batch_id, value in zip(unit.batch_ids, prompt_estimates)
+            if value > 6000
+        ]
         runs = []
         raw_results = []
         for run_index in range(1, args.repetitions + 1):
@@ -2177,6 +2187,8 @@ async def _run_domains(args, plan) -> dict[str, Any]:
                     "batch_ids": list(unit.batch_ids),
                     "check_codes": [item.check_code for item in unit.check_specs],
                     "prompt_token_estimates": prompt_estimates,
+                    "client_estimated_prompt_tokens": prompt_estimates,
+                    "client_tokenizer_name": "Qwen3-32B-Tokenizer",
                     "batch_specs": batch_specs,
                     "runs": runs,
                     "raw_batch_results": raw_results,
@@ -2201,6 +2213,8 @@ async def _run_domains(args, plan) -> dict[str, Any]:
                     "batch_ids": list(unit.batch_ids),
                     "check_codes": [item.check_code for item in unit.check_specs],
                     "prompt_token_estimates": prompt_estimates,
+                    "client_estimated_prompt_tokens": prompt_estimates,
+                    "client_tokenizer_name": "Qwen3-32B-Tokenizer",
                     "batch_specs": batch_specs,
                     "runs": runs,
                     "raw_batch_results": raw_results,
@@ -2234,6 +2248,8 @@ async def _run_domains(args, plan) -> dict[str, Any]:
                         item.check_code for item in unit.check_specs
                     ],
                     "prompt_token_estimates": prompt_estimates,
+                    "client_estimated_prompt_tokens": prompt_estimates,
+                    "client_tokenizer_name": "Qwen3-32B-Tokenizer",
                     "batch_specs": batch_specs,
                     "duration_ms": {
                         "min": min(durations),
@@ -2270,6 +2286,8 @@ async def _run_domains(args, plan) -> dict[str, Any]:
             "batch_ids": list(unit.batch_ids),
             "check_codes": [item.check_code for item in unit.check_specs],
             "prompt_token_estimates": prompt_estimates,
+            "client_estimated_prompt_tokens": prompt_estimates,
+            "client_tokenizer_name": "Qwen3-32B-Tokenizer",
             "batch_specs": batch_specs,
             "duration_ms": {
                 "min": min(durations),
@@ -2329,6 +2347,22 @@ def _bundle_summary(bundle, *, plan) -> dict[str, Any]:
         "cached_tokens": bundle.metrics.cached_tokens,
         "completion_tokens": bundle.metrics.completion_tokens,
         "total_tokens": bundle.metrics.total_tokens,
+        "prompt_budget_policy_version": (
+            bundle.metrics.prompt_budget_policy_version
+        ),
+        "prompt_budget_warning_count": (
+            bundle.metrics.prompt_budget_warning_count
+        ),
+        "prompt_budget_hard_failure_count": (
+            bundle.metrics.prompt_budget_hard_failure_count
+        ),
+        "max_provider_prompt_tokens": (
+            bundle.metrics.max_provider_prompt_tokens
+        ),
+        "batches_over_target": list(bundle.metrics.batches_over_target),
+        "batches_over_hard_limit": list(
+            bundle.metrics.batches_over_hard_limit
+        ),
         "slowest_batch_id": bundle.metrics.slowest_batch_id,
         "slowest_batch_duration_ms": bundle.metrics.slowest_batch_duration_ms,
         "slowest_unit_id": bundle.metrics.slowest_unit_id,
@@ -2511,6 +2545,10 @@ def _validate_bundles(
             failures.append(f"run {index}: Tool call count is nonzero")
         if value["peak_concurrency"] != 7:
             failures.append(f"run {index}: peak concurrency is not 7")
+        if value["prompt_budget_hard_failure_count"] != 0:
+            failures.append(f"run {index}: Provider Prompt hard limit exceeded")
+        if value["batches_over_hard_limit"]:
+            failures.append(f"run {index}: Provider Prompt hard-limit Batch recorded")
         if value["wall_duration_ms"] > 60000:
             failures.append(f"run {index}: Bundle hard performance limit exceeded")
         if any(

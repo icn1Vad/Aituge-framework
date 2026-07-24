@@ -293,7 +293,17 @@ class ReviewBatchSpec(StrictModel):
     required_ir_types: list[IrField]
     projected_item_ids: list[str]
     source_anchor_ids: list[str]
-    estimated_input_tokens: int = Field(ge=0)
+    estimated_input_tokens: int = Field(
+        ge=0,
+        description=(
+            "Compatibility field: deterministic Business Context size estimate, "
+            "not a provider prompt-token measurement."
+        ),
+    )
+
+    @property
+    def estimated_business_context_tokens(self) -> int:
+        return self.estimated_input_tokens
 
 
 class ReviewUnitSpec(StrictModel):
@@ -373,8 +383,18 @@ class RiskReviewContext(StrictModel):
     missing_ir_types: list[IrField]
     coverage_summary: RiskCoverageSummary
     horizontal_candidates: list[RiskHorizontalCandidate] = Field(default_factory=list)
-    estimated_input_tokens: int = Field(ge=0)
+    estimated_input_tokens: int = Field(
+        ge=0,
+        description=(
+            "Compatibility field: deterministic Business Context size estimate, "
+            "not a provider prompt-token measurement."
+        ),
+    )
     context_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+    @property
+    def estimated_business_context_tokens(self) -> int:
+        return self.estimated_input_tokens
 
 
 class DeterministicCheckResult(StrictModel):

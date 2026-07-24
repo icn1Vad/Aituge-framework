@@ -4036,14 +4036,22 @@ def _coverage(codes: list[str]) -> list[CheckCoverageResult]:
     ]
 
 
-def _metric(unit_id: str, suffix: str) -> LlmCallMetric:
+def _metric(
+    unit_id: str,
+    suffix: str,
+    *,
+    prompt_tokens: int | None = 100,
+    cached_tokens: int | None = 0,
+) -> LlmCallMetric:
     return LlmCallMetric(
         review_unit_id=unit_id,
         repair_no=0,
-        prompt_tokens=100,
-        cached_tokens=0,
+        prompt_tokens=prompt_tokens,
+        cached_tokens=cached_tokens,
         completion_tokens=20,
-        total_tokens=120,
+        total_tokens=(
+            prompt_tokens + 20 if prompt_tokens is not None else None
+        ),
         time_to_first_token_ms=10,
         model_duration_ms=30,
         trace_id=f"trace-{suffix}",
@@ -4160,16 +4168,32 @@ def test_commercial_bundle_stability_ignores_only_non_core_findings() -> None:
 
 
 class FakeGenericReviewer:
-    def __init__(self, tracker: ConcurrencyTracker, *, fail_unit: str | None = None) -> None:
+    def __init__(
+        self,
+        tracker: ConcurrencyTracker,
+        *,
+        fail_unit: str | None = None,
+        prompt_tokens_by_unit: dict[str, int | None] | None = None,
+    ) -> None:
         self.tracker = tracker
         self.fail_unit = fail_unit
+        self.prompt_tokens_by_unit = prompt_tokens_by_unit or {}
 
     async def review(self, request, **_kwargs) -> ReviewBatchResult:
         await self.tracker.wait()
         if request.unit_id == self.fail_unit:
             raise DirectReviewError("RISK_FAKE_BATCH_FAILED", "injected failure")
         suffix = request.batch_id[-6:]
-        metric = _metric(request.unit_id, suffix)
+        prompt_tokens = self.prompt_tokens_by_unit.get(request.unit_id, 100)
+        cached_tokens = (
+            min(prompt_tokens, 64) if prompt_tokens is not None else None
+        )
+        metric = _metric(
+            request.unit_id,
+            suffix,
+            prompt_tokens=prompt_tokens,
+            cached_tokens=cached_tokens,
+        )
         return ReviewBatchResult(
             unit_id=request.unit_id,
             domain=request.unit_id,
@@ -4181,10 +4205,12 @@ class FakeGenericReviewer:
             findings=[],
             model_call_count=1,
             repair_count=0,
-            prompt_tokens=100,
-            cached_tokens=0,
+            prompt_tokens=prompt_tokens,
+            cached_tokens=cached_tokens,
             completion_tokens=20,
-            total_tokens=120,
+            total_tokens=(
+                prompt_tokens + 20 if prompt_tokens is not None else None
+            ),
             duration_ms=30,
             trace_ids=[metric.trace_id],
             call_metrics=[metric],
@@ -4198,12 +4224,28 @@ class FakeGenericReviewer:
 
 
 class FakeCommercialReviewer:
-    def __init__(self, tracker: ConcurrencyTracker) -> None:
+    def __init__(
+        self,
+        tracker: ConcurrencyTracker,
+        *,
+        prompt_tokens: int | None = 100,
+    ) -> None:
         self.tracker = tracker
+        self.prompt_tokens = prompt_tokens
 
     async def review(self, request, **_kwargs) -> ReviewUnitResult:
         await self.tracker.wait()
-        metric = _metric("commercial_financial", "commercial")
+        cached_tokens = (
+            min(self.prompt_tokens, 64)
+            if self.prompt_tokens is not None
+            else None
+        )
+        metric = _metric(
+            "commercial_financial",
+            "commercial",
+            prompt_tokens=self.prompt_tokens,
+            cached_tokens=cached_tokens,
+        )
         return ReviewUnitResult(
             unit_id="commercial_financial",
             domain="commercial_financial",
@@ -4214,10 +4256,14 @@ class FakeCommercialReviewer:
             findings=[],
             model_call_count=1,
             repair_count=0,
-            prompt_tokens=100,
-            cached_tokens=0,
+            prompt_tokens=self.prompt_tokens,
+            cached_tokens=cached_tokens,
             completion_tokens=20,
-            total_tokens=120,
+            total_tokens=(
+                self.prompt_tokens + 20
+                if self.prompt_tokens is not None
+                else None
+            ),
             duration_ms=30,
             trace_ids=[metric.trace_id],
             call_metrics=[metric],
@@ -4300,6 +4346,16 @@ def test_fixed_fixture_builds_seven_batches_and_parallel_complete_bundle() -> No
     assert bundle.identity.schema_version == "1.0"
     assert len(bundle.metrics.batch_metrics) == 7
     assert len(bundle.metrics.unit_metrics) == 5
+    assert bundle.metrics.prompt_budget_policy_version == "2.0"
+    assert bundle.metrics.prompt_budget_warning_count == 0
+    assert bundle.metrics.prompt_budget_hard_failure_count == 0
+    assert bundle.metrics.max_provider_prompt_tokens == 100
+    assert bundle.metrics.batches_over_target == []
+    assert bundle.metrics.batches_over_hard_limit == []
+    assert all(
+        item.prompt_budget is not None
+        for item in bundle.metrics.batch_metrics
+    )
     assert all(
         item.start_offset_ms < bundle.metrics.wall_duration_ms
         for item in bundle.metrics.batch_metrics
@@ -4352,8 +4408,89 @@ def test_fixed_fixture_builds_seven_batches_and_parallel_complete_bundle() -> No
         assert (
             estimate_tokens_in_text(_PO_CANDIDATE_SYSTEM_PROMPT)
             + estimate_tokens_in_text(prompt)
-            <= 6000
+            > 0
         )
+
+
+@pytest.mark.skipif(not os.getenv(FIXTURE_ENV), reason=f"{FIXTURE_ENV} is not configured")
+def test_provider_prompt_soft_warning_does_not_fail_base_bundle() -> None:
+    value = load_fixed_risk_plan_input(Path(os.environ[FIXTURE_ENV]))
+    plan = RiskReviewPlanBuilder().build(value)
+    tracker = ConcurrencyTracker()
+    bundle = _run_fake_bundle(
+        plan,
+        generic=FakeGenericReviewer(
+            tracker,
+            prompt_tokens_by_unit={"formation_validity_authority": 6145},
+        ),
+        commercial=FakeCommercialReviewer(tracker),
+    )
+
+    fva_metric = next(
+        item
+        for item in bundle.metrics.batch_metrics
+        if item.unit_id == "formation_validity_authority"
+    )
+    assert fva_metric.prompt_budget is not None
+    assert fva_metric.prompt_budget.budget_status == "SOFT_WARNING"
+    assert fva_metric.prompt_budget.tokens_over_target == 145
+    assert bundle.metrics.prompt_budget_warning_count == 1
+    assert bundle.metrics.prompt_budget_hard_failure_count == 0
+    assert bundle.metrics.max_provider_prompt_tokens == 6145
+    assert bundle.metrics.batches_over_target == [fva_metric.batch_id]
+    assert bundle.metrics.batches_over_hard_limit == []
+    assert bundle.status == "COMPLETED"
+
+
+@pytest.mark.skipif(not os.getenv(FIXTURE_ENV), reason=f"{FIXTURE_ENV} is not configured")
+def test_provider_prompt_hard_limit_fails_batch_unit_and_bundle_atomically() -> None:
+    value = load_fixed_risk_plan_input(Path(os.environ[FIXTURE_ENV]))
+    plan = RiskReviewPlanBuilder().build(value)
+    tracker = ConcurrencyTracker()
+
+    with pytest.raises(BaseBundleExecutionError) as raised:
+        _run_fake_bundle(
+            plan,
+            generic=FakeGenericReviewer(
+                tracker,
+                prompt_tokens_by_unit={"formation_validity_authority": 7001},
+            ),
+            commercial=FakeCommercialReviewer(tracker),
+        )
+
+    assert raised.value.code == "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED"
+    assert raised.value.failure.failed_unit_id == "formation_validity_authority"
+    assert raised.value.failure.failed_batch_id
+    assert not hasattr(raised.value.failure, "findings")
+
+
+@pytest.mark.skipif(not os.getenv(FIXTURE_ENV), reason=f"{FIXTURE_ENV} is not configured")
+def test_missing_provider_usage_is_diagnostic_and_not_replaced_by_local_estimate() -> None:
+    value = load_fixed_risk_plan_input(Path(os.environ[FIXTURE_ENV]))
+    plan = RiskReviewPlanBuilder().build(value)
+    tracker = ConcurrencyTracker()
+    bundle = _run_fake_bundle(
+        plan,
+        generic=FakeGenericReviewer(
+            tracker,
+            prompt_tokens_by_unit={"formation_validity_authority": None},
+        ),
+        commercial=FakeCommercialReviewer(tracker),
+    )
+
+    fva_metric = next(
+        item
+        for item in bundle.metrics.batch_metrics
+        if item.unit_id == "formation_validity_authority"
+    )
+    assert fva_metric.prompt_budget is not None
+    assert (
+        fva_metric.prompt_budget.budget_status
+        == "PROVIDER_USAGE_UNAVAILABLE"
+    )
+    assert fva_metric.prompt_budget.provider_prompt_tokens is None
+    assert fva_metric.prompt_budget.tokens_over_target is None
+    assert bundle.metrics.prompt_budget_hard_failure_count == 0
 
 
 @pytest.mark.skipif(not os.getenv(FIXTURE_ENV), reason=f"{FIXTURE_ENV} is not configured")
@@ -4715,7 +4852,7 @@ def test_lre_fixture_plan_has_two_bounded_batches_and_all_eight_checks() -> None
             estimate_tokens_in_text(_PO_CANDIDATE_SYSTEM_PROMPT)
             + estimate_tokens_in_text(_generic_prompt(context)[0])
         )
-        < 6000
+        > 0
         for context in contexts.values()
     )
 

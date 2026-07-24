@@ -152,13 +152,18 @@ def _valid_payload(*, finding_count: int = 1) -> dict:
     return {"check_results": results}
 
 
-def _completion(content: str, *, repair_no: int = 0) -> LlmCompletionResult:
+def _completion(
+    content: str,
+    *,
+    repair_no: int = 0,
+    prompt_tokens: int = 2800,
+) -> LlmCompletionResult:
     return LlmCompletionResult(
         content=content,
-        prompt_tokens=2800,
-        cached_tokens=1200,
+        prompt_tokens=prompt_tokens,
+        cached_tokens=min(prompt_tokens, 1200),
         completion_tokens=600,
-        total_tokens=3400,
+        total_tokens=prompt_tokens + 600,
         time_to_first_token_ms=300,
         model_duration_ms=1800,
         trace_id=f"trace-{repair_no}",
@@ -230,6 +235,38 @@ def test_direct_review_succeeds_with_all_checks_zero_tools_and_one_call() -> Non
     prompt_payload = json.loads(runtime.calls[0]["messages"][0]["content"].split("\n", 1)[1])
     assert "assigned_check_specs" in prompt_payload
     assert "checks" not in prompt_payload
+
+
+def test_provider_prompt_hard_limit_stops_before_schema_repair() -> None:
+    runtime = FakeRuntime(
+        [
+            _completion(
+                json.dumps(_valid_payload(), ensure_ascii=False),
+                prompt_tokens=7001,
+            ),
+            _completion(
+                json.dumps(_valid_payload(), ensure_ascii=False),
+                repair_no=1,
+            ),
+        ]
+    )
+    reviewer = CommercialFinancialDirectReviewer(
+        runtime_factory=lambda _tenant: runtime
+    )
+
+    with pytest.raises(DirectReviewError) as raised:
+        asyncio.run(
+            reviewer.review(
+                _request(),
+                tenant_id="tenant-1",
+                model_id="deepseek-v4-pro",
+                framework_run_id="run-1",
+            )
+        )
+
+    assert raised.value.code == "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED"
+    assert len(runtime.calls) == 1
+    assert len(runtime.responses) == 1
 
 
 def test_direct_review_does_not_apply_legacy_four_finding_cap() -> None:
