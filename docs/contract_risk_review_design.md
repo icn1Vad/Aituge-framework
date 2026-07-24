@@ -404,6 +404,30 @@ SAME_RISK仍要求核心法律根因、主要后果和核心控制措施一致�
 调用既有`compute_result_hash`生成结果Hash。阶段5.1模型不可用时为`SKIPPED`并保留
 全部原Finding；兼容路由、Artifact完整性或Evidence验证错误仍为整体硬失败。
 
+### 11.3 阶段6.6 Direct端到端Dry Run
+
+Legacy Shadow Compare因Legacy `commercial_terms_review`自身无法生成同时包含
+`quoted_text`和`quoted_text_hash`的合法Evidence而暂缓。该缺陷不在Direct改造范围
+内，也不得通过补Hash、删原文或宽松Schema修复。Shadow不再是Direct主链路继续验证
+的前置条件。
+
+阶段6.6改为从冻结Contract IR和审查上下文实际执行七个Review Unit、45项Check、
+Extended Bundle、五Artifact兼容、既有阶段5.1、Evidence验证、正式DTO和正式
+Result Hash，再由`DryRunResultSink`模拟一结果一审查的事务、回调和幂等规则。
+Dry Run只接受`DRY_RUN`模式，不连接正式数据库、不发送Java回调、不写正式Result
+Sink，也不修改正式Pipeline。
+
+正式Payload继续使用`FinalizeReviewStageResult`、`ReviewResultData`、
+`StageResultCallback`和`compute_result_hash`的冻结结构与算法。内部Candidate、
+Canonical Root、Finding所有权、路由和Severity审计字段不得进入正式Payload。
+相同Payload重复提交为幂等成功；同一Review出现不同Result Hash为冲突；回调ID重复
+且Envelope相同为幂等成功，不同则失败。
+
+三轮稳定性以45项Check、核心Root/Risk Type/等级、Primary Evidence和主体视角为
+门禁，而不是强制正式Result Hash相同。Commercial非核心Finding可以按既有规则合法
+变化，因此另计算只用于内部诊断的`core_result_signature`；该签名使用稳定Evidence
+Source身份，不包含Absence Evidence说明性措辞。
+
 ## 12. Playbook样例和回滚
 
 动态Playbook已正式暂缓，不作为Direct主链路兼容接入或上线前置条件。本阶段不实现
@@ -422,9 +446,13 @@ CONTRACT_RISK_REVIEW_MODEL_ID=<existing model id>
 CONTRACT_RISK_REVIEW_PLAYBOOKS=base_neutral,software_ip
 ```
 
-6.1～6.7默认`legacy`；Shadow不覆盖正式Artifact；6.8仅隔离测试环境切`direct`。回滚恢复`legacy`并重启测试容器，不涉及数据库。
+正式Pipeline继续默认`legacy`；Direct E2E只运行隔离Dry Run，不覆盖正式Artifact。
+后续测试环境切`direct`必须另行授权。回滚仍恢复`legacy`，不涉及数据库协议变更。
 
 ## 13. Shadow Compare质量集
+
+Legacy Shadow Compare已暂缓，且不再作为Direct测试环境验证的前置条件。以下质量集
+设计保留供Legacy契约具备合法Evidence后重新评估，不在当前Direct E2E阶段执行。
 
 质量集包含：服务器隔离环境中的既有授权样本（Git只记录Hash和Artifact引用）；至少12份无敏感Fixture，覆盖服务、采购、软件许可、数据处理、保密、咨询、交付验收、责任限制、单方解除、争议管辖、主体授权和内部矛盾；原始规范版与人工风险版按PARTY_A/PARTY_B分别审查。
 
@@ -445,7 +473,8 @@ Plan记录`plan_build_ms/context_build_ms/plan_hash/selected_playbooks/unit_coun
 | 6.3 | 五基础Unit、Bundle校验 | 五路并发、Check覆盖、REQUIRED失败、预算超限 | 无固定4条截断，质量不低于Legacy |
 | 6.4 | 两横向候选和条件裁决 | 无候选0调用、有候选1调用、候选外输出拒绝 | 不读全文、不伪造关系、不重复基础风险 |
 | 6.5 | Bundle映射和现有5.1（原计划6.6；动态Playbook暂缓） | 五Artifact、SKIPPED、跨Category不合并、全集守恒 | 5.1安全边界不变 |
-| 6.7 | Legacy/Direct Shadow（须另行授权） | 质量集、耗时、Token、Evidence、Check覆盖 | 关键风险零漏报、Evidence 100%、Risk P95<=35s |
+| 6.6 | Direct风险审查全链路端到端Dry Run | 45项Check、五Artifact、5.1、Evidence、正式Payload/Hash、Sink/回调幂等及失败原子性 | 三轮核心Signature稳定、Evidence 100%、完整链路硬上限90s、正式副作用0 |
+| Legacy Shadow | 暂缓；不修复Legacy Evidence契约 | 恢复前须先具备合法、公平的Legacy基准 | 不作为Direct测试环境验证前置条件 |
 | 6.8 | 仅测试环境切Direct | Java→Python→Framework、状态、取消、Attempt、Sink、Hash | OpenAPI一致、完整任务P95<=60s、可回滚 |
 | 6.9 | 正式切换后单独清理Legacy | 全量回归和镜像验证 | 多类型验收、性能稳定、用户单独确认 |
 

@@ -1302,3 +1302,175 @@ Evidence验证；未重新调用七Review Unit。
 状态：未开始。
 
 目标：在用户另行确认正式切换且稳定后提出Legacy清理建议；任何正式切换和删除都需单独确认。
+
+## 阶段 6.6：Legacy ReAct 与 Direct Structured Review 影子对照
+
+状态：进行中。该阶段对应原设计记录中的 Shadow Compare 能力；用户已将本轮编号明确为阶段 6.6。正式 Pipeline、测试环境 Direct 切换和 Legacy 清理均未授权。
+
+### 开始前核对单
+
+```text
+当前阶段：6.6 Legacy ReAct vs Direct Structured Review Shadow Compare
+当前工作目录/工作树：D:\contract-risk-review-v1
+当前分支：feat/contract-risk-review-playbook-v1
+开始前 HEAD：3d2cf0cd0bef9932739e9144944319efbb631ddd
+本地 HEAD / 远程跟踪引用 / GitHub 真实 HEAD：一致
+开始前工作树：干净
+工作树外备份：E:\MyProjects\Newestcontract\backups\stage66-start-20260724-142415
+允许修改：内部 Shadow Runner、统一比较器、Corpus Manifest、人工复核队列、隔离测试入口、无模型和真实验收测试、设计及阶段记录
+禁止修改：Java、公开 OpenAPI、schema_version=1.0、正式 Finding/Evidence DTO、正式 Stage/Artifact、Result Sink、正式 Result Hash、Window IR、五基础领域和两个横向 Unit 业务规则、阶段 5.1 正式语义、动态 Playbook、Specialist、正式/测试环境 Pipeline 切换
+必须复用：Legacy 五类 ReAct Stage、阶段 5.1 FindingConsolidationEngine、verify_evidence、Direct Extended Bundle、阶段 6.5 Legacy Artifact 兼容层、Prompt 预算政策 2.0
+固定 Fixture：服务外包补充协议 0829；101 条 Contract IR；PARTY_A；中立审查
+模型调用：仅真实 Legacy、Direct 和有限 Comparison 候选分类；无路由模型、无总结模型；失败注入和输入压力测试调用为 0
+执行模式：BENCHMARK 三轮依次 Legacy→Direct、Direct→Legacy、Legacy→Direct；另执行一次 SHADOW_RUNTIME 隔离验收
+权威边界：official_result_source=LEGACY；Direct 和 Comparison 只写隔离 Shadow Artifact；任何 Shadow 失败不得改变 Legacy 正式结果、状态、Sink 或 Hash
+语料门禁：只有同时达到至少 5 份合同和 3 种合同类型才允许 GO；当前已确认完整冻结语料仅 1 份，航空航天 DOCX 尚无配套冻结 IR/上下文，因此预期 corpus_coverage_status=LIMITED、cutover_recommendation=NEEDS_MORE_CORPUS
+Prompt 预算：政策 2.0；Provider <=6000 为目标内，6001～7000 为软告警，>7000 为硬失败；三类调用分别统计
+提交信息：功能：实现Legacy与Direct风险审查影子对照
+通过后：提交、推送并停止；正式 Pipeline 未切换；测试环境 Direct 切换尚未授权
+失败后：不提交、不推送，保存工作树、Artifact 和复现信息并停止
+```
+
+### 开始前真实边界核对
+
+- 已从文件系统重新完整读取联合冻结稿、阶段 6 设计稿、阶段日志、Legacy 五类 Stage/Skill、阶段 5.1、Evidence 验证、Direct 基础及横向 Bundle、阶段 6.5 兼容层、正式 Result Sink/Hash 和隐藏验收脚本。
+- 正式 Pipeline 仍注册并执行五个 Legacy ReAct 风险 Stage；阶段 6.3～6.5 的 Direct、横向和兼容能力仍为内部执行入口，尚未写入正式 Result Sink 或 Java 回调。
+- 固定输入目录保存服务外包补充协议的 101 条 IR、完整 Window/Anchor/Offset、真实主体和 PARTY_A 立场；两条链必须由该同一冻结值建立独立深复制快照。
+- 当前可见的另一份真实文档为航空航天收购可行性 DOCX，但尚未发现其完整冻结 Contract IR 和 Risk Review Context。缺少完整冻结输入的文档不得进入真实 Legacy/Direct 主比较，也不得计入充分语料覆盖。
+
+### 单链预检结果与停止点
+
+状态：未通过。按阶段 6.6 固定验收顺序在第一步停止；Direct 单链、三轮配对 Shadow Compare、Shadow Runtime、其他语料、失败注入和全量回归均未继续执行。
+
+- Shadow 基础设施无模型专项及相关确定性回归为 `42 passed, 18 skipped`；输入深复制、Hash、有限候选配对、人工复核队列、Legacy 权威边界和 Shadow Artifact 写入失败隔离均通过。
+- 首次诊断运行发现五个 Legacy Stage 共用临时用户身份时，Conversation 层会恢复其他 Stage 的 Redis 历史。该运行作废且不计入验收。Runner 已改为每个执行轮次、Stage 和局部尝试使用独立 `user_id/session_id`。
+- 独立身份后的正式单链预检中，跨 Stage 历史恢复次数为 0；Legacy 使用冻结的 `deepseek-v4-pro`、`temperature=0.1`、ReAct 和四个 Contract Tool。
+- `commercial_terms_review` 在两次局部执行中均输出了 `quoted_text` 但没有配套 `quoted_text_hash`。最终第二次输出有 6 条 Evidence 触发正式 `CommercialTermsStageResult` 的硬校验：
+  `quoted_text and quoted_text_hash must be supplied together`。
+- 该错误与既有 Legacy Artifact 的已知 Evidence Schema 缺陷一致。Shadow Runner 没有删除 `quoted_text`、补算 Hash、宽松解析或把 Direct 结果顶替为 Legacy；因此 Legacy 单链未形成合法正式结果。
+- 有效隔离预检约 210 秒；日志观测到 50 次 Legacy 模型调用和 59 次 Tool 调用。由于 Fail Fast，Direct、Comparison 和其他语料新增模型调用均为 0。
+- Corpus Manifest 只确认 1 份合同、1 种合同类型具备完整冻结 IR 和上下文；另有 1 份真实航空航天 DOCX 但缺少冻结 IR/上下文，1 份合成演示 PDF 也不可运行。因此 `corpus_coverage_status=LIMITED`，即使后续修复 Legacy 预检，切换建议也不得直接为 `GO`。
+- 失败 Artifact：
+  `stage66-fixed-fixture-three-run.json`，SHA-256=`b67a45edc9b871dd4ba9630dada86d52680335952c143ca829857bd053f87e4e`；
+  `stage66-fixed-fixture-three-run-attempts.json`，SHA-256=`b4f9db01274d3e6e702a2e7721f552a9cb4dab3eb12ab36fcb1a33ea08b2387b`；
+  `stage66-shadow-corpus-manifest.json`，SHA-256=`50a83ea4f2413ae736517089d6cff7b567875e57d9e5749e3e66c00a7396c60f`；
+  原始隔离日志 `attempts/stage66-preflight4.log`，SHA-256=`3fb24091184635d63d584059f96cf02fd00aeb26b48827646b5850a0d89d990c`。
+
+结论：阶段 6.6 未通过；不提交、不推送，保留工作树和诊断 Artifact。正式 Pipeline 未切换，测试环境 Direct 切换未开始。后续需要用户单独决定是否允许修复 Legacy Evidence 输出契约，或调整 Shadow 基线对 Legacy 非法 Artifact 的处理口径。
+
+## 阶段 6.6（调整后）：Direct风险审查全链路端到端验收
+
+状态：通过。Legacy Shadow Compare因Legacy自身Evidence契约无效而暂缓，不修复、
+不再运行，也不再作为Direct主链路继续验证的前置条件。本阶段未切换正式Pipeline或
+测试环境。
+
+### 开始前核对与方向调整
+
+```text
+当前目录：D:\contract-risk-review-v1
+当前分支：feat/contract-risk-review-playbook-v1
+开始前HEAD：3d2cf0cd0bef9932739e9144944319efbb631ddd
+本地/跟踪引用/GitHub真实HEAD：一致
+开始前工作树：包含原Shadow Compare未提交代码和阶段日志
+工作树外备份：E:\MyProjects\Newestcontract\backups\stage66-shadow-to-direct-e2e-20260724-152502
+备份清单SHA-256：0F493868D7865CD74CAF9DBA4292EB04348F6E2F11F030883C98B9AE29F717FA
+允许修改：内部Direct E2E Runner、Dry Run Sink/Callback、隔离验收脚本、测试、
+  设计和阶段记录
+禁止修改：Legacy、Java、公开OpenAPI、schema_version=1.0、正式DTO、Result Sink
+  协议/Hash、任务状态机、Window IR、七Unit业务规则、阶段5.1语义、正式Pipeline
+固定输入：服务器risk-review-input目录中的101条Contract IR和PARTY_A中立上下文
+执行模式：DRY_RUN
+Legacy模型/Tool调用：0/0
+正式Result Sink写入/真实Java回调：0/0
+提交信息：功能：实现Direct风险审查全链路端到端验收
+```
+
+- 原Shadow代码逐文件审计后，只复用冻结输入Hash、深复制、隔离Artifact、指标、
+  失败诊断和正式副作用隔离原则。未使用的Legacy比较器、人工复核队列、Benchmark
+  和Shadow专用入口未纳入最终代码。
+- 原Shadow失败事实和Artifact记录保留；未补算Legacy `quoted_text_hash`，未删除
+  Legacy原文，未修改Legacy Schema、风险判断或正式Stage输出。
+
+### Direct E2E实现
+
+- `DirectRiskReviewEndToEndRunner`只接受`DRY_RUN`，从同一冻结Contract IR和Context
+  实际执行基础7 Batch、横向3 Batch、七Unit/45项Check、Extended Bundle、五类
+  Artifact兼容、阶段5.1、Evidence验证、正式DTO/Hash、Dry Run Sink和Callback。
+- 正式结果复用`EvidenceVerificationStageResult`、
+  `FinalizeReviewStageResult`、`ReviewResultData`、`StageResultCallback`和
+  `compute_result_hash`冻结语义；内部Candidate、Root、Ownership、Routing和Severity
+  Trace未进入Payload。
+- Dry Run按现有一Review一Result语义模拟事务和幂等：相同Payload重复为DUPLICATE，
+  同Review不同Hash为`FRAMEWORK_CALLBACK_MISMATCH`，不同Review独立；相同Callback
+  Envelope重复不产生第二次业务效果。
+- 状态Trace只使用冻结的`RISK_REVIEW`、`EVIDENCE_VERIFICATION`和`FINALIZING`
+  正式Stage值；内部事件只用于诊断，不修改任务状态机。
+- 第一轮后生成用户可读Markdown，逐五Artifact列出正式风险、等级、Check、
+  Risk Type、影响、建议、Evidence原文和位置，并列出FVA-002、PO-003、ICD文本
+  保密Candidate和LRE-006的重要无Finding结论。
+
+### 三轮真实E2E
+
+| 轮次 | Extended Bundle | 阶段5.1 | 总墙钟 | Review/5.1/总调用 | Repair/Tool | Prompt/Cached/Completion | Finding/Evidence | Result Hash |
+|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | 22,009ms | 10,388ms | 33,348ms | 10/5/15 | 0/0 | 52,294/51,456/7,791 | 15/42 | `sha256:6b9524b64fb5e4f8588d495848aa441ab10f513d260aa5b7bd59a9015c70243b` |
+| 2 | 24,068ms | 12,871ms | 37,996ms | 10/6/16 | 0/0 | 55,227/48,384/8,263 | 17/45 | `sha256:3c3028cb4f7f989c435aa6489312585718b1f988dd16d71bda7c1505576686d1` |
+| 3 | 22,617ms | 15,064ms | 38,723ms | 10/7/17 | 0/0 | 58,851/51,328/8,483 | 17/46 | `sha256:4f8f0d186570c3b7c04c45fa6680487ac827808c6671e292f158feb75b55ed3f` |
+
+- Extended Bundle `min/median/max=22,009/22,617/24,068ms`；阶段5.1为
+  `10,388/12,871/15,064ms`；完整E2E为`33,348/37,996/38,723ms`，均低于目标。
+- 基础和横向峰值并发三轮均为7和2。45项Check、七Unit、五类Artifact、
+  Evidence验证、Payload Schema、Dry Run Sink和Callback三轮全部通过。
+- 三轮`core_result_signature`均为
+  `sha256:06623127751704c7fec585eee0ebf9fec72c491a3d29a0d0c6c6c34e2976da4a`。
+  第二轮初次被旧签名误判，离线审计证明16项核心组件中15项完全一致，唯一差异是
+  CF-005同一稳定Absence Evidence的`checked_scope`多“任何”二字；签名修正为
+  Evidence Source身份后，既有第二轮离线重算通过，未重复调用模型。
+- 核心Oracle三轮一致：FVA-002为外部核验且Finding=0；CF-005为HIGH；
+  PO 6个Root、PO-001 HIGH、PO-003 Finding=0、PO-006 MEDIUM；ICD 1个MEDIUM Root；
+  LRE 4个Root且无上限责任HIGH；横向保持日期冲突、主体名称冲突和附件引用缺失。
+- Commercial非核心合法变化如实保留：第1轮仅CF-005；第2、3轮另有CF-007和
+  CF-008，第2轮CF-008为HIGH、第3轮为MEDIUM。因而Pair Plan实际为17/20/24个候选、
+  5/6/7个Batch，总模型调用15/16/17；未硬编码历史24/7或17次。
+- 所有Review和阶段5.1 Batch的Provider Prompt均不超过6,000，全部
+  `WITHIN_TARGET`；FVA三轮均为4,155 Token。
+
+### 确定性重放、失败注入与Artifact
+
+- 每轮模型完成后均执行100次无模型重放；Artifact Hash、Payload Hash、正式
+  Result Hash和幂等行为各轮100/100稳定。
+- 失败注入覆盖基础/横向Batch失败、未知兼容路由、阶段5.1超时/Schema失败、
+  Evidence失败、Payload Schema失败、Result Hash不稳定、Sink事务失败、Callback
+  失败、重复Payload/Callback、同Review不同Hash和不同Review独立结果。硬错误均无
+  可消费Payload或正式副作用；阶段5.1错误均SKIPPED并保留原Finding继续验证。
+- Artifact SHA-256：
+  - `stage66-direct-e2e-three-run.json`：
+    `c1c4aa8fcd4f4e058190420f34af3ed3601db219cf6409ed02580742b06b2518`
+  - `stage66-direct-e2e-three-run-attempts.json`：
+    `7c71fe061a0d640b9730bf8d073bfe54c8f9a81bb040ce837908ea52a168d3fd`
+  - `stage66-direct-e2e-human-readable.md`：
+    `1e5fefe4ec2bf8c2828b8d5322831c17fc1fbd303fbeb6254b8cfc753aa7ed85`
+  - `stage66-direct-e2e-formal-payload.json`：
+    `700ec8763ef9855b496ecf9ad3c882df6e195fccae2087b3693bd8959b211098`
+  - `stage66-direct-e2e-deterministic-replay.json`：
+    `8ffd36093c59775a2ec0e037df5633aa5de065b830d40251c5a848de7ff61690`
+  - `stage66-direct-e2e-failure-injection.json`：
+    `9e8ed61060240343455193bf6cef5e36ba61ed0736df15ddac2312f6369119c9`
+
+### 回归与结论
+
+- Direct E2E/Compatibility专项最终`34 passed`；风险、预算、五基础、横向、
+  Bundle、Evidence、Hash组合回归`287 passed, 44 skipped`。
+- Framework无实时服务全量`390 passed, 43 skipped`；唯一现场测试
+  `test_live_multi_capability.py`因独立Smoke HTTP服务未启动而连接失败，按既有
+  规则单列。
+- Contract Python：核心/API/OpenAPI等`104 passed`；数据库型集合
+  `5 passed, 10 skipped`（未配置隔离`CONTRACT_TEST_DATABASE_URL`）。
+- 固定OpenAPI通过；内部Runner和脚本未注册公开路由；`git diff --check`通过。
+- 正式Result Sink写入0，真实Java回调0，Legacy模型/Tool调用0，正式Pipeline切换
+  效果`NONE`。
+
+结论：阶段6.6通过；Direct全链路已跑通；
+`corpus_coverage_status=LIMITED`；
+`next_recommendation=READY_FOR_TEST_ENV_DIRECT_VALIDATION`。
+允许按本阶段授权提交并推送。正式Pipeline未切换，测试环境Direct切换尚未授权。
