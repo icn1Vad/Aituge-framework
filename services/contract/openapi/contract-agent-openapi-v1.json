@@ -4,18 +4,18 @@
       "Body_create_review_v1_contract_reviews_post": {
         "properties": {
           "file": {
-            "contentMediaType": "application/octet-stream",
+            "format": "binary",
             "title": "File",
             "type": "string"
           },
-          "request": {
-            "title": "Request",
+          "request_payload": {
+            "title": "Request Payload",
             "type": "string"
           }
         },
         "required": [
           "file",
-          "request"
+          "request_payload"
         ],
         "title": "Body_create_review_v1_contract_reviews_post",
         "type": "object"
@@ -789,6 +789,63 @@
           "counterparty"
         ],
         "title": "ContractProfile",
+        "type": "object"
+      },
+      "ContractReviewResultToolData": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "generation_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/ReviewResultData"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id",
+          "generation_id",
+          "result"
+        ],
+        "title": "ContractReviewResultToolData",
+        "type": "object"
+      },
+      "ContractReviewResultToolRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id"
+        ],
+        "title": "ContractReviewResultToolRequest",
         "type": "object"
       },
       "CreateReviewData": {
@@ -1584,6 +1641,268 @@
           "review_attitude"
         ],
         "title": "FrameworkTaskInput",
+        "type": "object"
+      },
+      "GroundedAnswerData": {
+        "additionalProperties": false,
+        "properties": {
+          "content_markdown": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "title": "Content Markdown",
+            "type": "string"
+          },
+          "contract_version_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Contract Version Id",
+            "type": "string"
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "REPORT",
+              "CHAT"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "references": {
+            "items": {
+              "$ref": "#/components/schemas/GroundedReferenceData"
+            },
+            "maxItems": 500,
+            "title": "References",
+            "type": "array"
+          },
+          "result_hash": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Result Hash",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "review_id",
+          "document_id",
+          "contract_version_id",
+          "result_hash",
+          "content_markdown"
+        ],
+        "title": "GroundedAnswerData",
+        "type": "object"
+      },
+      "GroundedChatRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_history": {
+            "items": {
+              "$ref": "#/components/schemas/GroundedConversationMessage"
+            },
+            "maxItems": 20,
+            "title": "Conversation History",
+            "type": "array"
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "question": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "question"
+        ],
+        "title": "GroundedChatRequest",
+        "type": "object"
+      },
+      "GroundedConversationMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "USER",
+              "ASSISTANT"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "GroundedConversationMessage",
+        "type": "object"
+      },
+      "GroundedReferenceData": {
+        "additionalProperties": false,
+        "properties": {
+          "block_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Block Id",
+            "type": "string"
+          },
+          "char_end": {
+            "exclusiveMinimum": 0.0,
+            "title": "Char End",
+            "type": "integer"
+          },
+          "char_start": {
+            "minimum": 0.0,
+            "title": "Char Start",
+            "type": "integer"
+          },
+          "chunk_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "contract_version_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Contract Version Id",
+            "type": "string"
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "evidence_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "finding_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "page_number": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Number"
+          },
+          "quoted_text": {
+            "minLength": 1,
+            "title": "Quoted Text",
+            "type": "string"
+          },
+          "quoted_text_hash": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Quoted Text Hash",
+            "type": "string"
+          },
+          "reference_id": {
+            "pattern": "^docref-[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+            "title": "Reference Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reference_id",
+          "label",
+          "evidence_id",
+          "finding_id",
+          "document_id",
+          "contract_version_id",
+          "chunk_id",
+          "block_id",
+          "char_start",
+          "char_end",
+          "quoted_text",
+          "quoted_text_hash"
+        ],
+        "title": "GroundedReferenceData",
+        "type": "object"
+      },
+      "GroundedReportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "instruction": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instruction"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id"
+        ],
+        "title": "GroundedReportRequest",
         "type": "object"
       },
       "HealthData": {
@@ -2995,6 +3314,32 @@
         "title": "SuccessResponse[ContractIrToolData]",
         "type": "object"
       },
+      "SuccessResponse_ContractReviewResultToolData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ContractReviewResultToolData"
+          },
+          "request_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "success": {
+            "const": true,
+            "default": true,
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "title": "SuccessResponse[ContractReviewResultToolData]",
+        "type": "object"
+      },
       "SuccessResponse_CreateReviewData_": {
         "additionalProperties": false,
         "properties": {
@@ -3045,6 +3390,32 @@
           "request_id"
         ],
         "title": "SuccessResponse[FrameworkCallbackData]",
+        "type": "object"
+      },
+      "SuccessResponse_GroundedAnswerData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/GroundedAnswerData"
+          },
+          "request_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "success": {
+            "const": true,
+            "default": true,
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "title": "SuccessResponse[GroundedAnswerData]",
         "type": "object"
       },
       "SuccessResponse_HealthData_": {
@@ -3748,6 +4119,436 @@
           }
         },
         "summary": "Cancel Review"
+      }
+    },
+    "/v1/contract-reviews/{review_id}/chat": {
+      "post": {
+        "operationId": "answer_grounded_chat_v1_contract_reviews__review_id__chat_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "title": "Review Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Service",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Service",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-User-Id",
+            "required": true,
+            "schema": {
+              "title": "X-User-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Request-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Request-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroundedChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_GroundedAnswerData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request Entity Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Media Type"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Gateway Timeout"
+          }
+        },
+        "summary": "Answer Grounded Chat"
+      }
+    },
+    "/v1/contract-reviews/{review_id}/report": {
+      "post": {
+        "operationId": "generate_grounded_report_v1_contract_reviews__review_id__report_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "title": "Review Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Service",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Service",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-User-Id",
+            "required": true,
+            "schema": {
+              "title": "X-User-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Request-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Request-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroundedReportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_GroundedAnswerData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request Entity Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Media Type"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Gateway Timeout"
+          }
+        },
+        "summary": "Generate Grounded Report"
       }
     },
     "/v1/contract-reviews/{review_id}/result": {
@@ -5041,6 +5842,183 @@
           }
         },
         "summary": "Contract Get Ir"
+      }
+    },
+    "/v1/internal/contract-tools/review-result": {
+      "post": {
+        "operationId": "contract_get_review_result_v1_internal_contract_tools_review_result_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Service",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Service",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": true,
+            "schema": {
+              "title": "X-Internal-Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Request-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Request-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContractReviewResultToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_ContractReviewResultToolData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request Entity Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Media Type"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Gateway Timeout"
+          }
+        },
+        "summary": "Contract Get Review Result"
       }
     }
   }
