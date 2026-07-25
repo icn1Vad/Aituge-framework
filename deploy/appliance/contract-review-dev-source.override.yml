@@ -1,0 +1,15 @@
+services:
+  framework:
+    build:
+      context: ${CONTRACT_REVIEW_DEV_PYTHON_SOURCE}
+      dockerfile: deploy/appliance/framework.runtime.Dockerfile
+    environment:
+      CONTRACT_IR_ENGINE: window
+    volumes:
+      - ${CONTRACT_REVIEW_DEV_PYTHON_SOURCE}/services/contract/capabilities:/opt/contract-capabilities:ro
+
+  ai-contract:
+    build:
+      context: ${CONTRACT_REVIEW_DEV_PYTHON_SOURCE}
+      dockerfile: services/contract/Dockerfile
+      target: runtime
