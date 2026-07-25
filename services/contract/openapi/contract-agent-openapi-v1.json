@@ -8,14 +8,14 @@
             "title": "File",
             "type": "string"
           },
-          "request_payload": {
+          "request": {
             "title": "Request Payload",
             "type": "string"
           }
         },
         "required": [
           "file",
-          "request_payload"
+          "request"
         ],
         "title": "Body_create_review_v1_contract_reviews_post",
         "type": "object"
