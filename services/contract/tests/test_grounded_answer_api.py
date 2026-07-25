@@ -85,7 +85,11 @@ def test_framework_service_runs_report_task_and_reuses_succeeded_task() -> None:
                         "id": "task-1",
                         "task_type": "contract.grounded.answer",
                         "status": "pending",
-                        "input_payload_json": body["input_payload"],
+                        "input_payload_json": {
+                            key: value
+                            for key, value in body["input_payload"].items()
+                            if value is not None
+                        },
                         "result_payload_json": None,
                         "error_payload_json": None,
                         "tenant_id": "tenant-1",
@@ -106,8 +110,6 @@ def test_framework_service_runs_report_task_and_reuses_succeeded_task() -> None:
                             "mode": "REPORT",
                             "review_id": "review-1",
                             "document_id": "document-1",
-                            "instruction": None,
-                            "question": None,
                             "conversation_history": [],
                         },
                         "result_payload_json": {

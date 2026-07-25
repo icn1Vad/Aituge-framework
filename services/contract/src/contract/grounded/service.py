@@ -273,7 +273,9 @@ class FrameworkGroundedAnswerService:
                 "Framework复用了不兼容的合同报告或问答任务",
                 status_code=502,
             )
-        if task.input_payload_json != payload:
+        if task.input_payload_json != {
+            key: value for key, value in payload.items() if value is not None
+        }:
             raise ContractError(
                 "IDEMPOTENCY_CONFLICT",
                 "Idempotency-Key已用于不同的合同报告或问答请求",
