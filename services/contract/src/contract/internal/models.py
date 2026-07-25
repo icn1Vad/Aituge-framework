@@ -6,6 +6,7 @@ from pydantic import Field, JsonValue
 
 from contract.api.models import StrictModel
 from contract.ir.models import ContractIR
+from contract.risk.models import RiskReviewPlan
 
 
 class ContractDocumentToolRequest(StrictModel):
@@ -26,6 +27,18 @@ class ContractClauseContextToolRequest(ContractDocumentToolRequest):
 
 class ContractIrToolRequest(ContractDocumentToolRequest):
     pass
+
+
+class ContractWindowPlanToolRequest(ContractDocumentToolRequest):
+    pass
+
+
+class ContractRiskPlanRequest(ContractDocumentToolRequest):
+    selected_playbook_ids: list[str] = Field(
+        default_factory=lambda: ["base_neutral"],
+        min_length=1,
+        max_length=20,
+    )
 
 
 class ContractDocumentToolData(StrictModel):
@@ -72,3 +85,44 @@ class ContractIrToolData(StrictModel):
     generation_id: str
     generation_status: Literal["RUNNING", "SUCCEEDED"]
     contract_ir: ContractIR
+
+
+class ContractWindowExpectedBlockData(StrictModel):
+    block_id: str = Field(min_length=1, max_length=160)
+    text_length: int = Field(gt=0)
+
+
+class ContractWindowOffsetData(StrictModel):
+    rendered_start: int = Field(ge=0)
+    rendered_end: int = Field(gt=0)
+    block_id: str = Field(min_length=1, max_length=160)
+    block_no: int = Field(ge=1)
+    block_char_start: int = Field(ge=0)
+    block_char_end: int = Field(gt=0)
+    page_number: int | None = Field(default=None, ge=1)
+
+
+class ContractWindowData(StrictModel):
+    window_id: str = Field(min_length=1, max_length=160)
+    sequence_no: int = Field(ge=1)
+    section_ids: list[str] = Field(min_length=1, max_length=500)
+    heading_path: list[str] = Field(default_factory=list, max_length=30)
+    clause_nos: list[str] = Field(default_factory=list, max_length=100)
+    primary_block_ids: list[str] = Field(min_length=1, max_length=2000)
+    estimated_tokens: int = Field(ge=1)
+    source_text: str = Field(min_length=1, max_length=100000)
+    context_text: str = Field(default="", max_length=10000)
+    offset_map: list[ContractWindowOffsetData] = Field(min_length=1, max_length=2000)
+
+
+class ContractWindowPlanToolData(StrictModel):
+    review_id: str = Field(min_length=1, max_length=160)
+    document_id: str = Field(min_length=1, max_length=160)
+    generation_id: str = Field(min_length=1, max_length=160)
+    expected_blocks: list[ContractWindowExpectedBlockData] = Field(min_length=1, max_length=20000)
+    expected_section_ids: list[str] = Field(min_length=1, max_length=20000)
+    windows: list[ContractWindowData] = Field(min_length=1, max_length=5000)
+    concurrency: Literal[10] = 10
+
+
+ContractRiskPlanData = RiskReviewPlan

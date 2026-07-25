@@ -30,7 +30,11 @@ from contract.callback.service import FrameworkCallbackService
 from contract.config import Settings
 from contract.errors import ContractError
 from contract.internal.service import ContractInternalService
-from contract.internal.models import ContractBlocksToolRequest, ContractIrToolRequest
+from contract.internal.models import (
+    ContractBlocksToolRequest,
+    ContractIrToolRequest,
+    ContractWindowPlanToolRequest,
+)
 from contract.persistence.postgres.callback_repository import FrameworkCallbackRepository
 from contract.persistence.postgres.migrate import run_migrations
 from contract.persistence.postgres.repository import ContractRepository
@@ -209,6 +213,25 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
             )
         ).blocks
         assert all(item.char_start == 0 and item.char_end == len(item.text) for item in tool_blocks)
+        window_plan = internal.get_window_plan(
+            ContractWindowPlanToolRequest(
+                review_id=created.review_id,
+                document_id=created.document_id,
+            )
+        )
+        assert window_plan.generation_id == active_generation["id"]
+        assert window_plan.concurrency == 10
+        assert [item.sequence_no for item in window_plan.windows] == list(
+            range(1, len(window_plan.windows) + 1)
+        )
+        assert {item.block_id for item in window_plan.expected_blocks} == {
+            item.block_id for item in tool_blocks if item.block_type != "footer"
+        }
+        assert {
+            block_id
+            for window in window_plan.windows
+            for block_id in window.primary_block_ids
+        } == {item.block_id for item in window_plan.expected_blocks}
         quoted_text = "Party B pays."
         char_start = block["text"].index(quoted_text)
         evidence = EvidenceCandidate(

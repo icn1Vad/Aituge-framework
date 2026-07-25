@@ -8,11 +8,32 @@ from fastapi.testclient import TestClient
 from contract.api.app import create_app
 from contract.callback.models import FrameworkCallbackData
 from contract.config import Settings
-from contract.internal.models import ContractDocumentToolData
+from contract.internal.models import ContractDocumentToolData, ContractWindowPlanToolData
+from contract.risk.plan_builder import RiskReviewPlanBuilder
+from services.contract.capabilities.revision_drafts import (
+    InMemoryRevisionDraftCache,
+    InMemoryRevisionSourceProvider,
+    RevisionDraftService,
+    RevisionReviewSource,
+)
+
+from risk_test_data import risk_plan_input
 
 
 TOKEN = "contract-test-token"
 PDF_BYTES = b"%PDF-1.4\ncontract review test\n%%EOF"
+
+
+class ResolvingRevisionSourceProvider(InMemoryRevisionSourceProvider):
+    async def resolve_generation_id(self, review_id: str, result_hash: str) -> str:
+        matching = [
+            generation_id
+            for candidate_review_id, generation_id, candidate_result_hash in self.sources
+            if candidate_review_id == review_id and candidate_result_hash == result_hash
+        ]
+        if len(matching) != 1:
+            raise AssertionError("test source must resolve to exactly one Generation")
+        return matching[0]
 
 
 def _client() -> TestClient:
@@ -23,6 +44,39 @@ def _client() -> TestClient:
                 internal_token=TOKEN,
                 mock_mode=True,
             )
+        ),
+        raise_server_exceptions=False,
+    )
+
+
+def _revision_client() -> TestClient:
+    result_hash = "sha256:" + "a" * 64
+    source = RevisionReviewSource(
+        review_id="review-revision-1",
+        generation_id="generation-revision-1",
+        result_hash=result_hash,
+        review_status="COMPLETED",
+        perspective="PARTY_A",
+        our_party="Party A",
+        counterparty="Party B",
+        findings=[],
+        evidences=[],
+        contract_ir=[],
+    )
+    return TestClient(
+        create_app(
+            Settings(
+                internal_auth_enabled=True,
+                internal_token=TOKEN,
+                mock_mode=True,
+            ),
+            revision_draft_service=RevisionDraftService(
+                source_provider=ResolvingRevisionSourceProvider(
+                    {(source.review_id, source.generation_id, source.result_hash): source}
+                ),
+                generator=object(),
+                cache=InMemoryRevisionDraftCache(),
+            ),
         ),
         raise_server_exceptions=False,
     )
@@ -88,6 +142,57 @@ def test_health_does_not_require_internal_auth() -> None:
         },
         "request_id": "req-health",
     }
+
+
+def test_hidden_revision_draft_routes_use_internal_auth_and_request_identity() -> None:
+    client = _revision_client()
+    params = {
+        "result_hash": "sha256:" + "a" * 64,
+    }
+
+    unauthorized = client.get(
+        "/v1/internal/contract-reviews/review-revision-1/revision-drafts",
+        params=params,
+        headers=_headers(**{"X-Internal-Token": "wrong"}),
+    )
+    assert unauthorized.status_code == 401
+    assert unauthorized.json()["error"]["code"] == "UNAUTHORIZED_INTERNAL_CALL"
+    assert unauthorized.json()["request_id"] == "req-10001"
+
+    wrong_generation = client.get(
+        "/v1/internal/contract-reviews/review-revision-1/revision-drafts",
+        params={**params, "generation_id": "generation-other"},
+        headers=_headers(),
+    )
+    assert wrong_generation.status_code == 404
+    assert wrong_generation.json()["error"]["code"] == "GENERATION_NOT_FOUND"
+
+    first = client.get(
+        "/v1/internal/contract-reviews/review-revision-1/revision-drafts",
+        params=params,
+        headers=_headers(),
+    )
+    assert first.status_code == 200
+    assert first.json() == {
+        "schema_version": "1.0",
+        "review_id": "review-revision-1",
+        "generation_id": "generation-revision-1",
+        "result_hash": "sha256:" + "a" * 64,
+        "status": "COMPLETED",
+        "drafts": [],
+        "failed_findings": [],
+        "model_call_count": 0,
+        "duration_ms": first.json()["duration_ms"],
+        "cache_hit": False,
+    }
+
+    generated = client.post(
+        "/v1/internal/contract-reviews/review-revision-1/revision-drafts:generate",
+        params=params,
+        headers=_headers(),
+    )
+    assert generated.status_code == 200
+    assert generated.json()["cache_hit"] is True
 
 
 def test_non_mock_mode_lazily_builds_runtime_service(monkeypatch) -> None:
@@ -227,6 +332,47 @@ def test_framework_tool_endpoint_uses_callback_credential_and_typed_response() -
                 block_count=1,
             )
 
+        def get_window_plan(self, payload):
+            assert payload.review_id == "review-1"
+            assert payload.document_id == "document-1"
+            return ContractWindowPlanToolData(
+                review_id="review-1",
+                document_id="document-1",
+                generation_id="generation-1",
+                expected_blocks=[{"block_id": "block-1", "text_length": 4}],
+                expected_section_ids=["section-1"],
+                windows=[
+                    {
+                        "window_id": "window-1",
+                        "sequence_no": 1,
+                        "section_ids": ["section-1"],
+                        "heading_path": [],
+                        "clause_nos": [],
+                        "primary_block_ids": ["block-1"],
+                        "estimated_tokens": 4,
+                        "source_text": "test",
+                        "context_text": "",
+                        "offset_map": [
+                            {
+                                "rendered_start": 0,
+                                "rendered_end": 4,
+                                "block_id": "block-1",
+                                "block_no": 1,
+                                "block_char_start": 0,
+                                "block_char_end": 4,
+                                "page_number": None,
+                            }
+                        ],
+                    }
+                ],
+            )
+
+        def get_risk_plan(self, payload):
+            assert payload.review_id == "review-1"
+            assert payload.document_id == "document-1"
+            assert payload.selected_playbook_ids == ["base_neutral"]
+            return RiskReviewPlanBuilder().build(risk_plan_input())
+
     client = TestClient(
         create_app(
             Settings(
@@ -256,12 +402,28 @@ def test_framework_tool_endpoint_uses_callback_credential_and_typed_response() -
         headers={**headers, "X-Internal-Token": TOKEN},
         json=payload,
     )
+    windows = client.post(
+        "/v1/internal/contract-tools/windows",
+        headers=headers,
+        json=payload,
+    )
+    risk_plan = client.post(
+        "/v1/internal/contract-reviews/review-1/risk-plan",
+        headers=headers,
+        json={**payload, "selected_playbook_ids": ["base_neutral"]},
+    )
 
     assert accepted.status_code == 200
     assert accepted.json()["data"]["generation_status"] == "RUNNING"
     assert accepted.json()["data"]["block_count"] == 1
     assert unauthorized.status_code == 401
     assert unauthorized.json()["error"]["code"] == "UNAUTHORIZED_INTERNAL_CALL"
+    assert windows.status_code == 200
+    assert windows.json()["data"]["concurrency"] == 10
+    assert windows.json()["data"]["windows"][0]["primary_block_ids"] == ["block-1"]
+    assert risk_plan.status_code == 200
+    assert risk_plan.json()["data"]["plan_version"] == "1.0"
+    assert len(risk_plan.json()["data"]["review_units"]) == 7
 
 
 def test_create_status_result_not_ready_and_cancel_flow() -> None:

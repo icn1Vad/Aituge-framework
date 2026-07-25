@@ -112,6 +112,65 @@ class FrameworkCallbackRepository:
         value["generation"] = dict(generation) if generation else None
         return value
 
+    def get_revision_source_snapshot(
+        self,
+        review_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        """Read the completed result and the parse Generation that produced it.
+
+        The result Attempt, rather than the document's currently active
+        Generation, is authoritative.  Ownership predicates intentionally make
+        a foreign-tenant or foreign-user review indistinguishable from a
+        missing review.
+        """
+
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT review.id AS review_id,
+                       review.status AS review_status,
+                       result.result_hash,
+                       result.result_json,
+                       generation.id AS generation_id,
+                       generation.status AS generation_status,
+                       generation.contract_ir_json
+                FROM contract_review_run review
+                LEFT JOIN contract_review_result result
+                  ON result.review_id = review.id
+                 AND result.tenant_id = review.tenant_id
+                LEFT JOIN LATERAL (
+                    SELECT parse_generation.*
+                    FROM contract_review_stage_result stage
+                    JOIN contract_parse_generation parse_generation
+                      ON parse_generation.id = stage.result_json ->> 'generation_id'
+                     AND parse_generation.document_id = review.document_id
+                     AND parse_generation.tenant_id = review.tenant_id
+                    WHERE stage.review_id = review.id
+                      AND stage.attempt_no = result.attempt_no
+                      AND stage.callback_type = 'STAGE_RESULT'
+                      AND stage.stage_id = 'parse_contract'
+                      AND stage.validation_status = 'VALIDATED'
+                    ORDER BY stage.event_sequence DESC, stage.received_at DESC
+                    LIMIT 1
+                ) generation ON true
+                WHERE review.id = %s
+                  AND review.tenant_id = %s
+                  AND review.user_id = %s
+                LIMIT 1
+                """,
+                (review_id, tenant_id, user_id),
+            ).fetchone()
+        if row is None:
+            raise ContractError(
+                "REVIEW_NOT_FOUND",
+                "Contract review does not exist or is not accessible",
+                status_code=404,
+            )
+        return dict(row)
+
     def get_stage_execution_context(self, request: StageExecuteRequest) -> dict[str, Any]:
         """Return the active execution context, claiming a matching CREATING Attempt if needed.
 

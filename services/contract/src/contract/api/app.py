@@ -4,12 +4,13 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Body, Depends, FastAPI, File, Form, Header, Request, UploadFile, status
+from fastapi import Body, Depends, FastAPI, File, Form, Header, Query, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
@@ -47,10 +48,22 @@ from contract.internal.models import (
     ContractDocumentToolRequest,
     ContractIrToolData,
     ContractIrToolRequest,
+    ContractRiskPlanRequest,
+    ContractWindowPlanToolData,
+    ContractWindowPlanToolRequest,
 )
+from contract.risk.models import RiskReviewPlan
 from contract.internal.service import ContractInternalService
 from contract.persistence.postgres.callback_repository import FrameworkCallbackRepository
 from contract.persistence.postgres.repository import ContractRepository
+from services.contract.capabilities.revision_drafts import (
+    LlmRevisionTextGenerator,
+    PostgresRevisionSourceProvider,
+    RevisionDraftError,
+    RevisionDraftResponse,
+    RevisionDraftService,
+    default_cache,
+)
 
 
 ALLOWED_FILE_TYPES = {
@@ -80,6 +93,7 @@ def create_app(
     service: ContractReviewService | None = None,
     internal_service: ContractInternalService | None = None,
     callback_service: FrameworkCallbackService | None = None,
+    revision_draft_service: RevisionDraftService | None = None,
 ) -> FastAPI:
     app_settings = settings or get_settings()
 
@@ -101,6 +115,8 @@ def create_app(
     app.state.contract_service = service
     app.state.contract_internal_service = internal_service
     app.state.framework_callback_service = callback_service
+    app.state.revision_draft_service = revision_draft_service
+    app.state.revision_draft_cache = None
 
     @app.exception_handler(ContractError)
     async def handle_contract_error(request: Request, exc: ContractError) -> JSONResponse:
@@ -287,6 +303,83 @@ def create_app(
         data = await asyncio.to_thread(_internal_service(http_request).get_ir, payload)
         return SuccessResponse(data=data, request_id=request_id)
 
+    @app.post(
+        "/v1/internal/contract-tools/windows",
+        response_model=SuccessResponse[ContractWindowPlanToolData],
+        responses=ERROR_RESPONSES,
+        include_in_schema=False,
+    )
+    async def contract_get_windows(
+        payload: ContractWindowPlanToolRequest,
+        http_request: Request,
+        request_id: Annotated[str, Depends(_framework_request_id)],
+    ) -> SuccessResponse[ContractWindowPlanToolData]:
+        data = await asyncio.to_thread(_internal_service(http_request).get_window_plan, payload)
+        return SuccessResponse(data=data, request_id=request_id)
+
+    @app.post(
+        "/v1/internal/contract-reviews/{review_id}/risk-plan",
+        response_model=SuccessResponse[RiskReviewPlan],
+        responses=ERROR_RESPONSES,
+        include_in_schema=False,
+    )
+    async def contract_get_risk_plan(
+        review_id: str,
+        payload: ContractRiskPlanRequest,
+        http_request: Request,
+        request_id: Annotated[str, Depends(_framework_request_id)],
+    ) -> SuccessResponse[RiskReviewPlan]:
+        if payload.review_id != review_id:
+            raise ContractError(
+                "FRAMEWORK_CALLBACK_MISMATCH",
+                "Risk plan review_id does not match the request path",
+                status_code=409,
+            )
+        data = await asyncio.to_thread(_internal_service(http_request).get_risk_plan, payload)
+        return SuccessResponse(data=data, request_id=request_id)
+
+    @app.get(
+        "/v1/internal/contract-reviews/{review_id}/revision-drafts",
+        response_model=RevisionDraftResponse,
+        responses=ERROR_RESPONSES,
+        include_in_schema=False,
+    )
+    async def get_revision_drafts(
+        review_id: str,
+        http_request: Request,
+        result_hash: Annotated[str, Query(pattern=r"^sha256:[0-9a-f]{64}$")],
+        context: Annotated[InternalRequestContext, Depends(_internal_context)],
+        generation_id: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+    ) -> RevisionDraftResponse:
+        return await _generate_revision_drafts(
+            http_request,
+            context,
+            review_id=review_id,
+            generation_id=generation_id,
+            result_hash=result_hash,
+        )
+
+    @app.post(
+        "/v1/internal/contract-reviews/{review_id}/revision-drafts:generate",
+        response_model=RevisionDraftResponse,
+        responses=ERROR_RESPONSES,
+        include_in_schema=False,
+    )
+    async def generate_revision_drafts(
+        review_id: str,
+        http_request: Request,
+        result_hash: Annotated[str, Query(pattern=r"^sha256:[0-9a-f]{64}$")],
+        context: Annotated[InternalRequestContext, Depends(_internal_context)],
+        generation_id: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+    ) -> RevisionDraftResponse:
+        return await _generate_revision_drafts(
+            http_request,
+            context,
+            review_id=review_id,
+            generation_id=generation_id,
+            result_hash=result_hash,
+        )
+
     @app.get(
         "/v1/contract-reviews/{review_id}",
         response_model=SuccessResponse[ReviewStatusData],
@@ -351,6 +444,80 @@ def create_app(
 
     app.openapi = contract_openapi  # type: ignore[method-assign]
     return app
+
+
+async def _generate_revision_drafts(
+    request: Request,
+    context: InternalRequestContext,
+    *,
+    review_id: str,
+    generation_id: str | None,
+    result_hash: str,
+) -> RevisionDraftResponse:
+    try:
+        service = _revision_draft_service(request, context)
+        resolver = getattr(service.source_provider, "resolve_generation_id", None)
+        if callable(resolver):
+            resolved_generation_id = await resolver(review_id, result_hash)
+            if generation_id is not None and generation_id != resolved_generation_id:
+                raise RevisionDraftError(
+                    "GENERATION_NOT_FOUND",
+                    "generation_id does not match the completed review",
+                    status_code=404,
+                )
+            generation_id = resolved_generation_id
+        elif generation_id is None:
+            raise RevisionDraftError(
+                "GENERATION_NOT_FOUND",
+                "Completed review Generation was not found",
+                status_code=404,
+            )
+        return await service.get_or_generate(
+            review_id,
+            generation_id,
+            result_hash,
+        )
+    except RevisionDraftError as exc:
+        raise ContractError(
+            exc.code,
+            str(exc),
+            status_code=exc.status_code,
+            retryable=exc.status_code >= 500,
+        ) from exc
+
+
+def _revision_draft_service(
+    request: Request,
+    context: InternalRequestContext,
+) -> RevisionDraftService:
+    configured = request.app.state.revision_draft_service
+    if configured is not None:
+        return configured
+    _ensure_internal_components(request)
+    cache = request.app.state.revision_draft_cache
+    if cache is None:
+        cache = default_cache()
+        request.app.state.revision_draft_cache = cache
+    model_id = os.getenv("CONTRACT_MODEL_ID", "deepseek-v4-pro").strip()
+    if not model_id:
+        raise ContractError(
+            "REVISION_GENERATION_FAILED",
+            "CONTRACT_MODEL_ID is not configured",
+            status_code=503,
+        )
+    callback_repository = request.app.state.contract_internal_service.callback_repository
+    return RevisionDraftService(
+        source_provider=PostgresRevisionSourceProvider(
+            repository=callback_repository,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+        ),
+        generator=LlmRevisionTextGenerator(
+            tenant_id=context.tenant_id,
+            model_id=model_id,
+        ),
+        cache=cache,
+    )
 
 
 def _service(request: Request) -> ContractReviewService:

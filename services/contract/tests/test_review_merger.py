@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import pytest
 
-from contract.api.models import Finding
+from contract.api.models import Finding, FindingCategory
 from contract.callback.models import (
     CommercialTermsStageResult,
     EvidenceCandidate,
+    FindingConsolidationArtifact,
     RightsObligationsStageResult,
 )
 from contract.errors import ContractError
@@ -109,6 +111,172 @@ def test_namespaces_model_local_ids_before_parallel_stage_merge() -> None:
     assert all(item.evidence_id.startswith("evidence-") for item in evidences)
 
 
+def test_model_decision_merges_paraphrased_same_risk_and_unions_evidence() -> None:
+    first_source = _finding(
+        "finding-acceptance-a",
+        "MEDIUM",
+        "Acceptance procedure is missing",
+        "The contract does not define a formal acceptance procedure.",
+    )
+    second_source = _finding(
+        "finding-acceptance-b",
+        "HIGH",
+        "No enforceable acceptance mechanism",
+        "There is no standard, deadline, or consequence for failed acceptance.",
+    )
+    first_raw = RightsObligationsStageResult(
+        result_type="RIGHTS_OBLIGATIONS_STAGE_V1",
+        findings=[first_source],
+        evidences=[_quote("evidence-a", first_source.finding_id, "Payment")],
+    )
+    second_raw = CommercialTermsStageResult(
+        result_type="COMMERCIAL_TERMS_STAGE_V1",
+        findings=[second_source],
+        evidences=[
+            EvidenceCandidate(
+                evidence_id="evidence-b",
+                finding_id=second_source.finding_id,
+                evidence_type="TEXT_QUOTE",
+                block_id="block-2",
+                page_number=1,
+                char_start=2,
+                char_end=10,
+            )
+        ],
+    )
+    first = namespace_review_stage_result("rights_obligations_review_result", first_raw)
+    second = namespace_review_stage_result("commercial_terms_review_result", second_raw)
+    left = ("rights_obligations_review_result", first_source.finding_id)
+    right = ("commercial_terms_review_result", second_source.finding_id)
+    pair_id = _pair_id(left, right)
+    consolidation = FindingConsolidationArtifact.model_validate(
+        {
+            "result_type": "FINDING_CONSOLIDATION_V1",
+            "status": "COMPLETED",
+            "candidate_count": 1,
+            "model_call_count": 1,
+            "decisions": [
+                {
+                    "pair_id": pair_id,
+                    "left": {"artifact_type": left[0], "finding_id": left[1]},
+                    "right": {"artifact_type": right[0], "finding_id": right[1]},
+                    "relation": "SAME_RISK",
+                }
+            ],
+            "skip_reason": None,
+        }
+    )
+
+    findings, evidences = merge_review_stage_results(
+        [first, second],
+        consolidation=consolidation,
+        finding_reference_ids={
+            left: first.findings[0].finding_id,
+            right: second.findings[0].finding_id,
+        },
+    )
+
+    assert len(findings) == 1
+    assert findings[0].risk_level.value == "HIGH"
+    assert len(findings[0].evidence_ids) == 2
+    assert len(evidences) == 2
+    assert {item.finding_id for item in evidences} == {findings[0].finding_id}
+
+
+def test_model_decision_never_merges_cross_category_findings() -> None:
+    first_source = _finding("finding-payment", "HIGH", "Payment", "Payment is risky")
+    second_source = _finding("finding-termination", "HIGH", "Termination", "Termination is risky")
+    second_source = second_source.model_copy(update={"category": FindingCategory.TERMINATION})
+    first_raw = RightsObligationsStageResult(
+        result_type="RIGHTS_OBLIGATIONS_STAGE_V1",
+        findings=[first_source],
+        evidences=[_quote("evidence-a", first_source.finding_id, "Payment")],
+    )
+    second_raw = CommercialTermsStageResult(
+        result_type="COMMERCIAL_TERMS_STAGE_V1",
+        findings=[second_source],
+        evidences=[_quote("evidence-b", second_source.finding_id, "Payment")],
+    )
+    first = namespace_review_stage_result("rights_obligations_review_result", first_raw)
+    second = namespace_review_stage_result("commercial_terms_review_result", second_raw)
+    left = ("rights_obligations_review_result", first_source.finding_id)
+    right = ("commercial_terms_review_result", second_source.finding_id)
+    consolidation = FindingConsolidationArtifact.model_validate(
+        {
+            "result_type": "FINDING_CONSOLIDATION_V1",
+            "status": "COMPLETED",
+            "candidate_count": 1,
+            "model_call_count": 1,
+            "decisions": [
+                {
+                    "pair_id": _pair_id(left, right),
+                    "left": {"artifact_type": left[0], "finding_id": left[1]},
+                    "right": {"artifact_type": right[0], "finding_id": right[1]},
+                    "relation": "SAME_RISK",
+                }
+            ],
+            "skip_reason": None,
+        }
+    )
+
+    findings, _ = merge_review_stage_results(
+        [first, second],
+        consolidation=consolidation,
+        finding_reference_ids={
+            left: first.findings[0].finding_id,
+            right: second.findings[0].finding_id,
+        },
+    )
+
+    assert len(findings) == 2
+
+
+def test_rejects_forged_consolidation_pair_id() -> None:
+    source = _finding("finding-a", "HIGH", "Payment A", "Payment risk A")
+    other = _finding("finding-b", "HIGH", "Payment B", "Payment risk B")
+    first_raw = RightsObligationsStageResult(
+        result_type="RIGHTS_OBLIGATIONS_STAGE_V1",
+        findings=[source],
+        evidences=[_quote("evidence-a", source.finding_id, "Payment")],
+    )
+    second_raw = CommercialTermsStageResult(
+        result_type="COMMERCIAL_TERMS_STAGE_V1",
+        findings=[other],
+        evidences=[_quote("evidence-b", other.finding_id, "Payment")],
+    )
+    first = namespace_review_stage_result("rights_obligations_review_result", first_raw)
+    second = namespace_review_stage_result("commercial_terms_review_result", second_raw)
+    left = ("rights_obligations_review_result", source.finding_id)
+    right = ("commercial_terms_review_result", other.finding_id)
+    consolidation = FindingConsolidationArtifact.model_validate(
+        {
+            "result_type": "FINDING_CONSOLIDATION_V1",
+            "status": "COMPLETED",
+            "candidate_count": 1,
+            "model_call_count": 1,
+            "decisions": [
+                {
+                    "pair_id": "pair-" + "0" * 32,
+                    "left": {"artifact_type": left[0], "finding_id": left[1]},
+                    "right": {"artifact_type": right[0], "finding_id": right[1]},
+                    "relation": "SAME_RISK",
+                }
+            ],
+            "skip_reason": None,
+        }
+    )
+
+    with pytest.raises(ContractError, match="pair ID does not match"):
+        merge_review_stage_results(
+            [first, second],
+            consolidation=consolidation,
+            finding_reference_ids={
+                left: first.findings[0].finding_id,
+                right: second.findings[0].finding_id,
+            },
+        )
+
+
 def _finding(finding_id: str, risk_level: str, title: str, issue: str) -> Finding:
     return Finding(
         finding_id=finding_id,
@@ -146,3 +314,8 @@ def _quote(
         char_end=len(text),
         **values,
     )
+
+
+def _pair_id(left: tuple[str, str], right: tuple[str, str]) -> str:
+    canonical = json.dumps(sorted((left, right)), ensure_ascii=False, separators=(",", ":"))
+    return "pair-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
