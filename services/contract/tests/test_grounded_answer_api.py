@@ -84,7 +84,7 @@ def test_framework_service_runs_report_task_and_reuses_succeeded_task() -> None:
                     "task": {
                         "id": "task-1",
                         "task_type": "contract.grounded.answer",
-                        "status": "pending",
+                        "status": "created",
                         "input_payload_json": {
                             key: value
                             for key, value in body["input_payload"].items()

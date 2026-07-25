@@ -145,7 +145,7 @@ class FrameworkGroundedAnswerService:
                 payload=payload,
                 context=context,
             )
-        elif task.status == "pending":
+        elif task.status in {"created", "pending"}:
             run_key = f"{task_key}:run"
             completed = await self._request(
                 "POST",
