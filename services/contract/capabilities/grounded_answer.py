@@ -41,13 +41,6 @@ class GroundedAnswerDraft(StrictModel):
     content_markdown: str = Field(min_length=1, max_length=100_000)
     citations: list[GroundedCitationDraft] = Field(default_factory=list, max_length=500)
 
-    @model_validator(mode="after")
-    def validate_unique_citations(self) -> "GroundedAnswerDraft":
-        evidence_ids = [item.evidence_id for item in self.citations]
-        if len(evidence_ids) != len(set(evidence_ids)):
-            raise ValueError("citations must contain unique evidence_id values")
-        return self
-
 
 class GroundedReference(StrictModel):
     reference_id: str = Field(pattern=r"^docref-[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
@@ -121,15 +114,18 @@ def materialize_grounded_answer(
         for match in DOCREF_PATTERN.finditer(draft.content_markdown)
     ]
     marker_ids = {item[0] for item in marker_pairs}
-    citation_by_id = {item.evidence_id: item for item in draft.citations}
-    if marker_ids != set(citation_by_id):
-        missing = sorted(set(citation_by_id) - marker_ids)
-        dangling = sorted(marker_ids - set(citation_by_id))
+    citation_ids = {item.evidence_id for item in draft.citations}
+    if marker_ids != citation_ids:
+        missing = sorted(citation_ids - marker_ids)
+        dangling = sorted(marker_ids - citation_ids)
         raise GroundedAnswerMaterializationError(
             f"Markdown markers and citations differ; missing={missing}, dangling={dangling}"
         )
+    citation_labels_by_id: dict[str, set[str]] = {}
+    for citation in draft.citations:
+        citation_labels_by_id.setdefault(citation.evidence_id, set()).add(citation.label)
     for evidence_id, label in marker_pairs:
-        if citation_by_id[evidence_id].label != label:
+        if label not in citation_labels_by_id[evidence_id]:
             raise GroundedAnswerMaterializationError(
                 f"citation label does not match Markdown marker for '{evidence_id}'"
             )
@@ -143,33 +139,38 @@ def materialize_grounded_answer(
 
     content_markdown = draft.content_markdown
     references: list[GroundedReference] = []
-    for citation in draft.citations:
-        evidence = evidence_by_id.get(citation.evidence_id)
+    referenced_ids: set[str] = set()
+    for evidence_id, label in marker_pairs:
+        evidence = evidence_by_id.get(evidence_id)
         if evidence is None:
-            raise GroundedAnswerMaterializationError(
-                f"unknown evidence_id '{citation.evidence_id}'"
+            content_markdown = content_markdown.replace(
+                f"[{label}](#docref-{evidence_id})",
+                label,
             )
+            continue
         if evidence.get("evidence_type") == "ABSENCE":
             content_markdown = content_markdown.replace(
-                f"[{citation.label}](#docref-{citation.evidence_id})",
-                citation.label,
+                f"[{label}](#docref-{evidence_id})",
+                label,
             )
+            continue
+        if evidence_id in referenced_ids:
             continue
         if evidence.get("evidence_type") not in {"TEXT_QUOTE", "CONTEXT"}:
             raise GroundedAnswerMaterializationError(
-                f"evidence '{citation.evidence_id}' is not locatable text evidence"
+                f"evidence '{evidence_id}' is not locatable text evidence"
             )
         finding_id = evidence.get("finding_id")
         if finding_id not in finding_ids:
             raise GroundedAnswerMaterializationError(
-                f"evidence '{citation.evidence_id}' has no matching finding"
+                f"evidence '{evidence_id}' has no matching finding"
             )
         try:
             references.append(
                 GroundedReference(
-                    reference_id=f"docref-{citation.evidence_id}",
-                    label=citation.label,
-                    evidence_id=citation.evidence_id,
+                    reference_id=f"docref-{evidence_id}",
+                    label=label,
+                    evidence_id=evidence_id,
                     finding_id=finding_id,
                     document_id=task_input.document_id,
                     contract_version_id=contract_version_id,
@@ -182,9 +183,10 @@ def materialize_grounded_answer(
                     quoted_text_hash=evidence["quoted_text_hash"],
                 )
             )
+            referenced_ids.add(evidence_id)
         except (KeyError, TypeError, ValueError) as exc:
             raise GroundedAnswerMaterializationError(
-                f"evidence '{citation.evidence_id}' has an invalid source anchor"
+                f"evidence '{evidence_id}' has an invalid source anchor"
             ) from exc
 
     return GroundedAnswerResult(
