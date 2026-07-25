@@ -47,6 +47,11 @@ class Settings(BaseSettings):
         ge=0,
         validation_alias="FRAMEWORK_CANCEL_WAIT_SECONDS",
     )
+    grounded_answer_timeout_seconds: float = Field(
+        default=360,
+        gt=0,
+        validation_alias="CONTRACT_GROUNDED_ANSWER_TIMEOUT_SECONDS",
+    )
     framework_stage_timeout_seconds: int = Field(
         default=1800,
         gt=0,

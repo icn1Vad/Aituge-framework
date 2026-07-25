@@ -24,6 +24,7 @@ from contract.api.models import (
     ErrorResponse,
     HealthData,
     ReviewResultData,
+    ReviewStatus,
     ReviewStatusData,
     SuccessResponse,
 )
@@ -39,6 +40,12 @@ from contract.callback.models import (
 from contract.callback.service import FrameworkCallbackService
 from contract.config import Settings, get_settings
 from contract.errors import ContractError
+from contract.grounded.models import (
+    GroundedAnswerData,
+    GroundedChatRequest,
+    GroundedReportRequest,
+)
+from contract.grounded.service import FrameworkGroundedAnswerService
 from contract.internal.models import (
     ContractBlocksToolData,
     ContractBlocksToolRequest,
@@ -97,6 +104,7 @@ def create_app(
     internal_service: ContractInternalService | None = None,
     callback_service: FrameworkCallbackService | None = None,
     revision_draft_service: RevisionDraftService | None = None,
+    grounded_answer_service: FrameworkGroundedAnswerService | None = None,
 ) -> FastAPI:
     app_settings = settings or get_settings()
 
@@ -120,6 +128,7 @@ def create_app(
     app.state.framework_callback_service = callback_service
     app.state.revision_draft_service = revision_draft_service
     app.state.revision_draft_cache = None
+    app.state.grounded_answer_service = grounded_answer_service
 
     @app.exception_handler(ContractError)
     async def handle_contract_error(request: Request, exc: ContractError) -> JSONResponse:
@@ -434,6 +443,56 @@ def create_app(
         return SuccessResponse(data=data, request_id=context.request_id)
 
     @app.post(
+        "/v1/contract-reviews/{review_id}/report",
+        response_model=SuccessResponse[GroundedAnswerData],
+        responses=ERROR_RESPONSES,
+    )
+    async def generate_grounded_report(
+        review_id: str,
+        payload: GroundedReportRequest,
+        http_request: Request,
+        context: Annotated[InternalRequestContext, Depends(_create_internal_context)],
+    ) -> SuccessResponse[GroundedAnswerData]:
+        await _require_grounded_review(
+            http_request,
+            context,
+            review_id=review_id,
+            document_id=payload.document_id,
+        )
+        service = _grounded_answer_service(http_request)
+        data = await service.generate_report(
+            review_id=review_id,
+            request=payload,
+            context=context,
+        )
+        return SuccessResponse(data=data, request_id=context.request_id)
+
+    @app.post(
+        "/v1/contract-reviews/{review_id}/chat",
+        response_model=SuccessResponse[GroundedAnswerData],
+        responses=ERROR_RESPONSES,
+    )
+    async def answer_grounded_chat(
+        review_id: str,
+        payload: GroundedChatRequest,
+        http_request: Request,
+        context: Annotated[InternalRequestContext, Depends(_create_internal_context)],
+    ) -> SuccessResponse[GroundedAnswerData]:
+        await _require_grounded_review(
+            http_request,
+            context,
+            review_id=review_id,
+            document_id=payload.document_id,
+        )
+        service = _grounded_answer_service(http_request)
+        data = await service.answer_chat(
+            review_id=review_id,
+            request=payload,
+            context=context,
+        )
+        return SuccessResponse(data=data, request_id=context.request_id)
+
+    @app.post(
         "/v1/contract-reviews/{review_id}/cancel",
         response_model=SuccessResponse[CancelReviewData],
         responses=ERROR_RESPONSES,
@@ -463,6 +522,44 @@ def create_app(
 
     app.openapi = contract_openapi  # type: ignore[method-assign]
     return app
+
+
+async def _require_grounded_review(
+    request: Request,
+    context: InternalRequestContext,
+    *,
+    review_id: str,
+    document_id: str,
+) -> None:
+    review = await asyncio.to_thread(
+        _service(request).get_status,
+        review_id,
+        context=context,
+    )
+    if review.status != ReviewStatus.SUCCEEDED:
+        raise ContractError(
+            "REVIEW_NOT_READY",
+            "合同审查稳定结果尚未完成",
+            status_code=409,
+            user_action_required=True,
+            details={"current_status": review.status.value},
+        )
+    if review.document_id != document_id:
+        raise ContractError(
+            "REVIEW_DOCUMENT_MISMATCH",
+            "document_id与合同审查任务不一致",
+            status_code=409,
+            user_action_required=True,
+        )
+
+
+def _grounded_answer_service(request: Request) -> FrameworkGroundedAnswerService:
+    configured = request.app.state.grounded_answer_service
+    if configured is not None:
+        return configured
+    configured = FrameworkGroundedAnswerService(request.app.state.settings)
+    request.app.state.grounded_answer_service = configured
+    return configured
 
 
 async def _generate_revision_drafts(
