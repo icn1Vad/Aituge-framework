@@ -199,7 +199,6 @@ services:
       agent_internal:
         aliases:
           - ai-framework
-          - ai-contract
 
 networks:
   ai_internal:
