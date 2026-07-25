@@ -6,10 +6,12 @@ internal endpoint without changing the formal review-result contract.
 
 from __future__ import annotations
 
+import hmac
 import os
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import Body, FastAPI, Query, Request
+from fastapi import Body, Depends, FastAPI, Header, Query, Request
 from fastapi.responses import JSONResponse
 
 from services.contract.capabilities.revision_drafts import (
@@ -23,7 +25,50 @@ from services.contract.capabilities.revision_drafts import (
 )
 
 
-def create_app(service: RevisionDraftService | None = None) -> FastAPI:
+def create_app(
+    service: RevisionDraftService | None = None,
+    *,
+    internal_token: str | None = None,
+    internal_auth_enabled: bool | None = None,
+) -> FastAPI:
+    auth_enabled = (
+        internal_auth_enabled
+        if internal_auth_enabled is not None
+        else os.getenv("CONTRACT_INTERNAL_AUTH_ENABLED", "true").strip().lower()
+        not in {"0", "false", "no", "off"}
+    )
+    expected_token = (
+        internal_token
+        if internal_token is not None
+        else os.getenv("CONTRACT_INTERNAL_TOKEN", "")
+    )
+
+    def authorize(
+        internal_service: Annotated[str, Header(alias="X-Internal-Service")],
+        supplied_token: Annotated[str, Header(alias="X-Internal-Token")],
+        request_id: Annotated[str, Header(alias="X-Request-Id")],
+    ) -> str:
+        if internal_service != "continew-java" or (
+            auth_enabled
+            and (
+                not expected_token
+                or not hmac.compare_digest(supplied_token, expected_token)
+            )
+        ):
+            raise RevisionDraftError(
+                "UNAUTHORIZED_INTERNAL_CALL",
+                "Internal service credential is invalid",
+                status_code=401,
+            )
+        normalized_request_id = request_id.strip()
+        if not normalized_request_id or len(normalized_request_id) > 160:
+            raise RevisionDraftError(
+                "INVALID_REQUEST",
+                "X-Request-Id is invalid",
+                status_code=400,
+            )
+        return normalized_request_id
+
     app = FastAPI(
         title="Contract Revision Draft Internal API",
         version="1.0",
@@ -50,6 +95,7 @@ def create_app(service: RevisionDraftService | None = None) -> FastAPI:
     )
     async def get_revision_drafts(
         review_id: str,
+        _request_id: str = Depends(authorize),
         generation_id: str = Query(min_length=1, max_length=200),
         result_hash: str = Query(pattern=r"^sha256:[0-9a-f]{64}$"),
     ) -> RevisionDraftResponse:
@@ -69,6 +115,7 @@ def create_app(service: RevisionDraftService | None = None) -> FastAPI:
     )
     async def generate_revision_drafts(
         review_id: str,
+        _request_id: str = Depends(authorize),
         source: RevisionReviewSource = Body(),
     ) -> RevisionDraftResponse:
         coordinator = app.state.revision_draft_service

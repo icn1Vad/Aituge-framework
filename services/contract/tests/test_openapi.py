@@ -94,3 +94,5 @@ def test_hidden_risk_plan_interface_does_not_change_frozen_openapi() -> None:
     schema = create_app(Settings(internal_auth_enabled=False)).openapi()
 
     assert "/v1/internal/contract-reviews/{review_id}/risk-plan" not in schema["paths"]
+    assert "/v1/internal/contract-reviews/{review_id}/revision-drafts" not in schema["paths"]
+    assert "/v1/internal/contract-reviews/{review_id}/revision-drafts:generate" not in schema["paths"]

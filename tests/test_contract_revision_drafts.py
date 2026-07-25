@@ -11,6 +11,7 @@ from services.contract.capabilities.revision_drafts import (
     GeneratedReplacement,
     InMemoryRevisionDraftCache,
     InMemoryRevisionSourceProvider,
+    PostgresRevisionSourceProvider,
     ReplacementBatchResult,
     RevisionDraftError,
     RevisionDraftService,
@@ -25,6 +26,13 @@ from services.contract.capabilities.revision_drafts import (
 
 def _hash(value: str) -> str:
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+_INTERNAL_HEADERS = {
+    "X-Internal-Service": "continew-java",
+    "X-Internal-Token": "test-token",
+    "X-Request-Id": "request-1",
+}
 
 
 @dataclass
@@ -46,6 +54,16 @@ class FakeGenerator:
                 for item in items
             )
         )
+
+
+@dataclass
+class FakeRevisionSnapshotRepository:
+    snapshot: dict
+    calls: list[tuple[str, str, str]] = field(default_factory=list)
+
+    def get_revision_source_snapshot(self, review_id, *, tenant_id, user_id):
+        self.calls.append((review_id, tenant_id, user_id))
+        return self.snapshot
 
 
 def _source(*findings: RevisionFindingSource, evidences=None, ir=None, result_hash=None):
@@ -129,6 +147,67 @@ async def test_review_generation_and_result_hash_are_strictly_validated():
     assert generation.value.code == "GENERATION_NOT_FOUND"
     with pytest.raises(RevisionDraftError) as result:
         await service.get_or_generate("review-1", "generation-1", _hash("different"))
+    assert result.value.code == "RESULT_HASH_MISMATCH"
+
+
+@pytest.mark.asyncio
+async def test_postgres_source_uses_completed_result_generation_and_owner_scope():
+    result_hash = _hash("persisted-result")
+    payload = {
+        "review_id": "review-1",
+        "schema_version": "1.0",
+        "contract_profile": {
+            "perspective": "PARTY_A",
+            "our_party": "Party A",
+            "counterparty": "Party B",
+        },
+        "findings": [],
+        "evidences": [],
+        "relationships": [],
+        "summary": {},
+        "result_hash": result_hash,
+    }
+    repository = FakeRevisionSnapshotRepository(
+        {
+            "review_id": "review-1",
+            "review_status": "SUCCEEDED",
+            "result_hash": result_hash,
+            "result_json": payload,
+            "generation_id": "generation-1",
+            "generation_status": "SUCCEEDED",
+            "contract_ir_json": {
+                "items": [
+                    {
+                        "ir_id": "I001",
+                        "anchor_id": "A001",
+                        "block_id": "B001",
+                        "char_start": 0,
+                        "char_end": 4,
+                        "text": "text",
+                    }
+                ]
+            },
+        }
+    )
+    provider = PostgresRevisionSourceProvider(repository, tenant_id="tenant-1", user_id="user-1")
+
+    source = await provider.get_source("review-1", "generation-1", result_hash)
+
+    assert source.review_id == "review-1"
+    assert source.generation_id == "generation-1"
+    assert source.result_hash == result_hash
+    assert await provider.resolve_generation_id("review-1", result_hash) == "generation-1"
+    assert repository.calls == [
+        ("review-1", "tenant-1", "user-1"),
+        ("review-1", "tenant-1", "user-1"),
+    ]
+
+    with pytest.raises(RevisionDraftError) as generation:
+        await provider.get_source("review-1", "generation-other", result_hash)
+    assert generation.value.code == "GENERATION_NOT_FOUND"
+
+    with pytest.raises(RevisionDraftError) as result:
+        await provider.get_source("review-1", "generation-1", _hash("other"))
     assert result.value.code == "RESULT_HASH_MISMATCH"
 
 
@@ -368,11 +447,12 @@ def test_revision_key_and_revision_hash_are_stable_and_result_bound():
 
 def test_internal_api_returns_drafts_and_does_not_change_public_contract_api():
     source = _source()
-    app = create_app(_service(source))
+    app = create_app(_service(source), internal_auth_enabled=False)
     client = TestClient(app)
     response = client.get(
         "/v1/internal/contract-reviews/review-1/revision-drafts",
         params={"generation_id": "generation-1", "result_hash": source.result_hash},
+        headers=_INTERNAL_HEADERS,
     )
     assert response.status_code == 200
     assert response.json()["drafts"][0]["finding_id"] == "finding-1"
@@ -384,10 +464,11 @@ def test_internal_api_returns_drafts_and_does_not_change_public_contract_api():
 
 
 def test_internal_api_maps_domain_errors():
-    app = create_app(_service())
+    app = create_app(_service(), internal_auth_enabled=False)
     response = TestClient(app).get(
         "/v1/internal/contract-reviews/missing/revision-drafts",
         params={"generation_id": "generation-1", "result_hash": _hash("result-1")},
+        headers=_INTERNAL_HEADERS,
     )
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "REVIEW_NOT_FOUND"
@@ -397,18 +478,51 @@ def test_internal_generate_endpoint_registers_source_then_get_uses_cache():
     provider = InMemoryRevisionSourceProvider({})
     generator = FakeGenerator()
     service = RevisionDraftService(provider, generator, InMemoryRevisionDraftCache())
-    client = TestClient(create_app(service))
+    client = TestClient(create_app(service, internal_auth_enabled=False))
     source = _source()
     generated = client.post(
         "/v1/internal/contract-reviews/review-1/revision-drafts:generate",
         json=source.model_dump(mode="json"),
+        headers=_INTERNAL_HEADERS,
     )
     assert generated.status_code == 200
     assert generated.json()["cache_hit"] is False
     queried = client.get(
         "/v1/internal/contract-reviews/review-1/revision-drafts",
         params={"generation_id": "generation-1", "result_hash": source.result_hash},
+        headers=_INTERNAL_HEADERS,
     )
     assert queried.status_code == 200
     assert queried.json()["cache_hit"] is True
     assert len(generator.calls) == 1
+
+
+def test_standalone_internal_api_fails_closed_without_valid_internal_token():
+    source = _source()
+    app = create_app(_service(source), internal_token="secret", internal_auth_enabled=True)
+    client = TestClient(app)
+    path = "/v1/internal/contract-reviews/review-1/revision-drafts"
+    params = {"generation_id": "generation-1", "result_hash": source.result_hash}
+
+    denied = client.get(
+        path,
+        params=params,
+        headers={
+            "X-Internal-Service": "continew-java",
+            "X-Internal-Token": "wrong",
+            "X-Request-Id": "request-1",
+        },
+    )
+    assert denied.status_code == 401
+    assert denied.json()["error"]["code"] == "UNAUTHORIZED_INTERNAL_CALL"
+
+    allowed = client.get(
+        path,
+        params=params,
+        headers={
+            "X-Internal-Service": "continew-java",
+            "X-Internal-Token": "secret",
+            "X-Request-Id": "request-1",
+        },
+    )
+    assert allowed.status_code == 200

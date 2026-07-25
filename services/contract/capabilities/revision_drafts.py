@@ -166,6 +166,16 @@ class RevisionSourceProvider(Protocol):
     ) -> RevisionReviewSource: ...
 
 
+class RevisionSourceSnapshotRepository(Protocol):
+    def get_revision_source_snapshot(
+        self,
+        review_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> dict[str, Any]: ...
+
+
 class RevisionTextGenerator(Protocol):
     async def generate(
         self,
@@ -318,6 +328,116 @@ class JsonRevisionSourceProvider:
         if source.result_hash != result_hash:
             raise RevisionDraftError("RESULT_HASH_MISMATCH", "Result hash mismatch", status_code=409)
         return source.model_copy(deep=True)
+
+
+@dataclass(slots=True)
+class PostgresRevisionSourceProvider:
+    """Resolve a revision source from the persisted formal result and its IR."""
+
+    repository: RevisionSourceSnapshotRepository
+    tenant_id: str
+    user_id: str
+
+    async def get_source(
+        self,
+        review_id: str,
+        generation_id: str,
+        result_hash: str,
+    ) -> RevisionReviewSource:
+        snapshot = await self._snapshot(review_id)
+        self._validate_completed_result(snapshot, review_id, result_hash)
+        stored_generation_id = snapshot.get("generation_id")
+        if stored_generation_id != generation_id:
+            raise RevisionDraftError(
+                "GENERATION_NOT_FOUND",
+                "generation_id does not match the completed review",
+                status_code=404,
+            )
+        payload = snapshot["result_json"]
+        contract_ir = snapshot.get("contract_ir_json")
+        if not isinstance(contract_ir, dict):
+            raise RevisionDraftError(
+                "GENERATION_NOT_FOUND",
+                "Completed review Contract IR is unavailable",
+                status_code=404,
+            )
+        try:
+            ir_values = _find_contract_ir_list(contract_ir)
+            return source_from_formal_payload(
+                payload,
+                generation_id=generation_id,
+                contract_ir=ir_values,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RevisionDraftError(
+                "REVISION_GENERATION_FAILED",
+                f"Completed review source is invalid: {exc}",
+                status_code=500,
+            ) from exc
+
+    async def resolve_generation_id(self, review_id: str, result_hash: str) -> str:
+        snapshot = await self._snapshot(review_id)
+        self._validate_completed_result(snapshot, review_id, result_hash)
+        return str(snapshot["generation_id"])
+
+    async def _snapshot(self, review_id: str) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                self.repository.get_revision_source_snapshot,
+                review_id,
+                tenant_id=self.tenant_id,
+                user_id=self.user_id,
+            )
+        except RevisionDraftError:
+            raise
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            status_code = getattr(exc, "status_code", 500)
+            if code == "REVIEW_NOT_FOUND":
+                raise RevisionDraftError(
+                    "REVIEW_NOT_FOUND",
+                    "Contract review was not found",
+                    status_code=404,
+                ) from exc
+            raise RevisionDraftError(
+                "REVISION_GENERATION_FAILED",
+                "Unable to read the completed contract review",
+                status_code=status_code,
+            ) from exc
+
+    @staticmethod
+    def _validate_completed_result(
+        snapshot: dict[str, Any],
+        review_id: str,
+        result_hash: str,
+    ) -> None:
+        if snapshot.get("review_status") != "SUCCEEDED" or not isinstance(
+            snapshot.get("result_json"), dict
+        ):
+            raise RevisionDraftError(
+                "REVIEW_NOT_COMPLETED",
+                "Contract review is not completed",
+                status_code=409,
+            )
+        stored_generation_id = snapshot.get("generation_id")
+        if stored_generation_id is None or snapshot.get("generation_status") != "SUCCEEDED":
+            raise RevisionDraftError(
+                "GENERATION_NOT_FOUND",
+                "Completed review Generation was not found",
+                status_code=404,
+            )
+        stored_result_hash = snapshot.get("result_hash")
+        payload = snapshot["result_json"]
+        if (
+            stored_result_hash != result_hash
+            or payload.get("result_hash") != result_hash
+            or payload.get("review_id") != review_id
+        ):
+            raise RevisionDraftError(
+                "RESULT_HASH_MISMATCH",
+                "result_hash does not match the completed review result",
+                status_code=409,
+            )
 
 
 @dataclass(slots=True)
