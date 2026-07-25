@@ -72,15 +72,40 @@ def test_contract_capability_registers_frozen_pipeline_and_internal_tools() -> N
         "contract_get_blocks",
         "contract_get_clause_context",
         "contract_get_ir",
+        "contract_get_review_result",
     ]
     assert all(item["headers"]["X-Internal-Token"] == "callback-secret" for item in registry.tools)
     assert all(item["request_id_header"] == "X-Request-Id" for item in registry.tools)
-    assert len(registry.skill_packages) == 8
+    assert len(registry.skill_packages) == 9
     assert registry.agents[0]["agent_id"] == "contract-review-neutral-v1"
     assert registry.tasks[0]["task_type"] == "contract.review.run"
     assert registry.tasks[0]["pipeline_id"] == "contract-review-pipeline-v1"
     assert registry.result_sinks[0]["task_type"] == "contract.review.run"
     assert registry.result_sinks[0]["required"] is True
+
+    grounded_task = next(
+        item for item in registry.tasks if item["task_type"] == "contract.grounded.answer"
+    )
+    grounded_agent = next(
+        item
+        for item in registry.agents
+        if item["agent_id"] == "contract-grounded-answer-v1"
+    )
+    grounded_pipeline = next(
+        item
+        for item in registry.pipelines
+        if item["pipeline_id"] == "contract-grounded-answer-pipeline-v1"
+    )
+    grounded_stages = {
+        item["stage_id"]: item for item in grounded_pipeline["stages"]
+    }
+    assert grounded_task["handler"] == "pipeline"
+    assert grounded_task["pipeline_id"] == "contract-grounded-answer-pipeline-v1"
+    assert "contract_get_review_result" in grounded_agent["default_tools"]
+    assert grounded_stages["generate_grounded_answer"]["input_adapter"] == "task_input"
+    assert grounded_stages["finalize_grounded_answer"]["service_handler"] == (
+        "contract_grounded_answer_finalize_v1"
+    )
 
     pipeline = registry.pipelines[0]
     assert pipeline["pipeline_id"] == "contract-review-pipeline-v1"
@@ -136,6 +161,7 @@ def test_contract_capability_can_switch_only_ir_stage_to_window_engine() -> None
         "contract_ir_fragment_merge_v1",
         "contract_ir_window_v1",
         "contract_direct_review_v1",
+        "contract_grounded_answer_finalize_v1",
     ]
     assert stages["finalize_review"]["depends_on"] == [
         "parse_contract",

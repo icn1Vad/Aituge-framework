@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 
 import pytest
@@ -11,40 +10,6 @@ from services.contract.capabilities.grounded_answer import (
     GroundedAnswerTaskInput,
     materialize_grounded_answer,
 )
-from services.contract.capabilities import register as contract_capability
-
-
-class _Settings:
-    def get(self, name: str, default: str = "") -> str:
-        return {
-            "CONTRACT_SERVICE_BASE_URL": "http://contract:18120",
-            "CONTRACT_RESULT_SINK_INTERNAL_TOKEN": "test-token",
-            "CONTRACT_MODEL_ID": "deepseek-v4-pro",
-            "CONTRACT_IR_ENGINE": "window",
-        }.get(name, default)
-
-    def require(self, name: str) -> str:
-        value = self.get(name).strip()
-        if not value:
-            raise ValueError(name)
-        return value
-
-
-class _Registry:
-    def __init__(self) -> None:
-        self.calls: dict[str, list] = {}
-
-    def register_skill_root(self, path) -> None:
-        self.calls.setdefault("skill_root", []).append(path)
-
-    def __getattr__(self, name: str):
-        if not name.startswith("register_"):
-            raise AttributeError(name)
-
-        def capture(**kwargs) -> None:
-            self.calls.setdefault(name.removeprefix("register_"), []).append(kwargs)
-
-        return capture
 
 
 def _review_result(*, evidence_type: str = "TEXT_QUOTE") -> dict:
@@ -190,31 +155,3 @@ def test_rejects_marker_label_that_differs_from_citation() -> None:
             draft=draft,
             review_result=_review_result(),
         )
-
-
-def test_contract_capability_registers_grounded_report_pipeline() -> None:
-    registry = _Registry()
-
-    asyncio.run(contract_capability.register(registry, _Settings()))
-
-    tasks = {item["task_type"]: item for item in registry.calls["task"]}
-    pipelines = {item["pipeline_id"]: item for item in registry.calls["pipeline"]}
-    tools = {item["tool_name"]: item for item in registry.calls["http_tool"]}
-    agents = {item["agent_id"]: item for item in registry.calls["agent"]}
-    report_task = tasks["contract.grounded.answer"]
-    report_pipeline = pipelines["contract-grounded-answer-pipeline-v1"]
-    stages = {item["stage_id"]: item for item in report_pipeline["stages"]}
-
-    assert report_task["handler"] == "pipeline"
-    assert report_task["input_model"] is GroundedAnswerTaskInput
-    assert report_task["output_model"].__name__ == "GroundedAnswerResult"
-    assert tools["contract_get_review_result"]["path"] == (
-        "/v1/internal/contract-tools/review-result"
-    )
-    assert "contract_get_review_result" in agents["contract-grounded-answer-v1"][
-        "default_tools"
-    ]
-    assert stages["generate_grounded_answer"]["output_model"] is GroundedAnswerDraft
-    assert stages["finalize_grounded_answer"]["service_handler"] == (
-        "contract_grounded_answer_finalize_v1"
-    )
