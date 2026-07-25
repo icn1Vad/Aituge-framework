@@ -110,7 +110,16 @@ def test_framework_service_runs_report_task_and_reuses_succeeded_task() -> None:
                             "question": None,
                             "conversation_history": [],
                         },
-                        "result_payload_json": _answer("REPORT"),
+                        "result_payload_json": {
+                            "content": json.dumps(
+                                _answer("REPORT"),
+                                ensure_ascii=False,
+                            ),
+                            "structured": _answer("REPORT"),
+                            "usage": None,
+                            "thread_id": None,
+                            "session_id": None,
+                        },
                         "error_payload_json": None,
                         "tenant_id": "tenant-1",
                         "user_id": "user-1",

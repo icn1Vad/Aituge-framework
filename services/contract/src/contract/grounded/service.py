@@ -158,8 +158,15 @@ class FrameworkGroundedAnswerService:
                 retryable=True,
                 details=details,
             )
+        structured_result = task.result_payload_json.get("structured")
+        if not isinstance(structured_result, dict):
+            raise ContractError(
+                "FRAMEWORK_PROTOCOL_ERROR",
+                "Framework合同报告或问答结果缺少structured对象",
+                status_code=502,
+            )
         try:
-            result = GroundedAnswerData.model_validate(task.result_payload_json)
+            result = GroundedAnswerData.model_validate(structured_result)
         except ValidationError as exc:
             raise ContractError(
                 "FRAMEWORK_PROTOCOL_ERROR",
