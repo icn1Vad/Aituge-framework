@@ -27,6 +27,7 @@ from skill import ensure_default_skill_packages
 from task_manager import create_task_manager_router
 from tool import ToolBundle
 from tool.registry import ToolManager
+from backend.revision_llm_api import create_revision_llm_router
 
 
 TASK_MEMORY_TEST_DIR = Path(__file__).resolve().parents[1] / "frontend" / "task-memory-test"
@@ -147,6 +148,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(create_scheduling_router(scheduling_options))
     app.include_router(create_task_manager_router(scheduling_options))
+    app.include_router(create_revision_llm_router())
     app.mount(
         "/task-memory-test",
         StaticFiles(directory=TASK_MEMORY_TEST_DIR, html=True),

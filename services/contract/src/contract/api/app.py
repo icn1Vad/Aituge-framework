@@ -64,6 +64,7 @@ from services.contract.capabilities.revision_drafts import (
     RevisionDraftService,
     default_cache,
 )
+from contract.revision_llm_gateway import FrameworkRevisionLlmRuntime
 
 
 ALLOWED_FILE_TYPES = {
@@ -515,6 +516,17 @@ def _revision_draft_service(
         generator=LlmRevisionTextGenerator(
             tenant_id=context.tenant_id,
             model_id=model_id,
+            runtime=FrameworkRevisionLlmRuntime(
+                base_url=request.app.state.settings.framework_base_url,
+                internal_token=request.app.state.settings.internal_token,
+                tenant_id=context.tenant_id,
+                connect_timeout_seconds=(
+                    request.app.state.settings.framework_connect_timeout_seconds
+                ),
+                read_timeout_seconds=(
+                    request.app.state.settings.framework_read_timeout_seconds
+                ),
+            ),
         ),
         cache=cache,
     )
