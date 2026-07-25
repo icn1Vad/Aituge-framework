@@ -144,16 +144,17 @@ def test_downgrades_absence_evidence_to_plain_text() -> None:
     assert result.references == []
 
 
-def test_rejects_marker_label_that_differs_from_citation() -> None:
+def test_uses_marker_label_when_redundant_citation_label_differs() -> None:
     draft = GroundedAnswerDraft(
         mode="REPORT",
         content_markdown="重点检查[付款条款](#docref-ev-019)。",
         citations=[{"evidence_id": "ev-019", "label": "付款安排"}],
     )
 
-    with pytest.raises(GroundedAnswerMaterializationError, match="label"):
-        materialize_grounded_answer(
-            task_input=_task_input(),
-            draft=draft,
-            review_result=_review_result(),
-        )
+    result = materialize_grounded_answer(
+        task_input=_task_input(),
+        draft=draft,
+        review_result=_review_result(),
+    )
+
+    assert result.references[0].label == "付款条款"
