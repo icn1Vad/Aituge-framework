@@ -1434,13 +1434,13 @@ async def register(registry, settings) -> None:
     registry.register_agent(
         agent_id=GROUNDED_ANSWER_AGENT_ID,
         name="Contract Grounded Answer Agent V1",
-        description="Generates a contract report grounded only in validated review evidence.",
+        description="Generates contract reports and answers grounded in validated review evidence.",
         model_id=model_id or "deepseek-v4-pro",
         system_prompt=(
             "You generate grounded contract content from the completed review result. "
             "Use only contract tools and the supplied task. Every clickable source reference "
-            "must use Markdown form [label](#docref-EVIDENCE_ID), and every such evidence ID "
-            "must also appear exactly once in citations. Only TEXT_QUOTE or CONTEXT evidence "
+            "must use Markdown form [label](#docref-EVIDENCE_ID), and every such link "
+            "must have a matching citations entry. Only TEXT_QUOTE or CONTEXT evidence "
             "may be cited; never create a link for ABSENCE evidence. Do not invent identifiers, "
             "quotes, offsets, hashes, parties, findings, or legal conclusions. Return exactly "
             "the registered JSON shape with no prose outside JSON."
@@ -1493,8 +1493,8 @@ async def register(registry, settings) -> None:
     )
     registry.register_task(
         task_type=GROUNDED_ANSWER_TASK_TYPE,
-        name="Contract Grounded Report",
-        description="Generate a source-grounded report from one completed contract review.",
+        name="Contract Grounded Answer",
+        description="Generate a source-grounded report or answer from a completed contract review.",
         handler="pipeline",
         pipeline_id=GROUNDED_ANSWER_PIPELINE_ID,
         default_agent_id=GROUNDED_ANSWER_AGENT_ID,
@@ -1679,7 +1679,7 @@ async def register(registry, settings) -> None:
         pipeline_id=GROUNDED_ANSWER_PIPELINE_ID,
         version="1.0",
         task_type=GROUNDED_ANSWER_TASK_TYPE,
-        description="Generate one grounded report and materialize authoritative citations.",
+        description="Generate one grounded report or answer and materialize authoritative citations.",
         final_artifact_type="contract_grounded_answer",
         timeout_seconds=360,
         resumable=False,
@@ -1687,7 +1687,7 @@ async def register(registry, settings) -> None:
         stages=[
             {
                 "stage_id": "generate_grounded_answer",
-                "name": "Generate grounded contract report",
+                "name": "Generate grounded contract content",
                 "stage_type": "agent",
                 "input_model": GroundedAnswerTaskInput,
                 "output_model": GroundedAnswerDraft,

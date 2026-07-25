@@ -17,12 +17,32 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class GroundedChatMessage(StrictModel):
+    role: Literal["USER", "ASSISTANT"]
+    content: str = Field(min_length=1, max_length=8000)
+
+
 class GroundedAnswerTaskInput(StrictModel):
     schema_version: Literal["1.0"]
-    mode: Literal["REPORT"]
+    mode: Literal["REPORT", "CHAT"]
     review_id: str = Field(min_length=1, max_length=160)
     document_id: str = Field(min_length=1, max_length=160)
     instruction: str | None = Field(default=None, max_length=4000)
+    question: str | None = Field(default=None, max_length=8000)
+    conversation_history: list[GroundedChatMessage] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+
+    @model_validator(mode="after")
+    def validate_mode_fields(self) -> "GroundedAnswerTaskInput":
+        if self.mode == "REPORT":
+            if self.question is not None or self.conversation_history:
+                raise ValueError("REPORT mode does not accept question or conversation_history")
+            return self
+        if self.question is None or not self.question.strip():
+            raise ValueError("CHAT mode requires a non-empty question")
+        return self
 
 
 class GroundedAnswerPipelineContext(StrictModel):
@@ -37,7 +57,7 @@ class GroundedCitationDraft(StrictModel):
 
 class GroundedAnswerDraft(StrictModel):
     schema_version: Literal["1.0"] = "1.0"
-    mode: Literal["REPORT"]
+    mode: Literal["REPORT", "CHAT"]
     content_markdown: str = Field(min_length=1, max_length=100_000)
     citations: list[GroundedCitationDraft] = Field(default_factory=list, max_length=500)
 
@@ -68,7 +88,7 @@ class GroundedReference(StrictModel):
 
 class GroundedAnswerResult(StrictModel):
     schema_version: Literal["1.0"] = "1.0"
-    mode: Literal["REPORT"]
+    mode: Literal["REPORT", "CHAT"]
     review_id: str = Field(min_length=1, max_length=160)
     document_id: str = Field(min_length=1, max_length=160)
     contract_version_id: str = Field(min_length=1, max_length=160)

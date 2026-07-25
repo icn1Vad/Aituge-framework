@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 
+import pytest
+from pydantic import ValidationError
+
 from services.contract.capabilities.grounded_answer import (
     GroundedAnswerDraft,
     GroundedAnswerTaskInput,
@@ -81,3 +84,65 @@ def test_unknown_evidence_is_downgraded_to_plain_text() -> None:
 
     assert result.content_markdown == "合同缺少数据删除条款。"
     assert result.references == []
+
+
+def test_chat_requires_question_and_accepts_bounded_history() -> None:
+    task_input = GroundedAnswerTaskInput(
+        schema_version="1.0",
+        mode="CHAT",
+        review_id="review-1",
+        document_id="document-1",
+        question="付款条款对甲方有什么风险？",
+        conversation_history=[
+            {"role": "USER", "content": "先说明合同金额。"},
+            {"role": "ASSISTANT", "content": "合同金额以审查结果为准。"},
+        ],
+    )
+
+    assert task_input.question == "付款条款对甲方有什么风险？"
+    assert len(task_input.conversation_history) == 2
+
+    with pytest.raises(ValidationError, match="requires a non-empty question"):
+        GroundedAnswerTaskInput(
+            schema_version="1.0",
+            mode="CHAT",
+            review_id="review-1",
+            document_id="document-1",
+            question=" ",
+        )
+
+
+def test_chat_materializes_the_same_authoritative_reference_shape() -> None:
+    task_input = GroundedAnswerTaskInput(
+        schema_version="1.0",
+        mode="CHAT",
+        review_id="review-1",
+        document_id="document-1",
+        question="付款证据在哪里？",
+    )
+    draft = GroundedAnswerDraft(
+        mode="CHAT",
+        content_markdown="请查看[付款条款](#docref-evidence-1)。",
+        citations=[{"evidence_id": "evidence-1", "label": "付款条款"}],
+    )
+
+    result = materialize_grounded_answer(
+        task_input=task_input,
+        draft=draft,
+        review_result=_review_result(),
+    )
+
+    assert result.mode == "CHAT"
+    assert result.references[0].chunk_id == "block-1"
+    assert result.references[0].char_start == 0
+
+
+def test_report_rejects_chat_only_fields() -> None:
+    with pytest.raises(ValidationError, match="does not accept"):
+        GroundedAnswerTaskInput(
+            schema_version="1.0",
+            mode="REPORT",
+            review_id="review-1",
+            document_id="document-1",
+            question="不应出现在报告模式",
+        )

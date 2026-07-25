@@ -40,7 +40,15 @@ Markdown 引用格式固定为：
 报告草稿由 Agent 生成，引用由确定性 Finalizer 校验并物化。ABSENCE 证据可以作为普通文字
 描述，但不得生成可点击引用。
 
-## 后续阶段
+## 阶段 2：问答模式
 
-在相同 Task、Agent、工具和引用协议上增加 `CHAT` 模式及有界会话历史。REPORT 与 CHAT
-使用不同业务指令，但共用 Evidence 引用和定位数据结构。
+相同 Task、Agent、工具和引用协议现已支持 `CHAT` 模式：
+
+- `question`为必填的当前问题；
+- `conversation_history`最多20条，只用于理解上下文；
+- 历史消息不是事实来源；
+- 回答依据仍只有正式审查结果；
+- 无法从结果确认时明确说明无法确定；
+- 输出继续使用相同Markdown引用和`references[]`。
+
+REPORT 与 CHAT 使用不同业务指令，但共用 Evidence 引用和定位数据结构。
