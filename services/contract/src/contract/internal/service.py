@@ -35,6 +35,8 @@ from contract.internal.models import (
     ContractDocumentToolRequest,
     ContractIrToolData,
     ContractIrToolRequest,
+    ContractReviewResultToolData,
+    ContractReviewResultToolRequest,
     ContractWindowData,
     ContractWindowExpectedBlockData,
     ContractWindowOffsetData,
@@ -173,6 +175,37 @@ class ContractInternalService:
             generation_id=generation["id"],
             generation_status=generation["status"],
             contract_ir=contract_ir,
+        )
+
+    def get_review_result(
+        self,
+        request: ContractReviewResultToolRequest,
+    ) -> ContractReviewResultToolData:
+        review = self._tool_context(request.review_id, request.document_id)
+        snapshot = self.callback_repository.get_revision_source_snapshot(
+            review["id"],
+            tenant_id=review["tenant_id"],
+            user_id=review["user_id"],
+        )
+        if snapshot["review_status"] != "SUCCEEDED":
+            raise ContractError(
+                "RESULT_NOT_READY",
+                "Contract review result is not ready",
+                status_code=409,
+            )
+        result = snapshot.get("result_json")
+        generation_id = snapshot.get("generation_id")
+        if not isinstance(result, dict) or not isinstance(generation_id, str):
+            raise ContractError(
+                "RESULT_INVALID",
+                "Completed contract review result is unavailable",
+                status_code=422,
+            )
+        return ContractReviewResultToolData(
+            review_id=review["id"],
+            document_id=review["document_id"],
+            generation_id=generation_id,
+            result=ReviewResultData.model_validate(result),
         )
 
     def get_window_plan(

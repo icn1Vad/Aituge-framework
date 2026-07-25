@@ -16,6 +16,13 @@ from task_manager.pipeline.stage_registry import StageExecutionContext, StageSer
 from task_manager.result_sink import ResultSinkDelivery, ResultSinkRejectedError
 try:
     from services.contract.capabilities.finding_consolidation import FindingConsolidationEngine
+    from services.contract.capabilities.grounded_answer import (
+        GroundedAnswerDraft,
+        GroundedAnswerPipelineContext,
+        GroundedAnswerResult,
+        GroundedAnswerTaskInput,
+        materialize_grounded_answer,
+    )
     from services.contract.capabilities.window_extraction import WindowExtractionEngine
     from services.contract.capabilities.window_pipeline import (
         ContractIrWindowPipeline,
@@ -26,6 +33,13 @@ except ModuleNotFoundError as exc:  # standalone capability mount in the runtime
     if exc.name != "services":
         raise
     from finding_consolidation import FindingConsolidationEngine
+    from grounded_answer import (
+        GroundedAnswerDraft,
+        GroundedAnswerPipelineContext,
+        GroundedAnswerResult,
+        GroundedAnswerTaskInput,
+        materialize_grounded_answer,
+    )
     from window_extraction import WindowExtractionEngine
     from window_pipeline import ContractIrWindowPipeline, WindowPipelineError, WindowPipelineRequest
 
@@ -35,6 +49,9 @@ CAPABILITY_DIR = Path(__file__).resolve().parent
 TASK_TYPE = "contract.review.run"
 PIPELINE_ID = "contract-review-pipeline-v1"
 AGENT_ID = "contract-review-neutral-v1"
+GROUNDED_ANSWER_TASK_TYPE = "contract.grounded.answer"
+GROUNDED_ANSWER_PIPELINE_ID = "contract-grounded-answer-pipeline-v1"
+GROUNDED_ANSWER_AGENT_ID = "contract-grounded-answer-v1"
 
 STAGE_SEQUENCE = {
     "parse_contract": 10,
@@ -1256,6 +1273,76 @@ def _stage_gateway_handler(
     return execute
 
 
+def _grounded_answer_finalizer(base_url: str, token: str):
+    async def finalize(context: StageExecutionContext) -> StageServiceResult:
+        task_input = GroundedAnswerTaskInput.model_validate(
+            context.task.input_payload_json or {}
+        )
+        draft_artifact = context.artifacts.get("generate_grounded_answer")
+        if draft_artifact is None or not isinstance(draft_artifact.content_json, dict):
+            raise StageExecutionError(
+                "Grounded answer draft artifact is missing.",
+                code="missing_dependency_artifact",
+                retryable=False,
+            )
+        draft = GroundedAnswerDraft.model_validate(draft_artifact.content_json)
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=30) as client:
+                response = await client.post(
+                    "/v1/internal/contract-tools/review-result",
+                    headers={
+                        "X-Internal-Service": "aituge-framework",
+                        "X-Internal-Token": token,
+                        "X-Request-Id": (
+                            f"contract-grounded:{context.run.id}:{context.stage.stage_id}"
+                        ),
+                    },
+                    json={
+                        "review_id": task_input.review_id,
+                        "document_id": task_input.document_id,
+                    },
+                )
+            response.raise_for_status()
+            body = response.json()
+            data = body.get("data") if isinstance(body, dict) else None
+            review_result = data.get("result") if isinstance(data, dict) else None
+            if (
+                not isinstance(body, dict)
+                or body.get("success") is not True
+                or not isinstance(review_result, dict)
+            ):
+                raise ValueError("invalid review result envelope")
+            result = materialize_grounded_answer(
+                task_input=task_input,
+                draft=draft,
+                review_result=review_result,
+            )
+        except httpx.HTTPStatusError as exc:
+            raise StageExecutionError(
+                f"Contract review result returned HTTP {exc.response.status_code}",
+                code="CONTRACT_CONTEXT_UNAVAILABLE",
+                retryable=exc.response.status_code >= 500,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise StageExecutionError(
+                f"Contract review result request failed: {exc}",
+                code="CONTRACT_CONTEXT_UNAVAILABLE",
+                retryable=True,
+            ) from exc
+        except ValueError as exc:
+            raise StageExecutionError(
+                f"Grounded answer citation validation failed: {exc}",
+                code="GROUNDING_INVALID",
+                retryable=False,
+            ) from exc
+        return StageServiceResult(
+            output=result.model_dump(mode="json"),
+            summary="Validated report citations against authoritative contract evidence.",
+        )
+
+    return finalize
+
+
 async def register(registry, settings) -> None:
     base_url = settings.require("CONTRACT_SERVICE_BASE_URL").rstrip("/")
     callback_token = settings.require("CONTRACT_RESULT_SINK_INTERNAL_TOKEN")
@@ -1278,6 +1365,12 @@ async def register(registry, settings) -> None:
          ContractClauseContextToolInput, "Read one contract block with adjacent clause context."),
         ("contract_get_ir", "/v1/internal/contract-tools/ir", ContractIrToolInput,
          "Read the current typed Contract IR for review."),
+        (
+            "contract_get_review_result",
+            "/v1/internal/contract-tools/review-result",
+            ContractDocumentToolInput,
+            "Read the completed, validated contract review result and source evidences.",
+        ),
     ):
         registry.register_http_tool(
             tool_name=tool_name,
@@ -1302,6 +1395,7 @@ async def register(registry, settings) -> None:
         "contract-ir-liability-termination",
         "contract-ir-special-terms",
         "contract-neutral-risk-review",
+        "contract-grounded-answer",
     ]
     for skill_name in skill_names:
         registry.register_skill_package(
@@ -1337,6 +1431,28 @@ async def register(registry, settings) -> None:
         ],
     )
 
+    registry.register_agent(
+        agent_id=GROUNDED_ANSWER_AGENT_ID,
+        name="Contract Grounded Answer Agent V1",
+        description="Generates a contract report grounded only in validated review evidence.",
+        model_id=model_id or "deepseek-v4-pro",
+        system_prompt=(
+            "You generate grounded contract content from the completed review result. "
+            "Use only contract tools and the supplied task. Every clickable source reference "
+            "must use Markdown form [label](#docref-EVIDENCE_ID), and every such evidence ID "
+            "must also appear exactly once in citations. Only TEXT_QUOTE or CONTEXT evidence "
+            "may be cited; never create a link for ABSENCE evidence. Do not invent identifiers, "
+            "quotes, offsets, hashes, parties, findings, or legal conclusions. Return exactly "
+            "the registered JSON shape with no prose outside JSON."
+        ),
+        default_tools=[
+            "contract_get_review_result",
+            "contract_get_ir",
+            "contract_get_blocks",
+            "contract_get_clause_context",
+        ],
+    )
+
     gateway_handler = _stage_gateway_handler(base_url, callback_token, model_id)
     registry.register_stage_handler(name="contract_stage_gateway_v1", handler=gateway_handler)
     registry.register_stage_handler(
@@ -1350,6 +1466,10 @@ async def register(registry, settings) -> None:
     registry.register_stage_handler(
         name="contract_direct_review_v1",
         handler=_direct_contract_review_handler(base_url, callback_token, model_id),
+    )
+    registry.register_stage_handler(
+        name="contract_grounded_answer_finalize_v1",
+        handler=_grounded_answer_finalizer(base_url, callback_token),
     )
     registry.register_result_sink(
         task_type=TASK_TYPE,
@@ -1373,6 +1493,24 @@ async def register(registry, settings) -> None:
         ],
         input_model=ContractTaskInput,
         output_model=FinalizeReviewStageResult,
+    )
+    registry.register_task(
+        task_type=GROUNDED_ANSWER_TASK_TYPE,
+        name="Contract Grounded Report",
+        description="Generate a source-grounded report from one completed contract review.",
+        handler="pipeline",
+        pipeline_id=GROUNDED_ANSWER_PIPELINE_ID,
+        default_agent_id=GROUNDED_ANSWER_AGENT_ID,
+        default_skill_package="contract-grounded-answer-package",
+        default_primary_skill="contract-grounded-answer",
+        default_tools=[
+            "contract_get_review_result",
+            "contract_get_ir",
+            "contract_get_blocks",
+            "contract_get_clause_context",
+        ],
+        input_model=GroundedAnswerTaskInput,
+        output_model=GroundedAnswerResult,
     )
 
     review_tools = [
@@ -1542,4 +1680,52 @@ async def register(registry, settings) -> None:
         resumable=False,
         max_parallelism=7,
         stages=stages,
+    )
+    registry.register_pipeline(
+        pipeline_id=GROUNDED_ANSWER_PIPELINE_ID,
+        version="1.0",
+        task_type=GROUNDED_ANSWER_TASK_TYPE,
+        description="Generate one grounded report and materialize authoritative citations.",
+        final_artifact_type="contract_grounded_answer",
+        timeout_seconds=360,
+        resumable=False,
+        max_parallelism=1,
+        stages=[
+            {
+                "stage_id": "generate_grounded_answer",
+                "name": "Generate grounded contract report",
+                "stage_type": "agent",
+                "input_model": GroundedAnswerTaskInput,
+                "output_model": GroundedAnswerDraft,
+                "input_adapter": "task_input",
+                "artifact_type": "contract_grounded_answer_draft",
+                "agent_id": GROUNDED_ANSWER_AGENT_ID,
+                "skill_package": "contract-grounded-answer-package",
+                "primary_skill": "contract-grounded-answer",
+                "tools": [
+                    "contract_get_review_result",
+                    "contract_get_ir",
+                    "contract_get_blocks",
+                    "contract_get_clause_context",
+                ],
+                "output_policy": "repair_once",
+                "timeout_seconds": 300,
+                "retry_policy": {
+                    "max_attempts": 2,
+                    "retry_on": ["invalid_output", "timeout"],
+                },
+            },
+            {
+                "stage_id": "finalize_grounded_answer",
+                "name": "Validate and materialize contract citations",
+                "stage_type": "finalizer",
+                "depends_on": ["generate_grounded_answer"],
+                "input_model": GroundedAnswerPipelineContext,
+                "output_model": GroundedAnswerResult,
+                "artifact_type": "contract_grounded_answer",
+                "service_handler": "contract_grounded_answer_finalize_v1",
+                "timeout_seconds": 30,
+                "retry_policy": {"max_attempts": 1, "retry_on": []},
+            },
+        ],
     )

@@ -48,6 +48,8 @@ from contract.internal.models import (
     ContractDocumentToolRequest,
     ContractIrToolData,
     ContractIrToolRequest,
+    ContractReviewResultToolData,
+    ContractReviewResultToolRequest,
     ContractRiskPlanRequest,
     ContractWindowPlanToolData,
     ContractWindowPlanToolRequest,
@@ -302,6 +304,22 @@ def create_app(
         request_id: Annotated[str, Depends(_framework_request_id)],
     ) -> SuccessResponse[ContractIrToolData]:
         data = await asyncio.to_thread(_internal_service(http_request).get_ir, payload)
+        return SuccessResponse(data=data, request_id=request_id)
+
+    @app.post(
+        "/v1/internal/contract-tools/review-result",
+        response_model=SuccessResponse[ContractReviewResultToolData],
+        responses=ERROR_RESPONSES,
+    )
+    async def contract_get_review_result(
+        payload: ContractReviewResultToolRequest,
+        http_request: Request,
+        request_id: Annotated[str, Depends(_framework_request_id)],
+    ) -> SuccessResponse[ContractReviewResultToolData]:
+        data = await asyncio.to_thread(
+            _internal_service(http_request).get_review_result,
+            payload,
+        )
         return SuccessResponse(data=data, request_id=request_id)
 
     @app.post(

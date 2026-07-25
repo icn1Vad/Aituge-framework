@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import Field, JsonValue
 
-from contract.api.models import StrictModel
+from contract.api.models import ReviewResultData, StrictModel
 from contract.ir.models import ContractIR
 from contract.risk.models import RiskReviewPlan
 
@@ -26,6 +26,10 @@ class ContractClauseContextToolRequest(ContractDocumentToolRequest):
 
 
 class ContractIrToolRequest(ContractDocumentToolRequest):
+    pass
+
+
+class ContractReviewResultToolRequest(ContractDocumentToolRequest):
     pass
 
 
@@ -85,6 +89,13 @@ class ContractIrToolData(StrictModel):
     generation_id: str
     generation_status: Literal["RUNNING", "SUCCEEDED"]
     contract_ir: ContractIR
+
+
+class ContractReviewResultToolData(StrictModel):
+    review_id: str = Field(min_length=1, max_length=160)
+    document_id: str = Field(min_length=1, max_length=160)
+    generation_id: str = Field(min_length=1, max_length=160)
+    result: ReviewResultData
 
 
 class ContractWindowExpectedBlockData(StrictModel):
