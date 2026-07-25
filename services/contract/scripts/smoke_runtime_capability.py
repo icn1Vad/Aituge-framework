@@ -14,12 +14,6 @@ EXPECTED_STAGES = [
     "extract_ir_liability_termination",
     "extract_ir_special_terms",
     "extract_contract_ir",
-    "rights_obligations_review",
-    "commercial_terms_review",
-    "liability_termination_review",
-    "missing_ambiguous_clauses",
-    "relation_extraction",
-    "verify_evidence",
     "finalize_review",
 ]
 
@@ -54,7 +48,7 @@ def main() -> None:
         item for item in pipelines if item["pipeline_id"] == "contract-review-pipeline-v1"
     )
     assert pipeline["task_type"] == "contract.review.run"
-    assert pipeline["max_parallelism"] == 3
+    assert pipeline["max_parallelism"] == 7
     assert [stage["stage_id"] for stage in pipeline["stages"]] == EXPECTED_STAGES
 
     openapi = _get_json(f"{contract}/openapi.json")

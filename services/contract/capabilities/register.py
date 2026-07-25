@@ -40,12 +40,6 @@ STAGE_SEQUENCE = {
     "parse_contract": 10,
     "resolve_parties": 20,
     "extract_contract_ir": 30,
-    "rights_obligations_review": 40,
-    "commercial_terms_review": 50,
-    "liability_termination_review": 60,
-    "missing_ambiguous_clauses": 70,
-    "relation_extraction": 80,
-    "verify_evidence": 90,
     "finalize_review": 100,
 }
 
@@ -58,14 +52,6 @@ IR_FRAGMENT_STAGE_IDS = (
 )
 
 IR_FRAGMENT_EXTERNAL_STAGE_ID = "extract_contract_ir"
-
-MODEL_REVIEW_STAGE_IDS = {
-    "rights_obligations_review",
-    "commercial_terms_review",
-    "liability_termination_review",
-    "missing_ambiguous_clauses",
-    "relation_extraction",
-}
 
 FROZEN_ASYNC_ERROR_CODES = {
     "CONTRACT_PARSE_FAILED",
@@ -783,6 +769,205 @@ def _window_contract_ir_handler(base_url: str, token: str, model_id: str):
     return execute
 
 
+def _direct_contract_review_handler(base_url: str, token: str, model_id: str):
+    """Run the accepted Direct structured review as the formal final stage.
+
+    The final stage ID and DTO remain frozen so Contract Python, the result
+    sink, Java callbacks, and the frontend do not need a compatibility change.
+    """
+
+    async def execute(context: StageExecutionContext) -> StageServiceResult:
+        try:
+            from contract.risk.models import RiskReviewPlanInput, RiskSourceBlock
+            from contract.api.models import ContractProfile as DirectContractProfile
+            from contract.callback.models import (
+                ExtractContractIrStageResult as DirectExtractContractIrStageResult,
+            )
+            from services.contract.capabilities.direct_e2e import (
+                DirectRiskReviewEndToEndRequest,
+            )
+            from services.contract.capabilities.legacy_compatibility import (
+                LegacyCompatibilityContext,
+            )
+            from services.contract.capabilities.party_roles import contract_party_roles
+            from services.contract.scripts.contract_risk_stage66_direct_e2e import (
+                _execute_one,
+            )
+        except ImportError as exc:
+            raise StageExecutionError(
+                f"Direct risk-review runtime is unavailable: {exc}",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=False,
+            ) from exc
+
+        task_input = ContractTaskInput.model_validate(context.task.input_payload_json or {})
+        parse_artifact = context.artifacts.get("parse_contract")
+        party_artifact = context.artifacts.get("resolve_parties")
+        ir_artifact = context.artifacts.get("extract_contract_ir")
+        if any(
+            item is None or not isinstance(item.content_json, dict)
+            for item in (parse_artifact, party_artifact, ir_artifact)
+        ):
+            raise StageExecutionError(
+                "Direct review dependencies are incomplete.",
+                code="missing_dependency_artifact",
+                retryable=False,
+            )
+        parsed = ParseContractStageResult.model_validate(parse_artifact.content_json)
+        party = PartyResolutionStageResult.model_validate(party_artifact.content_json)
+        stage_result = ExtractContractIrStageResult.model_validate(ir_artifact.content_json)
+
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=60) as client:
+                response = await client.post(
+                    "/v1/internal/contract-tools/blocks",
+                    headers={
+                        "X-Internal-Service": "aituge-framework",
+                        "X-Internal-Token": token,
+                        "X-Request-Id": f"contract-direct:{context.run.id}:blocks",
+                    },
+                    json={
+                        "review_id": task_input.review_id,
+                        "document_id": task_input.document_id,
+                        "block_ids": [],
+                        "limit": 2000,
+                    },
+                )
+            response.raise_for_status()
+            blocks_envelope = InternalContractBlocksEnvelope.model_validate(response.json())
+        except httpx.HTTPStatusError as exc:
+            raise StageExecutionError(
+                f"Contract blocks returned HTTP {exc.response.status_code}",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=exc.response.status_code >= 500,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise StageExecutionError(
+                f"Contract blocks request failed: {exc}",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=True,
+            ) from exc
+        except ValueError as exc:
+            raise StageExecutionError(
+                "Contract blocks response is invalid.",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=False,
+            ) from exc
+
+        blocks = blocks_envelope.data
+        if (
+            blocks.review_id != task_input.review_id
+            or blocks.document_id != task_input.document_id
+            or blocks.generation_id != parsed.generation_id
+        ):
+            raise StageExecutionError(
+                "Direct review block identity does not match the frozen Contract IR.",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=False,
+            )
+        value = RiskReviewPlanInput(
+            review_id=task_input.review_id,
+            document_id=task_input.document_id,
+            generation_id=parsed.generation_id,
+            attempt_no=task_input.attempt_no,
+            perspective=party.perspective,
+            our_party=party.our_party,
+            counterparty=party.counterparty,
+            contract_type=party.contract_type,
+            review_attitude=task_input.review_attitude,
+            stage_result=DirectExtractContractIrStageResult.model_validate(
+                stage_result.model_dump(mode="json")
+            ),
+            source_blocks=[
+                RiskSourceBlock(
+                    block_id=item.block_id,
+                    block_no=item.block_no,
+                    text=item.text,
+                    page_number=item.page_number,
+                    heading_path=list(item.heading_path),
+                )
+                for item in blocks.blocks
+                if item.block_type != "footer" and item.text
+            ],
+            selected_playbook_ids=["base_neutral"],
+        )
+        roles = contract_party_roles(
+            perspective=value.perspective,
+            our_party=value.our_party,
+            counterparty=value.counterparty,
+        )
+        compatibility_context = LegacyCompatibilityContext(
+            review_id=value.review_id,
+            business_task_id=task_input.business_task_id,
+            contract_version_id=task_input.contract_version_id,
+            generation_id=value.generation_id,
+            contract_hash=parsed.ir_hash,
+            contract_profile=DirectContractProfile(
+                contract_type=value.contract_type,
+                party_a={"name": roles.party_a_name},
+                party_b={"name": roles.party_b_name},
+                perspective=value.perspective,
+                our_party=value.our_party,
+                counterparty=value.counterparty,
+                review_attitude=value.review_attitude,
+            ),
+        )
+        request = DirectRiskReviewEndToEndRequest(
+            review_id=value.review_id,
+            generation_id=value.generation_id,
+            contract_hash=parsed.ir_hash,
+            fixture_id=f"formal:{value.document_id}",
+            contract_ir_stage_result=stage_result.model_dump(mode="json"),
+            risk_review_context={
+                "resolve_parties_artifact": party.model_dump(mode="json"),
+                "execution_source": "FORMAL_DIRECT_PIPELINE",
+            },
+        )
+        try:
+            summary, _attempt, payload, _compatible, _extended = await _execute_one(
+                run_index=task_input.attempt_no,
+                value=value,
+                request=request,
+                context=compatibility_context,
+                tenant_id=str(context.task.tenant_id),
+                model_id=model_id,
+                run_id_prefix=f"formal-direct-{context.run.id}",
+                allow_dynamic_base_batch_count=True,
+                diagnostic_allow_oracle_drift=True,
+            )
+        except Exception as exc:
+            code = getattr(exc, "code", "FRAMEWORK_RUN_FAILED")
+            raise StageExecutionError(
+                f"Direct risk review failed: {exc}",
+                code=code if code in FROZEN_ASYNC_ERROR_CODES else "FRAMEWORK_RUN_FAILED",
+                retryable=False,
+            ) from exc
+
+        formal = payload.model_dump(mode="json")
+        formal.pop("result_hash", None)
+        formal["result_type"] = "FINAL_REVIEW_STAGE_V1"
+        validated = FinalizeReviewStageResult.model_validate(formal)
+        return StageServiceResult(
+            output=validated.model_dump(mode="json"),
+            summary=(
+                f"Direct structured review completed: "
+                f"{len(validated.findings)} findings, "
+                f"{summary.get('total_model_calls', 0)} model calls."
+            ),
+            metadata={
+                "risk_review_engine": "direct",
+                "review_unit_count": 7,
+                "check_count": 45,
+                "model_calls": summary.get("total_model_calls", 0),
+                "repair_calls": summary.get("total_repairs", 0),
+                "tool_calls": summary.get("total_tool_calls", 0),
+                "core_result_signature": summary.get("core_result_signature"),
+            },
+        )
+
+    return execute
+
+
 def _fragment_anchor_validator(base_url: str, token: str):
     async def validate(delivery: ResultSinkDelivery) -> None:
         stage_id = str(delivery.stage_id or "")
@@ -851,7 +1036,7 @@ def _callback_envelope(delivery: ResultSinkDelivery) -> tuple[str, dict[str, Any
             error_code = "PARTY_UNRESOLVED"
             retryable = False
             user_action_required = True
-        elif stage_id in {*MODEL_REVIEW_STAGE_IDS, "verify_evidence"} and framework_error_code in {
+        elif stage_id == "finalize_review" and framework_error_code in {
             "required_result_sink_failed",
             "EVIDENCE_INVALID",
         }:
@@ -1116,11 +1301,6 @@ async def register(registry, settings) -> None:
         "contract-ir-commercial-terms",
         "contract-ir-liability-termination",
         "contract-ir-special-terms",
-        "contract-rights-obligations",
-        "contract-commercial-terms",
-        "contract-liability-termination",
-        "contract-missing-ambiguity",
-        "contract-relation-extraction",
         "contract-neutral-risk-review",
     ]
     for skill_name in skill_names:
@@ -1167,6 +1347,10 @@ async def register(registry, settings) -> None:
         name="contract_ir_window_v1",
         handler=_window_contract_ir_handler(base_url, callback_token, model_id),
     )
+    registry.register_stage_handler(
+        name="contract_direct_review_v1",
+        handler=_direct_contract_review_handler(base_url, callback_token, model_id),
+    )
     registry.register_result_sink(
         task_type=TASK_TYPE,
         handler=_result_sink_handler(base_url, callback_token),
@@ -1196,18 +1380,6 @@ async def register(registry, settings) -> None:
         "contract_get_blocks",
         "contract_get_clause_context",
         "contract_get_ir",
-    ]
-    parallel_stages = [
-        ("rights_obligations_review", "Review rights and obligations", RightsObligationsStageResult,
-         "contract-rights-obligations-package", "contract-rights-obligations"),
-        ("commercial_terms_review", "Review payment, delivery and acceptance", CommercialTermsStageResult,
-         "contract-commercial-terms-package", "contract-commercial-terms"),
-        ("liability_termination_review", "Review liability and termination", LiabilityTerminationStageResult,
-         "contract-liability-termination-package", "contract-liability-termination"),
-        ("missing_ambiguous_clauses", "Review missing, ambiguous and conflicting clauses",
-         MissingAmbiguityStageResult, "contract-missing-ambiguity-package", "contract-missing-ambiguity"),
-        ("relation_extraction", "Extract internal clause relationships", RelationExtractionStageResult,
-         "contract-relation-extraction-package", "contract-relation-extraction"),
     ]
     ir_fragment_stages = [
         (
@@ -1337,60 +1509,26 @@ async def register(registry, settings) -> None:
                 },
             }
         )
-    for stage_id, name, output_model, package, skill in parallel_stages:
-        stages.append(
-            {
-                "stage_id": stage_id,
-                "name": name,
-                "stage_type": "agent",
-                "depends_on": ["extract_contract_ir"],
-                # The complete semantic IR can be very large for 30-100 page contracts.
-                # It is already persisted by Contract Python when extract_contract_ir is
-                # accepted, so review agents receive only stable task identity here and
-                # fetch the IR or selected blocks through the frozen Contract tools.
-                "input_model": ContractTaskInput,
-                "input_adapter": "task_input",
-                "output_model": output_model,
-                "artifact_type": f"{stage_id}_result",
-                "agent_id": AGENT_ID,
-                "skill_package": package,
-                "primary_skill": skill,
-                "tools": review_tools,
-                "output_policy": "repair_once",
-                "timeout_seconds": 300,
-                "retry_policy": {
-                    "max_attempts": 2,
-                    "retry_on": ["invalid_output", "timeout", "required_result_sink_failed"],
-                },
-            }
-        )
     stages.extend(
         [
             {
-                "stage_id": "verify_evidence",
-                "name": "Verify evidence and merge findings",
-                "stage_type": "gateway",
+                "stage_id": "finalize_review",
+                "name": "Run Direct structured review and finalize",
+                "stage_type": "finalizer",
                 "depends_on": [
+                    "parse_contract",
                     "resolve_parties",
                     "extract_contract_ir",
-                    *[item[0] for item in parallel_stages],
                 ],
-                "input_model": PipelineContextInput,
-                "output_model": EvidenceVerificationStageResult,
-                "artifact_type": "contract_verified_findings",
-                "service_handler": "contract_stage_gateway_v1",
-                "timeout_seconds": 60,
-            },
-            {
-                "stage_id": "finalize_review",
-                "name": "Finalize stable contract review",
-                "stage_type": "finalizer",
-                "depends_on": ["verify_evidence"],
                 "input_model": PipelineContextInput,
                 "output_model": FinalizeReviewStageResult,
                 "artifact_type": "contract_review_result",
-                "service_handler": "contract_stage_gateway_v1",
-                "timeout_seconds": 60,
+                "service_handler": "contract_direct_review_v1",
+                "timeout_seconds": 900,
+                "retry_policy": {
+                    "max_attempts": 1,
+                    "retry_on": [],
+                },
             },
         ]
     )
@@ -1398,10 +1536,10 @@ async def register(registry, settings) -> None:
         pipeline_id=PIPELINE_ID,
         version="1.0",
         task_type=TASK_TYPE,
-        description="Parse, resolve parties, review in parallel, verify evidence, and finalize.",
+        description="Parse, resolve parties, extract IR, run Direct review, and finalize.",
         final_artifact_type="contract_review_result",
         timeout_seconds=1800,
         resumable=False,
-        max_parallelism=3,
+        max_parallelism=7,
         stages=stages,
     )
