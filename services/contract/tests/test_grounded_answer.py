@@ -127,19 +127,21 @@ def test_rejects_dangling_or_unused_citations() -> None:
         )
 
 
-def test_rejects_absence_evidence_as_clickable_reference() -> None:
+def test_downgrades_absence_evidence_to_plain_text() -> None:
     draft = GroundedAnswerDraft(
         mode="REPORT",
         content_markdown="未约定[争议解决](#docref-ev-019)。",
         citations=[{"evidence_id": "ev-019", "label": "争议解决"}],
     )
 
-    with pytest.raises(GroundedAnswerMaterializationError, match="not locatable"):
-        materialize_grounded_answer(
-            task_input=_task_input(),
-            draft=draft,
-            review_result=_review_result(evidence_type="ABSENCE"),
-        )
+    result = materialize_grounded_answer(
+        task_input=_task_input(),
+        draft=draft,
+        review_result=_review_result(evidence_type="ABSENCE"),
+    )
+
+    assert result.content_markdown == "未约定争议解决。"
+    assert result.references == []
 
 
 def test_rejects_marker_label_that_differs_from_citation() -> None:

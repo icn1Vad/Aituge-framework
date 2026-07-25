@@ -1447,9 +1447,6 @@ async def register(registry, settings) -> None:
         ),
         default_tools=[
             "contract_get_review_result",
-            "contract_get_ir",
-            "contract_get_blocks",
-            "contract_get_clause_context",
         ],
     )
 
@@ -1505,9 +1502,6 @@ async def register(registry, settings) -> None:
         default_primary_skill="contract-grounded-answer",
         default_tools=[
             "contract_get_review_result",
-            "contract_get_ir",
-            "contract_get_blocks",
-            "contract_get_clause_context",
         ],
         input_model=GroundedAnswerTaskInput,
         output_model=GroundedAnswerResult,
@@ -1704,9 +1698,6 @@ async def register(registry, settings) -> None:
                 "primary_skill": "contract-grounded-answer",
                 "tools": [
                     "contract_get_review_result",
-                    "contract_get_ir",
-                    "contract_get_blocks",
-                    "contract_get_clause_context",
                 ],
                 "output_policy": "repair_once",
                 "timeout_seconds": 300,

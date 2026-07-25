@@ -141,6 +141,7 @@ def materialize_grounded_answer(
             "review result is missing contract_version_id or result_hash"
         )
 
+    content_markdown = draft.content_markdown
     references: list[GroundedReference] = []
     for citation in draft.citations:
         evidence = evidence_by_id.get(citation.evidence_id)
@@ -148,6 +149,12 @@ def materialize_grounded_answer(
             raise GroundedAnswerMaterializationError(
                 f"unknown evidence_id '{citation.evidence_id}'"
             )
+        if evidence.get("evidence_type") == "ABSENCE":
+            content_markdown = content_markdown.replace(
+                f"[{citation.label}](#docref-{citation.evidence_id})",
+                citation.label,
+            )
+            continue
         if evidence.get("evidence_type") not in {"TEXT_QUOTE", "CONTEXT"}:
             raise GroundedAnswerMaterializationError(
                 f"evidence '{citation.evidence_id}' is not locatable text evidence"
@@ -186,6 +193,6 @@ def materialize_grounded_answer(
         document_id=task_input.document_id,
         contract_version_id=contract_version_id,
         result_hash=result_hash,
-        content_markdown=draft.content_markdown,
+        content_markdown=content_markdown,
         references=references,
     )

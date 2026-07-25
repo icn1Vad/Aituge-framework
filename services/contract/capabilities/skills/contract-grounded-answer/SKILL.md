@@ -13,9 +13,7 @@ content generation, not a new legal review.
 
 1. Call `contract_get_review_result` with the task's `review_id` and `document_id`.
 2. Use the returned contract profile, summary, findings and evidences as the authoritative source.
-3. Use `contract_get_ir`, `contract_get_blocks`, or `contract_get_clause_context` only when the completed
-   result needs additional source context.
-4. Do not introduce a risk, party, amount, date, clause or conclusion that is absent from those tools.
+3. Do not introduce a risk, party, amount, date, clause or conclusion that is absent from that result.
 
 ## Report structure
 
