@@ -29,7 +29,7 @@ FROM dependencies AS test
 
 RUN python -c "import subprocess, sys, tomllib; data = tomllib.load(open('pyproject.toml', 'rb')); subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', *data['project']['optional-dependencies']['test']])"
 COPY services/contract/src/ ./src/
-COPY services/contract/capabilities/revision_drafts.py ./services/contract/capabilities/revision_drafts.py
+COPY services/contract/capabilities/ ./services/contract/capabilities/
 COPY services/contract/tests/ ./tests/
 COPY services/contract/openapi/ ./openapi/
 COPY services/contract/scripts/ ./scripts/
