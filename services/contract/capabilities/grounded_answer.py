@@ -141,15 +141,6 @@ def materialize_grounded_answer(
         raise GroundedAnswerMaterializationError(
             f"Markdown markers and citations differ; missing={missing}, dangling={dangling}"
         )
-    citation_labels_by_id: dict[str, set[str]] = {}
-    for citation in draft.citations:
-        citation_labels_by_id.setdefault(citation.evidence_id, set()).add(citation.label)
-    for evidence_id, label in marker_pairs:
-        if label not in citation_labels_by_id[evidence_id]:
-            raise GroundedAnswerMaterializationError(
-                f"citation label does not match Markdown marker for '{evidence_id}'"
-            )
-
     contract_version_id = review_result.get("contract_version_id")
     result_hash = review_result.get("result_hash")
     if not isinstance(contract_version_id, str) or not isinstance(result_hash, str):

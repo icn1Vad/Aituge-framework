@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from typing import Any, Literal
 
@@ -137,7 +138,14 @@ class FrameworkGroundedAnswerService:
             json=task_body,
         )
         task = self._validate_task(created, payload, context)
-        if task.status != "succeeded":
+        if task.status == "running":
+            task = await self._wait_for_task(
+                task_id=task.id,
+                headers=headers,
+                payload=payload,
+                context=context,
+            )
+        elif task.status == "pending":
             run_key = f"{task_key}:run"
             completed = await self._request(
                 "POST",
@@ -149,6 +157,12 @@ class FrameworkGroundedAnswerService:
                 },
             )
             task = self._validate_task(completed, payload, context)
+        elif task.status not in {"succeeded", "failed", "cancelled"}:
+            raise ContractError(
+                "FRAMEWORK_PROTOCOL_ERROR",
+                f"Framework返回未知任务状态：{task.status}",
+                status_code=502,
+            )
         if task.status != "succeeded" or task.result_payload_json is None:
             details = task.error_payload_json or {"framework_status": task.status}
             raise ContractError(
@@ -185,13 +199,39 @@ class FrameworkGroundedAnswerService:
             )
         return result
 
+    async def _wait_for_task(
+        self,
+        *,
+        task_id: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        context: InternalRequestContext,
+    ) -> _TaskRecord:
+        deadline = asyncio.get_running_loop().time() + self.read_timeout
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.5)
+            current = await self._request(
+                "GET",
+                f"/task-manager/tasks/{task_id}",
+                headers=headers,
+            )
+            task = self._validate_task(current, payload, context)
+            if task.status != "running":
+                return task
+        raise ContractError(
+            "FRAMEWORK_TIMEOUT",
+            "等待合同报告或问答任务完成超时",
+            status_code=504,
+            retryable=True,
+        )
+
     async def _request(
         self,
         method: str,
         path: str,
         *,
         headers: dict[str, str],
-        json: dict[str, Any],
+        json: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         timeout = httpx.Timeout(
             connect=self.connect_timeout,

@@ -195,6 +195,53 @@ def test_framework_service_rejects_task_reused_for_different_input() -> None:
     assert exc_info.value.code == "IDEMPOTENCY_CONFLICT"
 
 
+def test_framework_service_does_not_restart_a_terminal_failed_task() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        body = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "task": {
+                    "id": "task-failed",
+                    "task_type": "contract.grounded.answer",
+                    "status": "failed",
+                    "input_payload_json": {
+                        key: value
+                        for key, value in body["input_payload"].items()
+                        if value is not None
+                    },
+                    "result_payload_json": None,
+                    "error_payload_json": {
+                        "code": "StageExecutionError",
+                        "message": "citation validation failed",
+                    },
+                    "tenant_id": "tenant-1",
+                    "user_id": "user-1",
+                }
+            },
+        )
+
+    service = FrameworkGroundedAnswerService(
+        _settings(),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(ContractError) as exc_info:
+        asyncio.run(
+            service.generate_report(
+                review_id="review-1",
+                request=GroundedReportRequest(document_id="document-1"),
+                context=_context(),
+            )
+        )
+
+    assert exc_info.value.code == "GROUNDED_ANSWER_FAILED"
+    assert [request.url.path for request in requests] == ["/task-manager/tasks"]
+
+
 class _SucceededReviewService:
     def get_status(
         self,

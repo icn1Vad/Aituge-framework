@@ -69,6 +69,22 @@ def test_reuses_one_reference_for_repeated_evidence() -> None:
     assert result.references[0].evidence_id == "evidence-1"
 
 
+def test_markdown_label_is_authoritative_when_redundant_citation_label_differs() -> None:
+    draft = GroundedAnswerDraft(
+        mode="REPORT",
+        content_markdown="查看[付款原文](#docref-evidence-1)。",
+        citations=[{"evidence_id": "evidence-1", "label": "付款条款"}],
+    )
+
+    result = materialize_grounded_answer(
+        task_input=_task_input(),
+        draft=draft,
+        review_result=_review_result(),
+    )
+
+    assert result.references[0].label == "付款原文"
+
+
 def test_unknown_evidence_is_downgraded_to_plain_text() -> None:
     draft = GroundedAnswerDraft(
         mode="REPORT",
