@@ -517,6 +517,15 @@ def create_app(
             "multipart/form-data"
         ]
         multipart["encoding"] = {"request": {"contentType": "application/json"}}
+        body_schema_name = multipart["schema"]["$ref"].rsplit("/", 1)[-1]
+        body_schema = schema["components"]["schemas"][body_schema_name]
+        properties = body_schema["properties"]
+        if "request_payload" in properties:
+            properties["request"] = properties.pop("request_payload")
+        body_schema["required"] = [
+            "request" if field == "request_payload" else field
+            for field in body_schema.get("required", [])
+        ]
         app.openapi_schema = schema
         return schema
 

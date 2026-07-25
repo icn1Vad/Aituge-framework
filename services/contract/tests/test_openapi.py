@@ -39,6 +39,11 @@ def test_multipart_request_part_is_declared_as_json() -> None:
     ]
 
     assert multipart["encoding"]["request"]["contentType"] == "application/json"
+    body_schema_name = multipart["schema"]["$ref"].rsplit("/", 1)[-1]
+    body_schema = schema["components"]["schemas"][body_schema_name]
+    assert set(body_schema["required"]) == {"file", "request"}
+    assert "request" in body_schema["properties"]
+    assert "request_payload" not in body_schema["properties"]
 
 
 def test_idempotency_key_is_required_only_for_create() -> None:
