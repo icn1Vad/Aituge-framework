@@ -186,6 +186,33 @@ class PartialAlignmentRetryExtractor(FakePipelineExtractor):
         )
 
 
+class SameSpanSemanticRetryExtractor(FakePipelineExtractor):
+    async def extract(
+        self,
+        request: WindowExtractionRequest,
+        *,
+        tenant_id: str,
+        model_id: str,
+        retry_feedback: str | None = None,
+    ) -> WindowExtractionResult:
+        self.calls.append((request.window_id, retry_feedback))
+        self.call_counts[request.window_id] = self.call_counts.get(request.window_id, 0) + 1
+        if self.call_counts[request.window_id] == 1:
+            raise WindowExtractionError(
+                "WINDOW_ALIGNMENT_FAILED",
+                "另一个语义项需要局部复查",
+                retry_feedback="只补充另一个语义项",
+                accepted_extractions=[
+                    _aligned(request, predicate="应完成")
+                ],
+            )
+        return WindowExtractionResult(
+            window_id=request.window_id,
+            model_id=model_id,
+            extractions=[_aligned(request, predicate="应保证")],
+        )
+
+
 class AlignmentThenPaymentExtractor(FakePipelineExtractor):
     async def extract(
         self,
@@ -340,6 +367,35 @@ async def test_pipeline_preserves_valid_items_and_merges_only_retry_delta() -> N
 
 
 @pytest.mark.asyncio
+async def test_retry_merge_preserves_distinct_semantics_on_same_source_span() -> None:
+    extractor = SameSpanSemanticRetryExtractor()
+
+    result = await ContractIrWindowPipeline(extractor=extractor).run(
+        _pipeline_request(count=1),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    assert result.coverage.valid is True
+    assert extractor.call_counts == {"window-001": 2}
+    assert [item.predicate for item in result.semantic_ir.obligations] == [
+        "应完成",
+        "应保证",
+    ]
+    assert {
+        tuple(
+            (
+                anchor.block_id,
+                anchor.char_start,
+                anchor.char_end,
+            )
+            for anchor in item.source_anchors
+        )
+        for item in result.semantic_ir.obligations
+    } == {(("block-001", 0, len("履行事项1")),)}
+
+
+@pytest.mark.asyncio
 async def test_alignment_retry_also_requires_all_strong_categories() -> None:
     extractor = AlignmentThenPaymentExtractor()
 
@@ -416,7 +472,7 @@ async def test_pipeline_is_deterministic_for_same_input() -> None:
 
 
 @pytest.mark.asyncio
-async def test_source_grounded_item_id_ignores_model_predicate_wording_variation() -> None:
+async def test_item_id_distinguishes_semantic_variants_on_the_same_source() -> None:
     request = _pipeline_request(count=1)
     first = await ContractIrWindowPipeline(
         extractor=FakePipelineExtractor(predicate="应履行")
@@ -427,7 +483,7 @@ async def test_source_grounded_item_id_ignores_model_predicate_wording_variation
 
     assert (
         first.semantic_ir.obligations[0].item_id
-        == second.semantic_ir.obligations[0].item_id
+        != second.semantic_ir.obligations[0].item_id
     )
     assert first.semantic_ir_hash != second.semantic_ir_hash
 

@@ -216,6 +216,79 @@ async def test_window_extractor_accepts_complete_json_with_explanatory_prefix() 
 
 
 @pytest.mark.asyncio
+async def test_one_source_span_can_support_distinct_semantics_of_same_class() -> None:
+    source = "乙方应完成系统部署并保证系统能够满足甲方全部业务需求。"
+    runtime = FakeRuntime(
+        json.dumps(
+            {
+                "extractions": [
+                    _semantic_item(
+                        "OBLIGATION",
+                        source,
+                        subject="乙方",
+                        predicate="应完成",
+                        object_="系统部署",
+                    ),
+                    _semantic_item(
+                        "OBLIGATION",
+                        source,
+                        subject="乙方",
+                        predicate="应保证",
+                        object_="系统能够满足甲方全部业务需求",
+                    ),
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    result = await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+        _single_block_request(source),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    obligations = [
+        item for item in result.extractions if item.extraction_class == "OBLIGATION"
+    ]
+    assert [(item.predicate, item.object) for item in obligations] == [
+        ("应完成", "系统部署"),
+        ("应保证", "系统能够满足甲方全部业务需求"),
+    ]
+    assert {
+        (item.rendered_char_start, item.rendered_char_end) for item in obligations
+    } == {(0, len(source))}
+    assert all(item.source_spans[0].quoted_text == source for item in obligations)
+
+
+@pytest.mark.asyncio
+async def test_exact_duplicate_model_items_are_deduplicated_without_retry() -> None:
+    source = "乙方应完成系统部署。"
+    item = _semantic_item(
+        "OBLIGATION",
+        source,
+        subject="乙方",
+        predicate="应完成",
+        object_="系统部署",
+    )
+    runtime = FakeRuntime(
+        json.dumps({"extractions": [item, dict(item)]}, ensure_ascii=False)
+    )
+
+    result = await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+        _single_block_request(source),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    obligations = [
+        value for value in result.extractions if value.extraction_class == "OBLIGATION"
+    ]
+    assert len(obligations) == 1
+    assert obligations[0].source_spans[0].quoted_text == source
+
+
+@pytest.mark.asyncio
 async def test_window_extractor_rejects_ungrounded_or_paraphrased_text() -> None:
     runtime = FakeRuntime(_model_output("乙方需要尽快交付成果"))
 

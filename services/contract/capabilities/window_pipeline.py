@@ -525,6 +525,12 @@ def _merge_aligned_extractions(
             item.extraction_class,
             item.rendered_char_start,
             item.rendered_char_end,
+            item.subject,
+            item.predicate,
+            item.object,
+            item.term,
+            item.meaning,
+            tuple(item.referenced_clause_nos),
             tuple(
                 (
                     span.block_id,
@@ -685,13 +691,19 @@ def _map_extraction(
             )
         )
 
-    # Technical identity is grounded in the immutable source, not in the model's
-    # potentially variable wording of subject/predicate/object.  Two outputs for
-    # the same IR class and exact source span therefore keep the same item_id and
+    # Source identity remains anchored to immutable text, while the semantic
+    # fields distinguish multiple legal facts legitimately expressed by the
+    # same continuous clause. Fully identical outputs still share one hash and
     # are deterministically de-duplicated.
     stable_payload = {
         "extraction_class": extraction.extraction_class,
         "extraction_text": extraction.extraction_text,
+        "subject": extraction.subject,
+        "predicate": extraction.predicate,
+        "object": extraction.object,
+        "term": extraction.term,
+        "meaning": extraction.meaning,
+        "referenced_clause_nos": extraction.referenced_clause_nos,
         "anchors": [
             [item.block_id, item.char_start, item.char_end] for item in technical_anchors
         ],

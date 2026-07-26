@@ -354,18 +354,22 @@ def _align_extractions(
     envelope: WindowExtractionEnvelope,
     resolver: Resolver,
 ) -> list[AlignedExtraction]:
+    model_extractions = _deduplicate_exact_extractions(
+        request.source_text,
+        envelope.extractions,
+    )
     normalized_keys = [
         (item.extraction_class, _normalize_alignment_text(item.extraction_text).text)
-        for item in envelope.extractions
+        for item in model_extractions
     ]
     candidate_sets = [
         _alignment_candidates(request.source_text, item.extraction_text)
-        for item in envelope.extractions
+        for item in model_extractions
     ]
     unaligned_items = [
         item
         for item, (candidates, _) in zip(
-            envelope.extractions,
+            model_extractions,
             candidate_sets,
             strict=True,
         )
@@ -375,7 +379,7 @@ def _align_extractions(
     used_candidate_ranges: dict[tuple[str, str], set[tuple[int, int]]] = {}
     results: list[AlignedExtraction] = []
     for model_item, occurrence_key, candidate_set in zip(
-        envelope.extractions,
+        model_extractions,
         normalized_keys,
         candidate_sets,
         strict=True,
@@ -401,12 +405,20 @@ def _align_extractions(
         used_ranges = used_candidate_ranges.setdefault(occurrence_key, set())
         available_candidates = [item for item in candidates if item not in used_ranges]
         if not available_candidates:
-            raise WindowExtractionError(
-                "WINDOW_ALIGNMENT_FAILED",
-                f"{model_item.extraction_class} 的模型输出次数超过原文候选位置数量",
-                accepted_extractions=results,
-            )
-        start, end = available_candidates[0]
+            if len(candidates) == 1:
+                # One continuous clause may express several distinct facts of
+                # the same IR class. Exact duplicate model items were removed
+                # above, so sharing this sole source span preserves distinct
+                # semantics without inventing another source location.
+                start, end = candidates[0]
+            else:
+                raise WindowExtractionError(
+                    "WINDOW_ALIGNMENT_FAILED",
+                    f"{model_item.extraction_class} 的模型输出次数超过原文候选位置数量",
+                    accepted_extractions=results,
+                )
+        else:
+            start, end = available_candidates[0]
         used_ranges.add((start, end))
         grounded_text = request.source_text[start:end]
 
@@ -486,6 +498,35 @@ def _align_extractions(
         results,
         key=lambda item: (item.rendered_char_start, item.extraction_class, item.extraction_text),
     )
+
+
+def _deduplicate_exact_extractions(
+    source_text: str,
+    extractions: list[ModelExtraction],
+) -> list[ModelExtraction]:
+    """Remove surplus exact duplicates without erasing real repeated source spans."""
+
+    unique: dict[tuple[Any, ...], list[ModelExtraction]] = {}
+    for item in extractions:
+        key = (
+            item.extraction_class,
+            item.extraction_text,
+            item.subject,
+            item.predicate,
+            item.object,
+            item.term,
+            item.meaning,
+            tuple(item.referenced_clause_nos),
+        )
+        group = unique.setdefault(key, [])
+        candidate_count = len(_alignment_candidates(source_text, item.extraction_text)[0])
+        # Identical outputs may legitimately represent identical clauses at
+        # different source positions. Keep at most one item per real position;
+        # when no position exists, preserve one item so normal alignment error
+        # reporting still explains the unsupported model output.
+        if len(group) < max(1, candidate_count):
+            group.append(item)
+    return [item for group in unique.values() for item in group]
 
 
 def _augment_explicit_value_extractions(
