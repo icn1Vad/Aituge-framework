@@ -13,7 +13,7 @@ from typing import Annotated
 from fastapi import Body, Depends, FastAPI, File, Form, Header, Query, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
 from contract.api.models import (
@@ -493,6 +493,85 @@ def create_app(
         return SuccessResponse(data=data, request_id=context.request_id)
 
     @app.post(
+        "/v1/contract-reviews/{review_id}/chat/stream",
+        response_class=StreamingResponse,
+        responses={
+            200: {
+                "description": "合同问答SSE事件流",
+                "content": {
+                    "text/event-stream": {
+                        "schema": {"type": "string"},
+                    }
+                },
+            },
+            **ERROR_RESPONSES,
+        },
+    )
+    async def stream_grounded_chat(
+        review_id: str,
+        payload: GroundedChatRequest,
+        http_request: Request,
+        context: Annotated[InternalRequestContext, Depends(_create_internal_context)],
+    ) -> StreamingResponse:
+        await _require_grounded_review(
+            http_request,
+            context,
+            review_id=review_id,
+            document_id=payload.document_id,
+        )
+        service = _grounded_answer_service(http_request)
+
+        async def event_stream():
+            try:
+                async for event_type, event_data in service.stream_chat(
+                    review_id=review_id,
+                    request=payload,
+                    context=context,
+                ):
+                    yield _sse_event(event_type, event_data)
+            except ContractError as exc:
+                yield _sse_event(
+                    "error",
+                    {
+                        "request_id": context.request_id,
+                        "error": {
+                            "code": exc.code,
+                            "message": str(exc),
+                            "retryable": exc.retryable,
+                            "user_action_required": exc.user_action_required,
+                            "details": exc.details,
+                        },
+                    },
+                )
+            except Exception:
+                logging.exception(
+                    "Unexpected grounded chat stream failure; request_id=%s",
+                    context.request_id,
+                )
+                yield _sse_event(
+                    "error",
+                    {
+                        "request_id": context.request_id,
+                        "error": {
+                            "code": "INTERNAL_ERROR",
+                            "message": "合同问答流式生成失败",
+                            "retryable": False,
+                            "user_action_required": False,
+                            "details": None,
+                        },
+                    },
+                )
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.post(
         "/v1/contract-reviews/{review_id}/cancel",
         response_model=SuccessResponse[CancelReviewData],
         responses=ERROR_RESPONSES,
@@ -569,6 +648,13 @@ def _grounded_answer_service(request: Request) -> FrameworkGroundedAnswerService
     configured = FrameworkGroundedAnswerService(request.app.state.settings)
     request.app.state.grounded_answer_service = configured
     return configured
+
+
+def _sse_event(event_type: str, data: dict[str, object]) -> str:
+    return (
+        f"event: {event_type}\n"
+        f"data: {json.dumps(data, ensure_ascii=False, separators=(',', ':'))}\n\n"
+    )
 
 
 async def _generate_revision_drafts(
