@@ -60,16 +60,6 @@ STAGE_SEQUENCE = {
     "finalize_review": 100,
 }
 
-IR_FRAGMENT_STAGE_IDS = (
-    "extract_ir_definitions_basics",
-    "extract_ir_rights_duties",
-    "extract_ir_commercial_terms",
-    "extract_ir_liability_termination",
-    "extract_ir_special_terms",
-)
-
-IR_FRAGMENT_EXTERNAL_STAGE_ID = "extract_contract_ir"
-
 FROZEN_ASYNC_ERROR_CODES = {
     "CONTRACT_PARSE_FAILED",
     "PARTY_UNRESOLVED",
@@ -352,40 +342,6 @@ class ContractIrSemanticDelta(StrictModel):
     amounts: list[IrSemanticItem] = Field(default_factory=list)
 
 
-class IrDefinitionsBasicsFragmentResult(StrictModel):
-    result_type: Literal["CONTRACT_IR_DEFINITIONS_BASICS_FRAGMENT_V1"]
-    definitions: list[IrDefinition] = Field(default_factory=list)
-    dates: list[IrSemanticItem] = Field(default_factory=list)
-    amounts: list[IrSemanticItem] = Field(default_factory=list)
-
-
-class IrRightsDutiesFragmentResult(StrictModel):
-    result_type: Literal["CONTRACT_IR_RIGHTS_DUTIES_FRAGMENT_V1"]
-    rights: list[IrSemanticItem] = Field(default_factory=list)
-    obligations: list[IrSemanticItem] = Field(default_factory=list)
-    prohibitions: list[IrSemanticItem] = Field(default_factory=list)
-
-
-class IrCommercialTermsFragmentResult(StrictModel):
-    result_type: Literal["CONTRACT_IR_COMMERCIAL_TERMS_FRAGMENT_V1"]
-    payment_terms: list[IrSemanticItem] = Field(default_factory=list)
-    delivery_terms: list[IrSemanticItem] = Field(default_factory=list)
-    acceptance_terms: list[IrSemanticItem] = Field(default_factory=list)
-
-
-class IrLiabilityTerminationFragmentResult(StrictModel):
-    result_type: Literal["CONTRACT_IR_LIABILITY_TERMINATION_FRAGMENT_V1"]
-    liabilities: list[IrSemanticItem] = Field(default_factory=list)
-    termination_terms: list[IrSemanticItem] = Field(default_factory=list)
-
-
-class IrSpecialTermsFragmentResult(StrictModel):
-    result_type: Literal["CONTRACT_IR_SPECIAL_TERMS_FRAGMENT_V1"]
-    confidentiality_terms: list[IrSemanticItem] = Field(default_factory=list)
-    intellectual_property_terms: list[IrSemanticItem] = Field(default_factory=list)
-    dispute_resolution: list[IrSemanticItem] = Field(default_factory=list)
-
-
 class ExtractContractIrStageResult(StrictModel):
     result_type: Literal["CONTRACT_IR_STAGE_V1"]
     semantic_ir: ContractIrSemanticDelta
@@ -535,122 +491,12 @@ class InternalContractWindowPlanEnvelope(StrictModel):
     request_id: str = Field(min_length=1, max_length=160)
 
 
-IR_FRAGMENT_MODELS = {
-    "extract_ir_definitions_basics": IrDefinitionsBasicsFragmentResult,
-    "extract_ir_rights_duties": IrRightsDutiesFragmentResult,
-    "extract_ir_commercial_terms": IrCommercialTermsFragmentResult,
-    "extract_ir_liability_termination": IrLiabilityTerminationFragmentResult,
-    "extract_ir_special_terms": IrSpecialTermsFragmentResult,
-}
-
-IR_FRAGMENT_FIELDS = {
-    "extract_ir_definitions_basics": ("definitions", "dates", "amounts"),
-    "extract_ir_rights_duties": ("rights", "obligations", "prohibitions"),
-    "extract_ir_commercial_terms": (
-        "payment_terms",
-        "delivery_terms",
-        "acceptance_terms",
-    ),
-    "extract_ir_liability_termination": ("liabilities", "termination_terms"),
-    "extract_ir_special_terms": (
-        "confidentiality_terms",
-        "intellectual_property_terms",
-        "dispute_resolution",
-    ),
-}
-
-
 def _callback_identity(delivery: ResultSinkDelivery) -> tuple[str, int, str, str]:
     task_input = ContractTaskInput.model_validate(delivery.task.input_payload_json or {})
     run_id = str(delivery.task.current_run_id or "").strip()
     if not run_id:
         raise RuntimeError("Contract task has no active Framework Run")
     return task_input.review_id, task_input.attempt_no, delivery.task.id, run_id
-
-
-def _external_callback_stage(stage_id: str | None) -> str | None:
-    if stage_id in IR_FRAGMENT_STAGE_IDS:
-        return IR_FRAGMENT_EXTERNAL_STAGE_ID
-    return stage_id
-
-
-def _fragment_result(stage_id: str, value: Any) -> StrictModel:
-    try:
-        model = IR_FRAGMENT_MODELS[stage_id]
-    except KeyError as exc:
-        raise RuntimeError(f"Unknown Contract IR fragment stage '{stage_id}'") from exc
-    result = model.model_validate(value)
-    seen_item_ids: set[str] = set()
-    anchor_positions: dict[str, tuple[str, int | None, int, int]] = {}
-    for field in IR_FRAGMENT_FIELDS[stage_id]:
-        field_semantics: set[tuple[Any, ...]] = set()
-        for item in getattr(result, field):
-            if isinstance(item, IrSemanticItem):
-                if item.item_id in seen_item_ids:
-                    raise ValueError(
-                        f"Contract IR fragment contains duplicate item_id '{item.item_id}'"
-                    )
-                seen_item_ids.add(item.item_id)
-                semantic_key = (item.subject, item.predicate, item.object)
-            else:
-                semantic_key = (item.term, item.meaning)
-            anchor_key = tuple(
-                (anchor.block_id, anchor.page_number, anchor.char_start, anchor.char_end)
-                for anchor in item.source_anchors
-            )
-            exact_key = (*semantic_key, anchor_key)
-            if exact_key in field_semantics:
-                raise ValueError(f"Contract IR fragment contains a duplicate '{field}' item")
-            field_semantics.add(exact_key)
-            for anchor in item.source_anchors:
-                position = (
-                    anchor.block_id,
-                    anchor.page_number,
-                    anchor.char_start,
-                    anchor.char_end,
-                )
-                previous = anchor_positions.setdefault(anchor.anchor_id, position)
-                if previous != position:
-                    raise ValueError(
-                        f"Contract IR fragment reuses anchor_id '{anchor.anchor_id}' "
-                        "for different source positions"
-                    )
-    return result
-
-
-def _fragment_anchors(stage_id: str, value: Any) -> list[SourceAnchor]:
-    result = _fragment_result(stage_id, value)
-    anchors: list[SourceAnchor] = []
-    for field in IR_FRAGMENT_FIELDS[stage_id]:
-        for item in getattr(result, field):
-            anchors.extend(item.source_anchors)
-    return anchors
-
-
-def _merge_contract_ir_fragments_handler():
-    async def merge(context: StageExecutionContext) -> StageServiceResult:
-        semantic: dict[str, Any] = {}
-        for stage_id in IR_FRAGMENT_STAGE_IDS:
-            artifact = context.artifacts.get(stage_id)
-            if artifact is None or not isinstance(artifact.content_json, dict):
-                raise StageExecutionError(
-                    f"Contract IR fragment '{stage_id}' is missing.",
-                    code="missing_dependency_artifact",
-                    retryable=False,
-                )
-            fragment = _fragment_result(stage_id, artifact.content_json)
-            for field in IR_FRAGMENT_FIELDS[stage_id]:
-                semantic[field] = getattr(fragment, field)
-        result = ExtractContractIrStageResult(
-            result_type="CONTRACT_IR_STAGE_V1",
-            semantic_ir=ContractIrSemanticDelta.model_validate(semantic),
-        )
-        return StageServiceResult(
-            output=result.model_dump(mode="json"),
-            summary="Merged five validated Contract IR fragments.",
-        )
-
-    return merge
 
 
 def _party_window_context(party: PartyResolutionStageResult) -> str:
@@ -985,59 +831,12 @@ def _direct_contract_review_handler(base_url: str, token: str, model_id: str):
     return execute
 
 
-def _fragment_anchor_validator(base_url: str, token: str):
-    async def validate(delivery: ResultSinkDelivery) -> None:
-        stage_id = str(delivery.stage_id or "")
-        task_input = ContractTaskInput.model_validate(delivery.task.input_payload_json or {})
-        anchors = _fragment_anchors(stage_id, delivery.output)
-        block_ids = list(dict.fromkeys(anchor.block_id for anchor in anchors))
-        blocks: dict[str, InternalContractBlock] = {}
-        for offset in range(0, len(block_ids), 200):
-            selected = block_ids[offset : offset + 200]
-            async with httpx.AsyncClient(base_url=base_url, timeout=30) as client:
-                response = await client.post(
-                    "/v1/internal/contract-tools/blocks",
-                    headers={
-                        "X-Internal-Service": "aituge-framework",
-                        "X-Internal-Token": token,
-                        "X-Request-Id": (
-                            f"contract-ir-fragment:{delivery.task.current_run_id}:{stage_id}:{offset}"
-                        ),
-                    },
-                    json={
-                        "review_id": task_input.review_id,
-                        "document_id": task_input.document_id,
-                        "block_ids": selected,
-                        "limit": max(1, len(selected)),
-                    },
-                )
-                response.raise_for_status()
-                envelope = InternalContractBlocksEnvelope.model_validate(response.json())
-            if (
-                envelope.data.review_id != task_input.review_id
-                or envelope.data.document_id != task_input.document_id
-            ):
-                raise ValueError("Contract IR fragment block scope does not match the task")
-            blocks.update({item.block_id: item for item in envelope.data.blocks})
-
-        if set(blocks) != set(block_ids):
-            raise ValueError("Contract IR fragment references an unknown contract block")
-        for anchor in anchors:
-            block = blocks[anchor.block_id]
-            if anchor.char_end > len(block.text):
-                raise ValueError("Contract IR fragment anchor exceeds its contract block")
-            if anchor.page_number != block.page_number:
-                raise ValueError("Contract IR fragment anchor page does not match its contract block")
-
-    return validate
-
-
 def _callback_envelope(delivery: ResultSinkDelivery) -> tuple[str, dict[str, Any]]:
     review_id, attempt_no, task_id, run_id = _callback_identity(delivery)
     if delivery.status == "failed":
         callback_type = "RUN_FAILED"
         internal_stage_id = delivery.stage_id
-        stage_id = _external_callback_stage(internal_stage_id)
+        stage_id = internal_stage_id
         sequence = STAGE_SEQUENCE.get(stage_id or "", 900) + 1
         result = None
         framework_error_code = delivery.error_code or "FRAMEWORK_RUN_FAILED"
@@ -1072,8 +871,6 @@ def _callback_envelope(delivery: ResultSinkDelivery) -> tuple[str, dict[str, Any
         if stage_id:
             details["stage_id"] = stage_id
             details["framework_error_code"] = framework_error_code
-        if internal_stage_id in IR_FRAGMENT_STAGE_IDS:
-            details["internal_stage_id"] = internal_stage_id
         error = {
             "code": error_code,
             "message": (delivery.error_message or "Framework contract stage failed")[:2000],
@@ -1112,20 +909,7 @@ def _callback_envelope(delivery: ResultSinkDelivery) -> tuple[str, dict[str, Any
 
 
 def _result_sink_handler(base_url: str, token: str):
-    validate_fragment = _fragment_anchor_validator(base_url, token)
-
     async def deliver(delivery: ResultSinkDelivery) -> None:
-        if delivery.stage_id in IR_FRAGMENT_STAGE_IDS and delivery.status != "failed":
-            try:
-                await validate_fragment(delivery)
-            except (httpx.HTTPError, ValueError) as exc:
-                raise ResultSinkRejectedError(
-                    f"Contract IR fragment validation failed: {exc}",
-                    code="RESULT_INVALID",
-                    retryable=True,
-                    details={"internal_stage_id": delivery.stage_id},
-                ) from exc
-            return
         review_id, envelope = _callback_envelope(delivery)
         request_id = envelope["callback_id"]
         last_error: Exception | None = None
@@ -1347,9 +1131,6 @@ async def register(registry, settings) -> None:
     base_url = settings.require("CONTRACT_SERVICE_BASE_URL").rstrip("/")
     callback_token = settings.require("CONTRACT_RESULT_SINK_INTERNAL_TOKEN")
     model_id = settings.get("CONTRACT_MODEL_ID", "deepseek-v4-pro").strip()
-    ir_engine = settings.get("CONTRACT_IR_ENGINE", "legacy").strip().lower()
-    if ir_engine not in {"legacy", "window"}:
-        raise ValueError("CONTRACT_IR_ENGINE must be either 'legacy' or 'window'.")
     internal_headers = {
         "X-Internal-Service": "aituge-framework",
         "X-Internal-Token": callback_token,
@@ -1388,12 +1169,6 @@ async def register(registry, settings) -> None:
 
     skill_names = [
         "contract-party-resolution",
-        "contract-ir-extraction",
-        "contract-ir-definitions-basics",
-        "contract-ir-rights-duties",
-        "contract-ir-commercial-terms",
-        "contract-ir-liability-termination",
-        "contract-ir-special-terms",
         "contract-neutral-risk-review",
         "contract-grounded-answer",
     ]
@@ -1453,10 +1228,6 @@ async def register(registry, settings) -> None:
     gateway_handler = _stage_gateway_handler(base_url, callback_token, model_id)
     registry.register_stage_handler(name="contract_stage_gateway_v1", handler=gateway_handler)
     registry.register_stage_handler(
-        name="contract_ir_fragment_merge_v1",
-        handler=_merge_contract_ir_fragments_handler(),
-    )
-    registry.register_stage_handler(
         name="contract_ir_window_v1",
         handler=_window_contract_ir_handler(base_url, callback_token, model_id),
     )
@@ -1513,43 +1284,6 @@ async def register(registry, settings) -> None:
         "contract_get_clause_context",
         "contract_get_ir",
     ]
-    ir_fragment_stages = [
-        (
-            "extract_ir_definitions_basics",
-            "Extract definitions, dates and amounts",
-            IrDefinitionsBasicsFragmentResult,
-            "contract-ir-definitions-basics-package",
-            "contract-ir-definitions-basics",
-        ),
-        (
-            "extract_ir_rights_duties",
-            "Extract rights, obligations and prohibitions",
-            IrRightsDutiesFragmentResult,
-            "contract-ir-rights-duties-package",
-            "contract-ir-rights-duties",
-        ),
-        (
-            "extract_ir_commercial_terms",
-            "Extract payment, delivery and acceptance terms",
-            IrCommercialTermsFragmentResult,
-            "contract-ir-commercial-terms-package",
-            "contract-ir-commercial-terms",
-        ),
-        (
-            "extract_ir_liability_termination",
-            "Extract liability and termination terms",
-            IrLiabilityTerminationFragmentResult,
-            "contract-ir-liability-termination-package",
-            "contract-ir-liability-termination",
-        ),
-        (
-            "extract_ir_special_terms",
-            "Extract confidentiality, intellectual property and dispute terms",
-            IrSpecialTermsFragmentResult,
-            "contract-ir-special-terms-package",
-            "contract-ir-special-terms",
-        ),
-    ]
     stages: list[dict[str, Any]] = [
         {
             "stage_id": "parse_contract",
@@ -1583,64 +1317,23 @@ async def register(registry, settings) -> None:
             },
         },
     ]
-    if ir_engine == "legacy":
-        for stage_id, name, output_model, package, skill in ir_fragment_stages:
-            stages.append(
-                {
-                "stage_id": stage_id,
-                "name": name,
-                "stage_type": "agent",
-                "depends_on": ["parse_contract", "resolve_parties"],
-                "input_model": PipelineContextInput,
-                "output_model": output_model,
-                "artifact_type": f"{stage_id}_result",
-                "agent_id": AGENT_ID,
-                "skill_package": package,
-                "primary_skill": skill,
-                "tools": review_tools,
-                "output_policy": "repair_once",
-                "timeout_seconds": 300,
-                "retry_policy": {
-                    "max_attempts": 2,
-                    "retry_on": [
-                        "invalid_output",
-                        "timeout",
-                        "required_result_sink_failed",
-                    ],
-                },
-                }
-            )
-        stages.append(
-            {
-                "stage_id": "extract_contract_ir",
-                "name": "Merge semantic Contract IR fragments",
-                "stage_type": "finalizer",
-                "depends_on": list(IR_FRAGMENT_STAGE_IDS),
-                "input_model": PipelineContextInput,
-                "output_model": ExtractContractIrStageResult,
-                "artifact_type": "contract_ir",
-                "service_handler": "contract_ir_fragment_merge_v1",
-                "timeout_seconds": 30,
-            }
-        )
-    else:
-        stages.append(
-            {
-                "stage_id": "extract_contract_ir",
-                "name": "Extract semantic Contract IR by source windows",
-                "stage_type": "finalizer",
-                "depends_on": ["parse_contract", "resolve_parties"],
-                "input_model": PipelineContextInput,
-                "output_model": ExtractContractIrStageResult,
-                "artifact_type": "contract_ir",
-                "service_handler": "contract_ir_window_v1",
-                "timeout_seconds": 600,
-                "retry_policy": {
-                    "max_attempts": 1,
-                    "retry_on": [],
-                },
-            }
-        )
+    stages.append(
+        {
+            "stage_id": "extract_contract_ir",
+            "name": "Extract semantic Contract IR by source windows",
+            "stage_type": "finalizer",
+            "depends_on": ["parse_contract", "resolve_parties"],
+            "input_model": PipelineContextInput,
+            "output_model": ExtractContractIrStageResult,
+            "artifact_type": "contract_ir",
+            "service_handler": "contract_ir_window_v1",
+            "timeout_seconds": 600,
+            "retry_policy": {
+                "max_attempts": 1,
+                "retry_on": [],
+            },
+        }
+    )
     stages.extend(
         [
             {

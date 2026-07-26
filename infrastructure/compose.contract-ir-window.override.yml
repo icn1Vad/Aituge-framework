@@ -5,7 +5,6 @@ services:
       dockerfile: deploy/appliance/framework.Dockerfile
       target: runtime
     environment:
-      CONTRACT_IR_ENGINE: window
       PYTHONPATH: /app:/app/backend:/app/backend/single-agent:/app/services/contract/src:/opt/contract-capabilities
     volumes:
       - framework-data:/app/runtime

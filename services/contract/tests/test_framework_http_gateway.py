@@ -164,8 +164,6 @@ def test_http_failures_map_to_stable_gateway_errors(response_status, expected_er
             tenant_id="tenant-1",
             user_id="user-1",
         )
-
-
 def test_transport_timeout_maps_to_504_error() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("timed out", request=request)
@@ -179,7 +177,6 @@ def test_transport_timeout_maps_to_504_error() -> None:
             tenant_id="tenant-1",
             user_id="user-1",
         )
-
     assert raised.value.code == "FRAMEWORK_TIMEOUT"
     assert raised.value.status_code == 504
     assert raised.value.retryable is True
@@ -225,29 +222,3 @@ def test_unknown_contract_stage_is_rejected_instead_of_masked_as_parsing() -> No
             tenant_id="tenant-1",
             user_id="user-1",
         )
-
-
-@pytest.mark.parametrize(
-    "stage",
-    [
-        "extract_ir_definitions_basics",
-        "extract_ir_rights_duties",
-        "extract_ir_commercial_terms",
-        "extract_ir_liability_termination",
-        "extract_ir_special_terms",
-    ],
-)
-def test_internal_ir_fragment_stages_remain_external_ir_extraction(stage: str) -> None:
-    transport = httpx.MockTransport(
-        lambda _request: httpx.Response(200, json=_run_payload(stage=stage))
-    )
-    gateway = FrameworkHttpGateway(_settings(), transport=transport)
-
-    snapshot = gateway.get_run(
-        "task-1",
-        "run-1",
-        tenant_id="tenant-1",
-        user_id="user-1",
-    )
-
-    assert snapshot.current_stage_id == "IR_EXTRACTION"

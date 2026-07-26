@@ -34,11 +34,6 @@ KNOWN_RUN_STATUSES = frozenset(
 STAGE_MAPPING = {
     "parse_contract": "PARSING",
     "resolve_parties": "PARTY_RESOLUTION",
-    "extract_ir_definitions_basics": "IR_EXTRACTION",
-    "extract_ir_rights_duties": "IR_EXTRACTION",
-    "extract_ir_commercial_terms": "IR_EXTRACTION",
-    "extract_ir_liability_termination": "IR_EXTRACTION",
-    "extract_ir_special_terms": "IR_EXTRACTION",
     "extract_contract_ir": "IR_EXTRACTION",
     "rights_obligations_review": "RIGHTS_OBLIGATIONS",
     "commercial_terms_review": "RISK_REVIEW",

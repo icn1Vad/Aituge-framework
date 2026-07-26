@@ -206,3 +206,10 @@
 - 隔离环境：源码同步并重启 `contract-ir-window-stage2-framework`，继续复用 `contract-ir-window-stage1-ui`；测试页面和端口保持不变；正式容器、正式环境、Java、main 与 proof 分支均未修改
 - 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage55-window11-result.json`、`/home/aituge/workspace/contract-review-dev/test-artifacts/stage55-full-window-result.json`
 - 后续观察：第 2、6 个 Window 的首项重复候选在尚未形成可保留项时仍会触发一次完整局部重试；本阶段已消除“已有正确结果被整体丢弃”的主要失败源，后续是否继续聚合全部 Alignment 错误应以真实失败率和质量数据决定，不继续堆叠 Prompt
+
+## 正式执行链收敛：Window IR成为唯一入口
+
+- 正式 `contract.review.run` 固定执行 `parse_contract -> resolve_parties -> extract_contract_ir(Window，并发10) -> finalize_review(Direct)`。
+- 删除 `CONTRACT_IR_ENGINE` 双轨开关及其 `legacy` 默认值，避免部署漏配时静默回退。
+- 删除五个旧 IR Fragment Agent Stage、Fragment Pydantic 模型、合并器、专属 Result Sink 校验、Gateway 映射和六个旧 IR Skill。
+- Java仍消费既有正式结果结构；本次不修改正式 Finding/Evidence DTO、Result Hash或回调协议。

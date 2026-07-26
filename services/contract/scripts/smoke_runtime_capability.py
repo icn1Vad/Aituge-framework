@@ -8,11 +8,6 @@ import urllib.request
 EXPECTED_STAGES = [
     "parse_contract",
     "resolve_parties",
-    "extract_ir_definitions_basics",
-    "extract_ir_rights_duties",
-    "extract_ir_commercial_terms",
-    "extract_ir_liability_termination",
-    "extract_ir_special_terms",
     "extract_contract_ir",
     "finalize_review",
 ]

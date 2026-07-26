@@ -46,7 +46,7 @@ class CapturingRegistry:
         self.pipelines.append(value)
 
 
-def _registered(ir_engine="legacy"):
+def _registered():
     registry = CapturingRegistry()
     asyncio.run(
         capability.register(
@@ -56,7 +56,6 @@ def _registered(ir_engine="legacy"):
                     "CONTRACT_SERVICE_BASE_URL": "http://ai-contract:18200",
                     "CONTRACT_RESULT_SINK_INTERNAL_TOKEN": "callback-secret",
                     "CONTRACT_MODEL_ID": "contract-model",
-                    "CONTRACT_IR_ENGINE": ir_engine,
                 }
             ),
         )
@@ -76,7 +75,7 @@ def test_contract_capability_registers_frozen_pipeline_and_internal_tools() -> N
     ]
     assert all(item["headers"]["X-Internal-Token"] == "callback-secret" for item in registry.tools)
     assert all(item["request_id_header"] == "X-Request-Id" for item in registry.tools)
-    assert len(registry.skill_packages) == 9
+    assert len(registry.skill_packages) == 3
     assert registry.agents[0]["agent_id"] == "contract-review-neutral-v1"
     assert registry.tasks[0]["task_type"] == "contract.review.run"
     assert registry.tasks[0]["pipeline_id"] == "contract-review-pipeline-v1"
@@ -114,51 +113,15 @@ def test_contract_capability_registers_frozen_pipeline_and_internal_tools() -> N
     assert list(stages) == [
         "parse_contract",
         "resolve_parties",
-        *capability.IR_FRAGMENT_STAGE_IDS,
         "extract_contract_ir",
         "finalize_review",
     ]
-    fragments = set(capability.IR_FRAGMENT_STAGE_IDS)
-    assert all(
-        stages[item]["depends_on"] == ["parse_contract", "resolve_parties"]
-        for item in fragments
-    )
     assert stages["extract_contract_ir"]["stage_type"] == "finalizer"
-    assert stages["extract_contract_ir"]["depends_on"] == list(capability.IR_FRAGMENT_STAGE_IDS)
-    assert stages["extract_contract_ir"]["service_handler"] == "contract_ir_fragment_merge_v1"
-    assert all(
-        set(stages[item]["tools"]) == {
-            "contract_get_document",
-            "contract_get_blocks",
-            "contract_get_clause_context",
-            "contract_get_ir",
-        }
-        for item in fragments | {"resolve_parties"}
-    )
-    assert all(
-        "required_result_sink_failed" in stages[item]["retry_policy"]["retry_on"]
-        for item in fragments | {"resolve_parties"}
-    )
-    assert stages["finalize_review"]["depends_on"] == [
-        "parse_contract",
-        "resolve_parties",
-        "extract_contract_ir",
-    ]
-    assert stages["finalize_review"]["service_handler"] == "contract_direct_review_v1"
-    assert stages["finalize_review"]["output_model"] is capability.FinalizeReviewStageResult
-
-
-def test_contract_capability_can_switch_only_ir_stage_to_window_engine() -> None:
-    registry = _registered("window")
-    stages = {item["stage_id"]: item for item in registry.pipelines[0]["stages"]}
-
-    assert not set(capability.IR_FRAGMENT_STAGE_IDS) & set(stages)
     assert stages["extract_contract_ir"]["depends_on"] == ["parse_contract", "resolve_parties"]
     assert stages["extract_contract_ir"]["service_handler"] == "contract_ir_window_v1"
     assert stages["extract_contract_ir"]["output_model"] is capability.ExtractContractIrStageResult
     assert [item["name"] for item in registry.stage_handlers] == [
         "contract_stage_gateway_v1",
-        "contract_ir_fragment_merge_v1",
         "contract_ir_window_v1",
         "contract_direct_review_v1",
         "contract_grounded_answer_finalize_v1",
@@ -171,9 +134,28 @@ def test_contract_capability_can_switch_only_ir_stage_to_window_engine() -> None
     assert stages["finalize_review"]["service_handler"] == "contract_direct_review_v1"
 
 
-def test_contract_capability_rejects_unknown_ir_engine() -> None:
-    with pytest.raises(ValueError, match="CONTRACT_IR_ENGINE"):
-        _registered("unknown")
+def test_legacy_ir_execution_path_is_removed() -> None:
+    legacy_stage_ids = {
+        "extract_ir_definitions_basics",
+        "extract_ir_rights_duties",
+        "extract_ir_commercial_terms",
+        "extract_ir_liability_termination",
+        "extract_ir_special_terms",
+    }
+    registry = _registered()
+    pipeline = registry.pipelines[0]
+    assert not legacy_stage_ids & {
+        stage["stage_id"] for stage in pipeline["stages"]
+    }
+    assert "contract_ir_fragment_merge_v1" not in {
+        handler["name"] for handler in registry.stage_handlers
+    }
+    assert not hasattr(capability, "IR_FRAGMENT_STAGE_IDS")
+    assert not hasattr(capability, "_merge_contract_ir_fragments_handler")
+    assert not any(
+        path.name.startswith("contract-ir-")
+        for path in (capability.CAPABILITY_DIR / "skills").iterdir()
+    )
 
 
 def test_direct_final_stage_builds_formal_result_without_legacy_review_stages(
@@ -366,7 +348,7 @@ def test_legacy_react_review_stages_and_skills_are_not_registered() -> None:
     } & registered_skills
 
 
-def test_ir_extraction_returns_only_a_semantic_delta() -> None:
+def test_window_ir_returns_only_a_semantic_delta() -> None:
     schema = capability.ExtractContractIrStageResult.model_json_schema()
     assert set(schema["properties"]) == {"result_type", "semantic_ir"}
     semantic_schema = schema["$defs"]["ContractIrSemanticDelta"]
@@ -380,78 +362,6 @@ def test_ir_extraction_returns_only_a_semantic_delta() -> None:
         "contract_type",
         "source_anchors",
     } & set(semantic_schema["properties"])
-
-    content = (
-        capability.CAPABILITY_DIR / "skills" / "contract-ir-extraction" / "SKILL.md"
-    ).read_text("utf-8")
-    assert "semantic_ir" in content
-    assert "Contract Python deterministically composes" in content
-    assert "Do not return or rewrite `document`" in content
-
-
-def test_ir_fragments_cover_every_semantic_field_once_and_merge_deterministically() -> None:
-    covered = [
-        field
-        for stage_id in capability.IR_FRAGMENT_STAGE_IDS
-        for field in capability.IR_FRAGMENT_FIELDS[stage_id]
-    ]
-    assert len(covered) == len(set(covered))
-    assert set(covered) == set(capability.ContractIrSemanticDelta.model_fields)
-    anchor = {
-        "anchor_id": "anchor-1",
-        "block_id": "block-1",
-        "page_number": None,
-        "char_start": 0,
-        "char_end": 4,
-    }
-    semantic = {
-        "definitions": [{"term": "甲方", "meaning": "委托方", "source_anchors": [anchor]}],
-        "dates": [],
-        "amounts": [],
-        "rights": [],
-        "obligations": [
-            {
-                "item_id": "obligation-1",
-                "subject": "乙方",
-                "predicate": "交付成果",
-                "object": None,
-                "source_anchors": [anchor],
-            }
-        ],
-        "prohibitions": [],
-        "payment_terms": [],
-        "delivery_terms": [],
-        "acceptance_terms": [],
-        "liabilities": [],
-        "termination_terms": [],
-        "confidentiality_terms": [],
-        "intellectual_property_terms": [],
-        "dispute_resolution": [],
-    }
-    result_types = {
-        "extract_ir_definitions_basics": "CONTRACT_IR_DEFINITIONS_BASICS_FRAGMENT_V1",
-        "extract_ir_rights_duties": "CONTRACT_IR_RIGHTS_DUTIES_FRAGMENT_V1",
-        "extract_ir_commercial_terms": "CONTRACT_IR_COMMERCIAL_TERMS_FRAGMENT_V1",
-        "extract_ir_liability_termination": "CONTRACT_IR_LIABILITY_TERMINATION_FRAGMENT_V1",
-        "extract_ir_special_terms": "CONTRACT_IR_SPECIAL_TERMS_FRAGMENT_V1",
-    }
-    artifacts = {
-        stage_id: SimpleNamespace(
-            content_json={
-                "result_type": result_types[stage_id],
-                **{field: semantic[field] for field in capability.IR_FRAGMENT_FIELDS[stage_id]},
-            }
-        )
-        for stage_id in capability.IR_FRAGMENT_STAGE_IDS
-    }
-
-    merged = asyncio.run(
-        capability._merge_contract_ir_fragments_handler()(SimpleNamespace(artifacts=artifacts))
-    )
-
-    assert merged.output["result_type"] == "CONTRACT_IR_STAGE_V1"
-    assert merged.output["semantic_ir"] == semantic
-
 
 def test_window_ir_handler_injects_party_context_without_changing_source(monkeypatch) -> None:
     captured = {}
@@ -577,234 +487,6 @@ def test_window_ir_handler_injects_party_context_without_changing_source(monkeyp
     assert "section context" in captured["request"].windows[0].context_text
     assert captured["tenant_id"] == "tenant-1"
     assert captured["model_id"] == "contract-model"
-
-
-def test_ir_fragment_rejects_duplicate_semantic_items_before_merge() -> None:
-    anchor = {
-        "anchor_id": "anchor-1",
-        "block_id": "block-1",
-        "page_number": None,
-        "char_start": 0,
-        "char_end": 4,
-    }
-    duplicate = {
-        "item_id": "payment-1",
-        "subject": "甲方",
-        "predicate": "支付服务费",
-        "object": "合同签订后支付",
-        "source_anchors": [anchor],
-    }
-
-    with pytest.raises(ValueError, match="duplicate 'payment_terms' item"):
-        capability._fragment_result(
-            "extract_ir_commercial_terms",
-            {
-                "result_type": "CONTRACT_IR_COMMERCIAL_TERMS_FRAGMENT_V1",
-                "payment_terms": [
-                    duplicate,
-                    {**duplicate, "item_id": "payment-2"},
-                ],
-                "delivery_terms": [],
-                "acceptance_terms": [],
-            },
-        )
-
-
-def test_internal_ir_fragment_sink_validates_anchors_without_external_callback(monkeypatch) -> None:
-    calls = []
-
-    class Response:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {
-                "success": True,
-                "data": {
-                    "review_id": "review-1",
-                    "document_id": "document-1",
-                    "generation_id": "generation-1",
-                    "blocks": [
-                        {
-                            "block_id": "block-1",
-                            "block_no": 1,
-                            "block_type": "paragraph",
-                            "page_number": None,
-                            "paragraph_no": 1,
-                            "char_start": 0,
-                            "char_end": 4,
-                            "text": "甲方付款",
-                            "heading_path": [],
-                            "metadata": {},
-                        }
-                    ],
-                },
-                "request_id": "fragment-validation",
-            }
-
-    class Client:
-        def __init__(self, **kwargs):
-            assert kwargs["base_url"] == "http://ai-contract:18200"
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return None
-
-        async def post(self, path, *, headers, json):
-            calls.append((path, headers, json))
-            return Response()
-
-    monkeypatch.setattr(capability.httpx, "AsyncClient", Client)
-    task = SimpleNamespace(
-        id="task-1",
-        current_run_id="run-1",
-        input_payload_json={
-            "schema_version": "1.0",
-            "review_id": "review-1",
-            "attempt_no": 1,
-            "business_task_id": "business-1",
-            "contract_version_id": "version-1",
-            "document_id": "document-1",
-            "perspective": "PARTY_A",
-            "our_party_name": None,
-            "contract_type": "AUTO",
-            "review_attitude": "NEUTRAL",
-        },
-    )
-    output = {
-        "result_type": "CONTRACT_IR_DEFINITIONS_BASICS_FRAGMENT_V1",
-        "definitions": [
-            {
-                "term": "甲方",
-                "meaning": "付款方",
-                "source_anchors": [
-                    {
-                        "anchor_id": "anchor-1",
-                        "block_id": "block-1",
-                        "page_number": None,
-                        "char_start": 0,
-                        "char_end": 2,
-                    }
-                ],
-            }
-        ],
-        "dates": [],
-        "amounts": [],
-    }
-    handler = capability._result_sink_handler("http://ai-contract:18200", "secret")
-
-    asyncio.run(
-        handler(
-            ResultSinkDelivery(
-                task,
-                SimpleNamespace(result_sink_url=None),
-                output,
-                "extract_ir_definitions_basics",
-                "completed",
-                None,
-            )
-        )
-    )
-
-    assert [item[0] for item in calls] == ["/v1/internal/contract-tools/blocks"]
-    assert calls[0][2]["block_ids"] == ["block-1"]
-
-
-def test_internal_ir_fragment_sink_rejects_anchor_outside_the_source_block(monkeypatch) -> None:
-    class Response:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {
-                "success": True,
-                "data": {
-                    "review_id": "review-1",
-                    "document_id": "document-1",
-                    "generation_id": "generation-1",
-                    "blocks": [
-                        {
-                            "block_id": "block-1",
-                            "block_no": 1,
-                            "block_type": "paragraph",
-                            "page_number": 1,
-                            "paragraph_no": 1,
-                            "char_start": 0,
-                            "char_end": 4,
-                            "text": "甲方付款",
-                            "heading_path": [],
-                            "metadata": {},
-                        }
-                    ],
-                },
-                "request_id": "fragment-validation",
-            }
-
-    class Client:
-        def __init__(self, **_kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return None
-
-        async def post(self, *_args, **_kwargs):
-            return Response()
-
-    monkeypatch.setattr(capability.httpx, "AsyncClient", Client)
-    task = SimpleNamespace(
-        id="task-1",
-        current_run_id="run-1",
-        input_payload_json={
-            "schema_version": "1.0",
-            "review_id": "review-1",
-            "attempt_no": 1,
-            "business_task_id": "business-1",
-            "contract_version_id": "version-1",
-            "document_id": "document-1",
-            "perspective": "PARTY_A",
-            "our_party_name": None,
-            "contract_type": "AUTO",
-            "review_attitude": "NEUTRAL",
-        },
-    )
-    delivery = ResultSinkDelivery(
-        task,
-        SimpleNamespace(result_sink_url=None),
-        {
-            "result_type": "CONTRACT_IR_DEFINITIONS_BASICS_FRAGMENT_V1",
-            "definitions": [
-                {
-                    "term": "甲方",
-                    "meaning": "付款方",
-                    "source_anchors": [
-                        {
-                            "anchor_id": "anchor-1",
-                            "block_id": "block-1",
-                            "page_number": 1,
-                            "char_start": 0,
-                            "char_end": 5,
-                        }
-                    ],
-                }
-            ],
-            "dates": [],
-            "amounts": [],
-        },
-        "extract_ir_definitions_basics",
-        "completed",
-        None,
-    )
-
-    with pytest.raises(capability.ResultSinkRejectedError) as caught:
-        asyncio.run(capability._result_sink_handler("http://ai-contract:18200", "secret")(delivery))
-
-    assert caught.value.code == "RESULT_INVALID"
-    assert caught.value.retryable is True
 
 
 def test_contract_result_sink_emits_three_frozen_callback_shapes(monkeypatch) -> None:
@@ -964,19 +646,6 @@ def test_contract_failed_callback_maps_stable_business_errors() -> None:
             retryable=True,
         )
     )
-    _, ir_fragment = capability._callback_envelope(
-        ResultSinkDelivery(
-            task=task,
-            definition=definition,
-            output=None,
-            stage_id="extract_ir_commercial_terms",
-            status="failed",
-            error_message="fragment output was truncated",
-            error_code="invalid_output",
-            retryable=True,
-        )
-    )
-
     assert party["error"] == {
         "code": "PARTY_UNRESOLVED",
         "message": "party result rejected",
@@ -995,11 +664,6 @@ def test_contract_failed_callback_maps_stable_business_errors() -> None:
     assert model_failure["error"]["retryable"] is True
     assert review_evidence["error"]["code"] == "EVIDENCE_INVALID"
     assert review_evidence["error"]["retryable"] is False
-    assert ir_fragment["stage_id"] == "extract_contract_ir"
-    assert ir_fragment["error"]["code"] == "FRAMEWORK_RUN_FAILED"
-    assert ir_fragment["error"]["details"]["internal_stage_id"] == "extract_ir_commercial_terms"
-
-
 def test_contract_result_sink_preserves_safe_rejection_detail(monkeypatch) -> None:
     class Response:
         status_code = 422
