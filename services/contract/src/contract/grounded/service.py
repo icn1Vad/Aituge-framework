@@ -450,6 +450,13 @@ class FrameworkGroundedAnswerService:
             headers=headers,
         )
         task = self._validate_task(current, payload, context)
+        if task.status == "running":
+            task = await self._wait_for_task(
+                task_id=task.id,
+                headers=headers,
+                payload=payload,
+                context=context,
+            )
         result = self._result_from_task(task, payload=payload, mode=mode)
         yield "done", {"answer": result.model_dump(mode="json")}
 

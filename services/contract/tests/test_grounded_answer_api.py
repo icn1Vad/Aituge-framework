@@ -257,6 +257,7 @@ def test_content_markdown_stream_decoder_handles_split_field_and_escapes() -> No
 
 def test_framework_service_streams_markdown_and_returns_validated_answer() -> None:
     requests: list[httpx.Request] = []
+    task_read_count = 0
     draft_json = json.dumps(
         {
             "schema_version": "1.0",
@@ -286,6 +287,7 @@ def test_framework_service_streams_markdown_and_returns_validated_answer() -> No
         )
 
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal task_read_count
         requests.append(request)
         if request.url.path == "/task-manager/tasks":
             body = json.loads(request.content)
@@ -331,13 +333,15 @@ def test_framework_service_streams_markdown_and_returns_validated_answer() -> No
                 headers={"Content-Type": "text/event-stream"},
             )
         if request.url.path == "/task-manager/tasks/task-stream":
+            task_read_count += 1
+            status = "running" if task_read_count == 1 else "succeeded"
             return httpx.Response(
                 200,
                 json={
                     "task": {
                         "id": "task-stream",
                         "task_type": "contract.grounded.answer",
-                        "status": "succeeded",
+                        "status": status,
                         "input_payload_json": {
                             "schema_version": "1.0",
                             "mode": "CHAT",
@@ -346,9 +350,11 @@ def test_framework_service_streams_markdown_and_returns_validated_answer() -> No
                             "question": "付款条件是什么？",
                             "conversation_history": [],
                         },
-                        "result_payload_json": {
-                            "structured": _answer("CHAT"),
-                        },
+                        "result_payload_json": (
+                            {"structured": _answer("CHAT")}
+                            if status == "succeeded"
+                            else None
+                        ),
                         "error_payload_json": None,
                         "tenant_id": "tenant-1",
                         "user_id": "user-1",
@@ -385,6 +391,7 @@ def test_framework_service_streams_markdown_and_returns_validated_answer() -> No
     assert [request.url.path for request in requests] == [
         "/task-manager/tasks",
         "/task-manager/tasks/task-stream/stream",
+        "/task-manager/tasks/task-stream",
         "/task-manager/tasks/task-stream",
     ]
 
