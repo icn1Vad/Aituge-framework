@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Literal, Protocol
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, ValidationInfo, model_validator
 
 from contract.risk.models import (
     RiskAbsenceEvidenceSource,
@@ -278,7 +278,9 @@ class GenericReviewRequest(StrictModel):
     estimated_input_tokens: int = Field(ge=1, le=6000)
 
     @model_validator(mode="after")
-    def validate_identity_and_coverage(self) -> "GenericReviewRequest":
+    def validate_identity_and_coverage(
+        self, info: ValidationInfo
+    ) -> "GenericReviewRequest":
         if self.unit_id not in GENERIC_UNIT_IDS:
             raise ValueError("Generic Direct Reviewer supports only the four new base units")
         expected = set(UNIT_CHECK_CODES[self.unit_id])
@@ -306,10 +308,17 @@ class GenericReviewRequest(StrictModel):
             "ip_confidentiality_data",
             "liability_remedies_exit",
         }:
-            self._validate_evidence_source_catalog()
+            self._validate_evidence_source_catalog(
+                allow_absence_only=bool(
+                    info.context
+                    and info.context.get("allow_absence_only_evidence_catalog")
+                )
+            )
         return self
 
-    def _validate_evidence_source_catalog(self) -> None:
+    def _validate_evidence_source_catalog(
+        self, *, allow_absence_only: bool = False
+    ) -> None:
         items = {
             item.item_id: item
             for item in [*self.definitions, *self.projected_ir_items]
@@ -318,7 +327,7 @@ class GenericReviewRequest(StrictModel):
         source_ids = [item.source_id for item in self.evidence_sources]
         absence_ids = [item.source_id for item in self.absence_evidence_sources]
         if (
-            not source_ids
+            (not source_ids and not (allow_absence_only and absence_ids))
             or len(source_ids) != len(set(source_ids))
             or len(absence_ids) != len(set(absence_ids))
             or set(source_ids) & set(absence_ids)
@@ -1212,9 +1221,9 @@ class BaseBundleMetrics(StrictModel):
     queue_duration_ms: int = Field(ge=0)
     wall_duration_ms: int = Field(ge=0)
     peak_concurrency: int = Field(ge=1, le=7)
-    batch_count: Literal[7] = 7
+    batch_count: int = Field(default=7, ge=1, le=16)
     unit_count: Literal[5] = 5
-    model_call_count: int = Field(ge=7, le=14)
+    model_call_count: int = Field(ge=1, le=16)
     repair_count: int = Field(ge=0, le=7)
     tool_call_count: Literal[0] = 0
     prompt_tokens: int | None = Field(default=None, ge=0)
@@ -1222,16 +1231,16 @@ class BaseBundleMetrics(StrictModel):
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
     prompt_budget_policy_version: Literal["2.0"] = PROMPT_BUDGET_POLICY_VERSION
-    prompt_budget_warning_count: int = Field(default=0, ge=0, le=7)
-    prompt_budget_hard_failure_count: int = Field(default=0, ge=0, le=7)
+    prompt_budget_warning_count: int = Field(default=0, ge=0, le=16)
+    prompt_budget_hard_failure_count: int = Field(default=0, ge=0, le=16)
     max_provider_prompt_tokens: int | None = Field(default=None, ge=0)
-    batches_over_target: list[str] = Field(default_factory=list, max_length=7)
-    batches_over_hard_limit: list[str] = Field(default_factory=list, max_length=7)
+    batches_over_target: list[str] = Field(default_factory=list, max_length=16)
+    batches_over_hard_limit: list[str] = Field(default_factory=list, max_length=16)
     slowest_batch_id: str = Field(pattern=r"^risk-batch-[0-9a-f]{32}$")
     slowest_batch_duration_ms: int = Field(ge=0)
     slowest_unit_id: str = Field(pattern=BASE_UNIT_ID_PATTERN)
     slowest_unit_duration_ms: int = Field(ge=0)
-    batch_metrics: list[BaseBundleBatchMetric] = Field(min_length=7, max_length=7)
+    batch_metrics: list[BaseBundleBatchMetric] = Field(min_length=1, max_length=16)
     unit_metrics: list[BaseBundleUnitMetric] = Field(min_length=5, max_length=5)
     failed_batch_ids: list[str] = Field(default_factory=list, max_length=0)
 
@@ -1244,7 +1253,7 @@ class BaseRiskReviewBundle(StrictModel):
     plan_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     status: Literal["COMPLETED"]
     units: list[BaseReviewUnitResult] = Field(min_length=5, max_length=5)
-    batch_results: list[ReviewBatchResult] = Field(min_length=7, max_length=7)
+    batch_results: list[ReviewBatchResult] = Field(min_length=1, max_length=16)
     cross_unit_overlap_candidates: list[CrossUnitOverlapCandidate] = Field(
         default_factory=list
     )
@@ -1281,15 +1290,15 @@ class BaseBundleFailure(StrictModel):
     )
     error_code: str = Field(min_length=1, max_length=160)
     error_message: str = Field(min_length=1, max_length=4000)
-    completed_batch_count: int = Field(ge=0, le=7)
-    cancelled_batch_count: int = Field(ge=0, le=7)
-    in_flight_batch_count: int = Field(ge=0, le=7)
+    completed_batch_count: int = Field(ge=0, le=16)
+    cancelled_batch_count: int = Field(ge=0, le=16)
+    in_flight_batch_count: int = Field(ge=0, le=16)
     trace_id: str = Field(min_length=1, max_length=200)
-    completed_batch_ids: list[str] = Field(default_factory=list, max_length=7)
-    cancelled_batch_ids: list[str] = Field(default_factory=list, max_length=7)
+    completed_batch_ids: list[str] = Field(default_factory=list, max_length=16)
+    cancelled_batch_ids: list[str] = Field(default_factory=list, max_length=16)
     diagnostic_batch_results: list[ReviewBatchResult] = Field(
         default_factory=list,
-        max_length=7,
+        max_length=16,
     )
 
 
@@ -4173,6 +4182,8 @@ def _validate_po_perspective_language(
 
 def generic_request_from_context(
     value: BaseModel | dict[str, Any],
+    *,
+    allow_absence_only_evidence_catalog: bool = False,
 ) -> GenericReviewRequest:
     payload = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
 
@@ -4232,7 +4243,12 @@ def generic_request_from_context(
             "present_ir_types": payload["present_ir_types"],
             "missing_ir_types": payload["missing_ir_types"],
             "estimated_input_tokens": payload["estimated_input_tokens"],
-        }
+        },
+        context={
+            "allow_absence_only_evidence_catalog": (
+                allow_absence_only_evidence_catalog
+            )
+        },
     )
 
 
@@ -9355,6 +9371,7 @@ def _validate_base_bundle_inputs(
     contract_hash: str,
     schema_version: str,
     fixture_id: str,
+    allow_dynamic_batch_count: bool = False,
 ) -> tuple[list[Any], list[Any], BaseBundleIdentity]:
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", contract_hash):
         raise DirectReviewError(
@@ -9374,7 +9391,7 @@ def _validate_base_bundle_inputs(
     base_contexts = [
         item for item in plan.contexts if _value(item.unit_id) in BASE_UNIT_IDS
     ]
-    if len(base_contexts) != 7:
+    if not allow_dynamic_batch_count and len(base_contexts) != 7:
         raise DirectReviewError(
             "RISK_BASE_BATCH_COVERAGE_INVALID",
             "Base Bundle requires exactly seven executable Batch Contexts",
@@ -9397,9 +9414,8 @@ def _validate_base_bundle_inputs(
         batch_id for unit in base_units for batch_id in unit.batch_ids
     ]
     context_by_batch = {item.batch_id: item for item in base_contexts}
-    if (
-        len(context_by_batch) != 7
-        or set(ordered_batch_ids) != set(context_by_batch)
+    if set(ordered_batch_ids) != set(context_by_batch) or (
+        not allow_dynamic_batch_count and len(context_by_batch) != 7
     ):
         raise DirectReviewError(
             "RISK_BASE_BATCH_COVERAGE_INVALID",
@@ -9600,6 +9616,7 @@ async def execute_base_risk_review_bundle(
     attempt_artifact_sink: GenericAttemptArtifactSink | None = None,
     cancel_event: asyncio.Event | None = None,
     batch_timeout_seconds: float = 60.0,
+    allow_dynamic_batch_count: bool = False,
 ) -> BaseRiskReviewBundle:
     generic = generic_reviewer or GenericBaseDirectReviewer()
     commercial = commercial_reviewer or CommercialFinancialDirectReviewer()
@@ -9615,6 +9632,7 @@ async def execute_base_risk_review_bundle(
             contract_hash=contract_hash,
             schema_version=schema_version,
             fixture_id=fixture_id,
+            allow_dynamic_batch_count=allow_dynamic_batch_count,
         )
     except DirectReviewError as exc:
         raise BaseBundleExecutionError(
@@ -9635,7 +9653,9 @@ async def execute_base_risk_review_bundle(
         batch_id for unit in base_units for batch_id in unit.batch_ids
     ]
 
-    semaphore = asyncio.Semaphore(min(plan.max_concurrency, 7))
+    semaphore = asyncio.Semaphore(
+        min(plan.max_concurrency, len(ordered_batch_ids))
+    )
     active = 0
     peak = 0
     queue_started = time.perf_counter()
@@ -9683,7 +9703,12 @@ async def execute_base_risk_review_bundle(
                             sink=attempt_artifact_sink,
                         )
                         return _commercial_batch(context, result)
-                    request = generic_request_from_context(context)
+                    request = generic_request_from_context(
+                        context,
+                        allow_absence_only_evidence_catalog=(
+                            allow_dynamic_batch_count
+                        ),
+                    )
                     return await generic.review(
                         request,
                         tenant_id=tenant_id,
@@ -9823,7 +9848,7 @@ async def execute_base_risk_review_bundle(
                 failed_unit_id=failed_unit_id,
                 error_code=error_code,
                 error_message=str(cause) or cause.__class__.__name__,
-                completed_batch_count=7,
+                completed_batch_count=len(ordered_batch_ids),
                 cancelled_batch_count=0,
                 in_flight_batch_count=0,
                 trace_id=trace_id,
@@ -9931,6 +9956,7 @@ async def execute_base_risk_review_bundle(
             queue_duration_ms=queue_duration_ms,
             wall_duration_ms=wall_duration_ms,
             peak_concurrency=peak,
+            batch_count=len(ordered_batch_ids),
             model_call_count=sum(item.model_call_count for item in completed),
             repair_count=sum(item.repair_count for item in completed),
             prompt_tokens=_sum_optional(item.prompt_tokens for item in completed),

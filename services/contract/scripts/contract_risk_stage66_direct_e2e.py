@@ -29,7 +29,6 @@ from common.system_constants import DEFAULT_TENANT_ID
 from contract.api.models import ContractProfile, ReviewResultData
 from contract.callback.models import FindingConsolidationArtifact
 from contract.risk.plan_builder import RiskReviewPlanBuilder
-from risk_fixture_loader import load_fixed_risk_plan_input
 from services.contract.capabilities.direct_e2e import (
     DirectE2EError,
     DirectE2EStageMetric,
@@ -350,8 +349,11 @@ async def _execute_one(
     context: LegacyCompatibilityContext,
     tenant_id: str,
     model_id: str,
+    run_id_prefix: str = "stage66-direct-e2e",
+    allow_dynamic_base_batch_count: bool = False,
+    diagnostic_allow_oracle_drift: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], ReviewResultData, Any, Any]:
-    run_id = f"stage66-direct-e2e-{run_index}"
+    run_id = f"{run_id_prefix}-{run_index}"
     started = time.perf_counter()
     plan = RiskReviewPlanBuilder().build(value)
 
@@ -363,6 +365,7 @@ async def _execute_one(
         contract_hash=request.contract_hash,
         fixture_id=request.fixture_id,
         framework_run_id=f"{run_id}-base",
+        allow_dynamic_batch_count=allow_dynamic_base_batch_count,
     )
     base_wall = round((time.perf_counter() - base_started) * 1000)
 
@@ -391,7 +394,7 @@ async def _execute_one(
         horizontal_peak_concurrency=horizontal_peak,
     )
     oracle_failures = _validate_oracle(extended)
-    if oracle_failures:
+    if oracle_failures and not diagnostic_allow_oracle_drift:
         raise DirectE2EError(
             "RISK_DIRECT_ORACLE_FAILED",
             "; ".join(oracle_failures),
@@ -895,6 +898,11 @@ def _failure_injection(payload: ReviewResultData) -> dict[str, Any]:
 
 
 async def _main(args: argparse.Namespace) -> None:
+    # Fixture loading is acceptance-only.  The formal Direct runtime imports
+    # ``_execute_one`` from this module in production images, where test
+    # helpers are deliberately not packaged.
+    from risk_fixture_loader import load_fixed_risk_plan_input
+
     fixture_dir = args.fixture_dir.resolve(strict=True)
     value = load_fixed_risk_plan_input(fixture_dir)
     contract_hash = _contract_hash(fixture_dir)
