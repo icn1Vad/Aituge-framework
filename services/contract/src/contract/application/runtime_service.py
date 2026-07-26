@@ -29,6 +29,7 @@ from contract.application.ports import InternalRequestContext, UploadedContract
 from contract.config import Settings
 from contract.errors import ContractError
 from contract.persistence.models import ReviewCreate
+from contract.persistence.postgres.callback_repository import FrameworkCallbackRepository
 from contract.persistence.postgres.repository import ContractRepository
 from contract.persistence.postgres.review_state import AttemptReservation, ReviewStateRepository
 
@@ -46,12 +47,14 @@ class RuntimeContractReviewService:
         state_repository: ReviewStateRepository,
         document_processor: ContractDocumentProcessor,
         framework_gateway: FrameworkGateway,
+        completion_repository: FrameworkCallbackRepository | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
         self.state_repository = state_repository
         self.document_processor = document_processor
         self.framework_gateway = framework_gateway
+        self.completion_repository = completion_repository or FrameworkCallbackRepository(settings)
 
     def health(self) -> dict[str, str]:
         health = self.repository.health()
@@ -301,6 +304,17 @@ class RuntimeContractReviewService:
                 state["id"], tenant_id=context.tenant_id, user_id=context.user_id
             )
         if snapshot.status == "succeeded":
+            if self.completion_repository.finish_if_ready(
+                state["id"],
+                tenant_id=context.tenant_id,
+                user_id=context.user_id,
+                attempt_no=attempt["attempt_no"],
+            ):
+                return self.state_repository.get_state(
+                    state["id"],
+                    tenant_id=context.tenant_id,
+                    user_id=context.user_id,
+                )
             return state
         self.state_repository.record_run_snapshot(
             review_id=state["id"],

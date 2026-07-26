@@ -31,7 +31,27 @@ STAGE_TO_REVIEW_STAGE = {
     "verify_evidence": "EVIDENCE_VERIFICATION",
     "finalize_review": "FINALIZING",
 }
-REQUIRED_STAGE_IDS = frozenset(STAGE_TO_REVIEW_STAGE)
+LEGACY_REQUIRED_STAGE_IDS = frozenset(STAGE_TO_REVIEW_STAGE)
+DIRECT_REQUIRED_STAGE_IDS = frozenset(
+    {
+        "parse_contract",
+        "resolve_parties",
+        "extract_contract_ir",
+        "finalize_review",
+    }
+)
+REQUIRED_STAGE_PROFILES = frozenset(
+    {
+        LEGACY_REQUIRED_STAGE_IDS,
+        DIRECT_REQUIRED_STAGE_IDS,
+    }
+)
+
+
+def _matches_required_stage_profile(completed_stages: set[str]) -> bool:
+    return frozenset(completed_stages) in REQUIRED_STAGE_PROFILES
+
+
 MODEL_REVIEW_STAGE_IDS = frozenset(
     {
         "rights_obligations_review",
@@ -170,6 +190,44 @@ class FrameworkCallbackRepository:
                 status_code=404,
             )
         return dict(row)
+
+    def finish_if_ready(
+        self,
+        review_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+        attempt_no: int,
+    ) -> bool:
+        """Idempotently finalize a terminal Framework attempt from persisted callbacks."""
+
+        with self.connect() as conn:
+            review = conn.execute(
+                """
+                SELECT * FROM contract_review_run
+                WHERE id = %s AND tenant_id = %s AND user_id = %s
+                FOR UPDATE
+                """,
+                (review_id, tenant_id, user_id),
+            ).fetchone()
+            if review is None:
+                raise ContractError(
+                    "REVIEW_NOT_FOUND",
+                    "Contract review does not exist or is not accessible",
+                    status_code=404,
+                )
+            if review["status"] == "SUCCEEDED":
+                conn.commit()
+                return True
+            if (
+                review["status"] != "RUNNING"
+                or review["active_attempt_no"] != attempt_no
+            ):
+                conn.commit()
+                return False
+            finished = self._finish_if_ready(conn, review, attempt_no)
+            conn.commit()
+            return finished
 
     def get_stage_execution_context(self, request: StageExecuteRequest) -> dict[str, Any]:
         """Return the active execution context, claiming a matching CREATING Attempt if needed.
@@ -1077,7 +1135,7 @@ class FrameworkCallbackRepository:
             attempt is None
             or attempt["status"] != "SUCCEEDED"
             or final_stage is None
-            or completed_stages != REQUIRED_STAGE_IDS
+            or not _matches_required_stage_profile(completed_stages)
         ):
             return False
         raw = dict(final_stage["result_json"])
