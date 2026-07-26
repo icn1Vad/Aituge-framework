@@ -480,7 +480,7 @@ class LlmCallMetric(StrictModel):
 class ReviewUnitResult(StrictModel):
     unit_id: str = Field(pattern=BASE_UNIT_ID_PATTERN)
     domain: str = Field(pattern=BASE_UNIT_ID_PATTERN)
-    status: Literal["COMPLETED"]
+    status: Literal["COMPLETED", "PARTIAL_FAILED"]
     check_results: list[CheckCoverageResult] = Field(min_length=1, max_length=8)
     findings: list[FindingDraft] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -741,7 +741,15 @@ class CommercialFinancialDirectReviewer:
         return ReviewUnitResult(
             unit_id=COMMERCIAL_UNIT_ID,
             domain=COMMERCIAL_UNIT_ID,
-            status="COMPLETED",
+            status=(
+                "PARTIAL_FAILED"
+                if any(
+                    item.status == "FAILED"
+                    or item.reason_code == "INSUFFICIENT_EVIDENCE"
+                    for item in result[0]
+                )
+                else "COMPLETED"
+            ),
             check_results=result[0],
             findings=result[1],
             warnings=warnings,
@@ -1334,11 +1342,6 @@ def _materialize(
     coverage: list[CheckCoverageResult] = []
     for check_code in COMMERCIAL_CHECK_CODES:
         check = by_code[check_code]
-        if check.status == "FAILED":
-            raise DirectReviewError(
-                "RISK_REQUIRED_CHECK_FAILED",
-                f"Required commercial check failed: {check_code}",
-            )
         local_ids: list[str] = []
         for model_finding in check.findings:
             if model_finding.check_code != check_code:

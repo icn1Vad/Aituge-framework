@@ -437,36 +437,46 @@ async def test_extended_bundle_rejects_stale_generation_without_partial_result()
 
 
 @pytest.mark.asyncio
-async def test_consistency_batch_failure_is_atomic() -> None:
+async def test_consistency_batch_failure_is_scoped_to_horizontal_unit() -> None:
     value = _fixture()
     plan = build_horizontal_plan(value, _base_bundle())
-    with pytest.raises(HorizontalReviewError) as error:
-        await execute_horizontal_unit(
-            value,
-            plan,
-            "cross_clause_consistency",
-            tenant_id="0",
-            model_id="test-model",
-            runtime_factory=lambda tenant_id: _FailingRiskRuntime(tenant_id),
-        )
-    assert error.value.code == "HORIZONTAL_BATCH_FAILED"
+    result = await execute_horizontal_unit(
+        value,
+        plan,
+        "cross_clause_consistency",
+        tenant_id="0",
+        model_id="test-model",
+        runtime_factory=lambda tenant_id: _FailingRiskRuntime(tenant_id),
+    )
+    assert result.status in {"PARTIAL_FAILED", "FAILED"}
+    assert all(item.status == "FAILED" for item in result.batch_metrics)
+    assert any(
+        item.verdict == "INSUFFICIENT_EVIDENCE"
+        for item in result.decisions
+    )
+    assert result.findings == []
 
 
 @pytest.mark.asyncio
-async def test_completeness_batch_timeout_is_atomic() -> None:
+async def test_completeness_batch_timeout_is_scoped_to_horizontal_unit() -> None:
     value = _fixture()
     plan = build_horizontal_plan(value, _base_bundle())
-    with pytest.raises(HorizontalReviewError) as error:
-        await execute_horizontal_unit(
-            value,
-            plan,
-            "missing_ambiguity_completeness",
-            tenant_id="0",
-            model_id="test-model",
-            runtime_factory=lambda tenant_id: _SlowRiskRuntime(tenant_id),
-            timeout_seconds=0.001,
-        )
-    assert error.value.code == "HORIZONTAL_BATCH_FAILED"
+    result = await execute_horizontal_unit(
+        value,
+        plan,
+        "missing_ambiguity_completeness",
+        tenant_id="0",
+        model_id="test-model",
+        runtime_factory=lambda tenant_id: _SlowRiskRuntime(tenant_id),
+        timeout_seconds=0.001,
+    )
+    assert result.status in {"PARTIAL_FAILED", "FAILED"}
+    assert all(item.status == "FAILED" for item in result.batch_metrics)
+    assert all(
+        item.verdict == "INSUFFICIENT_EVIDENCE"
+        for item in result.decisions
+        if item.owner_type != "BASE_DOMAIN"
+    )
 
 
 @pytest.mark.asyncio

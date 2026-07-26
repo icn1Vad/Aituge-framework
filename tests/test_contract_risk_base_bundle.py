@@ -113,6 +113,27 @@ FVA_RISK_TYPES = {
 }
 
 
+def test_po007_source_policy_excludes_termination_cure_language() -> None:
+    item = SimpleNamespace(
+        ir_type="obligations",
+        item_id="ir-termination-cure",
+        subject="乙方",
+        predicate="在收到通知后30日内未改正",
+        object="甲方可以解除合同",
+    )
+    excerpt = SimpleNamespace(
+        quoted_text=(
+            "乙方在收到通知后30日内未改正的，甲方可以解除合同。"
+        )
+    )
+    check = SimpleNamespace(
+        check_code="PO-007",
+        required_ir_types=["obligations", "dates", "acceptance_terms"],
+    )
+
+    assert not po_item_matches_check(item, [excerpt], check)
+
+
 def _request() -> GenericReviewRequest:
     quote = "甲方教育科技有限公司与乙方人工智能科技有限公司签订本协议。"
     return GenericReviewRequest(
@@ -2638,7 +2659,7 @@ def test_po_unknown_or_cross_candidate_control_code_is_rejected() -> None:
     assert len(runtime.calls) == 1
 
 
-def test_po_insufficient_evidence_fails_required_candidate() -> None:
+def test_po_insufficient_evidence_is_scoped_to_candidate_and_check() -> None:
     request = _po_request()
     payload = _po_candidate_payload(request)
     target = payload["candidate_decisions"][0]
@@ -2655,17 +2676,35 @@ def test_po_insufficient_evidence_fails_required_candidate() -> None:
         ]
     )
 
-    with pytest.raises(DirectReviewError) as raised:
-        asyncio.run(
-            GenericBaseDirectReviewer(
-                runtime_factory=lambda _tenant: runtime
-            ).review(
-                request,
-                tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
-            )
+    result = asyncio.run(
+        GenericBaseDirectReviewer(
+            runtime_factory=lambda _tenant: runtime
+        ).review(
+            request,
+            tenant_id="tenant-1",
+            model_id="deepseek-v4-pro",
         )
-    assert raised.value.code == "RISK_REQUIRED_CHECK_FAILED"
+    )
+
+    decision = next(
+        item
+        for item in result.candidate_decisions
+        if item.candidate_id == target["candidate_id"]
+    )
+    check = next(
+        item
+        for item in result.check_results
+        if item.check_code == decision.check_code
+    )
+    assert result.status == "PARTIAL_FAILED"
+    assert decision.verdict == "INSUFFICIENT_EVIDENCE"
+    assert decision.reason_code == "INSUFFICIENT_EVIDENCE"
+    assert check.status == "REVIEWED"
+    assert check.reason_code == "INSUFFICIENT_EVIDENCE"
+    assert not any(
+        target["candidate_id"] in item.source_candidate_ids
+        for item in result.canonical_risk_roots
+    )
 
 
 def test_po_missing_acceptance_generates_absence_candidate() -> None:
@@ -4476,25 +4515,29 @@ def test_provider_prompt_soft_warning_does_not_fail_base_bundle() -> None:
 
 
 @pytest.mark.skipif(not os.getenv(FIXTURE_ENV), reason=f"{FIXTURE_ENV} is not configured")
-def test_provider_prompt_hard_limit_fails_batch_unit_and_bundle_atomically() -> None:
+def test_provider_prompt_hard_limit_is_scoped_to_affected_batch() -> None:
     value = load_fixed_risk_plan_input(Path(os.environ[FIXTURE_ENV]))
     plan = RiskReviewPlanBuilder().build(value)
     tracker = ConcurrencyTracker()
 
-    with pytest.raises(BaseBundleExecutionError) as raised:
-        _run_fake_bundle(
-            plan,
-            generic=FakeGenericReviewer(
-                tracker,
-                prompt_tokens_by_unit={"formation_validity_authority": 7001},
-            ),
-            commercial=FakeCommercialReviewer(tracker),
-        )
+    bundle = _run_fake_bundle(
+        plan,
+        generic=FakeGenericReviewer(
+            tracker,
+            prompt_tokens_by_unit={"formation_validity_authority": 7001},
+        ),
+        commercial=FakeCommercialReviewer(tracker),
+    )
 
-    assert raised.value.code == "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED"
-    assert raised.value.failure.failed_unit_id == "formation_validity_authority"
-    assert raised.value.failure.failed_batch_id
-    assert not hasattr(raised.value.failure, "findings")
+    assert bundle.status == "PARTIAL_FAILED"
+    failed = [
+        item for item in bundle.batch_results if item.status == "FAILED"
+    ]
+    assert len(failed) == 1
+    assert failed[0].unit_id == "formation_validity_authority"
+    assert all(item.status == "FAILED" for item in failed[0].check_results)
+    assert bundle.metrics.failed_batch_ids == [failed[0].batch_id]
+    assert bundle.metrics.prompt_budget_hard_failure_count == 1
 
 
 @pytest.mark.skipif(not os.getenv(FIXTURE_ENV), reason=f"{FIXTURE_ENV} is not configured")
@@ -4644,32 +4687,41 @@ def test_fixed_fixture_i039_is_bound_to_a025_and_a044_cannot_be_combined() -> No
 
 
 @pytest.mark.skipif(not os.getenv(FIXTURE_ENV), reason=f"{FIXTURE_ENV} is not configured")
-def test_any_batch_failure_cancels_bundle_and_returns_no_partial_result() -> None:
+def test_one_batch_failure_preserves_other_validated_results() -> None:
     value = load_fixed_risk_plan_input(Path(os.environ[FIXTURE_ENV]))
     plan = RiskReviewPlanBuilder().build(value)
     tracker = ConcurrencyTracker()
 
-    with pytest.raises(BaseBundleExecutionError) as raised:
-        asyncio.run(
-            execute_base_risk_review_bundle(
-                plan,
-                tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
-                contract_hash=TEST_CONTRACT_HASH,
-                fixture_id=TEST_FIXTURE_ID,
-                generic_reviewer=FakeGenericReviewer(
-                    tracker,
-                    fail_unit="formation_validity_authority",
-                ),
-                commercial_reviewer=FakeCommercialReviewer(tracker),
-            )
+    bundle = asyncio.run(
+        execute_base_risk_review_bundle(
+            plan,
+            tenant_id="tenant-1",
+            model_id="deepseek-v4-pro",
+            contract_hash=TEST_CONTRACT_HASH,
+            fixture_id=TEST_FIXTURE_ID,
+            generic_reviewer=FakeGenericReviewer(
+                tracker,
+                fail_unit="formation_validity_authority",
+            ),
+            commercial_reviewer=FakeCommercialReviewer(tracker),
         )
+    )
 
-    assert raised.value.code == "RISK_FAKE_BATCH_FAILED"
-    assert raised.value.failure.status == "FAILED"
-    assert raised.value.failure.failed_unit_id == "formation_validity_authority"
-    assert raised.value.failure.failed_batch_id is not None
-    assert not hasattr(raised.value.failure, "findings")
+    assert bundle.status == "PARTIAL_FAILED"
+    assert len(bundle.units) == 5
+    assert len(bundle.metrics.failed_batch_ids) == 1
+    failed_unit = next(
+        item
+        for item in bundle.units
+        if item.unit_id == "formation_validity_authority"
+    )
+    assert failed_unit.status == "FAILED"
+    assert all(item.status == "FAILED" for item in failed_unit.check_results)
+    assert any(
+        item.findings
+        for item in bundle.units
+        if item.unit_id != "formation_validity_authority"
+    )
 
 
 @pytest.mark.skipif(not os.getenv(FIXTURE_ENV), reason=f"{FIXTURE_ENV} is not configured")
@@ -4786,21 +4838,28 @@ def test_bundle_cancel_is_atomic_and_does_not_start_formal_result() -> None:
 
 
 @pytest.mark.skipif(not os.getenv(FIXTURE_ENV), reason=f"{FIXTURE_ENV} is not configured")
-def test_commercial_batch_failure_fails_the_whole_bundle() -> None:
+def test_commercial_batch_failure_preserves_other_units() -> None:
     value = load_fixed_risk_plan_input(Path(os.environ[FIXTURE_ENV]))
     plan = RiskReviewPlanBuilder().build(value)
     tracker = ConcurrencyTracker()
 
-    with pytest.raises(BaseBundleExecutionError) as raised:
-        _run_fake_bundle(
-            plan,
-            generic=FakeGenericReviewer(tracker),
-            commercial=FailingCommercialReviewer(tracker),
-        )
+    bundle = _run_fake_bundle(
+        plan,
+        generic=FakeGenericReviewer(tracker),
+        commercial=FailingCommercialReviewer(tracker),
+    )
 
-    assert raised.value.code == "RISK_FAKE_COMMERCIAL_FAILED"
-    assert raised.value.failure.failed_unit_id == "commercial_financial"
-    assert not hasattr(raised.value.failure, "findings")
+    assert bundle.status == "PARTIAL_FAILED"
+    commercial = next(
+        item for item in bundle.units if item.unit_id == "commercial_financial"
+    )
+    assert commercial.status == "FAILED"
+    assert all(item.status == "FAILED" for item in commercial.check_results)
+    assert any(
+        item.findings
+        for item in bundle.units
+        if item.unit_id != "commercial_financial"
+    )
 
 
 @pytest.mark.skipif(not os.getenv(FIXTURE_ENV), reason=f"{FIXTURE_ENV} is not configured")

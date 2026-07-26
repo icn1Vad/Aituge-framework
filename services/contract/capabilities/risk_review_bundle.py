@@ -1065,11 +1065,11 @@ class ReviewBatchResult(StrictModel):
     unit_id: str = Field(pattern=BASE_UNIT_ID_PATTERN)
     domain: str = Field(pattern=BASE_UNIT_ID_PATTERN)
     batch_id: str = Field(pattern=r"^risk-batch-[0-9a-f]{32}$")
-    status: Literal["COMPLETED"]
+    status: Literal["COMPLETED", "PARTIAL_FAILED", "FAILED"]
     check_results: list[CheckCoverageResult] = Field(min_length=1, max_length=8)
     findings: list[FindingDraft] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
-    model_call_count: int = Field(ge=1, le=2)
+    model_call_count: int = Field(ge=0, le=2)
     repair_count: int = Field(ge=0, le=1)
     schema_repair_count: int = Field(default=0, ge=0, le=1)
     evidence_selection_repair_count: int = Field(default=0, ge=0, le=1)
@@ -1083,12 +1083,15 @@ class ReviewBatchResult(StrictModel):
     total_tokens: int | None = Field(default=None, ge=0)
     prompt_budget: PromptBudgetResult | None = None
     duration_ms: int = Field(ge=0)
-    trace_ids: list[str] = Field(min_length=1, max_length=2)
-    call_metrics: list[LlmCallMetric] = Field(min_length=1, max_length=2)
+    trace_ids: list[str] = Field(default_factory=list, max_length=2)
+    call_metrics: list[LlmCallMetric] = Field(default_factory=list, max_length=2)
     repair_reasons: list[str] = Field(default_factory=list, max_length=1)
     schema_normalization_applied: bool = False
     schema_normalization_type: Literal["TOP_LEVEL_CHECKS_TO_CHECK_RESULTS"] | None = None
-    attempt_diagnostics: list[LlmAttemptDiagnostic] = Field(min_length=1, max_length=2)
+    attempt_diagnostics: list[LlmAttemptDiagnostic] = Field(
+        default_factory=list,
+        max_length=2,
+    )
     reason_code_enrichment_count: int = Field(ge=0, le=8)
     reason_code_rule_version: Literal["1.0"]
     ignored_model_reason_code_count: int = Field(ge=0, le=8)
@@ -1119,12 +1122,12 @@ class ReviewBatchResult(StrictModel):
 class BaseReviewUnitResult(StrictModel):
     unit_id: str = Field(pattern=BASE_UNIT_ID_PATTERN)
     domain: str = Field(pattern=BASE_UNIT_ID_PATTERN)
-    status: Literal["COMPLETED"]
+    status: Literal["COMPLETED", "PARTIAL_FAILED", "FAILED"]
     batch_ids: list[str] = Field(min_length=1, max_length=2)
     check_results: list[CheckCoverageResult] = Field(min_length=5, max_length=8)
     findings: list[FindingDraft] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
-    model_call_count: int = Field(ge=1, le=4)
+    model_call_count: int = Field(ge=0, le=4)
     repair_count: int = Field(ge=0, le=2)
     schema_repair_count: int = Field(default=0, ge=0, le=2)
     evidence_selection_repair_count: int = Field(default=0, ge=0, le=2)
@@ -1155,8 +1158,8 @@ class BaseReviewUnitResult(StrictModel):
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
     duration_ms: int = Field(ge=0)
-    trace_ids: list[str] = Field(min_length=1, max_length=4)
-    call_metrics: list[LlmCallMetric] = Field(min_length=1, max_length=4)
+    trace_ids: list[str] = Field(default_factory=list, max_length=4)
+    call_metrics: list[LlmCallMetric] = Field(default_factory=list, max_length=4)
     fva_assessments: list[FvaAssessmentResult] = Field(
         default_factory=list,
         max_length=1,
@@ -1182,7 +1185,7 @@ class BaseBundleIdentity(StrictModel):
 class BaseBundleBatchMetric(StrictModel):
     unit_id: str = Field(pattern=BASE_UNIT_ID_PATTERN)
     batch_id: str = Field(pattern=r"^risk-batch-[0-9a-f]{32}$")
-    status: Literal["COMPLETED"]
+    status: Literal["COMPLETED", "PARTIAL_FAILED", "FAILED"]
     start_offset_ms: int = Field(ge=0)
     wall_duration_ms: int = Field(ge=0)
     time_to_first_token_ms: int | None = Field(default=None, ge=0)
@@ -1191,14 +1194,14 @@ class BaseBundleBatchMetric(StrictModel):
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
     prompt_budget: PromptBudgetResult | None = None
-    model_call_count: int = Field(ge=1, le=2)
+    model_call_count: int = Field(ge=0, le=2)
     repair_count: int = Field(ge=0, le=1)
     tool_call_count: Literal[0] = 0
 
 
 class BaseBundleUnitMetric(StrictModel):
     unit_id: str = Field(pattern=BASE_UNIT_ID_PATTERN)
-    status: Literal["COMPLETED"]
+    status: Literal["COMPLETED", "PARTIAL_FAILED", "FAILED"]
     check_count: int = Field(ge=1, le=8)
     candidate_count: int = Field(ge=0)
     root_count: int = Field(ge=0)
@@ -1224,7 +1227,7 @@ class BaseBundleMetrics(StrictModel):
     peak_concurrency: int = Field(ge=1, le=7)
     batch_count: int = Field(default=7, ge=1, le=16)
     unit_count: Literal[5] = 5
-    model_call_count: int = Field(ge=1, le=16)
+    model_call_count: int = Field(ge=0, le=16)
     repair_count: int = Field(ge=0, le=7)
     tool_call_count: Literal[0] = 0
     prompt_tokens: int | None = Field(default=None, ge=0)
@@ -1243,7 +1246,7 @@ class BaseBundleMetrics(StrictModel):
     slowest_unit_duration_ms: int = Field(ge=0)
     batch_metrics: list[BaseBundleBatchMetric] = Field(min_length=1, max_length=16)
     unit_metrics: list[BaseBundleUnitMetric] = Field(min_length=5, max_length=5)
-    failed_batch_ids: list[str] = Field(default_factory=list, max_length=0)
+    failed_batch_ids: list[str] = Field(default_factory=list, max_length=16)
 
 
 class BaseRiskReviewBundle(StrictModel):
@@ -1252,7 +1255,7 @@ class BaseRiskReviewBundle(StrictModel):
     identity: BaseBundleIdentity
     plan_id: str = Field(pattern=r"^risk-plan-[0-9a-f]{32}$")
     plan_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
-    status: Literal["COMPLETED"]
+    status: Literal["COMPLETED", "PARTIAL_FAILED"]
     units: list[BaseReviewUnitResult] = Field(min_length=5, max_length=5)
     batch_results: list[ReviewBatchResult] = Field(min_length=1, max_length=16)
     cross_unit_overlap_candidates: list[CrossUnitOverlapCandidate] = Field(
@@ -1656,7 +1659,15 @@ class GenericBaseDirectReviewer:
             unit_id=request.unit_id,
             domain=request.unit_id,
             batch_id=request.batch_id,
-            status="COMPLETED",
+            status=(
+                "PARTIAL_FAILED"
+                if any(
+                    item.status == "FAILED"
+                    or item.reason_code == "INSUFFICIENT_EVIDENCE"
+                    for item in check_results
+                )
+                else "COMPLETED"
+            ),
             check_results=check_results,
             findings=findings,
             warnings=warnings,
@@ -1949,7 +1960,15 @@ async def _review_po_candidate_batch(
         unit_id=request.unit_id,
         domain=request.unit_id,
         batch_id=request.batch_id,
-        status="COMPLETED",
+        status=(
+            "PARTIAL_FAILED"
+            if any(
+                item.status == "FAILED"
+                or item.reason_code == "INSUFFICIENT_EVIDENCE"
+                for item in check_results
+            )
+            else "COMPLETED"
+        ),
         check_results=check_results,
         findings=findings,
         warnings=warnings,
@@ -2267,13 +2286,6 @@ def _materialize_po_candidate_decisions(
             if raw.verdict == "RISK"
             else None
         )
-        if raw.verdict == "INSUFFICIENT_EVIDENCE":
-            raise DirectReviewError(
-                "RISK_REQUIRED_CHECK_FAILED",
-                f"Required Candidate lacks evidence: {candidate.candidate_id}; "
-                f"summary={raw.decision_summary}",
-            )
-
         reason_code: Literal[
             "RISK_IDENTIFIED",
             "NO_RISK_SUPPORTED",
@@ -2281,7 +2293,11 @@ def _materialize_po_candidate_decisions(
         ] = (
             "RISK_IDENTIFIED"
             if raw.verdict == "RISK"
-            else "NO_RISK_SUPPORTED"
+            else (
+                "INSUFFICIENT_EVIDENCE"
+                if raw.verdict == "INSUFFICIENT_EVIDENCE"
+                else "NO_RISK_SUPPORTED"
+            )
         )
         decision = CandidateDecision(
             candidate_id=candidate.candidate_id,
@@ -2476,8 +2492,21 @@ def _materialize_po_candidate_decisions(
                 if candidate_id in finding_by_candidate
             )
         )
-        reason_code: Literal["RISK_IDENTIFIED", "NO_RISK_IDENTIFIED"] = (
-            "RISK_IDENTIFIED" if local_ids else "NO_RISK_IDENTIFIED"
+        reason_code: Literal[
+            "RISK_IDENTIFIED",
+            "NO_RISK_IDENTIFIED",
+            "INSUFFICIENT_EVIDENCE",
+        ] = (
+            "RISK_IDENTIFIED"
+            if local_ids
+            else (
+                "INSUFFICIENT_EVIDENCE"
+                if any(
+                    item.verdict == "INSUFFICIENT_EVIDENCE"
+                    for item in decisions
+                )
+                else "NO_RISK_IDENTIFIED"
+            )
         )
         decision_note = "；".join(
             f"{item.candidate_type}:{item.decision_summary}" for item in decisions
@@ -5906,7 +5935,7 @@ _PO_PATTERN_RULES: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
         (
             "WARRANTY_SUPPORT_REVIEW",
             "存在质保、维护、整改、修复、响应或支持线索，需要核对范围、期限和复验",
-            (r"质保", r"维护", r"维修", r"整改", r"改正", r"修复", r"支持", r"响应", r"解决方案", r"复验"),
+            (r"质保", r"维护", r"维修", r"整改", r"修复", r"支持", r"响应", r"解决方案", r"复验"),
         ),
     ),
 }
@@ -7921,11 +7950,6 @@ def _materialize_generic(
     ignored_model_link_fields_count = 0
     for check_code in expected_codes:
         check = by_code[check_code]
-        if check.status == "FAILED":
-            raise DirectReviewError(
-                "RISK_REQUIRED_CHECK_FAILED",
-                f"Required Check failed: {check_code}",
-            )
         local_ids = []
         for model_finding in check.findings:
             spec = specs[check_code]
@@ -9259,6 +9283,54 @@ def _commercial_batch(
     )
 
 
+def _failed_batch_result(
+    context: Any,
+    error: BaseException,
+    *,
+    duration_ms: int,
+) -> ReviewBatchResult:
+    """Preserve unaffected review output when one executable Batch fails.
+
+    Identity, ownership and Generation gates run before execution and remain
+    bundle-fatal.  Once those gates pass, a provider/model/check failure is
+    represented at Batch/Check scope so other validated Batches can still be
+    materialized.
+    """
+
+    code = getattr(error, "code", error.__class__.__name__)
+    message = str(error) or error.__class__.__name__
+    note = f"{code}: {message}"[:1000]
+    check_results = [
+        CheckCoverageResult(
+            check_code=spec.check_code,
+            status="FAILED",
+            reason_code="CHECK_FAILED",
+            decision_note=note,
+            finding_local_ids=[],
+        )
+        for spec in context.check_specs
+    ]
+    return ReviewBatchResult(
+        unit_id=_value(context.unit_id),
+        domain=_value(context.unit_id),
+        batch_id=context.batch_id,
+        status="FAILED",
+        check_results=check_results,
+        findings=[],
+        warnings=[note],
+        model_call_count=0,
+        repair_count=0,
+        tool_call_count=0,
+        duration_ms=max(duration_ms, 0),
+        trace_ids=[],
+        call_metrics=[],
+        attempt_diagnostics=[],
+        reason_code_enrichment_count=len(check_results),
+        reason_code_rule_version="1.0",
+        ignored_model_reason_code_count=0,
+    )
+
+
 @dataclass(slots=True)
 class _BatchExecutionFailure(Exception):
     unit_id: str
@@ -9731,23 +9803,32 @@ async def execute_base_risk_review_bundle(
                 raise
             except TimeoutError as exc:
                 states[batch_id] = "FAILED"
-                raise _BatchExecutionFailure(
-                    _value(context.unit_id),
-                    batch_id,
-                    DirectReviewError(
-                        "RISK_BASE_BATCH_TIMEOUT",
-                        f"Batch {batch_id} exceeded the Bundle hard timeout",
+                failure = DirectReviewError(
+                    "RISK_BASE_BATCH_TIMEOUT",
+                    f"Batch {batch_id} exceeded the Bundle hard timeout",
+                )
+                result = _failed_batch_result(
+                    context,
+                    failure,
+                    duration_ms=round(
+                        (time.perf_counter() - started_at[batch_id]) * 1000
                     ),
-                ) from exc
+                )
+                results[batch_id] = result
+                return result
             except _BatchExecutionFailure:
                 raise
-            except BaseException as exc:
+            except Exception as exc:
                 states[batch_id] = "FAILED"
-                raise _BatchExecutionFailure(
-                    _value(context.unit_id),
-                    batch_id,
+                result = _failed_batch_result(
+                    context,
                     exc,
-                ) from exc
+                    duration_ms=round(
+                        (time.perf_counter() - started_at[batch_id]) * 1000
+                    ),
+                )
+                results[batch_id] = result
+                return result
             finally:
                 finished_at[batch_id] = time.perf_counter()
                 active -= 1
@@ -9829,6 +9910,34 @@ async def execute_base_risk_review_bundle(
             cancel_waiter.cancel()
             await asyncio.gather(cancel_waiter, return_exceptions=True)
 
+    if completed and all(item.status == "FAILED" for item in completed):
+        first_failure = completed[0]
+        first_diagnostic = (
+            first_failure.warnings[0]
+            if first_failure.warnings
+            else "RISK_BASE_ALL_BATCHES_FAILED: All Base Review Batches failed"
+        )
+        first_code, _, first_message = first_diagnostic.partition(":")
+        raise BaseBundleExecutionError(
+            BaseBundleFailure(
+                bundle_id=bundle_id,
+                plan_id=plan.plan_id,
+                plan_hash=plan.plan_hash,
+                failed_unit_id=first_failure.unit_id,
+                failed_batch_id=first_failure.batch_id,
+                error_code=first_code or "RISK_BASE_ALL_BATCHES_FAILED",
+                error_message=(
+                    first_message.strip()
+                    or "All Base Review Batches failed"
+                ),
+                completed_batch_count=0,
+                cancelled_batch_count=0,
+                in_flight_batch_count=0,
+                trace_id=trace_id,
+                diagnostic_batch_results=completed,
+            )
+        )
+
     by_batch = {item.batch_id: item for item in completed}
     unit_results: list[BaseReviewUnitResult] = []
     try:
@@ -9868,7 +9977,7 @@ async def execute_base_risk_review_bundle(
         BaseBundleBatchMetric(
             unit_id=by_batch[batch_id].unit_id,
             batch_id=batch_id,
-            status="COMPLETED",
+            status=by_batch[batch_id].status,
             start_offset_ms=round(
                 (started_at[batch_id] - queue_started) * 1000
             ),
@@ -9905,7 +10014,7 @@ async def execute_base_risk_review_bundle(
         unit_metrics.append(
             BaseBundleUnitMetric(
                 unit_id=unit_result.unit_id,
-                status="COMPLETED",
+                status=unit_result.status,
                 check_count=len(unit_result.check_results),
                 candidate_count=len(unit_result.candidate_decisions),
                 root_count=len(unit_result.canonical_risk_roots),
@@ -9941,15 +10050,30 @@ async def execute_base_risk_review_bundle(
     ]
     batches_over_hard_limit = [
         item.batch_id
-        for item in prompt_budgets
-        if item.budget_status == "HARD_LIMIT_EXCEEDED"
+        for item in completed
+        if (
+            item.prompt_budget is not None
+            and item.prompt_budget.budget_status == "HARD_LIMIT_EXCEEDED"
+        )
+        or any(
+            warning.startswith("RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED")
+            for warning in item.warnings
+        )
     ]
+    failed_batch_ids = [
+        item.batch_id for item in completed if item.status == "FAILED"
+    ]
+    bundle_status: Literal["COMPLETED", "PARTIAL_FAILED"] = (
+        "PARTIAL_FAILED"
+        if any(item.status != "COMPLETED" for item in unit_results)
+        else "COMPLETED"
+    )
     return BaseRiskReviewBundle(
         bundle_id=bundle_id,
         identity=identity,
         plan_id=plan.plan_id,
         plan_hash=plan.plan_hash,
-        status="COMPLETED",
+        status=bundle_status,
         units=unit_results,
         batch_results=[by_batch[item] for item in ordered_batch_ids],
         cross_unit_overlap_candidates=overlaps,
@@ -9979,6 +10103,7 @@ async def execute_base_risk_review_bundle(
             slowest_unit_duration_ms=slowest_unit.wall_duration_ms,
             batch_metrics=batch_metrics,
             unit_metrics=unit_metrics,
+            failed_batch_ids=failed_batch_ids,
         ),
     )
 
@@ -10258,7 +10383,19 @@ def _merge_unit_result(unit, by_batch: dict[str, ReviewBatchResult]) -> BaseRevi
     return BaseReviewUnitResult(
         unit_id=_value(unit.unit_id),
         domain=_value(unit.domain),
-        status="COMPLETED",
+        status=(
+            "FAILED"
+            if all(item.status == "FAILED" for item in checks)
+            else (
+                "PARTIAL_FAILED"
+                if any(
+                    item.status == "FAILED"
+                    or item.reason_code == "INSUFFICIENT_EVIDENCE"
+                    for item in checks
+                )
+                else "COMPLETED"
+            )
+        ),
         batch_ids=list(unit.batch_ids),
         check_results=checks,
         findings=sorted(

@@ -283,12 +283,14 @@ class HorizontalCanonicalRoot(StrictModel):
 
 class HorizontalCheckResult(StrictModel):
     check_code: str
-    status: Literal["REVIEWED"]
+    status: Literal["REVIEWED", "FAILED"]
     reason_code: Literal[
         "RISK_IDENTIFIED",
         "NO_RISK_IDENTIFIED",
         "CONFIRMED_BY_BASE_DOMAIN",
         "NO_DETERMINISTIC_CANDIDATES",
+        "INSUFFICIENT_EVIDENCE",
+        "CHECK_FAILED",
     ]
     candidate_ids: list[str] = Field(default_factory=list)
     finding_local_ids: list[str] = Field(default_factory=list)
@@ -307,11 +309,14 @@ class HorizontalBatchMetric(StrictModel):
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
     prompt_budget: PromptBudgetResult | None = None
+    status: Literal["COMPLETED", "FAILED"] = "COMPLETED"
+    error_code: str | None = None
+    error_message: str | None = None
 
 
 class HorizontalUnitResult(StrictModel):
     unit_id: HorizontalUnitId
-    status: Literal["COMPLETED"]
+    status: Literal["COMPLETED", "PARTIAL_FAILED", "FAILED"]
     check_results: list[HorizontalCheckResult]
     decisions: list[HorizontalDecision]
     canonical_roots: list[HorizontalCanonicalRoot]
@@ -341,7 +346,7 @@ class ExtendedBundleMetrics(StrictModel):
 class ExtendedRiskReviewBundle(StrictModel):
     bundle_version: Literal["1.0"] = "1.0"
     bundle_id: str = Field(pattern=r"^extended-risk-bundle-[0-9a-f]{32}$")
-    status: Literal["COMPLETED"]
+    status: Literal["COMPLETED", "PARTIAL_FAILED"]
     review_id: str
     generation_id: str
     base_bundle: BaseRiskReviewBundle
@@ -1406,10 +1411,19 @@ def _materialize_unit(
                 for finding_id in candidate.linked_base_finding_ids
             }
         )
+        insufficient = any(
+            decision_by_id.get(candidate.candidate_id) is not None
+            and decision_by_id[candidate.candidate_id].verdict
+            == "INSUFFICIENT_EVIDENCE"
+            for candidate in check_candidates
+            if candidate.owner_type != "BASE_DOMAIN"
+        )
         if check_findings:
             reason = "RISK_IDENTIFIED"
         elif linked:
             reason = "CONFIRMED_BY_BASE_DOMAIN"
+        elif insufficient:
+            reason = "INSUFFICIENT_EVIDENCE"
         elif check_candidates:
             reason = "NO_RISK_IDENTIFIED"
         else:
@@ -1417,16 +1431,21 @@ def _materialize_unit(
         check_results.append(
             HorizontalCheckResult(
                 check_code=check.check_code,
-                status="REVIEWED",
+                status=("FAILED" if insufficient else "REVIEWED"),
                 reason_code=reason,
                 candidate_ids=[item.candidate_id for item in check_candidates],
                 finding_local_ids=[item.finding_local_id for item in check_findings],
                 linked_base_finding_ids=linked,
             )
         )
+    failed_check_count = sum(item.status == "FAILED" for item in check_results)
     return HorizontalUnitResult(
         unit_id=unit_id,
-        status="COMPLETED",
+        status=(
+            "FAILED"
+            if failed_check_count == len(check_results)
+            else ("PARTIAL_FAILED" if failed_check_count else "COMPLETED")
+        ),
         check_results=check_results,
         decisions=sorted(all_decisions, key=lambda item: item.candidate_id),
         canonical_roots=sorted(roots, key=lambda item: item.root_id),
@@ -1435,10 +1454,21 @@ def _materialize_unit(
         model_call_count=sum(item.model_call_count for item in metrics),
         wall_duration_ms=round((time.perf_counter() - started) * 1000),
         warnings=[
-            "RISK_PROMPT_TOKEN_SOFT_WARNING"
+            warning
             for item in metrics
-            if item.prompt_budget
-            and item.prompt_budget.budget_status == "SOFT_WARNING"
+            for warning in (
+                (
+                    ["RISK_PROMPT_TOKEN_SOFT_WARNING"]
+                    if item.prompt_budget
+                    and item.prompt_budget.budget_status == "SOFT_WARNING"
+                    else []
+                )
+                + (
+                    [f"{item.error_code}: {item.error_message}"]
+                    if item.status == "FAILED"
+                    else []
+                )
+            )
         ],
     )
 
@@ -1473,61 +1503,86 @@ async def execute_horizontal_unit(
     ) -> tuple[list[HorizontalDecision], HorizontalBatchMetric]:
         batch_started = time.perf_counter()
         selected = [candidates[item] for item in batch.candidate_ids]
-        completion = await asyncio.wait_for(
-            runtime.complete_with_usage(
-                messages=[{"role": "user", "content": _batch_prompt(plan, batch)}],
-                model_id=model_id,
-                system_prompt=_SYSTEM_PROMPT,
-                max_tokens=2500,
-                temperature=0,
-                thinking_override=False,
-                response_format={"type": "json_object"},
-                review_unit_id=unit_id,
-                review_id=value.review_id,
-                framework_run_id=framework_run_id,
-                attempt_no=value.attempt_no,
-                repair_no=0,
-            ),
-            timeout=timeout_seconds,
-        )
-        budget = evaluate_prompt_budget(
-            provider_prompt_tokens=completion.prompt_tokens,
-            provider_cached_tokens=completion.cached_tokens,
-            estimated_business_context_tokens=batch.estimated_business_context_tokens,
-            unit_id=unit_id,
-            batch_id=batch.batch_id,
-        )
-        if budget.budget_status == "HARD_LIMIT_EXCEEDED":
-            raise HorizontalReviewError(
-                "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED",
-                f"{batch.batch_id} exceeded the Provider Prompt hard limit",
+        try:
+            completion = await asyncio.wait_for(
+                runtime.complete_with_usage(
+                    messages=[{"role": "user", "content": _batch_prompt(plan, batch)}],
+                    model_id=model_id,
+                    system_prompt=_SYSTEM_PROMPT,
+                    max_tokens=2500,
+                    temperature=0,
+                    thinking_override=False,
+                    response_format={"type": "json_object"},
+                    review_unit_id=unit_id,
+                    review_id=value.review_id,
+                    framework_run_id=framework_run_id,
+                    attempt_no=value.attempt_no,
+                    repair_no=0,
+                ),
+                timeout=timeout_seconds,
             )
-        raw = _parse_decisions(completion.content, selected)
-        decisions = [
-            _validate_decision(item, candidate)
-            for item, candidate in zip(raw, selected, strict=True)
-        ]
-        return decisions, HorizontalBatchMetric(
-            batch_id=batch.batch_id,
-            unit_id=unit_id,
-            wall_duration_ms=round((time.perf_counter() - batch_started) * 1000),
-            model_call_count=1,
-            prompt_tokens=completion.prompt_tokens,
-            cached_tokens=completion.cached_tokens,
-            completion_tokens=completion.completion_tokens,
-            total_tokens=completion.total_tokens,
-            prompt_budget=budget,
-        )
-
-    try:
-        results = await asyncio.gather(*(run_batch(batch) for batch in batches))
-    except Exception as exc:
-        if isinstance(exc, HorizontalReviewError):
+            budget = evaluate_prompt_budget(
+                provider_prompt_tokens=completion.prompt_tokens,
+                provider_cached_tokens=completion.cached_tokens,
+                estimated_business_context_tokens=batch.estimated_business_context_tokens,
+                unit_id=unit_id,
+                batch_id=batch.batch_id,
+            )
+            if budget.budget_status == "HARD_LIMIT_EXCEEDED":
+                raise HorizontalReviewError(
+                    "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED",
+                    f"{batch.batch_id} exceeded the Provider Prompt hard limit",
+                )
+            raw = _parse_decisions(completion.content, selected)
+            decisions = [
+                _validate_decision(item, candidate)
+                for item, candidate in zip(raw, selected, strict=True)
+            ]
+            return decisions, HorizontalBatchMetric(
+                batch_id=batch.batch_id,
+                unit_id=unit_id,
+                wall_duration_ms=round(
+                    (time.perf_counter() - batch_started) * 1000
+                ),
+                model_call_count=1,
+                prompt_tokens=completion.prompt_tokens,
+                cached_tokens=completion.cached_tokens,
+                completion_tokens=completion.completion_tokens,
+                total_tokens=completion.total_tokens,
+                prompt_budget=budget,
+            )
+        except asyncio.CancelledError:
             raise
-        raise HorizontalReviewError(
-            "HORIZONTAL_BATCH_FAILED",
-            f"{unit_id} Batch failed: {exc}",
-        ) from exc
+        except Exception as exc:
+            code = getattr(exc, "code", "HORIZONTAL_BATCH_FAILED")
+            message = str(exc) or exc.__class__.__name__
+            decisions = [
+                HorizontalDecision(
+                    candidate_id=candidate.candidate_id,
+                    check_code=candidate.check_code,
+                    verdict="INSUFFICIENT_EVIDENCE",
+                    decision_summary=(
+                        f"横向Batch未完成，当前Candidate未形成风险结论："
+                        f"{code}"
+                    ),
+                    owner_type=candidate.owner_type,
+                    linked_base_finding_ids=candidate.linked_base_finding_ids,
+                )
+                for candidate in selected
+            ]
+            return decisions, HorizontalBatchMetric(
+                batch_id=batch.batch_id,
+                unit_id=unit_id,
+                wall_duration_ms=round(
+                    (time.perf_counter() - batch_started) * 1000
+                ),
+                model_call_count=0,
+                status="FAILED",
+                error_code=code,
+                error_message=message[:1000],
+            )
+
+    results = await asyncio.gather(*(run_batch(batch) for batch in batches))
     decisions = [decision for result, _metric in results for decision in result]
     metrics = [metric for _result, metric in results]
     return _materialize_unit(
@@ -1592,10 +1647,10 @@ def build_extended_bundle(
     horizontal_phase_wall_ms: int,
     horizontal_peak_concurrency: int,
 ) -> ExtendedRiskReviewBundle:
-    if base_bundle.status != "COMPLETED":
+    if base_bundle.status not in {"COMPLETED", "PARTIAL_FAILED"}:
         raise HorizontalReviewError(
             "EXTENDED_BASE_PHASE_FAILED",
-            "Extended Bundle requires a complete base Bundle",
+            "Extended Bundle requires a usable base Bundle",
         )
     if {item.unit_id for item in horizontal_units} != set(HORIZONTAL_UNIT_IDS):
         raise HorizontalReviewError(
@@ -1689,7 +1744,12 @@ def build_extended_bundle(
     ]
     return ExtendedRiskReviewBundle(
         bundle_id=bundle_id,
-        status="COMPLETED",
+        status=(
+            "PARTIAL_FAILED"
+            if base_bundle.status == "PARTIAL_FAILED"
+            or any(item.status != "COMPLETED" for item in horizontal_units)
+            else "COMPLETED"
+        ),
         review_id=value.review_id,
         generation_id=value.generation_id,
         base_bundle=base_bundle,

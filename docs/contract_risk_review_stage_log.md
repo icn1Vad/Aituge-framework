@@ -1474,3 +1474,56 @@ Legacy模型/Tool调用：0/0
 `corpus_coverage_status=LIMITED`；
 `next_recommendation=READY_FOR_TEST_ENV_DIRECT_VALIDATION`。
 允许按本阶段授权提交并推送。正式Pipeline未切换，测试环境Direct切换尚未授权。
+
+## 2026-07-26 Direct风险审查运行时门禁粒度修正
+
+### 现场问题与根因
+
+- 正式任务在结果整理阶段因PO-007候选
+  `risk-candidate-42fedd00ab05a43d5e1a272efd0f3eb5`
+  返回`INSUFFICIENT_EVIDENCE`而整体失败。模型摘要明确表示现有证据只有服务范围和
+  解除条件，不能证明质保、维护、整改、响应或复验机制。
+- 旧运行时把“一个Candidate证据不足”沿
+  `Candidate → Check → Batch → Unit → Bundle → E2E`提升为全局硬失败，导致其他
+  已经通过校验的Finding也无法进入正式Payload。该传播粒度不适合正式运行。
+- PO-007 Source Policy中的裸关键词“改正”还会把“30日内未改正即可解除”的LRE
+  解除整改期文本投影到质保支持Check，扩大了无关Evidence暴露范围。
+
+### 修正规则
+
+- `INSUFFICIENT_EVIDENCE`只作用于当前Candidate；该Candidate不生成Root/Finding，
+  审计记录保留。
+- 单Check失败只标记当前Check为`FAILED/CHECK_FAILED`；同Batch内可以确定性保留的
+  合法Check结果继续保留。
+- 模型调用失败、超时、Schema不合法、未知或非法Source等无法安全拆解的错误，只使
+  当前Batch为`FAILED`；其他Batch继续运行并物化合法Finding。
+- Unit或Bundle包含局部失败时返回`PARTIAL_FAILED`。只有全部Batch都失败且没有可
+  消费结果，或命中全局完整性门时，才整体`FAILED`。
+- 横向Review Batch采用相同策略：失败Batch的候选确定性记录为
+  `INSUFFICIENT_EVIDENCE`，不生成横向Finding；另一横向Unit及基础Finding不受影响。
+- PO-007 Evidence Source Policy移除无上下文裸词“改正”，仍保留真正与质保、维护、
+  支持、响应、复验相关的文本信号。
+
+### 保持不变的全局硬门
+
+- review/document/generation/contract hash/schema/perspective/双方主体不一致；
+- Check、Candidate、Unit或Batch归属错误及跨Unit、跨Generation污染；
+- 正式Finding/Evidence ID冲突、重复同根Finding、非法Category/Risk Type；
+- 正式Evidence的IR、Anchor、Block、字符范围、逐字原文、Hash或Absence范围无效；
+- Compatibility路由、正式Artifact/Payload Schema、正式Result Hash失败；
+- Result Sink事务、幂等冲突和正式回调契约失败。
+
+这些门保护结果身份、技术证据和持久化一致性，不能通过丢弃单条结果静默修复，仍然
+整体失败。正式Finding/Evidence DTO、公开OpenAPI、Result Hash和Result Sink协议
+均未修改。
+
+### 验证
+
+- 新增PO-007解除整改期文本隔离、Candidate证据不足局部降级、Commercial Check局部
+  降级、基础/横向Batch失败隔离及Provider Prompt硬超限隔离测试。
+- 直接审查、基础Bundle和横向专项：`186 passed, 42 skipped`。
+- Direct E2E、Compatibility、Evidence、Candidate类型、Finding合并和Prompt预算：
+  `63 passed`。
+- Framework与Contract无实时服务仓库级回归（排除显式现场HTTP测试）：
+  `593 passed, 54 skipped`；固定OpenAPI与能力挂载均通过。
+- `py_compile`和`git diff --check`通过。

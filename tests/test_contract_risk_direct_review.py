@@ -328,10 +328,6 @@ def test_persistently_invalid_json_fails_after_one_repair() -> None:
             "RISK_DIRECT_SCHEMA_INVALID",
         ),
         (
-            lambda body: body["check_results"][0].update({"status": "FAILED"}),
-            "RISK_REQUIRED_CHECK_FAILED",
-        ),
-        (
             lambda body: body["check_results"][0]["findings"][0].update(
                 {"check_code": "CF-002"}
             ),
@@ -363,6 +359,26 @@ def test_invalid_direct_output_never_returns_partial_success(mutate, expected_co
         _review(responses)
 
     assert raised.value.code == expected_code
+
+
+def test_failed_commercial_check_returns_partial_result() -> None:
+    payload = _valid_payload(finding_count=0)
+    payload["check_results"][0].update(
+        {
+            "status": "FAILED",
+            "decision_note": "当前检查无法形成可靠结论。",
+        }
+    )
+
+    result, runtime = _review(
+        [_completion(json.dumps(payload, ensure_ascii=False))]
+    )
+
+    assert result.status == "PARTIAL_FAILED"
+    assert result.check_results[0].status == "FAILED"
+    assert result.check_results[0].reason_code == "CHECK_FAILED"
+    assert len(result.check_results) == 8
+    assert len(runtime.calls) == 1
 
 
 def test_missing_model_reason_code_is_enriched_without_repair() -> None:

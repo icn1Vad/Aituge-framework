@@ -292,7 +292,7 @@ Provider Prompt预算政策版本固定为`2.0`，权威口径只能是模型服
 |---:|---|---|
 | `<= 6,000` | `WITHIN_TARGET` | 正常通过 |
 | `6,001～7,000` | `SOFT_WARNING` | 记录结构化告警，Batch、Unit和Bundle仍可成功 |
-| `> 7,000` | `HARD_LIMIT_EXCEEDED` | `RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED`，按既有原子规则使Batch、Unit和Bundle失败 |
+| `> 7,000` | `HARD_LIMIT_EXCEEDED` | `RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED`；当前Batch失败并记录诊断，其他Batch的合法结果继续物化；仅在没有任何可消费结果或命中全局完整性门时整体失败 |
 | Provider Usage缺失 | `PROVIDER_USAGE_UNAVAILABLE` | 保留诊断，不使用本地估算伪造Provider Token |
 
 `cached_tokens`是`prompt_tokens`的子集，不得重复相加。本地
@@ -316,13 +316,16 @@ Check。`formation_validity_authority`、`commercial_financial`、
 一次性受控并发启动，不得形成分批屏障；Bundle 层不增加模型总结、合并或复核
 调用。
 
-Bundle 只负责调度、权威身份一致性、Unit 结果收集、指标汇总、原子失败和最终
+Bundle 只负责调度、权威身份一致性、Unit 结果收集、指标汇总、故障隔离和最终
 封装，不重新解释 Candidate Verdict、Canonical Root、Risk Level、Primary
 Evidence 或 Finding。所有 Batch 必须共享同一 review、document、generation、
 contract hash、schema、视角、双方主体、审查态度、Fixture、Plan ID 和 Plan
-Hash。任一 Batch、Unit、Check、Evidence 或身份门禁失败时，Bundle 返回严格
-`FAILED`诊断对象，不返回可消费的部分 Findings；已完成 Batch 只进入诊断
-Artifact。
+Hash。运行时按故障作用域处理：Candidate证据不足、单Check失败以及单Batch模型、
+Schema或Provider失败只使对应作用域降级为`INSUFFICIENT_EVIDENCE`、
+`CHECK_FAILED`或`PARTIAL_FAILED`，其他已经通过Evidence和领域校验的Finding继续
+物化。只有身份、Generation、Check归属、跨Unit污染、正式Evidence技术有效性、
+正式Artifact/Payload Schema、Result Hash和Sink事务等全局完整性门失败，或所有
+Batch均失败且不存在任何可消费结果时，才返回整体`FAILED`且不生成正式结果。
 
 跨 Unit 只做技术身份和同 Check 重复硬门禁。不同领域共享 Evidence 只记录为
 `cross_unit_overlap_candidates`，不自动合并或删除，阶段 5.1 语义合并仍由后续
@@ -343,7 +346,7 @@ Bundle同时记录`prompt_budget_policy_version`、
 `prompt_budget_warning_count`、`prompt_budget_hard_failure_count`、
 `max_provider_prompt_tokens`、`batches_over_target`和
 `batches_over_hard_limit`。软告警不改变结果原子性；任一Provider Prompt硬超限
-仍按必需Batch失败处理，不返回部分正式Finding。
+使当前Batch失败并进入部分失败诊断，不删除其他Batch已经验证通过的正式Finding。
 
 ## 10. complete_with_usage观测协议
 
@@ -495,7 +498,12 @@ missing_ambiguity_completeness
 
 FVA五项Check虽然共用一个模型Batch，但输入按Check独立投影。FVA-002只允许主体、签署、代表权、授权和生效审批材料；人员资质、劳动用工、社保、团队配置、技术能力、项目经验和一般履约能力在Candidate生成、Evidence Source Policy、Check级Prompt和最终领域门四层隔离。每个Batch输入均记录上下文、Check、Candidate、Evidence Policy和Prompt哈希，不保存完整Prompt到普通日志。相同Plan并发构建必须保持哈希稳定，横向Candidate构建不得修改基础Plan。
 
-Extended Bundle实行结果原子性：任一基础Batch/Unit、横向Candidate构建、横向Batch/Unit、所有权、Evidence或45项Check门禁失败时，不返回可消费的部分Finding集合。Prompt预算继续使用政策2.0；Provider Prompt不超过6,000为目标内，6,001至7,000为软告警，超过7,000为硬失败。
+Extended Bundle延续分层故障策略：单个基础或横向Candidate证据不足、Check失败、
+Batch模型失败或超时只在对应作用域记录`PARTIAL_FAILED`，保留其他已验证Finding。
+横向Candidate构建的输入身份错误、所有权冲突、跨Generation Evidence、Check归属
+错误、正式Evidence或Payload完整性错误仍为整体硬失败，不返回可消费的部分正式
+结果。Prompt预算继续使用政策2.0；Provider Prompt不超过6,000为目标内，6,001至
+7,000为软告警，超过7,000时当前Batch硬失败并局部隔离。
 
 ## 16. 文件级计划
 
