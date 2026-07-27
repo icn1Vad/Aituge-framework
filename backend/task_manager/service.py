@@ -33,6 +33,7 @@ from .payload_schemas import validate_input_payload, validate_output_payload
 from .registry import TaskType, get_task_definition
 from .runtime import executor_lock, get_event_broker, start_background_run
 from .runtime.fencing import RunLeaseLost, current_execution_lease, verify_execution_lease
+from .runtime.quota import release_quota_slot
 from .schemas import TaskCreateRequest, TaskEventRead, TaskItemRead, TaskRead, TaskRunRequest
 from .pipeline.registry import get_pipeline_definition
 from .pipeline.store import (
@@ -1295,11 +1296,24 @@ class TaskManagerService:
         outcome: str | None = None,
     ) -> TaskEntity:
         async with create_db_session() as session:
-            task = await session.get(TaskEntity, task_id)
+            task_result = await session.exec(
+                select(TaskEntity)
+                .where(TaskEntity.id == task_id)
+                .with_for_update()
+            )
+            task = task_result.first()
             if task is None:
                 raise ValueError(f"Task '{task_id}' not found.")
+            locked_run = None
             if task.current_run_id:
-                await verify_execution_lease(session, task.current_run_id)
+                locked_run = await verify_execution_lease(session, task.current_run_id)
+                if locked_run is None:
+                    run_result = await session.exec(
+                        select(TaskRunEntity)
+                        .where(TaskRunEntity.id == task.current_run_id)
+                        .with_for_update()
+                    )
+                    locked_run = run_result.first()
             task.status = status
             task.result_payload_json = result
             task.error_payload_json = error
@@ -1310,8 +1324,16 @@ class TaskManagerService:
             task.updated_at = now
             session.add(task)
             if task.current_run_id:
-                run = await session.get(TaskRunEntity, task.current_run_id)
+                run = locked_run
                 if run is not None:
+                    if not run.quota_slot_released:
+                        await release_quota_slot(
+                            session,
+                            service=task.service,
+                            tenant_id=task.tenant_id,
+                            resource_pool=run.resource_pool,
+                        )
+                        run.quota_slot_released = True
                     run.status = status
                     run.outcome = outcome
                     run.error_code = str((error or {}).get("type") or "") or None

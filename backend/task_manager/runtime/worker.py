@@ -15,6 +15,7 @@ from db.db_context import create_db_session, init_db
 from scheduling.scheduler import SchedulingRuntimeOptions
 from task_manager.models import TaskEntity, TaskRunEntity, utc_now
 from task_manager.runtime.fencing import ExecutionLease, bind_execution_lease
+from task_manager.runtime.quota import DEFAULT_TENANT_CONCURRENCY, claim_fair_run
 from task_manager.service import TaskManagerService
 
 
@@ -37,52 +38,31 @@ class TaskWorker:
         lease_seconds: int = 120,
         heartbeat_seconds: int = 30,
         poll_seconds: float = 1.0,
+        tenant_concurrency: int = DEFAULT_TENANT_CONCURRENCY,
     ) -> None:
         self.options = options
         self.worker_id = worker_id or f"framework-worker-{uuid.uuid4().hex}"
         self.lease_seconds = max(10, lease_seconds)
         self.heartbeat_seconds = max(1, min(heartbeat_seconds, self.lease_seconds // 2))
         self.poll_seconds = max(0.05, poll_seconds)
+        self.tenant_concurrency = max(1, tenant_concurrency)
 
     async def claim_one(self) -> RunLease | None:
         async with create_db_session() as session:
-            statement = (
-                select(TaskRunEntity)
-                .join(TaskEntity, TaskEntity.id == TaskRunEntity.task_id)
-                .where(TaskRunEntity.status == "running")
-                .where(TaskRunEntity.cancel_requested.is_(False))
-                .where(TaskEntity.status == "running")
-                .where(TaskEntity.handler_name != "external")
-                .where(TaskEntity.cancel_requested.is_(False))
-                .where(TaskEntity.current_run_id == TaskRunEntity.id)
-                .where(
-                    (TaskRunEntity.lease_until.is_(None))
-                    | (TaskRunEntity.lease_until <= utc_now())
-                )
-                .order_by(TaskEntity.priority.desc(), TaskRunEntity.created_at, TaskRunEntity.id)
-                .limit(1)
-                .with_for_update(skip_locked=True)
+            claimed = await claim_fair_run(
+                session,
+                worker_id=self.worker_id,
+                lease_seconds=self.lease_seconds,
+                tenant_concurrency=self.tenant_concurrency,
             )
-            result = await session.exec(statement)
-            run = result.first()
-            if run is None:
+            if claimed is None:
                 return None
-            task = await session.get(TaskEntity, run.task_id)
-            if task is None:
-                return None
-            now = utc_now()
-            run.lease_owner = self.worker_id
-            run.lease_until = now + timedelta(seconds=self.lease_seconds)
-            run.lease_version += 1
-            run.last_heartbeat_at = now
-            run.quota_slot_released = False
-            session.add(run)
-            await session.commit()
+            task_id, run_id, version = claimed
             return RunLease(
-                task_id=task.id,
-                run_id=run.id,
+                task_id=task_id,
+                run_id=run_id,
                 owner=self.worker_id,
-                version=run.lease_version,
+                version=version,
             )
 
     async def renew_lease(self, lease: RunLease) -> bool:
@@ -210,6 +190,7 @@ async def main() -> None:
         lease_seconds=int(os.environ.get("TASK_WORKER_LEASE_SECONDS", "120")),
         heartbeat_seconds=int(os.environ.get("TASK_WORKER_HEARTBEAT_SECONDS", "30")),
         poll_seconds=float(os.environ.get("TASK_WORKER_POLL_SECONDS", "1")),
+        tenant_concurrency=int(os.environ.get("TASK_TENANT_CONCURRENCY", "2")),
     )
     await worker.run_forever()
 
