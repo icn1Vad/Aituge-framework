@@ -495,7 +495,12 @@ def test_pipeline_run_retry_replay_and_human_review(tmp_path, monkeypatch):
             duplicate_create = await client.post(
                 "/task-manager/tasks",
                 headers={**headers, "Idempotency-Key": "pipeline-task-001"},
-                json={"task_type": "pipeline.demo", "input": {"goal": "Explain reusable pipelines"}},
+                json={
+                    "task_type": "pipeline.demo",
+                    "title": "Pipeline test",
+                    "input": {"goal": "Explain reusable pipelines"},
+                    "client_context": {"source": "pipeline-test"},
+                },
             )
             assert duplicate_create.json()["task"]["id"] == task_id
             start = await client.post(
