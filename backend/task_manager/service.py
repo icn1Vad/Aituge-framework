@@ -438,11 +438,6 @@ class TaskManagerService:
                         resource="run",
                         idempotency_key=request.idempotency_key,
                     )
-                    if existing.status == "running":
-                        start_background_run(
-                            existing.id,
-                            self._drain_prepared_task(task.id),
-                        )
                     return existing
         try:
             task = await self._prepare_run(
@@ -468,28 +463,24 @@ class TaskManagerService:
                 resource="run",
                 idempotency_key=request.idempotency_key,
             )
-            if existing.status == "running":
-                start_background_run(
-                    existing.id,
-                    self._drain_prepared_task(task_id),
-                )
             return existing
         if not task.current_run_id:
             raise ValueError(f"Task '{task_id}' did not create a run.")
         run = await get_run(task.current_run_id)
         if run is None:
             raise ValueError(f"Run '{task.current_run_id}' not found.")
-        if run.status == "running":
-            start_background_run(run.id, self._drain_prepared_task(task.id))
         return run
 
-    async def _drain_prepared_task(self, task_id: str) -> None:
+    async def _drain_prepared_task(self, task_id: str, *, run_id: str | None = None) -> None:
         task = await self.get_task(task_id)
         if task is None:
             raise ValueError(f"Task '{task_id}' not found.")
-        if not task.current_run_id:
+        effective_run_id = run_id or task.current_run_id
+        if not effective_run_id:
             raise ValueError(f"Task '{task_id}' has no active run.")
-        async with executor_lock(task.current_run_id) as acquired:
+        if task.current_run_id != effective_run_id:
+            raise ValueError(f"Task '{task_id}' does not point to Run '{effective_run_id}'.")
+        async with executor_lock(effective_run_id) as acquired:
             if not acquired:
                 return
             async for _ in self._stream_prepared_task(task):
@@ -647,7 +638,6 @@ class TaskManagerService:
             payload={"resume_from_stage": resume_from_stage or run.current_stage_id},
             source={"type": "task_manager", "id": task.id},
         )
-        start_background_run(run.id, self._drain_prepared_task(task.id))
         return run
 
     async def apply_script_change_proposal(
@@ -1027,18 +1017,28 @@ class TaskManagerService:
         source: dict[str, Any] | None = None,
     ) -> TaskEventEntity:
         async with create_db_session() as session:
-            statement = select(TaskEventEntity).where(TaskEventEntity.task_id == task_id)
-            statement = statement.where(
-                TaskEventEntity.run_id == run_id
-                if run_id is not None
-                else TaskEventEntity.run_id.is_(None)
-            ).order_by(desc(TaskEventEntity.sequence)).limit(1)
-            latest = (await session.exec(statement)).first()
+            if run_id is not None:
+                run_statement = (
+                    select(TaskRunEntity)
+                    .where(TaskRunEntity.id == run_id)
+                    .with_for_update()
+                )
+                run = (await session.exec(run_statement)).first()
+                if run is None:
+                    raise ValueError(f"Run '{run_id}' not found.")
+                run.next_event_sequence = (run.next_event_sequence or 0) + 1
+                sequence = run.next_event_sequence
+                session.add(run)
+            else:
+                statement = select(TaskEventEntity).where(TaskEventEntity.task_id == task_id)
+                statement = statement.where(TaskEventEntity.run_id.is_(None))
+                latest = (await session.exec(statement.order_by(desc(TaskEventEntity.sequence)).limit(1))).first()
+                sequence = (latest.sequence + 1) if latest else 1
             event = TaskEventEntity(
                 task_id=task_id,
                 run_id=run_id,
                 parent_event_id=parent_event_id,
-                sequence=(latest.sequence + 1) if latest else 1,
+                sequence=sequence,
                 event_type=event_type,
                 level=level,
                 stage=stage,
