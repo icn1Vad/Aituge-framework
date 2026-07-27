@@ -84,7 +84,10 @@ async def executor_lock(run_id: str) -> AsyncIterator[bool]:
 def start_background_run(run_id: str, coroutine: Awaitable[None]) -> None:
     existing = _RUN_TASKS.get(run_id)
     if existing is not None and not existing.done():
-        raise ValueError(f"Run '{run_id}' already has an active executor.")
+        close = getattr(coroutine, "close", None)
+        if close is not None:
+            close()
+        return
     task = asyncio.create_task(coroutine, name=f"task-manager-run:{run_id}")
     _RUN_TASKS[run_id] = task
 
