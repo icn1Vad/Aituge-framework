@@ -14,7 +14,7 @@ from sqlmodel import select
 from db.db_context import create_db_session, init_db
 from scheduling.scheduler import SchedulingRuntimeOptions
 from task_manager.models import TaskEntity, TaskRunEntity, utc_now
-from task_manager.runtime.execution import executor_lock
+from task_manager.runtime.fencing import ExecutionLease, bind_execution_lease
 from task_manager.service import TaskManagerService
 
 
@@ -119,30 +119,35 @@ class TaskWorker:
         if lease is None:
             return False
         service = TaskManagerService(self.options)
-        heartbeat_stop = asyncio.Event()
-        heartbeat = asyncio.create_task(
-            self._heartbeat_loop(lease, heartbeat_stop),
-            name=f"task-manager-heartbeat:{lease.run_id}",
+        execution_lease = ExecutionLease(
+            run_id=lease.run_id,
+            owner=lease.owner,
+            version=lease.version,
         )
-        try:
-            async with executor_lock(lease.run_id) as acquired:
-                if acquired:
-                    await service._drain_prepared_task(
-                        lease.task_id,
-                        run_id=lease.run_id,
-                    )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("TaskManager worker failed for Run {}", lease.run_id)
-        finally:
-            heartbeat_stop.set()
-            heartbeat.cancel()
+        with bind_execution_lease(execution_lease):
+            heartbeat_stop = asyncio.Event()
+            heartbeat = asyncio.create_task(
+                self._heartbeat_loop(lease, heartbeat_stop, execution_lease),
+                name=f"task-manager-heartbeat:{lease.run_id}",
+            )
             try:
-                await heartbeat
+                await service._drain_prepared_task(
+                    lease.task_id,
+                    run_id=lease.run_id,
+                )
             except asyncio.CancelledError:
-                pass
-            await self.release_lease(lease)
+                raise
+            except Exception:
+                logger.exception("TaskManager worker failed for Run {}", lease.run_id)
+            finally:
+                heartbeat_stop.set()
+                heartbeat.cancel()
+                try:
+                    await heartbeat
+                except asyncio.CancelledError:
+                    pass
+                if not execution_lease.lost:
+                    await self.release_lease(lease)
         return True
 
     async def run_forever(self, stop_event: asyncio.Event | None = None) -> None:
@@ -161,7 +166,12 @@ class TaskWorker:
                 except asyncio.TimeoutError:
                     pass
 
-    async def _heartbeat_loop(self, lease: RunLease, stop_event: asyncio.Event) -> None:
+    async def _heartbeat_loop(
+        self,
+        lease: RunLease,
+        stop_event: asyncio.Event,
+        execution_lease: ExecutionLease,
+    ) -> None:
         failures = 0
         while not stop_event.is_set():
             try:
@@ -178,6 +188,7 @@ class TaskWorker:
                 failures += 1
                 logger.exception("TaskManager Run {} heartbeat failed", lease.run_id)
             if failures >= 2:
+                execution_lease.mark_lost("two consecutive lease renewal failures")
                 logger.error("TaskManager Run {} lost its execution lease", lease.run_id)
                 return
 

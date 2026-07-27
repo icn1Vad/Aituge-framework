@@ -32,6 +32,7 @@ from .output_parser import parse_json_output
 from .payload_schemas import validate_input_payload, validate_output_payload
 from .registry import TaskType, get_task_definition
 from .runtime import executor_lock, get_event_broker, start_background_run
+from .runtime.fencing import RunLeaseLost, current_execution_lease, verify_execution_lease
 from .schemas import TaskCreateRequest, TaskEventRead, TaskItemRead, TaskRead, TaskRunRequest
 from .pipeline.registry import get_pipeline_definition
 from .pipeline.store import (
@@ -941,6 +942,8 @@ class TaskManagerService:
                 outcome=terminal_outcome or "success",
             )
             yield TaskEventRead.model_validate(succeeded)
+        except RunLeaseLost:
+            raise
         except Exception as exc:
             error = {
                 "type": exc.__class__.__name__,
@@ -963,7 +966,6 @@ class TaskManagerService:
             task = await self._finish_task(task.id, status="failed", error=error, outcome="failure")
             yield TaskEventRead.model_validate(failed)
             raise
-
     async def record_event_from_handler(
         self,
         task_id: str,
@@ -1016,6 +1018,11 @@ class TaskManagerService:
         stream_semantics: str = "status",
         source: dict[str, Any] | None = None,
     ) -> TaskEventEntity:
+        lease = current_execution_lease()
+        if lease is not None:
+            lease.assert_active()
+            if run_id != lease.run_id:
+                raise RunLeaseLost(f"Execution lease for Run '{lease.run_id}' cannot write an event without its run id.")
         async with create_db_session() as session:
             if run_id is not None:
                 run_statement = (
@@ -1026,6 +1033,7 @@ class TaskManagerService:
                 run = (await session.exec(run_statement)).first()
                 if run is None:
                     raise ValueError(f"Run '{run_id}' not found.")
+                await verify_execution_lease(session, run_id, run=run)
                 run.next_event_sequence = (run.next_event_sequence or 0) + 1
                 sequence = run.next_event_sequence
                 session.add(run)
@@ -1182,6 +1190,8 @@ class TaskManagerService:
         created_results = 0
         created_topics = 0
         async with create_db_session() as session:
+            if task.current_run_id:
+                await verify_execution_lease(session, task.current_run_id)
             existing_result = await session.exec(select(TaskItemEntity).where(TaskItemEntity.task_id == task.id))
             existing_items = {item.item_key: item for item in existing_result.all()}
             for index, raw_item in enumerate(results, start=1):
@@ -1263,6 +1273,8 @@ class TaskManagerService:
             task = await session.get(TaskEntity, task_id)
             if task is None:
                 raise ValueError(f"Task '{task_id}' not found.")
+            if task.current_run_id:
+                await verify_execution_lease(session, task.current_run_id)
             if thread_id:
                 task.thread_id = thread_id
             if session_id:
@@ -1286,6 +1298,8 @@ class TaskManagerService:
             task = await session.get(TaskEntity, task_id)
             if task is None:
                 raise ValueError(f"Task '{task_id}' not found.")
+            if task.current_run_id:
+                await verify_execution_lease(session, task.current_run_id)
             task.status = status
             task.result_payload_json = result
             task.error_payload_json = error

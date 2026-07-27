@@ -13,6 +13,7 @@ from task_manager.models import (
     TaskStageRunEntity,
     utc_now,
 )
+from task_manager.runtime.fencing import verify_execution_lease
 
 
 async def get_run(run_id: str) -> TaskRunEntity | None:
@@ -32,7 +33,8 @@ async def list_task_runs(task_id: str) -> list[TaskRunEntity]:
 
 async def update_run(run_id: str, **values: Any) -> TaskRunEntity:
     async with create_db_session() as session:
-        run = await session.get(TaskRunEntity, run_id)
+        run = await verify_execution_lease(session, run_id)
+        run = run or await session.get(TaskRunEntity, run_id)
         if run is None:
             raise ValueError(f"Run '{run_id}' not found.")
         for key, value in values.items():
@@ -71,6 +73,7 @@ async def create_stage_run(
         updated_at=now,
     )
     async with create_db_session() as session:
+        await verify_execution_lease(session, run_id)
         session.add(row)
         await session.commit()
         await session.refresh(row)
@@ -82,6 +85,7 @@ async def update_stage_run(stage_run_id: str, **values: Any) -> TaskStageRunEnti
         row = await session.get(TaskStageRunEntity, stage_run_id)
         if row is None:
             raise ValueError(f"StageRun '{stage_run_id}' not found.")
+        await verify_execution_lease(session, row.run_id)
         for key, value in values.items():
             if not hasattr(row, key):
                 raise ValueError(f"Unknown stage run field '{key}'.")
@@ -118,6 +122,7 @@ async def create_artifact(
     canonical = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     checksum = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     async with create_db_session() as session:
+        await verify_execution_lease(session, run_id)
         version_result = await session.exec(
             select(TaskArtifactEntity)
             .where(TaskArtifactEntity.run_id == run_id)
@@ -159,6 +164,7 @@ async def create_file_artifact(
 
     artifact_type = "tool_file"
     async with create_db_session() as session:
+        await verify_execution_lease(session, run_id)
         version_result = await session.exec(
             select(TaskArtifactEntity)
             .where(TaskArtifactEntity.run_id == run_id)
