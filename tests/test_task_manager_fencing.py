@@ -180,9 +180,9 @@ async def test_execution_fencing_rejects_stale_database_owner(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_marks_execution_lease_lost_after_two_failures(monkeypatch):
+async def test_heartbeat_marks_execution_lease_lost_after_two_failures(tmp_path, monkeypatch):
     worker = TaskWorker(
-        SchedulingRuntimeOptions(),
+        SchedulingRuntimeOptions(local_python_artifact_dir=tmp_path / "artifacts"),
         worker_id="heartbeat-worker",
         lease_seconds=30,
         heartbeat_seconds=1,
