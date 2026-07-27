@@ -5,7 +5,8 @@ description: Audit supplied policy chunks for material semantic ambiguity and ex
 
 # Proof Policy Clarity and Executability Audit
 
-逐一审校 `Current item.targets` 中的每个制度 Chunk。只审校 target 自身提供的
+逐一审校 `Current item.targets` 中的 1 到 8 个制度 Chunk。每个 target 都带有按当前 item 独立编号的
+`T01` 到 `T08` 短引用。只审校 target 自身提供的
 `text`、条款编号和标题路径，不审校任务元数据，也不假设 target 之外一定存在或不存在
 某项规则。
 
@@ -94,7 +95,8 @@ Chunk，能否形成稳定理解、采取下一步行动，并使关键结果可
 每个有问题的 target 最多返回一条 Finding；没有问题的 target 不返回。合并同一 Chunk 中所有实质问题，
 不要拆成多条。
 
-- `id` 必须与 target 的 `id` 完全一致。
+- 不要输出 target ID 或任何 Chunk ID；使用该 target 的 `T01` 到 `T08` 短引用作为 `target_ref`，
+  父服务会在当前 item 内映射并绑定真实 ID。
 - `category` 只能是 `semantic_ambiguity` 或 `executability_gap`，并与主要根因一致。
 - `problem` 具体说明原文中的问题、缺少什么以及实际影响，不能只写分类标签。
 - `suggestion` 给出消除当前问题所需的最小修改，不要扩写整套制度。
@@ -105,7 +107,7 @@ Chunk，能否形成稳定理解、采取下一步行动，并使关键结果可
 {
   "findings": [
     {
-      "id": "retrieval-unit-id",
+      "target_ref": "T01",
       "category": "semantic_ambiguity",
       "problem": "具体问题、缺失要素及其实际影响。",
       "suggestion": "最小且可落实的修改建议。"

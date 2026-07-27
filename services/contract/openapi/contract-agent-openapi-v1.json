@@ -1,0 +1,2783 @@
+{
+  "components": {
+    "schemas": {
+      "Body_create_review_v1_contract_reviews_post": {
+        "properties": {
+          "file": {
+            "format": "binary",
+            "title": "File",
+            "type": "string"
+          },
+          "request": {
+            "title": "Request Payload",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file",
+          "request"
+        ],
+        "title": "Body_create_review_v1_contract_reviews_post",
+        "type": "object"
+      },
+      "CancelReviewData": {
+        "additionalProperties": false,
+        "properties": {
+          "already_terminal": {
+            "title": "Already Terminal",
+            "type": "boolean"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "CANCELLED",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "status",
+          "already_terminal"
+        ],
+        "title": "CancelReviewData",
+        "type": "object"
+      },
+      "CommercialTermsStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "evidences": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceCandidate"
+            },
+            "title": "Evidences",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "result_type": {
+            "const": "COMMERCIAL_TERMS_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_type"
+        ],
+        "title": "CommercialTermsStageResult",
+        "type": "object"
+      },
+      "ContractBlockData": {
+        "additionalProperties": false,
+        "properties": {
+          "block_id": {
+            "title": "Block Id",
+            "type": "string"
+          },
+          "block_no": {
+            "exclusiveMinimum": 0.0,
+            "title": "Block No",
+            "type": "integer"
+          },
+          "block_type": {
+            "title": "Block Type",
+            "type": "string"
+          },
+          "char_end": {
+            "exclusiveMinimum": 0.0,
+            "title": "Char End",
+            "type": "integer"
+          },
+          "char_start": {
+            "minimum": 0.0,
+            "title": "Char Start",
+            "type": "integer"
+          },
+          "heading_path": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Heading Path",
+            "type": "array"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Metadata",
+            "type": "object"
+          },
+          "page_number": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Number"
+          },
+          "paragraph_no": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paragraph No"
+          },
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "block_id",
+          "block_no",
+          "block_type",
+          "char_start",
+          "char_end",
+          "text"
+        ],
+        "title": "ContractBlockData",
+        "type": "object"
+      },
+      "ContractBlocksToolData": {
+        "additionalProperties": false,
+        "properties": {
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/ContractBlockData"
+            },
+            "title": "Blocks",
+            "type": "array"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "generation_id": {
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "review_id": {
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id",
+          "generation_id",
+          "blocks"
+        ],
+        "title": "ContractBlocksToolData",
+        "type": "object"
+      },
+      "ContractBlocksToolRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "block_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Block Ids",
+            "type": "array"
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "limit": {
+            "default": 200,
+            "maximum": 2000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id"
+        ],
+        "title": "ContractBlocksToolRequest",
+        "type": "object"
+      },
+      "ContractClauseContextToolData": {
+        "additionalProperties": false,
+        "properties": {
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/ContractBlockData"
+            },
+            "title": "Blocks",
+            "type": "array"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "generation_id": {
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "review_id": {
+            "title": "Review Id",
+            "type": "string"
+          },
+          "target_block_id": {
+            "title": "Target Block Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id",
+          "generation_id",
+          "blocks",
+          "target_block_id"
+        ],
+        "title": "ContractClauseContextToolData",
+        "type": "object"
+      },
+      "ContractClauseContextToolRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "default": 1,
+            "maximum": 5.0,
+            "minimum": 0.0,
+            "title": "After",
+            "type": "integer"
+          },
+          "before": {
+            "default": 1,
+            "maximum": 5.0,
+            "minimum": 0.0,
+            "title": "Before",
+            "type": "integer"
+          },
+          "block_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Block Id",
+            "type": "string"
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id",
+          "block_id"
+        ],
+        "title": "ContractClauseContextToolRequest",
+        "type": "object"
+      },
+      "ContractDocumentToolData": {
+        "additionalProperties": false,
+        "properties": {
+          "block_count": {
+            "exclusiveMinimum": 0.0,
+            "title": "Block Count",
+            "type": "integer"
+          },
+          "content_hash": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "contract_version_id": {
+            "title": "Contract Version Id",
+            "type": "string"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "file_size": {
+            "exclusiveMinimum": 0.0,
+            "title": "File Size",
+            "type": "integer"
+          },
+          "file_type": {
+            "enum": [
+              "pdf",
+              "docx"
+            ],
+            "title": "File Type",
+            "type": "string"
+          },
+          "generation_id": {
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "generation_status": {
+            "enum": [
+              "RUNNING",
+              "SUCCEEDED"
+            ],
+            "title": "Generation Status",
+            "type": "string"
+          },
+          "original_name": {
+            "title": "Original Name",
+            "type": "string"
+          },
+          "review_id": {
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id",
+          "contract_version_id",
+          "original_name",
+          "content_type",
+          "file_type",
+          "file_size",
+          "content_hash",
+          "generation_id",
+          "generation_status",
+          "block_count"
+        ],
+        "title": "ContractDocumentToolData",
+        "type": "object"
+      },
+      "ContractDocumentToolRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id"
+        ],
+        "title": "ContractDocumentToolRequest",
+        "type": "object"
+      },
+      "ContractIR": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Acceptance Terms",
+            "type": "array"
+          },
+          "amounts": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Amounts",
+            "type": "array"
+          },
+          "clauses": {
+            "items": {
+              "$ref": "#/components/schemas/IRClause"
+            },
+            "minItems": 1,
+            "title": "Clauses",
+            "type": "array"
+          },
+          "confidentiality_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Confidentiality Terms",
+            "type": "array"
+          },
+          "contract_type": {
+            "default": "AUTO",
+            "pattern": "^[A-Z][A-Z0-9_]*$",
+            "title": "Contract Type",
+            "type": "string"
+          },
+          "counterparty": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counterparty"
+          },
+          "dates": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Dates",
+            "type": "array"
+          },
+          "definitions": {
+            "items": {
+              "$ref": "#/components/schemas/IRDefinition"
+            },
+            "title": "Definitions",
+            "type": "array"
+          },
+          "delivery_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Delivery Terms",
+            "type": "array"
+          },
+          "dispute_resolution": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Dispute Resolution",
+            "type": "array"
+          },
+          "document": {
+            "$ref": "#/components/schemas/IRDocument"
+          },
+          "intellectual_property_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Intellectual Property Terms",
+            "type": "array"
+          },
+          "ir_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Ir Version",
+            "type": "string"
+          },
+          "liabilities": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Liabilities",
+            "type": "array"
+          },
+          "obligations": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Obligations",
+            "type": "array"
+          },
+          "our_party": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Our Party"
+          },
+          "parties": {
+            "items": {
+              "$ref": "#/components/schemas/IRParty"
+            },
+            "title": "Parties",
+            "type": "array"
+          },
+          "payment_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Payment Terms",
+            "type": "array"
+          },
+          "prohibitions": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Prohibitions",
+            "type": "array"
+          },
+          "rights": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Rights",
+            "type": "array"
+          },
+          "source_anchors": {
+            "items": {
+              "$ref": "#/components/schemas/SourceAnchor"
+            },
+            "minItems": 1,
+            "title": "Source Anchors",
+            "type": "array"
+          },
+          "termination_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Termination Terms",
+            "type": "array"
+          }
+        },
+        "required": [
+          "document",
+          "clauses",
+          "source_anchors"
+        ],
+        "title": "ContractIR",
+        "type": "object"
+      },
+      "ContractIrSemanticDelta": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Acceptance Terms",
+            "type": "array"
+          },
+          "amounts": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Amounts",
+            "type": "array"
+          },
+          "confidentiality_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Confidentiality Terms",
+            "type": "array"
+          },
+          "dates": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Dates",
+            "type": "array"
+          },
+          "definitions": {
+            "items": {
+              "$ref": "#/components/schemas/IRDefinition"
+            },
+            "title": "Definitions",
+            "type": "array"
+          },
+          "delivery_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Delivery Terms",
+            "type": "array"
+          },
+          "dispute_resolution": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Dispute Resolution",
+            "type": "array"
+          },
+          "intellectual_property_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Intellectual Property Terms",
+            "type": "array"
+          },
+          "liabilities": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Liabilities",
+            "type": "array"
+          },
+          "obligations": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Obligations",
+            "type": "array"
+          },
+          "payment_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Payment Terms",
+            "type": "array"
+          },
+          "prohibitions": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Prohibitions",
+            "type": "array"
+          },
+          "rights": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Rights",
+            "type": "array"
+          },
+          "termination_terms": {
+            "items": {
+              "$ref": "#/components/schemas/IRSemanticItem"
+            },
+            "title": "Termination Terms",
+            "type": "array"
+          }
+        },
+        "title": "ContractIrSemanticDelta",
+        "type": "object"
+      },
+      "ContractIrToolData": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_ir": {
+            "$ref": "#/components/schemas/ContractIR"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "generation_id": {
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "generation_status": {
+            "enum": [
+              "RUNNING",
+              "SUCCEEDED"
+            ],
+            "title": "Generation Status",
+            "type": "string"
+          },
+          "review_id": {
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id",
+          "generation_id",
+          "generation_status",
+          "contract_ir"
+        ],
+        "title": "ContractIrToolData",
+        "type": "object"
+      },
+      "ContractIrToolRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id"
+        ],
+        "title": "ContractIrToolRequest",
+        "type": "object"
+      },
+      "ContractProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_type": {
+            "maxLength": 80,
+            "pattern": "^[A-Z][A-Z0-9_]*$",
+            "title": "Contract Type",
+            "type": "string"
+          },
+          "counterparty": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Counterparty",
+            "type": "string"
+          },
+          "our_party": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Our Party",
+            "type": "string"
+          },
+          "party_a": {
+            "$ref": "#/components/schemas/PartyProfile"
+          },
+          "party_b": {
+            "$ref": "#/components/schemas/PartyProfile"
+          },
+          "perspective": {
+            "$ref": "#/components/schemas/Perspective"
+          },
+          "review_attitude": {
+            "const": "NEUTRAL",
+            "default": "NEUTRAL",
+            "title": "Review Attitude",
+            "type": "string"
+          }
+        },
+        "required": [
+          "contract_type",
+          "party_a",
+          "party_b",
+          "perspective",
+          "our_party",
+          "counterparty"
+        ],
+        "title": "ContractProfile",
+        "type": "object"
+      },
+      "ContractReviewResultToolData": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "generation_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/ReviewResultData"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id",
+          "generation_id",
+          "result"
+        ],
+        "title": "ContractReviewResultToolData",
+        "type": "object"
+      },
+      "ContractReviewResultToolRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id"
+        ],
+        "title": "ContractReviewResultToolRequest",
+        "type": "object"
+      },
+      "CreateReviewData": {
+        "additionalProperties": false,
+        "properties": {
+          "current_stage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewStage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "framework_attempt_no": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Framework Attempt No"
+          },
+          "framework_run_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Framework Run Id"
+          },
+          "framework_task_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Framework Task Id"
+          },
+          "reused": {
+            "title": "Reused",
+            "type": "boolean"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "CREATED",
+              "RUNNING"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "document_id",
+          "status",
+          "reused"
+        ],
+        "title": "CreateReviewData",
+        "type": "object"
+      },
+      "ErrorData": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          },
+          "message": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "user_action_required": {
+            "title": "User Action Required",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "retryable",
+          "user_action_required"
+        ],
+        "title": "ErrorData",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorData"
+          },
+          "request_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "success": {
+            "const": false,
+            "default": false,
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "error",
+          "request_id"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
+      "Evidence": {
+        "additionalProperties": false,
+        "properties": {
+          "block_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Block Id"
+          },
+          "bounding_boxes": {
+            "items": {
+              "type": "null"
+            },
+            "maxItems": 0,
+            "title": "Bounding Boxes",
+            "type": "array"
+          },
+          "char_end": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Char End"
+          },
+          "char_start": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Char Start"
+          },
+          "checked_scope": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked Scope"
+          },
+          "evidence_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "evidence_type": {
+            "$ref": "#/components/schemas/EvidenceType"
+          },
+          "finding_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "page_number": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Number"
+          },
+          "quoted_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quoted Text"
+          },
+          "quoted_text_hash": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quoted Text Hash"
+          },
+          "verification_note": {
+            "anyOf": [
+              {
+                "maxLength": 5000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification Note"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "finding_id",
+          "evidence_type"
+        ],
+        "title": "Evidence",
+        "type": "object"
+      },
+      "EvidenceCandidate": {
+        "additionalProperties": false,
+        "properties": {
+          "block_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Block Id"
+          },
+          "bounding_boxes": {
+            "items": {
+              "type": "null"
+            },
+            "maxItems": 0,
+            "title": "Bounding Boxes",
+            "type": "array"
+          },
+          "char_end": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Char End"
+          },
+          "char_start": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Char Start"
+          },
+          "checked_scope": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked Scope"
+          },
+          "evidence_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "evidence_type": {
+            "$ref": "#/components/schemas/EvidenceType"
+          },
+          "finding_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "page_number": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Number"
+          },
+          "quoted_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quoted Text"
+          },
+          "quoted_text_hash": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quoted Text Hash"
+          },
+          "verification_note": {
+            "anyOf": [
+              {
+                "maxLength": 5000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification Note"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "finding_id",
+          "evidence_type"
+        ],
+        "title": "EvidenceCandidate",
+        "type": "object"
+      },
+      "EvidenceType": {
+        "enum": [
+          "TEXT_QUOTE",
+          "CONTEXT",
+          "ABSENCE"
+        ],
+        "title": "EvidenceType",
+        "type": "string"
+      },
+      "EvidenceVerificationStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_profile": {
+            "$ref": "#/components/schemas/ContractProfile"
+          },
+          "evidences": {
+            "items": {
+              "$ref": "#/components/schemas/Evidence"
+            },
+            "title": "Evidences",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "overview": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Overview",
+            "type": "string"
+          },
+          "relationships": {
+            "items": {
+              "type": "null"
+            },
+            "maxItems": 0,
+            "title": "Relationships",
+            "type": "array"
+          },
+          "result_type": {
+            "const": "EVIDENCE_VERIFICATION_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_type",
+          "contract_profile",
+          "overview"
+        ],
+        "title": "EvidenceVerificationStageResult",
+        "type": "object"
+      },
+      "ExtractContractIrStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "result_type": {
+            "const": "CONTRACT_IR_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          },
+          "semantic_ir": {
+            "$ref": "#/components/schemas/ContractIrSemanticDelta"
+          }
+        },
+        "required": [
+          "result_type",
+          "semantic_ir"
+        ],
+        "title": "ExtractContractIrStageResult",
+        "type": "object"
+      },
+      "FinalizeReviewStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "business_task_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Business Task Id",
+            "type": "string"
+          },
+          "contract_profile": {
+            "$ref": "#/components/schemas/ContractProfile"
+          },
+          "contract_version_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Contract Version Id",
+            "type": "string"
+          },
+          "evidences": {
+            "items": {
+              "$ref": "#/components/schemas/Evidence"
+            },
+            "title": "Evidences",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "relationships": {
+            "items": {
+              "type": "null"
+            },
+            "maxItems": 0,
+            "title": "Relationships",
+            "type": "array"
+          },
+          "result_type": {
+            "const": "FINAL_REVIEW_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/ReviewSummary"
+          }
+        },
+        "required": [
+          "result_type",
+          "schema_version",
+          "review_id",
+          "business_task_id",
+          "contract_version_id",
+          "contract_profile",
+          "summary",
+          "findings",
+          "evidences"
+        ],
+        "title": "FinalizeReviewStageResult",
+        "type": "object"
+      },
+      "Finding": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "$ref": "#/components/schemas/FindingCategory"
+          },
+          "counterparty": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Counterparty",
+            "type": "string"
+          },
+          "evidence_ids": {
+            "items": {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "finding_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "impact_to_our_party": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Impact To Our Party",
+            "type": "string"
+          },
+          "issue": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Issue",
+            "type": "string"
+          },
+          "our_party": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Our Party",
+            "type": "string"
+          },
+          "perspective": {
+            "$ref": "#/components/schemas/Perspective"
+          },
+          "risk_level": {
+            "$ref": "#/components/schemas/RiskLevel"
+          },
+          "suggestion": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Suggestion",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding_id",
+          "category",
+          "risk_level",
+          "title",
+          "perspective",
+          "our_party",
+          "counterparty",
+          "issue",
+          "impact_to_our_party",
+          "suggestion",
+          "evidence_ids"
+        ],
+        "title": "Finding",
+        "type": "object"
+      },
+      "FindingCategory": {
+        "enum": [
+          "PARTY_IDENTIFICATION",
+          "RIGHTS_OBLIGATIONS_IMBALANCE",
+          "PAYMENT",
+          "DELIVERY",
+          "ACCEPTANCE",
+          "BREACH",
+          "LIABILITY",
+          "TERMINATION",
+          "CONFIDENTIALITY",
+          "INTELLECTUAL_PROPERTY",
+          "DISPUTE_RESOLUTION",
+          "MISSING_CLAUSE",
+          "AMBIGUITY",
+          "INTERNAL_CONFLICT",
+          "OTHER"
+        ],
+        "title": "FindingCategory",
+        "type": "string"
+      },
+      "FrameworkCallbackData": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "duplicate": {
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "ignored_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ignored Reason"
+          }
+        },
+        "required": [
+          "accepted",
+          "duplicate"
+        ],
+        "title": "FrameworkCallbackData",
+        "type": "object"
+      },
+      "FrameworkTaskInput": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_no": {
+            "maximum": 2.0,
+            "minimum": 1.0,
+            "title": "Attempt No",
+            "type": "integer"
+          },
+          "business_task_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Business Task Id",
+            "type": "string"
+          },
+          "contract_type": {
+            "const": "AUTO",
+            "title": "Contract Type",
+            "type": "string"
+          },
+          "contract_version_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Contract Version Id",
+            "type": "string"
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "our_party_name": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Our Party Name"
+          },
+          "perspective": {
+            "enum": [
+              "PARTY_A",
+              "PARTY_B"
+            ],
+            "title": "Perspective",
+            "type": "string"
+          },
+          "review_attitude": {
+            "const": "NEUTRAL",
+            "title": "Review Attitude",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "review_id",
+          "attempt_no",
+          "business_task_id",
+          "contract_version_id",
+          "document_id",
+          "perspective",
+          "contract_type",
+          "review_attitude"
+        ],
+        "title": "FrameworkTaskInput",
+        "type": "object"
+      },
+      "GroundedAnswerData": {
+        "additionalProperties": false,
+        "properties": {
+          "content_markdown": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "title": "Content Markdown",
+            "type": "string"
+          },
+          "contract_version_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Contract Version Id",
+            "type": "string"
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "REPORT",
+              "CHAT"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "references": {
+            "items": {
+              "$ref": "#/components/schemas/GroundedReferenceData"
+            },
+            "maxItems": 500,
+            "title": "References",
+            "type": "array"
+          },
+          "result_hash": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Result Hash",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "review_id",
+          "document_id",
+          "contract_version_id",
+          "result_hash",
+          "content_markdown"
+        ],
+        "title": "GroundedAnswerData",
+        "type": "object"
+      },
+      "GroundedChatRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_history": {
+            "items": {
+              "$ref": "#/components/schemas/GroundedConversationMessage"
+            },
+            "maxItems": 20,
+            "title": "Conversation History",
+            "type": "array"
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "question": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "question"
+        ],
+        "title": "GroundedChatRequest",
+        "type": "object"
+      },
+      "GroundedConversationMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "USER",
+              "ASSISTANT"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "GroundedConversationMessage",
+        "type": "object"
+      },
+      "GroundedReferenceData": {
+        "additionalProperties": false,
+        "properties": {
+          "block_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Block Id",
+            "type": "string"
+          },
+          "char_end": {
+            "exclusiveMinimum": 0.0,
+            "title": "Char End",
+            "type": "integer"
+          },
+          "char_start": {
+            "minimum": 0.0,
+            "title": "Char Start",
+            "type": "integer"
+          },
+          "chunk_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "contract_version_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Contract Version Id",
+            "type": "string"
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "evidence_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "finding_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "page_number": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Number"
+          },
+          "quoted_text": {
+            "minLength": 1,
+            "title": "Quoted Text",
+            "type": "string"
+          },
+          "quoted_text_hash": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Quoted Text Hash",
+            "type": "string"
+          },
+          "reference_id": {
+            "pattern": "^docref-[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+            "title": "Reference Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reference_id",
+          "label",
+          "evidence_id",
+          "finding_id",
+          "document_id",
+          "contract_version_id",
+          "chunk_id",
+          "block_id",
+          "char_start",
+          "char_end",
+          "quoted_text",
+          "quoted_text_hash"
+        ],
+        "title": "GroundedReferenceData",
+        "type": "object"
+      },
+      "GroundedReportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "instruction": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instruction"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id"
+        ],
+        "title": "GroundedReportRequest",
+        "type": "object"
+      },
+      "HealthData": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "enum": [
+              "mock",
+              "runtime"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "service": {
+            "const": "contract",
+            "default": "contract",
+            "title": "Service",
+            "type": "string"
+          },
+          "status": {
+            "const": "UP",
+            "default": "UP",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "HealthData",
+        "type": "object"
+      },
+      "IRClause": {
+        "additionalProperties": false,
+        "properties": {
+          "clause_id": {
+            "minLength": 1,
+            "title": "Clause Id",
+            "type": "string"
+          },
+          "clause_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clause No"
+          },
+          "clause_type": {
+            "minLength": 1,
+            "title": "Clause Type",
+            "type": "string"
+          },
+          "heading_path": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Heading Path",
+            "type": "array"
+          },
+          "source_anchors": {
+            "items": {
+              "$ref": "#/components/schemas/SourceAnchor"
+            },
+            "minItems": 1,
+            "title": "Source Anchors",
+            "type": "array"
+          },
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "clause_id",
+          "clause_type",
+          "text",
+          "source_anchors"
+        ],
+        "title": "IRClause",
+        "type": "object"
+      },
+      "IRDefinition": {
+        "additionalProperties": false,
+        "properties": {
+          "meaning": {
+            "minLength": 1,
+            "title": "Meaning",
+            "type": "string"
+          },
+          "source_anchors": {
+            "items": {
+              "$ref": "#/components/schemas/SourceAnchor"
+            },
+            "minItems": 1,
+            "title": "Source Anchors",
+            "type": "array"
+          },
+          "term": {
+            "minLength": 1,
+            "title": "Term",
+            "type": "string"
+          }
+        },
+        "required": [
+          "term",
+          "meaning",
+          "source_anchors"
+        ],
+        "title": "IRDefinition",
+        "type": "object"
+      },
+      "IRDocument": {
+        "additionalProperties": false,
+        "properties": {
+          "block_count": {
+            "exclusiveMinimum": 0.0,
+            "title": "Block Count",
+            "type": "integer"
+          },
+          "content_hash": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "document_id": {
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "file_type": {
+            "enum": [
+              "pdf",
+              "docx"
+            ],
+            "title": "File Type",
+            "type": "string"
+          },
+          "generation_id": {
+            "minLength": 1,
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "page_count": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Count"
+          },
+          "parser_version": {
+            "minLength": 1,
+            "title": "Parser Version",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "document_id",
+          "generation_id",
+          "content_hash",
+          "file_type",
+          "block_count",
+          "parser_version"
+        ],
+        "title": "IRDocument",
+        "type": "object"
+      },
+      "IRParty": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "PARTY_A",
+              "PARTY_B",
+              "OTHER"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "source_anchors": {
+            "items": {
+              "$ref": "#/components/schemas/SourceAnchor"
+            },
+            "minItems": 1,
+            "title": "Source Anchors",
+            "type": "array"
+          }
+        },
+        "required": [
+          "role",
+          "name",
+          "source_anchors"
+        ],
+        "title": "IRParty",
+        "type": "object"
+      },
+      "IRSemanticItem": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "minLength": 1,
+            "title": "Item Id",
+            "type": "string"
+          },
+          "object": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object"
+          },
+          "predicate": {
+            "minLength": 1,
+            "title": "Predicate",
+            "type": "string"
+          },
+          "source_anchors": {
+            "items": {
+              "$ref": "#/components/schemas/SourceAnchor"
+            },
+            "minItems": 1,
+            "title": "Source Anchors",
+            "type": "array"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          }
+        },
+        "required": [
+          "item_id",
+          "predicate",
+          "source_anchors"
+        ],
+        "title": "IRSemanticItem",
+        "type": "object"
+      },
+      "InternalRelationship": {
+        "additionalProperties": false,
+        "properties": {
+          "explanation": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Explanation",
+            "type": "string"
+          },
+          "relation_type": {
+            "enum": [
+              "SUPPORTS",
+              "CONFLICTS",
+              "DEPENDS_ON",
+              "OVERRIDES"
+            ],
+            "title": "Relation Type",
+            "type": "string"
+          },
+          "source_clause_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Source Clause Id",
+            "type": "string"
+          },
+          "target_clause_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Target Clause Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_clause_id",
+          "target_clause_id",
+          "relation_type",
+          "explanation"
+        ],
+        "title": "InternalRelationship",
+        "type": "object"
+      },
+      "JsonValue": {},
+      "LiabilityTerminationStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "evidences": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceCandidate"
+            },
+            "title": "Evidences",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "result_type": {
+            "const": "LIABILITY_TERMINATION_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_type"
+        ],
+        "title": "LiabilityTerminationStageResult",
+        "type": "object"
+      },
+      "MissingAmbiguityStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "evidences": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceCandidate"
+            },
+            "title": "Evidences",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "result_type": {
+            "const": "MISSING_AMBIGUITY_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_type"
+        ],
+        "title": "MissingAmbiguityStageResult",
+        "type": "object"
+      },
+      "ParseContractStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "block_count": {
+            "exclusiveMinimum": 0.0,
+            "title": "Block Count",
+            "type": "integer"
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "generation_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "ir_hash": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Ir Hash",
+            "type": "string"
+          },
+          "result_type": {
+            "const": "PARSE_CONTRACT_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_type",
+          "document_id",
+          "generation_id",
+          "block_count",
+          "ir_hash"
+        ],
+        "title": "ParseContractStageResult",
+        "type": "object"
+      },
+      "PartyProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "PartyProfile",
+        "type": "object"
+      },
+      "PartyResolutionStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_type": {
+            "maxLength": 80,
+            "pattern": "^[A-Z][A-Z0-9_]*$",
+            "title": "Contract Type",
+            "type": "string"
+          },
+          "counterparty": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Counterparty",
+            "type": "string"
+          },
+          "our_party": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Our Party",
+            "type": "string"
+          },
+          "party_a": {
+            "$ref": "#/components/schemas/PartyProfile"
+          },
+          "party_b": {
+            "$ref": "#/components/schemas/PartyProfile"
+          },
+          "perspective": {
+            "enum": [
+              "PARTY_A",
+              "PARTY_B"
+            ],
+            "title": "Perspective",
+            "type": "string"
+          },
+          "result_type": {
+            "const": "PARTY_RESOLUTION_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_type",
+          "contract_type",
+          "party_a",
+          "party_b",
+          "perspective",
+          "our_party",
+          "counterparty"
+        ],
+        "title": "PartyResolutionStageResult",
+        "type": "object"
+      },
+      "Perspective": {
+        "enum": [
+          "PARTY_A",
+          "PARTY_B"
+        ],
+        "title": "Perspective",
+        "type": "string"
+      },
+      "RelationExtractionStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "evidences": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceCandidate"
+            },
+            "title": "Evidences",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "internal_relationships": {
+            "items": {
+              "$ref": "#/components/schemas/InternalRelationship"
+            },
+            "title": "Internal Relationships",
+            "type": "array"
+          },
+          "result_type": {
+            "const": "RELATION_EXTRACTION_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_type"
+        ],
+        "title": "RelationExtractionStageResult",
+        "type": "object"
+      },
+      "ReviewResultData": {
+        "additionalProperties": false,
+        "properties": {
+          "business_task_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Business Task Id",
+            "type": "string"
+          },
+          "contract_profile": {
+            "$ref": "#/components/schemas/ContractProfile"
+          },
+          "contract_version_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Contract Version Id",
+            "type": "string"
+          },
+          "evidences": {
+            "items": {
+              "$ref": "#/components/schemas/Evidence"
+            },
+            "title": "Evidences",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "relationships": {
+            "items": {
+              "type": "null"
+            },
+            "maxItems": 0,
+            "title": "Relationships",
+            "type": "array"
+          },
+          "result_hash": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Result Hash",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/ReviewSummary"
+          }
+        },
+        "required": [
+          "review_id",
+          "business_task_id",
+          "contract_version_id",
+          "contract_profile",
+          "summary",
+          "findings",
+          "evidences",
+          "result_hash"
+        ],
+        "title": "ReviewResultData",
+        "type": "object"
+      },
+      "ReviewStage": {
+        "enum": [
+          "PARSING",
+          "PARTY_RESOLUTION",
+          "IR_EXTRACTION",
+          "RIGHTS_OBLIGATIONS",
+          "RISK_REVIEW",
+          "EVIDENCE_VERIFICATION",
+          "FINALIZING"
+        ],
+        "title": "ReviewStage",
+        "type": "string"
+      },
+      "ReviewStatus": {
+        "enum": [
+          "CREATED",
+          "RUNNING",
+          "SUCCEEDED",
+          "FAILED",
+          "CANCELLED"
+        ],
+        "title": "ReviewStatus",
+        "type": "string"
+      },
+      "ReviewStatusData": {
+        "additionalProperties": false,
+        "properties": {
+          "business_task_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Business Task Id",
+            "type": "string"
+          },
+          "contract_version_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Contract Version Id",
+            "type": "string"
+          },
+          "current_stage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewStage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "document_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Document Id",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErrorData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "framework_attempt_no": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Framework Attempt No"
+          },
+          "framework_run_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Framework Run Id"
+          },
+          "framework_task_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Framework Task Id"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ReviewStatus"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "business_task_id",
+          "contract_version_id",
+          "status",
+          "document_id",
+          "updated_at"
+        ],
+        "title": "ReviewStatusData",
+        "type": "object"
+      },
+      "ReviewSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "high_count": {
+            "minimum": 0.0,
+            "title": "High Count",
+            "type": "integer"
+          },
+          "info_count": {
+            "minimum": 0.0,
+            "title": "Info Count",
+            "type": "integer"
+          },
+          "low_count": {
+            "minimum": 0.0,
+            "title": "Low Count",
+            "type": "integer"
+          },
+          "medium_count": {
+            "minimum": 0.0,
+            "title": "Medium Count",
+            "type": "integer"
+          },
+          "overview": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Overview",
+            "type": "string"
+          }
+        },
+        "required": [
+          "overview",
+          "high_count",
+          "medium_count",
+          "low_count",
+          "info_count"
+        ],
+        "title": "ReviewSummary",
+        "type": "object"
+      },
+      "RightsObligationsStageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "evidences": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceCandidate"
+            },
+            "title": "Evidences",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "result_type": {
+            "const": "RIGHTS_OBLIGATIONS_STAGE_V1",
+            "title": "Result Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_type"
+        ],
+        "title": "RightsObligationsStageResult",
+        "type": "object"
+      },
+      "RiskLevel": {
+        "enum": [
+          "HIGH",
+          "MEDIUM",
+          "LOW",
+          "INFO"
+        ],
+        "title": "RiskLevel",
+        "type": "string"
+      },
+      "RunFailedCallback": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_no": {
+            "maximum": 2.0,
+            "minimum": 1.0,
+            "title": "Attempt No",
+            "type": "integer"
+          },
+          "callback_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Callback Id",
+            "type": "string"
+          },
+          "callback_type": {
+            "const": "RUN_FAILED",
+            "title": "Callback Type",
+            "type": "string"
+          },
+          "error": {
+            "$ref": "#/components/schemas/ErrorData"
+          },
+          "event_sequence": {
+            "minimum": 0.0,
+            "title": "Event Sequence",
+            "type": "integer"
+          },
+          "framework_run_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Framework Run Id",
+            "type": "string"
+          },
+          "framework_task_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Framework Task Id",
+            "type": "string"
+          },
+          "result": {
+            "title": "Result",
+            "type": "null"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "stage_id": {
+            "anyOf": [
+              {
+                "enum": [
+                  "parse_contract",
+                  "resolve_parti{Û^í¢G§²ÚîÆ­yÒ&æÖR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚ÕW6W"Ô–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚ÕW6W"Ô–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚ÕFVæçBÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚ÕFVæçBÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Õ&WVW7BÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Õ&WVW7BÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢$–FV×÷FVæ7’Ô¶W’"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢&Ö„ÆVæwF‚#¢#À¢&Ö–äÆVæwF‚#¢À¢'F—FÆR#¢$–FV×÷FVæ7’Ô¶W’"À¢'G—R#¢'7G&–ær ¢Ğ¢Ğ¢ÒÀ¢'&WVW7D&öG’#¢°¢&6öçFVçB#¢°¢&×VÇF—'Böf÷&ÒÖFF#¢°¢&Væ6öF–ær#¢°¢'&WVW7B#¢°¢&6öçFVçEG—R#¢&Æ–6F–öâö§6öâ ¢Ğ¢ÒÀ¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ô&öG•ö7&VFU÷&Wf–Wu÷cö6öçG&7E÷&Wf–Ww5÷÷7B ¢Ğ¢Ğ¢ÒÀ¢'&WV—&VB#¢G'VP¢ÒÀ¢'&W7öç6W2#¢°¢###¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2õ7V66W75&W7öç6Uô7&VFU&Wf–WtFFò ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%7V66W76gVÂ&W7öç6R ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&B&WVW7B ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%VæWF†÷&—¦VB ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$f÷&&–FFVâ ¢ÒÀ¢#CB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$æ÷Bf÷VæB ¢ÒÀ¢#C’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$6öæfÆ–7B ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%&WVW7BVçF—G’FöòÆ&vR ¢ÒÀ¢#CR#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç7W÷'FVBÖVF–G—R ¢ÒÀ¢#C#"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç&ö6W76&ÆRVçF—G’ ¢ÒÀ¢#S#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$–çFW&æÂ6W'fW"W'&÷" ¢ÒÀ¢#S"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&BvFWv’ ¢ÒÀ¢#S2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%6W'f–6RVæf–Æ&ÆR ¢ÒÀ¢#SB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$vFWv’F–ÖV÷WB ¢Ğ¢ÒÀ¢'7VÖÖ'’#¢$7&VFR&Wf–Wr ¢Ğ¢ÒÀ¢"÷cö6öçG&7B×&Wf–Ww2÷·&Wf–Wuö–GÒ#¢°¢&vWB#¢°¢&÷W&F–öä–B#¢&vWE÷&Wf–Wu÷7FGW5÷cö6öçG&7E÷&Wf–Ww5õ÷&Wf–Wuö–EõövWB"À¢'&ÖWFW'2#¢°¢°¢&–â#¢'F‚"À¢&æÖR#¢'&Wf–Wuö–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%&Wf–Wr–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚ÕW6W"Ô–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚ÕW6W"Ô–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚ÕFVæçBÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚ÕFVæçBÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Õ&WVW7BÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Õ&WVW7BÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢Ğ¢ÒÀ¢'&W7öç6W2#¢°¢###¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2õ7V66W75&W7öç6Uõ&Wf–Wu7FGW4FFò ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%7V66W76gVÂ&W7öç6R ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&B&WVW7B ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%VæWF†÷&—¦VB ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$f÷&&–FFVâ ¢ÒÀ¢#CB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$æ÷Bf÷VæB ¢ÒÀ¢#C’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$6öæfÆ–7B ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%&WVW7BVçF—G’FöòÆ&vR ¢ÒÀ¢#CR#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç7W÷'FVBÖVF–G—R ¢ÒÀ¢#C#"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç&ö6W76&ÆRVçF—G’ ¢ÒÀ¢#S#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$–çFW&æÂ6W'fW"W'&÷" ¢ÒÀ¢#S"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&BvFWv’ ¢ÒÀ¢#S2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%6W'f–6RVæf–Æ&ÆR ¢ÒÀ¢#SB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$vFWv’F–ÖV÷WB ¢Ğ¢ÒÀ¢'7VÖÖ'’#¢$vWB&Wf–Wr7FGW2 ¢Ğ¢ÒÀ¢"÷cö6öçG&7B×&Wf–Ww2÷·&Wf–Wuö–GÒö6æ6VÂ#¢°¢'÷7B#¢°¢&÷W&F–öä–B#¢&6æ6VÅ÷&Wf–Wu÷cö6öçG&7E÷&Wf–Ww5õ÷&Wf–Wuö–Eõö6æ6VÅ÷÷7B"À¢'&ÖWFW'2#¢°¢°¢&–â#¢'F‚"À¢&æÖR#¢'&Wf–Wuö–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%&Wf–Wr–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚ÕW6W"Ô–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚ÕW6W"Ô–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚ÕFVæçBÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚ÕFVæçBÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Õ&WVW7BÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Õ&WVW7BÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢Ğ¢ÒÀ¢'&W7öç6W2#¢°¢###¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2õ7V66W75&W7öç6Uô6æ6VÅ&Wf–WtFFò ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%7V66W76gVÂ&W7öç6R ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&B&WVW7B ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%VæWF†÷&—¦VB ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$f÷&&–FFVâ ¢ÒÀ¢#CB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$æ÷Bf÷VæB ¢ÒÀ¢#C’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$6öæfÆ–7B ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%&WVW7BVçF—G’FöòÆ&vR ¢ÒÀ¢#CR#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç7W÷'FVBÖVF–G—R ¢ÒÀ¢#C#"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç&ö6W76&ÆRVçF—G’ ¢ÒÀ¢#S#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$–çFW&æÂ6W'fW"W'&÷" ¢ÒÀ¢#S"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&BvFWv’ ¢ÒÀ¢#S2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%6W'f–6RVæf–Æ&ÆR ¢ÒÀ¢#SB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$vFWv’F–ÖV÷WB ¢Ğ¢ÒÀ¢'7VÖÖ'’#¢$6æ6VÂ&Wf–Wr ¢Ğ¢ÒÀ¢"÷cö6öçG&7B×&Wf–Ww2÷·&Wf–Wuö–GÒö6†B#¢°¢'÷7B#¢°¢&÷W&F–öä–B#¢&ç7vW%öw&÷VæFVEö6†E÷cö6öçG&7E÷&Wf–Ww5õ÷&Wf–Wuö–Eõö6†E÷÷7B"À¢'&ÖWFW'2#¢°¢°¢&–â#¢'F‚"À¢&æÖR#¢'&Wf–Wuö–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%&Wf–Wr–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚ÕW6W"Ô–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚ÕW6W"Ô–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚ÕFVæçBÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚ÕFVæçBÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Õ&WVW7BÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Õ&WVW7BÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢$–FV×÷FVæ7’Ô¶W’"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢&Ö„ÆVæwF‚#¢#À¢&Ö–äÆVæwF‚#¢À¢'F—FÆR#¢$–FV×÷FVæ7’Ô¶W’"À¢'G—R#¢'7G&–ær ¢Ğ¢Ğ¢ÒÀ¢'&WVW7D&öG’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôw&÷VæFVD6†E&WVW7B ¢Ğ¢Ğ¢ÒÀ¢'&WV—&VB#¢G'VP¢ÒÀ¢'&W7öç6W2#¢°¢###¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2õ7V66W75&W7öç6Uôw&÷VæFVDç7vW$FFò ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%7V66W76gVÂ&W7öç6R ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&B&WVW7B ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%VæWF†÷&—¦VB ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$f÷&&–FFVâ ¢ÒÀ¢#CB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$æ÷Bf÷VæB ¢ÒÀ¢#C’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$6öæfÆ–7B ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%&WVW7BVçF—G’FöòÆ&vR ¢ÒÀ¢#CR#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç7W÷'FVBÖVF–G—R ¢ÒÀ¢#C#"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç&ö6W76&ÆRVçF—G’ ¢ÒÀ¢#S#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$–çFW&æÂ6W'fW"W'&÷" ¢ÒÀ¢#S"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&BvFWv’ ¢ÒÀ¢#S2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%6W'f–6RVæf–Æ&ÆR ¢ÒÀ¢#SB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$vFWv’F–ÖV÷WB ¢Ğ¢ÒÀ¢'7VÖÖ'’#¢$ç7vW"w&÷VæFVB6†B ¢Ğ¢ÒÀ¢"÷cö6öçG&7B×&Wf–Ww2÷·&Wf–Wuö–GÒö6†B÷7G&VÒ#¢°¢'÷7B#¢°¢&÷W&F–öä–B#¢'7G&VÕöw&÷VæFVEö6†E÷cö6öçG&7E÷&Wf–Ww5õ÷&Wf–Wuö–Eõö6†E÷7G&VÕ÷÷7B"À¢'&ÖWFW'2#¢°¢°¢&–â#¢'F‚"À¢&æÖR#¢'&Wf–Wuö–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%&Wf–Wr–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚ÕW6W"Ô–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚ÕW6W"Ô–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚ÕFVæçBÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚ÕFVæçBÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Õ&WVW7BÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Õ&WVW7BÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢$–FV×÷FVæ7’Ô¶W’"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢&Ö„ÆVæwF‚#¢#À¢&Ö–äÆVæwF‚#¢À¢'F—FÆR#¢$–FV×÷FVæ7’Ô¶W’"À¢'G—R#¢'7G&–ær ¢Ğ¢Ğ¢ÒÀ¢'&WVW7D&öG’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôw&÷VæFVD6†E&WVW7B ¢Ğ¢Ğ¢ÒÀ¢'&WV—&VB#¢G'VP¢ÒÀ¢'&W7öç6W2#¢°¢###¢°¢&6öçFVçB#¢°¢'FW‡BöWfVçB×7G&VÒ#¢°¢'66†VÖ#¢°¢'G—R#¢'7G&–ær ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢.YYÎ™zîzÙE54^K¨¾K»nkX ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&B&WVW7B ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%VæWF†÷&—¦VB ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$f÷&&–FFVâ ¢ÒÀ¢#CB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$æ÷Bf÷VæB ¢ÒÀ¢#C’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$6öæfÆ–7B ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%&WVW7BVçF—G’FöòÆ&vR ¢ÒÀ¢#CR#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç7W÷'FVBÖVF–G—R ¢ÒÀ¢#C#"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç&ö6W76&ÆRVçF—G’ ¢ÒÀ¢#S#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$–çFW&æÂ6W'fW"W'&÷" ¢ÒÀ¢#S"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&BvFWv’ ¢ÒÀ¢#S2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%6W'f–6RVæf–Æ&ÆR ¢ÒÀ¢#SB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$vFWv’F–ÖV÷WB ¢Ğ¢ÒÀ¢'7VÖÖ'’#¢%7G&VÒw&÷VæFVB6†B ¢Ğ¢ÒÀ¢"÷cö6öçG&7B×&Wf–Ww2÷·&Wf–Wuö–GÒ÷&W÷'B#¢°¢'÷7B#¢°¢&÷W&F–öä–B#¢&vVæW&FUöw&÷VæFVE÷&W÷'E÷cö6öçG&7E÷&Wf–Ww5õ÷&Wf–Wuö–Eõ÷&W÷'E÷÷7B"À¢'&ÖWFW'2#¢°¢°¢&–â#¢'F‚"À¢&æÖR#¢'&Wf–Wuö–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%&Wf–Wr–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚ÕW6W"Ô–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚ÕW6W"Ô–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚ÕFVæçBÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚ÕFVæçBÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Õ&WVW7BÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Õ&WVW7BÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢$–FV×÷FVæ7’Ô¶W’"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢&Ö„ÆVæwF‚#¢#À¢&Ö–äÆVæwF‚#¢À¢'F—FÆR#¢$–FV×÷FVæ7’Ô¶W’"À¢'G—R#¢'7G&–ær ¢Ğ¢Ğ¢ÒÀ¢'&WVW7D&öG’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôw&÷VæFVE&W÷'E&WVW7B ¢Ğ¢Ğ¢ÒÀ¢'&WV—&VB#¢G'VP¢ÒÀ¢'&W7öç6W2#¢°¢###¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2õ7V66W75&W7öç6Uôw&÷VæFVDç7vW$FFò ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%7V66W76gVÂ&W7öç6R ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&B&WVW7B ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%VæWF†÷&—¦VB ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$f÷&&–FFVâ ¢ÒÀ¢#CB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$æ÷Bf÷VæB ¢ÒÀ¢#C’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$6öæfÆ–7B ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%&WVW7BVçF—G’FöòÆ&vR ¢ÒÀ¢#CR#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç7W÷'FVBÖVF–G—R ¢ÒÀ¢#C#"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç&ö6W76&ÆRVçF—G’ ¢ÒÀ¢#S#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$–çFW&æÂ6W'fW"W'&÷" ¢ÒÀ¢#S"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&BvFWv’ ¢ÒÀ¢#S2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%6W'f–6RVæf–Æ&ÆR ¢ÒÀ¢#SB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$vFWv’F–ÖV÷WB ¢Ğ¢ÒÀ¢'7VÖÖ'’#¢$vVæW&FRw&÷VæFVB&W÷'B ¢Ğ¢ÒÀ¢"÷cö6öçG&7B×&Wf–Ww2÷·&Wf–Wuö–GÒ÷&W7VÇB#¢°¢&vWB#¢°¢&÷W&F–öä–B#¢&vWE÷&Wf–Wu÷&W7VÇE÷cö6öçG&7E÷&Wf–Ww5õ÷&Wf–Wuö–Eõ÷&W7VÇEövWB"À¢'&ÖWFW'2#¢°¢°¢&–â#¢'F‚"À¢&æÖR#¢'&Wf–Wuö–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%&Wf–Wr–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚ÕW6W"Ô–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚ÕW6W"Ô–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚ÕFVæçBÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚ÕFVæçBÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Õ&WVW7BÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Õ&WVW7BÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢Ğ¢ÒÀ¢'&W7öç6W2#¢°¢###¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2õ7V66W75&W7öç6Uõ&Wf–Wu&W7VÇDFFò ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%7V66W76gVÂ&W7öç6R ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&B&WVW7B ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%VæWF†÷&—¦VB ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$f÷&&–FFVâ ¢ÒÀ¢#CB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$æ÷Bf÷VæB ¢ÒÀ¢#C’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$6öæfÆ–7B ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%&WVW7BVçF—G’FöòÆ&vR ¢ÒÀ¢#CR#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç7W÷'FVBÖVF–G—R ¢ÒÀ¢#C#"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç&ö6W76&ÆRVçF—G’ ¢ÒÀ¢#S#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$–çFW&æÂ6W'fW"W'&÷" ¢ÒÀ¢#S"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&BvFWv’ ¢ÒÀ¢#S2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%6W'f–6RVæf–Æ&ÆR ¢ÒÀ¢#SB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$vFWv’F–ÖV÷WB ¢Ğ¢ÒÀ¢'7VÖÖ'’#¢$vWB&Wf–Wr&W7VÇB ¢Ğ¢ÒÀ¢"÷cö–çFW&æÂö6öçG&7B×&Wf–Ww2÷·&Wf–Wuö–GÒög&ÖWv÷&²×&W7VÇB#¢°¢'÷7B#¢°¢&÷W&F–öä–B#¢&66WEög&ÖWv÷&µ÷&W7VÇE÷cö–çFW&æÅö6öçG&7E÷&Wf–Ww5õ÷&Wf–Wuö–Eõög&ÖWv÷&µ÷&W7VÇE÷÷7B"À¢'&ÖWFW'2#¢°¢°¢&–â#¢'F‚"À¢&æÖR#¢'&Wf–Wuö–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%&Wf–Wr–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Õ&WVW7BÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Õ&WVW7BÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢Ğ¢ÒÀ¢'&WVW7D&öG’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢&F—67&–Ö–æF÷"#¢°¢&Ö–ær#¢°¢%%Tåôd”ÄTB#¢"2ö6ö×öæVçG2÷66†VÖ2õ'Väf–ÆVD6ÆÆ&6²"À¢%%Tåõ5T44TTDTB#¢"2ö6ö×öæVçG2÷66†VÖ2õ'Vå7V66VVFVD6ÆÆ&6²"À¢%5DtUõ$U5TÅB#¢"2ö6ö×öæVçG2÷66†VÖ2õ7FvU&W7VÇD6ÆÆ&6² ¢ÒÀ¢'&÷W'G”æÖR#¢&6ÆÆ&6µ÷G—R ¢ÒÀ¢&öæTöb#¢°¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2õ7FvU&W7VÇD6ÆÆ&6² ¢ÒÀ¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2õ'Vå7V66VVFVD6ÆÆ&6² ¢ÒÀ¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2õ'Väf–ÆVD6ÆÆ&6² ¢Ğ¢ÒÀ¢'F—FÆR#¢$6ÆÆ&6² ¢Ğ¢Ğ¢ÒÀ¢'&WV—&VB#¢G'VP¢ÒÀ¢'&W7öç6W2#¢°¢###¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2õ7V66W75&W7öç6Uôg&ÖWv÷&´6ÆÆ&6´FFò ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%7V66W76gVÂ&W7öç6R ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&B&WVW7B ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%VæWF†÷&—¦VB ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$f÷&&–FFVâ ¢ÒÀ¢#CB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$æ÷Bf÷VæB ¢ÒÀ¢#C’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$6öæfÆ–7B ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%&WVW7BVçF—G’FöòÆ&vR ¢ÒÀ¢#CR#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç7W÷'FVBÖVF–G—R ¢ÒÀ¢#C#"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç&ö6W76&ÆRVçF—G’ ¢ÒÀ¢#S#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$–çFW&æÂ6W'fW"W'&÷" ¢ÒÀ¢#S"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&BvFWv’ ¢ÒÀ¢#S2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%6W'f–6RVæf–Æ&ÆR ¢ÒÀ¢#SB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$vFWv’F–ÖV÷WB ¢Ğ¢ÒÀ¢'7VÖÖ'’#¢$66WBg&ÖWv÷&²&W7VÇB ¢Ğ¢ÒÀ¢"÷cö–çFW&æÂö6öçG&7B×&Wf–Ww2÷·&Wf–Wuö–GÒ÷7FvW2öW†V7WFR#¢°¢'÷7B#¢°¢&÷W&F–öä–B#¢&W†V7WFUög&ÖWv÷&µ÷7FvU÷cö–çFW&æÅö6öçG&7E÷&Wf–Ww5õ÷&Wf–Wuö–Eõ÷7FvW5öW†V7WFU÷÷7B"À¢'&ÖWFW'2#¢°¢°¢&–â#¢'F‚"À¢&æÖR#¢'&Wf–Wuö–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%&Wf–Wr–B"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Õ&WVW7BÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Õ&WVW7BÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢Ğ¢ÒÀ¢'&WVW7D&öG’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2õ7FvTW†V7WFU&WVW7B ¢Ğ¢Ğ¢ÒÀ¢'&WV—&VB#¢G'VP¢ÒÀ¢'&W7öç6W2#¢°¢###¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2õ7V66W75&W7öç6Uôææ÷FFVEõVæ–öåõ'6T6öçG&7E7FvU&W7VÇEõôWf–FVæ6UfW&–f–6F–öå7FvU&W7VÇEõôf–æÆ—¦U&Wf–Wu7FvU&W7VÇEõõôf–VÆD–æfõöææ÷FF–öåôæöæUG—Uõ÷&WV—&VEõG'VUõöF—67&–Ö–æF÷%õ÷&W7VÇE÷G—Uõõõò ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%7V66W76gVÂ&W7öç6R ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&B&WVW7B ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%VæWF†÷&—¦VB ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$f÷&&–FFVâ ¢ÒÀ¢#CB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$æ÷Bf÷VæB ¢ÒÀ¢#C’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$6öæfÆ–7B ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%&WVW7BVçF—G’FöòÆ&vR ¢ÒÀ¢#CR#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç7W÷'FVBÖVF–G—R ¢ÒÀ¢#C#"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç&ö6W76&ÆRVçF—G’ ¢ÒÀ¢#S#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$–çFW&æÂ6W'fW"W'&÷" ¢ÒÀ¢#S"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&BvFWv’ ¢ÒÀ¢#S2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%6W'f–6RVæf–Æ&ÆR ¢ÒÀ¢#SB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$vFWv’F–ÖV÷WB ¢Ğ¢ÒÀ¢'7VÖÖ'’#¢$W†V7WFRg&ÖWv÷&²7FvR ¢Ğ¢ÒÀ¢"÷cö–çFW&æÂö6öçG&7B×FööÇ2ö&Æö6·2#¢°¢'÷7B#¢°¢&÷W&F–öä–B#¢&6öçG&7EövWEö&Æö6·5÷cö–çFW&æÅö6öçG&7E÷FööÇ5ö&Æö6·5÷÷7B"À¢'&ÖWFW'2#¢°¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Õ&WVW7BÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Õ&WVW7BÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢Ğ¢ÒÀ¢'&WVW7D&öG’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ô6öçG&7D&Æö6·5FööÅ&WVW7B ¢Ğ¢Ğ¢ÒÀ¢'&WV—&VB#¢G'VP¢ÒÀ¢'&W7öç6W2#¢°¢###¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2õ7V66W75&W7öç6Uô6öçG&7D&Æö6·5FööÄFFò ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%7V66W76gVÂ&W7öç6R ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&B&WVW7B ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%VæWF†÷&—¦VB ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$f÷&&–FFVâ ¢ÒÀ¢#CB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$æ÷Bf÷VæB ¢ÒÀ¢#C’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$6öæfÆ–7B ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%&WVW7BVçF—G’FöòÆ&vR ¢ÒÀ¢#CR#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç7W÷'FVBÖVF–G—R ¢ÒÀ¢#C#"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç&ö6W76&ÆRVçF—G’ ¢ÒÀ¢#S#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$–çFW&æÂ6W'fW"W'&÷" ¢ÒÀ¢#S"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&BvFWv’ ¢ÒÀ¢#S2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%6W'f–6RVæf–Æ&ÆR ¢ÒÀ¢#SB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$vFWv’F–ÖV÷WB ¢Ğ¢ÒÀ¢'7VÖÖ'’#¢$6öçG&7BvWB&Æö6·2 ¢Ğ¢ÒÀ¢"÷cö–çFW&æÂö6öçG&7B×FööÇ2ö6ÆW6RÖ6öçFW‡B#¢°¢'÷7B#¢°¢&÷W&F–öä–B#¢&6öçG&7EövWEö6ÆW6Uö6öçFW‡E÷cö–çFW&æÅö6öçG&7E÷FööÇ5ö6ÆW6Uö6öçFW‡E÷÷7B"À¢'&ÖWFW'2#¢°¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Õ&WVW7BÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Õ&WVW7BÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢Ğ¢ÒÀ¢'&WVW7D&öG’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ô6öçG&7D6ÆW6T6öçFW‡EFööÅ&WVW7B ¢Ğ¢Ğ¢ÒÀ¢'&WV—&VB#¢G'VP¢ÒÀ¢'&W7öç6W2#¢°¢###¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2õ7V66W75&W7öç6Uô6öçG&7D6ÆW6T6öçFW‡EFööÄFFò ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%7V66W76gVÂ&W7öç6R ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&B&WVW7B ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%VæWF†÷&—¦VB ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$f÷&&–FFVâ ¢ÒÀ¢#CB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$æ÷Bf÷VæB ¢ÒÀ¢#C’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$6öæfÆ–7B ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%&WVW7BVçF—G’FöòÆ&vR ¢ÒÀ¢#CR#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç7W÷'FVBÖVF–G—R ¢ÒÀ¢#C#"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç&ö6W76&ÆRVçF—G’ ¢ÒÀ¢#S#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$–çFW&æÂ6W'fW"W'&÷" ¢ÒÀ¢#S"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&BvFWv’ ¢ÒÀ¢#S2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%6W'f–6RVæf–Æ&ÆR ¢ÒÀ¢#SB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$vFWv’F–ÖV÷WB ¢Ğ¢ÒÀ¢'7VÖÖ'’#¢$6öçG&7BvWB6ÆW6R6öçFW‡B ¢Ğ¢ÒÀ¢"÷cö–çFW&æÂö6öçG&7B×FööÇ2öFö7VÖVçB#¢°¢'÷7B#¢°¢&÷W&F–öä–B#¢&6öçG&7EövWEöFö7VÖVçE÷cö–çFW&æÅö6öçG&7E÷FööÇ5öFö7VÖVçE÷÷7B"À¢'&ÖWFW'2#¢°¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Õ&WVW7BÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Õ&WVW7BÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢Ğ¢ÒÀ¢'&WVW7D&öG’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ô6öçG&7DFö7VÖVçEFööÅ&WVW7B ¢Ğ¢Ğ¢ÒÀ¢'&WV—&VB#¢G'VP¢ÒÀ¢'&W7öç6W2#¢°¢###¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2õ7V66W75&W7öç6Uô6öçG&7DFö7VÖVçEFööÄFFò ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%7V66W76gVÂ&W7öç6R ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&B&WVW7B ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%VæWF†÷&—¦VB ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$f÷&&–FFVâ ¢ÒÀ¢#CB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$æ÷Bf÷VæB ¢ÒÀ¢#C’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$6öæfÆ–7B ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%&WVW7BVçF—G’FöòÆ&vR ¢ÒÀ¢#CR#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç7W÷'FVBÖVF–G—R ¢ÒÀ¢#C#"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç&ö6W76&ÆRVçF—G’ ¢ÒÀ¢#S#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$–çFW&æÂ6W'fW"W'&÷" ¢ÒÀ¢#S"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&BvFWv’ ¢ÒÀ¢#S2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%6W'f–6RVæf–Æ&ÆR ¢ÒÀ¢#SB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$vFWv’F–ÖV÷WB ¢Ğ¢ÒÀ¢'7VÖÖ'’#¢$6öçG&7BvWBFö7VÖVçB ¢Ğ¢ÒÀ¢"÷cö–çFW&æÂö6öçG&7B×FööÇ2ö—"#¢°¢'÷7B#¢°¢&÷W&F–öä–B#¢&6öçG&7EövWEö—%÷cö–çFW&æÅö6öçG&7E÷FööÇ5ö—%÷÷7B"À¢'&ÖWFW'2#¢°¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Õ&WVW7BÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Õ&WVW7BÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢Ğ¢ÒÀ¢'&WVW7D&öG’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ô6öçG&7D—%FööÅ&WVW7B ¢Ğ¢Ğ¢ÒÀ¢'&WV—&VB#¢G'VP¢ÒÀ¢'&W7öç6W2#¢°¢###¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2õ7V66W75&W7öç6Uô6öçG&7D—%FööÄFFò ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%7V66W76gVÂ&W7öç6R ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&B&WVW7B ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%VæWF†÷&—¦VB ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$f÷&&–FFVâ ¢ÒÀ¢#CB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$æ÷Bf÷VæB ¢ÒÀ¢#C’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$6öæfÆ–7B ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%&WVW7BVçF—G’FöòÆ&vR ¢ÒÀ¢#CR#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç7W÷'FVBÖVF–G—R ¢ÒÀ¢#C#"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç&ö6W76&ÆRVçF—G’ ¢ÒÀ¢#S#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$–çFW&æÂ6W'fW"W'&÷" ¢ÒÀ¢#S"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&BvFWv’ ¢ÒÀ¢#S2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%6W'f–6RVæf–Æ&ÆR ¢ÒÀ¢#SB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$vFWv’F–ÖV÷WB ¢Ğ¢ÒÀ¢'7VÖÖ'’#¢$6öçG&7BvWB—" ¢Ğ¢ÒÀ¢"÷cö–çFW&æÂö6öçG&7B×FööÇ2÷&Wf–Wr×&W7VÇB#¢°¢'÷7B#¢°¢&÷W&F–öä–B#¢&6öçG&7EövWE÷&Wf–Wu÷&W7VÇE÷cö–çFW&æÅö6öçG&7E÷FööÇ5÷&Wf–Wu÷&W7VÇE÷÷7B"À¢'&ÖWFW'2#¢°¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕ6W'f–6R"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Ô–çFW&æÂÕFö¶Vâ"À¢'G—R#¢'7G&–ær ¢Ğ¢ÒÀ¢°¢&–â#¢&†VFW""À¢&æÖR#¢%‚Õ&WVW7BÔ–B"À¢'&WV—&VB#¢G'VRÀ¢'66†VÖ#¢°¢'F—FÆR#¢%‚Õ&WVW7BÔ–B"À¢'G—R#¢'7G&–ær ¢Ğ¢Ğ¢ÒÀ¢'&WVW7D&öG’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ô6öçG&7E&Wf–Wu&W7VÇEFööÅ&WVW7B ¢Ğ¢Ğ¢ÒÀ¢'&WV—&VB#¢G'VP¢ÒÀ¢'&W7öç6W2#¢°¢###¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2õ7V66W75&W7öç6Uô6öçG&7E&Wf–Wu&W7VÇEFööÄFFò ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%7V66W76gVÂ&W7öç6R ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&B&WVW7B ¢ÒÀ¢#C#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%VæWF†÷&—¦VB ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$f÷&&–FFVâ ¢ÒÀ¢#CB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$æ÷Bf÷VæB ¢ÒÀ¢#C’#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$6öæfÆ–7B ¢ÒÀ¢#C2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%&WVW7BVçF—G’FöòÆ&vR ¢ÒÀ¢#CR#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç7W÷'FVBÖVF–G—R ¢ÒÀ¢#C#"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%Vç&ö6W76&ÆRVçF—G’ ¢ÒÀ¢#S#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$–çFW&æÂ6W'fW"W'&÷" ¢ÒÀ¢#S"#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$&BvFWv’ ¢ÒÀ¢#S2#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢%6W'f–6RVæf–Æ&ÆR ¢ÒÀ¢#SB#¢°¢&6öçFVçB#¢°¢&Æ–6F–öâö§6öâ#¢°¢'66†VÖ#¢°¢"G&Vb#¢"2ö6ö×öæVçG2÷66†VÖ2ôW'&÷%&W7öç6R ¢Ğ¢Ğ¢ÒÀ¢&FW67&—F–öâ#¢$vFWv’F–ÖV÷WB ¢Ğ¢ÒÀ¢'7VÖÖ'’#¢$6öçG&7BvWB&Wf–Wr&W7VÇB ¢Ğ¢Ğ¢Ğ§Ğ

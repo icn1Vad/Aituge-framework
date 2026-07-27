@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     framework_tenant_id: str = "__default_tenant_id__"
     audit_model_id: str = "deepseek-v4-pro"
     audit_batch_max_chars: int = Field(default=6000, ge=1)
-    audit_batch_max_chunks: int = Field(default=8, ge=1, le=100)
+    audit_batch_max_chunks: int = Field(default=8, ge=1, le=8)
     audit_max_chunk_chars: int = Field(default=12_000, ge=1)
     audit_max_concurrency: int = Field(default=4, ge=1, le=8)
     summary_max_chars: int = Field(default=60_000, ge=1)

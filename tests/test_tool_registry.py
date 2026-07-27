@@ -245,3 +245,42 @@ def test_tool_manager_skips_unknown_unconfigured_tool(tmp_path: Path, monkeypatc
         asyncio.run(run())
     finally:
         reset_engine_for_test()
+
+
+def test_tenant_disabled_tool_does_not_fall_back_to_default(tmp_path: Path, monkeypatch):
+    async def run():
+        monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'tools-disabled.db'}")
+        reset_engine_for_test()
+        await init_db()
+        async with create_db_session() as session:
+            session.add(
+                ToolConfigEntity(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    tool_name="fake_db_tool",
+                    provider="fake",
+                    enabled=True,
+                    config_json='{"label": "global"}',
+                )
+            )
+            session.add(
+                ToolConfigEntity(
+                    tenant_id="tenant-disabled",
+                    tool_name="fake_db_tool",
+                    provider="fake",
+                    enabled=False,
+                    config_json='{"label": "disabled"}',
+                )
+            )
+            await session.flush()
+            bundle = await ToolManager(
+                local_python_work_dir=tmp_path,
+                tenant_id="tenant-disabled",
+                tool_list=_fake_tool_list(),
+            ).create_bundle(["fake_db_tool"], session=session)
+
+        assert bundle.tools == []
+
+    try:
+        asyncio.run(run())
+    finally:
+        reset_engine_for_test()

@@ -40,7 +40,6 @@ async def get_tool_configs_by_names(
         return []
     statement = select(ToolConfigEntity).where(
         ToolConfigEntity.tenant_id == tenant_id,
-        ToolConfigEntity.enabled == True,  # noqa: E712
         ToolConfigEntity.tool_name.in_(names),
     )
     try:
@@ -50,4 +49,16 @@ async def get_tool_configs_by_names(
             logger.warning("tuge_tool_config table does not exist; no DB tools loaded.")
             return []
         raise
-    return list(result.all())
+    tenant_configs = list(result.all())
+    configs = [item for item in tenant_configs if item.enabled]
+    found_names = {item.tool_name for item in tenant_configs}
+    missing = [name for name in names if name not in found_names]
+    if missing and tenant_id != DEFAULT_TENANT_ID:
+        fallback_statement = select(ToolConfigEntity).where(
+            ToolConfigEntity.tenant_id == DEFAULT_TENANT_ID,
+            ToolConfigEntity.enabled == True,  # noqa: E712
+            ToolConfigEntity.tool_name.in_(missing),
+        )
+        fallback = await session.exec(fallback_statement)
+        configs.extend(fallback.all())
+    return configs

@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>合同 IR Window 阶段验收</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, "Microsoft YaHei", sans-serif; background:#0b1020; color:#e8eefc; }
+    * { box-sizing:border-box; }
+    body { margin:0; }
+    main { max-width:1280px; margin:auto; padding:28px; }
+    h1 { margin:0 0 8px; font-size:28px; }
+    .hint { color:#99a8c7; margin-bottom:22px; }
+    .panel { background:#131b30; border:1px solid #273454; border-radius:14px; padding:18px; margin-bottom:18px; }
+    .upload { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    input, select, button { border-radius:9px; border:1px solid #34456e; padding:10px 13px; background:#0d1528; color:#e8eefc; }
+    .party-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; }
+    .party-grid label { color:#99a8c7; font-size:12px; }
+    .party-grid input, .party-grid select { display:block; width:100%; margin-top:6px; }
+    button { background:#2867e8; border-color:#2867e8; cursor:pointer; font-weight:650; }
+    button:disabled { opacity:.55; cursor:wait; }
+    .error { color:#ff9eaa; white-space:pre-wrap; }
+    .metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+    .metric { background:#0d1528; border-radius:10px; padding:13px; }
+    .metric span { color:#94a3c4; display:block; font-size:12px; margin-bottom:4px; }
+    .good { color:#64e8a7; }
+    .tabs { display:flex; gap:8px; margin:18px 0 10px; }
+    .tabs button { background:#16213b; border-color:#34456e; }
+    .tabs button.active { background:#2867e8; }
+    .list { display:grid; gap:10px; }
+    details { border:1px solid #2a385b; background:#0e172a; border-radius:10px; padding:12px; }
+    summary { cursor:pointer; font-weight:650; }
+    .meta { color:#9cadce; font-size:13px; margin:8px 0; word-break:break-all; }
+    .extract { margin:10px 0; }
+    .extract-result { border-left:3px solid #2867e8; margin-top:10px; padding-left:12px; }
+    .extraction { background:#111d35; border-radius:8px; padding:10px; margin:8px 0; }
+    table { width:100%; border-collapse:collapse; margin-top:10px; }
+    th, td { border-bottom:1px solid #2a385b; padding:8px; text-align:left; white-space:nowrap; }
+    pre { white-space:pre-wrap; word-break:break-word; background:#080e1a; border-radius:8px; padding:12px; max-height:420px; overflow:auto; }
+    code { color:#b9ccff; }
+    [hidden] { display:none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>合同 IR Window 阶段验收</h1>
+  <div class="hint">阶段 3.3 验证：文件解析 → Section/Window → 并发 10 抽取 → 确定性字面对齐 → DATE/AMOUNT 规范化 → IR Mapper → 确定性合并与 Coverage。这里不会写业务数据库，也不会替换正式审查链路。</div>
+  <section class="panel upload">
+    <input id="file" type="file" accept=".pdf,.docx">
+    <button id="run">解析并构建 Window</button>
+    <span id="state" class="hint"></span>
+  </section>
+  <section class="panel">
+    <div class="hint">阶段 5：隔离环境完整链路结果（Window IR → 风险审查 → Finding/Evidence）。</div>
+    <button id="stage5-load">查看阶段 5 完整审查结果</button>
+    <span id="stage5-state" class="hint"></span>
+    <div id="stage5-result" class="extract-result" hidden></div>
+  </section>
+  <section class="panel">
+    <div class="hint">阶段 5.1：保留上面的合并前结果，单独展示同一批风险 Stage Artifact 经语义判重和确定性合并后的对比。</div>
+    <button id="stage51-load">查看阶段 5.1 合并后对比</button>
+    <span id="stage51-state" class="hint"></span>
+    <div id="stage51-result" class="extract-result" hidden></div>
+  </section>
+  <section class="panel">
+    <div class="hint">模拟正式链路已有的 resolve_parties 结果；仅作为模型理解上下文，不会写入 extraction_text、原文 Anchor 或 Evidence。</div>
+    <div class="party-grid">
+      <label>甲方名称<input id="party-a-name" type="text" placeholder="请输入合同中的甲方名称"></label>
+      <label>乙方名称<input id="party-b-name" type="text" placeholder="请输入合同中的乙方名称"></label>
+      <label>审查立场<select id="perspective"><option value="PARTY_A">我方是甲方</option><option value="PARTY_B">我方是乙方</option></select></label>
+      <label>合同类型<input id="contract-type" type="text" value="AUTO"></label>
+    </div>
+  </section>
+  <div id="error" class="panel error" hidden></div>
+  <section id="result" hidden>
+    <div id="metrics" class="panel metrics"></div>
+    <section class="panel">
+      <button id="extract-all">并发 10 抽取全部 Window 并合并 IR</button>
+      <span id="extract-all-state" class="hint"></span>
+      <div id="extract-all-result" class="extract-result" hidden></div>
+    </section>
+    <section class="panel">
+      <div class="hint">Shadow Compare 只比较同类别的原文 Anchor，不会覆盖 Legacy 正式结果，也不把任一引擎当作标准答案。</div>
+      <div class="upload">
+        <input id="legacy-ir-file" type="file" accept=".json,application/json">
+        <button id="shadow-compare" disabled>对比 Legacy 与 Window IR</button>
+        <span id="shadow-state" class="hint"></span>
+      </div>
+      <div id="shadow-result" class="extract-result" hidden></div>
+    </section>
+    <div class="tabs">
+      <button data-tab="sections" class="active">Section Tree</button>
+      <button data-tab="windows">Windows</button>
+      <button data-tab="raw">完整 JSON</button>
+    </div>
+    <div id="sections" class="list"></div>
+    <div id="windows" class="list" hidden></div>
+    <pre id="raw" hidden></pre>
+  </section>
+</main>
+<script>
+  const fileInput = document.querySelector('#file');
+  const runButton = document.querySelector('#run');
+  const state = document.querySelector('#state');
+  const errorBox = document.querySelector('#error');
+  const result = document.querySelector('#result');
+  const extractAllButton = document.querySelector('#extract-all');
+  const shadowButton = document.querySelector('#shadow-compare');
+  const stage5Button = document.querySelector('#stage5-load');
+  const stage51Button = document.querySelector('#stage51-load');
+  let inspection = null;
+  let latestWindowResult = null;
+  const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  stage5Button.addEventListener('click', async () => {
+    const stateBox = document.querySelector('#stage5-state');
+    const outputBox = document.querySelector('#stage5-result');
+    stage5Button.disabled = true; stateBox.textContent = ' 加载中…'; outputBox.hidden = true;
+    try {
+      const response = await fetch('/api/stage5-result');
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || JSON.stringify(body));
+      const summary = body.summary || {};
+      const result = body.result || {};
+      const findings = result.findings || [];
+      const rows = findings.map((item, index) => `<tr><td>${index + 1}</td><td>${escapeHtml(item.risk_level)}</td><td>${escapeHtml(item.category)}</td><td style="white-space:normal">${escapeHtml(item.title)}</td><td>${(item.evidence_ids || []).length}</td></tr>`).join('');
+      outputBox.innerHTML = `<div class="metrics">` +
+        `<div class="metric"><span>状态</span><b class="good">${escapeHtml(summary.status)}</b></div>` +
+        `<div class="metric"><span>Finding</span>${escapeHtml(summary.finding_count)}</div>` +
+        `<div class="metric"><span>Evidence</span>${escapeHtml(summary.evidence_count)}</div>` +
+        `<div class="metric"><span>高/中/低</span>${escapeHtml(summary.risk_counts?.high_count || 0)} / ${escapeHtml(summary.risk_counts?.medium_count || 0)} / ${escapeHtml(summary.risk_counts?.low_count || 0)}</div>` +
+        `</div><div class="meta">Review ${escapeHtml(summary.review_id)}<br>Result Hash ${escapeHtml(summary.result_hash)}<br>主体：${escapeHtml(result.contract_profile?.our_party)}（我方） / ${escapeHtml(result.contract_profile?.counterparty)}（相对方）</div>` +
+        `<div style="overflow:auto"><table><thead><tr><th>#</th><th>风险</th><th>类别</th><th>标题</th><th>证据</th></tr></thead><tbody>${rows}</tbody></table></div>` +
+        `<details><summary>完整 Finding/Evidence JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
+      outputBox.hidden = false; stateBox.textContent = ' 完成';
+    } catch (error) {
+      outputBox.innerHTML = `<span class="error">${escapeHtml(error.message)}</span>`;
+      outputBox.hidden = false; stateBox.textContent = ' 失败';
+    } finally { stage5Button.disabled = false; }
+  });
+
+  stage51Button.addEventListener('click', async () => {
+    const stateBox = document.querySelector('#stage51-state');
+    const outputBox = document.querySelector('#stage51-result');
+    stage51Button.disabled = true; stateBox.textContent = ' 加载中…'; outputBox.hidden = true;
+    try {
+      const response = await fetch('/api/stage51-result');
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || JSON.stringify(body));
+      const merge = body.merge || {};
+      const classification = body.classification || {};
+      const relationCounts = classification.relation_counts || {};
+      const rows = (merge.surviving_findings || []).map((item, index) =>
+        `<tr><td>${index + 1}</td><td>${escapeHtml(item.risk_level)}</td><td>${escapeHtml(item.category)}</td><td style="white-space:normal">${escapeHtml(item.title)}</td><td>${escapeHtml(item.evidence_count)}</td></tr>`
+      ).join('');
+      outputBox.innerHTML = `<div class="metrics">` +
+        `<div class="metric"><span>Finding</span>${escapeHtml(merge.exact_merge_finding_count)} → <b class="good">${escapeHtml(merge.semantic_merge_finding_count)}</b></div>` +
+        `<div class="metric"><span>Evidence</span>${escapeHtml(merge.exact_merge_evidence_count)} → <b class="good">${escapeHtml(merge.semantic_merge_evidence_count)}</b></div>` +
+        `<div class="metric"><span>安全删除重复项</span><b class="good">${escapeHtml(merge.removed_duplicate_count)}</b></div>` +
+        `<div class="metric"><span>Evidence完整性</span><b class="good">${merge.evidence_integrity_ok ? '通过' : '失败'}</b></div>` +
+        `</div><div class="meta">候选对 ${escapeHtml(classification.candidate_count)}；模型调用 ${escapeHtml(classification.model_call_count)} 次；` +
+        `SAME_RISK ${escapeHtml(relationCounts.SAME_RISK || 0)} / RELATED_DISTINCT ${escapeHtml(relationCounts.RELATED_DISTINCT || 0)} / DISTINCT ${escapeHtml(relationCounts.DISTINCT || 0)}</div>` +
+        `<div style="overflow:auto"><table><thead><tr><th>#</th><th>风险</th><th>类别</th><th>合并后保留标题</th><th>证据</th></tr></thead><tbody>${rows}</tbody></table></div>` +
+        `<details><summary>完整阶段 5.1 对比 JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
+      outputBox.hidden = false; stateBox.textContent = ' 完成';
+    } catch (error) {
+      outputBox.innerHTML = `<span class="error">${escapeHtml(error.message)}</span>`;
+      outputBox.hidden = false; stateBox.textContent = ' 失败';
+    } finally { stage51Button.disabled = false; }
+  });
+
+  function partyContext() {
+    const partyA = document.querySelector('#party-a-name').value.trim();
+    const partyB = document.querySelector('#party-b-name').value.trim();
+    if (!partyA || !partyB) throw new Error('请填写甲方名称和乙方名称。');
+    if (partyA === partyB) throw new Error('甲方名称和乙方名称不能相同。');
+    return {
+      party_a_name: partyA,
+      party_b_name: partyB,
+      perspective: document.querySelector('#perspective').value,
+      contract_type: document.querySelector('#contract-type').value.trim() || 'AUTO',
+      review_attitude: 'NEUTRAL'
+    };
+  }
+
+  function windowSourceBlocks() {
+    const blocks = new Map();
+    for (const window of inspection?.windows || []) {
+      for (const offset of window.offset_map) {
+        const current = blocks.get(offset.block_id) || {block_id:offset.block_id, block_no:offset.block_no, pieces:[]};
+        current.pieces.push({
+          start: offset.block_char_start,
+          end: offset.block_char_end,
+          text: window.source_text.slice(offset.rendered_start, offset.rendered_end)
+        });
+        blocks.set(offset.block_id, current);
+      }
+    }
+    return [...blocks.values()].sort((a,b) => a.block_no - b.block_no).map(block => ({
+      block_id: block.block_id,
+      block_no: block.block_no,
+      text: block.pieces.sort((a,b) => a.start - b.start).map(piece => piece.text).join('')
+    }));
+  }
+
+  runButton.addEventListener('click', async () => {
+    const file = fileInput.files[0];
+    if (!file) { showError('请先选择 PDF 或 DOCX 合同。'); return; }
+    runButton.disabled = true; state.textContent = '正在解析…'; errorBox.hidden = true; result.hidden = true;
+    const form = new FormData(); form.append('file', file);
+    try {
+      const response = await fetch('/api/inspect', { method:'POST', body:form });
+      const body = await response.json();
+      if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : JSON.stringify(body));
+      render(body); state.textContent = '完成';
+    } catch (error) { showError(error.message); state.textContent = '失败'; }
+    finally { runButton.disabled = false; }
+  });
+
+  document.querySelectorAll('[data-tab]').forEach(button => button.addEventListener('click', () => {
+    document.querySelectorAll('[data-tab]').forEach(item => item.classList.remove('active'));
+    button.classList.add('active');
+    ['sections','windows','raw'].forEach(id => document.querySelector(`#${id}`).hidden = id !== button.dataset.tab);
+  }));
+
+  extractAllButton.addEventListener('click', async () => {
+    if (!inspection) return;
+    const stateBox = document.querySelector('#extract-all-state');
+    const outputBox = document.querySelector('#extract-all-result');
+    let context;
+    try { context = partyContext(); } catch (error) { showError(error.message); return; }
+    extractAllButton.disabled = true; stateBox.textContent = ' 全量抽取中…'; outputBox.hidden = true;
+    try {
+      const response = await fetch('/api/extract-all', {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({inspection, party_context:context})
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        renderPipelineFailure(outputBox, body);
+        outputBox.hidden = false; stateBox.textContent = ' 失败';
+        return;
+      }
+      const successfulAttempts = body.windows.flatMap(item => item.attempts).filter(item => item.status === 'SUCCEEDED');
+      latestWindowResult = body;
+      shadowButton.disabled = false;
+      const canonicalizationCount = successfulAttempts.reduce((sum, item) => sum + (item.value_canonicalization_count || 0), 0);
+      const ambiguousValueCount = successfulAttempts.reduce((sum, item) => sum + (item.ambiguous_value_count || 0), 0);
+      const unboundValueCount = successfulAttempts.reduce((sum, item) => sum + (item.unbound_value_count || 0), 0);
+      const windowRows = body.windows.map(item => `<div class="extraction"><b>Window ${item.sequence_no}</b> · ${item.status} · ${item.mapped_extractions.length} 项<div class="meta">${item.attempts.map(attempt => `第${attempt.attempt_no}次：${attempt.status} / ${attempt.duration_ms}ms / 值规范化 ${attempt.value_canonicalization_count || 0}（歧义 ${attempt.ambiguous_value_count || 0}，未绑定 ${attempt.unbound_value_count || 0}）`).join('；')}</div></div>`).join('');
+      const party = body.party_context || {};
+      outputBox.innerHTML = `<div class="extraction"><b>主体上下文（context_only）</b><div class="meta">甲方：${escapeHtml(party.party_a_name)}<br>乙方：${escapeHtml(party.party_b_name)}<br>立场：${escapeHtml(party.perspective)}<br>我方：${escapeHtml(party.our_party)}<br>相对方：${escapeHtml(party.counterparty)}<br>合同类型：${escapeHtml(party.contract_type)}</div></div>` +
+        `<b>总耗时 ${escapeHtml(body.duration_ms)} ms；模型调用 ${escapeHtml(body.model_call_count)} 次；局部重试 ${escapeHtml(body.retry_count)} 次；IR Hash ${escapeHtml(body.semantic_ir_hash)}</b>` +
+        `<div class="meta">Coverage：${body.coverage.valid ? '通过' : '失败'}；并发固定 10；处理 Window ${body.coverage.processed_window_count}/${body.coverage.expected_window_count}；值规范化 ${canonicalizationCount}（歧义 ${ambiguousValueCount}，未绑定 ${unboundValueCount}）</div>` +
+        windowRows + `<details><summary>合并后的 Contract IR Delta</summary><pre>${escapeHtml(JSON.stringify(body.semantic_ir, null, 2))}</pre></details>` +
+        `<details><summary>完整阶段三 JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
+      outputBox.hidden = false; stateBox.textContent = ' 完成';
+    } catch (error) {
+      outputBox.innerHTML = `<span class="error">${escapeHtml(error.message)}</span>`;
+      outputBox.hidden = false; stateBox.textContent = ' 失败';
+    } finally { extractAllButton.disabled = false; }
+  });
+
+  shadowButton.addEventListener('click', async () => {
+    const file = document.querySelector('#legacy-ir-file').files[0];
+    const stateBox = document.querySelector('#shadow-state');
+    const outputBox = document.querySelector('#shadow-result');
+    if (!latestWindowResult) { showError('请先完成 Window 全量抽取。'); return; }
+    if (!file) { showError('请选择同一合同的 Legacy IR JSON。'); return; }
+    shadowButton.disabled = true; stateBox.textContent = ' 对照中…'; outputBox.hidden = true;
+    try {
+      const parsed = JSON.parse(await file.text());
+      const legacyIr = parsed.legacy_ir || parsed.semantic_ir || parsed.contract_ir?.semantic_ir || parsed.contract_ir || parsed.data?.contract_ir?.semantic_ir || parsed.data?.contract_ir || parsed;
+      const legacyBlocks = parsed.legacy_blocks || parsed.blocks || parsed.data?.blocks || [];
+      const response = await fetch('/api/shadow-compare', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          legacy_ir:legacyIr,
+          window_ir:latestWindowResult.semantic_ir,
+          legacy_blocks:legacyBlocks,
+          window_blocks:windowSourceBlocks()
+        })
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(JSON.stringify(body));
+      const percent = value => value == null ? 'N/A' : `${(value * 100).toFixed(1)}%`;
+      const fieldRows = body.fields.filter(item => item.legacy_count || item.window_count).map(item =>
+        `<tr><td>${escapeHtml(item.field)}</td><td>${item.legacy_count}</td><td>${item.window_count}</td><td>${item.exact_anchor_match_count}</td><td>${item.overlapping_anchor_match_count}</td><td>${item.legacy_only_count}</td><td>${item.window_only_count}</td></tr>`
+      ).join('');
+      outputBox.innerHTML = `<b>Anchor 一致性：Legacy ${percent(body.legacy_anchor_agreement)}；Window ${percent(body.window_anchor_agreement)}</b>` +
+        `<div class="meta">Legacy ${body.legacy_count} 项；Window ${body.window_count} 项；精确 Anchor ${body.exact_anchor_match_count}；重叠 Anchor ${body.overlapping_anchor_match_count}；Legacy 独有 ${body.legacy_only_count}；Window 独有 ${body.window_only_count}</div>` +
+        `<div class="meta">${escapeHtml(body.interpretation)}</div>` +
+        `<div style="overflow:auto"><table><thead><tr><th>类别</th><th>Legacy</th><th>Window</th><th>精确</th><th>重叠</th><th>Legacy独有</th><th>Window独有</th></tr></thead><tbody>${fieldRows}</tbody></table></div>` +
+        `<details><summary>Legacy 独有项</summary><pre>${escapeHtml(JSON.stringify(body.legacy_only, null, 2))}</pre></details>` +
+        `<details><summary>Window 独有项</summary><pre>${escapeHtml(JSON.stringify(body.window_only, null, 2))}</pre></details>` +
+        `<details><summary>完整 Shadow JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
+      outputBox.hidden = false; stateBox.textContent = ' 完成';
+    } catch (error) {
+      outputBox.innerHTML = `<span class="error">${escapeHtml(error.message)}</span>`;
+      outputBox.hidden = false; stateBox.textContent = ' 失败';
+    } finally { shadowButton.disabled = false; }
+  });
+
+  function showError(message) { errorBox.textContent = message; errorBox.hidden = false; }
+  function renderPipelineFailure(outputBox, body) {
+    const error = body?.error || {};
+    const details = error.details || {};
+    const coverage = details.coverage || {};
+    const failedWindows = (details.windows || []).filter(item => item.status === 'FAILED');
+    const failedRows = failedWindows.map(item => `<div class="extraction"><b>Window ${escapeHtml(item.sequence_no)} · ${escapeHtml(item.window_id)}</b>` +
+      `<div class="meta">${item.attempts.map(attempt => `第${attempt.attempt_no}次：${escapeHtml(attempt.error_code || attempt.status)} / ${attempt.duration_ms}ms<br>${escapeHtml(attempt.error_message || '')}`).join('<br>')}</div></div>`).join('');
+    outputBox.innerHTML = `<b class="error">${escapeHtml(error.code || 'PIPELINE_FAILED')}：${escapeHtml(error.message || body?.detail || '抽取失败')}</b>` +
+      `<div class="meta">处理 Window ${escapeHtml(coverage.processed_window_count ?? '-')}/${escapeHtml(coverage.expected_window_count ?? '-')}；失败：${escapeHtml((coverage.failed_window_ids || []).join(', ') || '未提供')}</div>` +
+      failedRows + `<details><summary>完整错误 JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
+  }
+  function render(data) {
+    inspection = data;
+    latestWindowResult = null;
+    shadowButton.disabled = true;
+    result.hidden = false;
+    const coverage = data.coverage;
+    document.querySelector('#metrics').innerHTML = [
+      ['文件', data.filename], ['Block', data.block_count], ['Section', data.section_count],
+      ['Window', data.window_count], ['覆盖', `${coverage.covered_block_count}/${coverage.expected_block_count}`],
+      ['覆盖校验', coverage.valid ? '<b class="good">通过</b>' : '失败']
+    ].map(([name,value]) => `<div class="metric"><span>${escapeHtml(name)}</span>${name === '覆盖校验' ? value : escapeHtml(value)}</div>`).join('');
+    document.querySelector('#sections').innerHTML = data.sections.map(section => `
+      <details><summary>${section.sequence_no}. ${escapeHtml(section.section_type)} · ${escapeHtml(section.title)}</summary>
+      <div class="meta">section_id: ${escapeHtml(section.section_id)}<br>parent: ${escapeHtml(section.parent_section_id)}<br>major: ${escapeHtml(section.major_section_id)}</div>
+      <div>Blocks：<code>${escapeHtml(section.block_ids.join(', '))}</code></div>
+      <div>子款 Block：<code>${escapeHtml(section.subclause_block_ids.join(', ') || '无')}</code></div></details>`).join('');
+    document.querySelector('#windows').innerHTML = data.windows.map(window => `
+      <details><summary>Window ${window.sequence_no} · ${window.estimated_tokens} tokens（估算） · ${window.primary_block_ids.length} Blocks</summary>
+      <div class="meta">window_id: ${escapeHtml(window.window_id)}<br>clauses: ${escapeHtml(window.clause_nos.join(', ') || '无')}<br>sections: ${escapeHtml(window.section_ids.join(', '))}</div>
+      <button class="extract" data-window-index="${window.sequence_no - 1}">用真实模型抽取这个 Window</button>
+      <span class="hint" id="extract-state-${window.sequence_no - 1}"></span>
+      <div class="extract-result" id="extract-result-${window.sequence_no - 1}" hidden></div>
+      <pre>${escapeHtml(window.source_text)}</pre>
+      <details><summary>Offset Map（${window.offset_map.length}）</summary><pre>${escapeHtml(JSON.stringify(window.offset_map, null, 2))}</pre></details></details>`).join('');
+    document.querySelectorAll('[data-window-index]').forEach(button => button.addEventListener('click', () => extractWindow(Number(button.dataset.windowIndex), button)));
+    document.querySelector('#raw').textContent = JSON.stringify(data, null, 2);
+  }
+
+  async function extractWindow(index, button) {
+    const windowData = inspection?.windows?.[index];
+    if (!windowData) return;
+    const stateBox = document.querySelector(`#extract-state-${index}`);
+    const outputBox = document.querySelector(`#extract-result-${index}`);
+    let context;
+    try { context = partyContext(); } catch (error) { showError(error.message); return; }
+    button.disabled = true; stateBox.textContent = ' 模型抽取中…'; outputBox.hidden = true;
+    try {
+      const response = await fetch('/api/extract-window', {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({window:windowData, party_context:context})
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.error?.message || body?.detail || JSON.stringify(body));
+      const items = body.result.extractions;
+      const canonicalizations = body.result.value_canonicalizations || [];
+      const party = body.party_context || {};
+      outputBox.innerHTML = `<div class="meta">上下文：我方 ${escapeHtml(party.our_party)}；相对方 ${escapeHtml(party.counterparty)}；${escapeHtml(party.perspective)}</div>` +
+        `<b>耗时 ${escapeHtml(body.duration_ms)} ms，抽取 ${items.length} 项，值规范化 ${canonicalizations.length} 项</b>` +
+        items.map(item => `<div class="extraction"><b>${escapeHtml(item.extraction_class)}</b> · ${escapeHtml(item.subject || '无主体')} · ${escapeHtml(item.predicate || item.term || '')}<br>${escapeHtml(item.extraction_text)}<div class="meta">Window字符：[${item.rendered_char_start}, ${item.rendered_char_end})<br>Block溯源：${escapeHtml(item.source_spans.map(span => `${span.block_id}[${span.block_char_start},${span.block_char_end})`).join('；'))}</div></div>`).join('') +
+        (canonicalizations.length ? `<details><summary>DATE/AMOUNT 规范化记录</summary><pre>${escapeHtml(JSON.stringify(canonicalizations, null, 2))}</pre></details>` : '') +
+        `<details><summary>完整抽取 JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
+      outputBox.hidden = false; stateBox.textContent = ' 完成';
+    } catch (error) {
+      outputBox.innerHTML = `<span class="error">${escapeHtml(error.message)}</span>`;
+      outputBox.hidden = false; stateBox.textContent = ' 失败';
+    } finally { button.disabled = false; }
+  }
+</script>
+</body>
+</html>

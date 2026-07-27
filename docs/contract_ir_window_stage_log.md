@@ -1,0 +1,215 @@
+# 合同 IR Window 改造阶段记录
+
+本文件记录每个阶段的提交、自动测试、独立容器验收、测试页面结果和遗留问题。未通过当前阶段门禁时，不进入下一阶段。
+
+## 阶段 0：工作区与设计冻结
+
+- 状态：通过
+- 基线：`origin/proof@7deb798`
+- 分支：`feat/contract-ir-window-v1`
+- 本地 Worktree：`D:\contract-ir-window-v1`
+- 设计文档：`docs/contract_ir_window_refactor.md`
+- 正式协议：顶层《合同审查一期 Java–Python–Framework 联合技术方案 v1.0（冻结稿）》
+- 自动测试：`git diff --check` 通过，设计标题及五阶段清单检查通过
+- 服务器独立环境：`contract-review-dev-framework-1`、`contract-review-dev-ai-contract-1`、PostgreSQL、Redis、Java 均运行；后续使用独立 `python-ir-window-source`，不修改现有脏 `python-source`
+- 提交：`07b6c1b 文档：冻结合同IR窗口化改造方案`
+- 远程分支：`origin/feat/contract-ir-window-v1`
+
+## 阶段 1：Section Unit、Window Builder、Offset Map
+
+- 状态：通过
+- 开始前设计复读：已完整复读本设计，并复核联合冻结稿第 14～20、33～39 节；确认本阶段不修改 Java–Python 协议、Framework Stage、状态机和正式结果
+- 实现：确定性 Section Unit、层级关系、子条款识别、4K/6K Window、超长 Block 非重叠切片、Offset Map、稳定 ID、100% 字符覆盖校验
+- 代码提交：`46dfbcd 功能：实现合同IR结构窗口构建`
+- 自动测试：服务器专用镜像内合同模块 `102 passed, 10 skipped`；其中新增窗口测试 6 项、测试页面测试 3 项
+- 独立容器验收：镜像 `contract-ir-window-stage1:test`；容器 `contract-ir-window-stage1-ui`；仅绑定服务器 `127.0.0.1:19310`
+- 测试页面验收：上传《服务外包协议之补充协议0829.docx》成功，识别 93 Block、12 Section、1 Window；Window 估算 2824 tokens；覆盖 93/93，无遗漏、无重叠
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage1-window-inspection.json`
+- 遗留问题：该样本低于 4000 tokens，合理合并为单 Window；多 Window 和超长 Block 场景已由确定性测试覆盖，真实长合同留在阶段二/三继续验收
+
+## 阶段 2：模型链路、LangExtract解析和单Window对齐
+
+- 状态：通过
+- 开始前设计复读：已完整复读本设计、阶段记录，并复核联合冻结稿第 14～20、33～39 节；确认本阶段仅实现单 Window 抽取，不替换正式 `extract_contract_ir` Stage，不修改 Java–Python DTO、状态机、Attempt 和回调协议
+- 实现：Framework `LlmRuntime` 统一模型调用；`max_tokens=20000`、`temperature=0`；Framework 完整 JSON 提取；严格 Pydantic Schema；LangExtract `1.6.0` 精确对齐；Offset Map 映射回 Block `[start,end)`；禁止模糊/部分匹配；同一原文允许不同 IR 类别共享 Anchor；测试页面沿用阶段一容器和 `19310` 端口
+- 代码提交：`5c0b668 功能：接入合同Window模型抽取与精确对齐`
+- 自动测试：阶段二新增测试 `7 passed`；Framework 回归 `146 passed, 2 deselected`，排除项分别依赖未接入一次性容器的 Smoke 服务和 Redis；未排除执行时总计 `146 passed, 2 failed`，两项失败堆栈均为连接拒绝；Contract Python `102 passed, 10 skipped`
+- 独立容器验收：镜像 `contract-ir-window-stage2-framework:test`、`contract-ir-window-stage2-contract:test`；页面继续使用 `contract-ir-window-stage1-ui` 和服务器本机 `127.0.0.1:19310`；模型助手为 `contract-ir-window-stage2-framework` 和 `127.0.0.1:19320`；助手只读挂载独立环境模型配置卷，未替换任何正式或独立主 Framework 容器
+- 测试页面验收：真实合同解析仍为 93 Block、12 Section、1 Window、2824 估算 tokens、覆盖 93/93；合成 Window 通过真实 `deepseek-v4-pro` 抽取，耗时 21602 ms，生成 `OBLIGATION`、`PAYMENT` 两项；两项共享逐字原文，均精确映射到 `block-stage2-synthetic[7,30)`
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage2-window-inspection.json`、`stage2-synthetic-window.json`、`stage2-synthetic-window-extraction.json`
+- 修复记录：首次模型助手因默认租户 `default` 找不到模型，改为独立环境真实租户 `0`；首次真实模型结果因 LangExtract 批量非重叠选择拒绝同句 `OBLIGATION + PAYMENT`，改为逐 Extraction 精确对齐并增加重叠语义回归测试
+- 遗留问题：真实用户合同正文未发送到外部模型。用户虽已确认可发送，但执行环境的数据策略仍禁止向未标记可信的外部提供方导出该文件；因此该合同只完成 Parser/Window 验收，模型链路使用无真实主体和金额的合成合同验收。后续若使用一体机本地模型，可再补真实合同单 Window 对比，不影响阶段三实现
+
+## 阶段 3：并发、IR映射、合并、Coverage和局部重试
+
+- 状态：通过
+- 开始前设计复读：已完整复读本设计、阶段记录以及联合冻结稿第 14～20、33～39 节；确认本阶段只建设 Window 内部编排，不切换正式 `extract_contract_ir` Stage，不修改 Java–Python API、状态机、Attempt、回调和 `schema_version=1.0`
+- 实现：滚动 Worker 并发固定为 3；单 Window 最多执行两次；Schema、JSON、Alignment、执行异常及关键条款可疑空结果只重试当前 Window；二次失败则整个 Pipeline 失败且不返回残缺 IR；按 Block 字符区间验证 Primary Source、Section 和 Window 覆盖；将逐字 Extraction 确定性映射到现有 `ContractIrSemanticDelta`；生成 Source-grounded `anchor_id`、`item_id`、原文 Hash 和技术溯源字段；按 Window、字符位置、类别和稳定 Hash 排序；同类别、同逐字原文、同 Anchor 确定性去重；测试 API 和页面增加全 Window 并发抽取、逐 Window 耗时、重试、Coverage 和合并 IR 展示
+- Prompt 补强：真实模型首轮把付款、交付和验收只归为 `OBLIGATION`，因此明确冻结“类别不互斥、不得用 OBLIGATION 代替专属类别”；修正后同一逐字原文可同时生成 `OBLIGATION + PAYMENT/DELIVERY/ACCEPTANCE`，并继续由逐 Extraction 精确对齐支持共享 Anchor
+- 代码提交：`b187882 功能：实现合同IR窗口并发映射与合并`
+- 自动测试：阶段三相关测试 `14 passed`；测试页面及 Window 构建测试 `9 passed`；Framework 全量回归 `154 passed, 2 deselected`，两项排除仍为一次性测试容器未接入 Smoke 服务与 Redis；Contract Python 全量 `102 passed, 10 skipped`；`git diff --check` 通过
+- 独立容器验收：继续复用 `contract-ir-window-stage1-ui` 和服务器本机 `127.0.0.1:19310`，未新增测试前端；页面镜像升级为 `contract-ir-window-stage3-contract:test`；模型助手继续复用 `contract-ir-window-stage2-framework` 和 `127.0.0.1:19320`，只读挂载隔离源码及模型配置；正式容器和正式环境未修改
+- 测试页面验收：页面已出现“并发 3 抽取全部 Window 并合并 IR”；四个无敏感信息的合成 Window 使用真实 `deepseek-v4-pro` 完成抽取，总耗时 39563 ms，单 Window 耗时分别为 16444、10162、19348、29383 ms；滚动并发使总耗时显著小于四项串行总和；模型调用 4 次、局部重试 0 次、4/4 Window、4/4 Section、4/4 Block 覆盖通过；合并后得到 12 项，覆盖 DELIVERY、OBLIGATION、PAYMENT、ACCEPTANCE、DATE、LIABILITY、RIGHT、TERMINATION、DISPUTE，全部精确映射回 Block `[char_start,char_end)`
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage3-synthetic-window-pipeline.json`；重复真实模型实验为 `stage3-synthetic-window-pipeline-repeat.json`
+- 遗留问题：确定性 Mapper 对完全相同的已对齐模型输出会生成相同 IR Hash，且同类别、同原文、同 Anchor 的技术 `item_id` 不受模型 predicate/object 措辞影响；但两次真实模型调用仍会在谓词措辞、DATE/RIGHT 分类和 Extraction 边界上产生变化，因此完整 `semantic_ir_hash` 不保证跨独立模型调用一致。该质量问题必须在阶段四 Shadow Compare 中量化并决定采用更严格分类规范、结果缓存或其他稳定化措施，不能通过隐藏式语义规则伪造一致。真实用户合同仍只用于本地 Parser/Window 覆盖，没有发送给外部模型
+
+## 阶段 3.1：300 Token Window与Contract IR关闭思考
+
+- 状态：通过，等待用户在测试页面补充真实合同模型结果
+- 开始前设计复读：已重新完整复读本设计、阶段记录以及联合冻结稿第 14～20、33～39 节；确认本次只调整 Contract IR Window，不修改风险判断等后续 Stage，不修改 Java–Python API、状态机、Attempt、回调和 `schema_version=1.0`
+- 实现：Window默认软/硬上限统一为 300 估算 Token，所有 Primary Window 的 `estimated_tokens<=300`；超长条款继续按子条款、段落、表格行和句界确定性拆分；`WindowExtractionEngine`显式请求关闭思考；Framework `LlmRuntime.complete()`增加可选 `thinking_override`，仅显式覆盖且命中官方 `api.deepseek.com/deepseek-v4-*` 时发送 `thinking.type=disabled`，其他调用保持原配置和兼容字段
+- 代码提交：`4ad506d 功能：合同IR窗口固定300 Token并关闭思考`
+- 自动测试：针对性 `24 passed`；Framework 全量 `157 passed, 2 deselected`，两项排除仍为一次性容器未接入 Smoke 服务与 Redis；Contract Python 全量 `103 passed, 10 skipped`；`git diff --check`通过；隔离镜像没有安装 Ruff，未为静态检查新增依赖
+- Window验收：原《服务外包协议之补充协议0829.docx》本地解析为 93 Block、12 Section、12 Window；单 Window 为 123～296 估算 Token，超过 300 的 Window 为 0；93/93 Block 覆盖有效，无遗漏、无重叠
+- 模型验收：无敏感合成合同 4 Window、并发 3，通过真实 `deepseek-v4-pro`完成；单次模型耗时 1933～3737 ms；一个 Window 首轮 Schema 失败后局部重试成功；模型调用 5 次、局部重试 1 次；4/4 Window、4/4 Section、4/4 Block 覆盖通过；合并得到 11 项 IR，覆盖 OBLIGATION、PAYMENT、DELIVERY、ACCEPTANCE、LIABILITY、TERMINATION、DISPUTE
+- 独立容器验收：继续复用 `contract-ir-window-stage1-ui` 和服务器本机 `127.0.0.1:19310`；页面镜像仍为 `contract-ir-window-stage3-contract:test`但已重建；模型助手仍为 `contract-ir-window-stage2-framework` 和 `127.0.0.1:19320`，已修正为优先加载只读 `/workspace` 新源码并继续使用原隔离模型配置卷；正式容器和正式环境未修改
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage31-window-inspection.json`、`stage31-synthetic-window-extraction.json`、`stage3-1-window-latency-matrix.json`、`stage3-1-window-quality-probe.json`、`stage3-1-window-latency-report.md`
+- 遗留问题：执行环境不允许代理将完整用户合同发送给外部模型，因此自动验收只对真实合同完成 Parser/Window/Coverage，对真实模型使用无敏感合成合同；用户可在已更新的测试页面自行触发真实合同抽取并补充结果。精简 Prompt 虽更快但会漏掉 PAYMENT、DELIVERY、ACCEPTANCE 等专属类别，当前未采用
+
+## 阶段 3.2：确定性规范化对齐与并发10
+
+- 状态：通过
+- 开始前设计复读：已重新完整复读本设计、阶段记录，并复核联合冻结稿中 Framework 执行、Contract IR、Evidence、错误与冻结结论；确认只改变内部 Window 对齐和调度，不修改 Java–Python API、状态机、Attempt、回调、Finding/Evidence DTO 及 `schema_version=1.0`
+- 对齐实现：优先逐字符精确匹配；失败时对模型文本与 Window 原文执行 Unicode NFKC，忽略空白、换行、普通中英文标点和全半角差异，保留中文、数字、英文字母、金额和百分比等业务字符；禁止语义、拼音、同义词和编辑距离模糊匹配；匹配后通过索引映射还原原始 Block 的真实 `[char_start,char_end)` 与逐字 `quoted_text`；无法唯一定位返回 `ALIGNMENT_AMBIGUOUS`
+- 并发实现：Window Pipeline 滚动并发由 3 固定为 10，Request、Result、测试 API 和测试页面保持一致；单 Window 两次局部尝试、失败不返回残缺 IR、Coverage 和确定性合并规则不变
+- 测试页面：继续复用 `contract-ir-window-stage1-ui` 和服务器本机 `127.0.0.1:19310`；按钮及结果显示更新为并发 10；失败时直接显示失败 Window、两次 Attempt、错误码、错误信息、耗时及完整错误 JSON，不再只显示笼统 422
+- 自动测试：对齐、Pipeline 与页面针对性测试分别组成 `20 passed` 和 `3 passed`；Framework 回归 `163 passed, 2 deselected`，两项排除仍为隔离容器未接入 Smoke 服务与 Redis；Contract Python 回归 `103 passed, 10 skipped`；`git diff --check` 通过
+- 真实模型验收：12 个无敏感信息的合成 Window 使用真实 `deepseek-v4-pro`、固定并发 10 完成；总耗时 6416 ms；模型调用 13 次、局部重试 1 次；12/12 Window、Section、Block 全部成功且 Coverage 通过；合并得到 33 项 IR。唯一重试为 DATE 首轮缺少 predicate，第二轮按既有局部重试规则成功
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage32-concurrency10-request.json`、`stage32-concurrency10-response.json`
+- 代码提交：`功能：合同IR支持规范化溯源并提升至并发10`
+- 遗留问题：并发 10 已通过当前模型端点验证，但它会同时占用更多 HTTP 连接、在途响应缓冲和模型端点配额；若后续模型提供方收紧并发或一体机改为本地模型，应通过内部配置重新压测资源上限，不能直接假设 10 永远适合所有模型部署
+
+## 阶段 3.3：DATE/AMOUNT 开放值规范化与 Span 关系绑定
+
+- 状态：通过
+- 开始前设计复读：已重新完整复核本设计、阶段记录及联合冻结稿；确认 Contract IR 属于 Python 内部技术模型，重要字段必须关联真实 Source Anchor，本阶段不修改 Java–Python API、状态机、Attempt、回调、Finding/Evidence DTO 或 `schema_version=1.0`
+- 实现：不建立封闭的日期/金额子类型枚举，不按合同中的具体数字硬编码；模型已给出合法 DATE/AMOUNT 关系时原样保留；仅对缺失 `predicate` 的已对齐值执行 `TEMPORAL/NUMERIC` 基础族规范化，分别补充中性 `时间约束为/数值约束为`，并将逐字原文值写入 `object`
+- 关系绑定：只依据当前 Window 的已对齐字符区间，依次选择唯一最小包含项或同一句唯一语义项；多个候选记为 `AMBIGUOUS`、没有候选记为 `UNBOUND`，两者都不猜关系、不做语义模糊匹配，也不触发整个 Window 重试；非 DATE/AMOUNT 类别缺少 `predicate` 仍按严格 Schema 失败
+- 可观测性：Window Attempt 增加内部 `value_canonicalization_count`、`ambiguous_value_count`、`unbound_value_count`；测试页面显示总计和逐 Window 计数；这些字段只属于隔离测试结果，不进入正式 Contract IR 和跨服务协议
+- 针对性测试：`30 passed`；覆盖任意工作日、月数、百分比、金额区间、模型合法关系保留、唯一包含绑定、同句唯一绑定、歧义不猜、无候选不造主体、非值类别仍失败以及 Pipeline 不新增模型调用
+- Framework 回归：`173 passed, 1 deselected`；排除项是现有隔离容器未接 localhost Redis 的会话压缩现场测试，另一个依赖未启动 Smoke 服务的 live 文件按既有方式忽略；均与本次改动无关
+- Contract Python 回归：`103 passed, 10 skipped`
+- 真实模型验收：复用阶段 3.2 的 12 个无敏感合成 Window 请求，真实 `deepseek-v4-pro`、并发 10；总耗时 `6507 ms`，模型调用 `12` 次，局部重试 `0` 次，Coverage `12/12`，合并得到 `42` 项 IR；本轮模型直接返回完整 DATE 关系，因此规范化计数为 0，证明正常合法输出不会被覆盖，缺字段兜底路径由确定性测试覆盖
+- 隔离容器：继续复用 `contract-ir-window-stage1-ui`、`contract-ir-window-stage2-framework`、服务器本机 `127.0.0.1:19310/19320`；只重建测试 UI 镜像并重启现有隔离容器，正式容器和正式环境未修改
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage33-value-canonicalization-response.json`
+- 代码提交：`功能：规范化合同日期金额值关系`
+- 遗留边界：内部规范化只保证值实体结构完整和真实溯源，不替代后续跨 Window 关系判断；歧义/未绑定计数将在阶段 4 Shadow Compare 中继续量化
+
+### 阶段 3.4：主体上下文接线
+
+- 状态：已完成
+- 目的：补齐测试旁路与正式链路之间的主体上下文差异；正式链路原有 `resolve_parties` 不变，本阶段只把它的类型化投影注入 Window 的 `context_only`
+- 输入：`party_a_name`、`party_b_name`、`perspective`、`contract_type`、固定一期 `review_attitude=NEUTRAL`
+- 确定性派生：根据 `perspective` 计算 `our_party` 和 `counterparty`；甲乙方同名或空白由请求校验拒绝
+- 溯源边界：主体上下文只写 `context_text`，不写 `source_text` 和 Offset Map；Extractor、Alignment、Anchor 仍只能引用 `source_text`
+- 测试页面：增加甲方、乙方、立场和合同类型输入；单 Window 与全量抽取结果都显示已解析的主体上下文
+- 针对性测试：Framework Window `31 passed`；Contract 测试页面 `3 passed`
+- 真实模型验收：复用 12 个无敏感合成 Window，真实模型、并发 10；总耗时 `5814 ms`，模型调用 `12` 次，局部重试 `0`，Coverage `12/12`；注入的“甲方测试单位/乙方测试单位”在所有证据 `quoted_text` 中出现 `0` 次
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage4a-party-context-response.json`
+- 影响范围：只修改功能分支和 `contract-ir-window-*` 隔离容器；未修改正式 Pipeline、公开 DTO、OpenAPI、数据库或正式容器
+- 代码提交：`功能：为合同Window注入主体上下文`
+
+## 阶段 4：Legacy/Window Shadow Compare
+
+- 状态：通过
+- 开始前设计复读：已重新完整复读改造设计、阶段记录及联合冻结稿第 14～20、33～39 节；确认 Shadow 不覆盖 Legacy 正式结果、不修改 Java–Python API、状态机、Attempt、回调、公开 DTO 和 `schema_version=1.0`
+- 实现：新增类型化 Shadow Comparator，按相同 IR 类别先匹配完全一致 Anchor，再确定性一对一匹配同 Block 重叠区间；输出逐类别计数、一致率、Legacy 独有和 Window 独有项，并明确 `ground_truth_available=false`
+- 跨 Generation：同一文件在持久化 Generation 和测试页面重新解析后 Block ID 不同；仅以 `block_no + UTF-8原文SHA-256` 建立跨 Generation Block 对应，93/93 Block 成功对应，不使用语义或模糊文本映射
+- 真实 Shadow：同一份 `sha256:c25a655f...7fafda`、93 Block 服务外包合同；Legacy `98` 项、Window `102` 项；同类别精确 Anchor `1`、重叠 Anchor `63`、Legacy 独有 `34`、Window 独有 `38`；Legacy Anchor 一致率 `65.31%`、Window Anchor 一致率 `62.75%`
+- 差异复核：Legacy 将一般服务标准/响应时限归入 `ACCEPTANCE`，并将单纯适用法律归入 `DISPUTE`；Window 返回正式验收 `0`、争议解决 `0`，与该合同“缺少正式验收机制和争议解决条款”的风险事实一致。Legacy 的甲乙方定义由正式 `resolve_parties` Artifact 负责，不要求 Window 重复。Window 旧结果中的发票、抵扣、逾期付款语义存在于义务/权利/责任，但 `PAYMENT` 类别不完整
+- 分类修正：Prompt 明确付款、正式验收、争议解决和定义边界；增加 PAYMENT/ACCEPTANCE/DISPUTE 强指示类别完整性门，缺类时只重试当前 Window 一次，第二次仍缺则 Stage 失败，不静默接受残缺分类
+- 无敏感真实模型复测：5 个合成 Window、总耗时 `4448 ms`、模型调用 `5` 次、重试 `0`、Coverage `5/5`；价款/发票得到 `PAYMENT+AMOUNT+OBLIGATION`，抵扣和逾期付款得到 `PAYMENT`，一般服务质量未误归 `ACCEPTANCE`，仅适用法律未误归 `DISPUTE`，正式验收及法院条款分别得到 `ACCEPTANCE` 和 `DISPUTE`
+- 自动测试：Shadow/Window 定向 `36 passed`；Framework 回归 `179 passed, 1 deselected`；Contract Python 回归 `103 passed, 10 skipped`；排除项仍为隔离一次性容器未接 localhost Redis 的既有现场测试
+- 独立容器验收：复用 `contract-ir-window-stage1-ui`、`contract-ir-window-stage2-framework` 和服务器本机 `127.0.0.1:19310/19320`；正式容器和正式环境未修改
+- 测试页面验收：增加 Legacy IR JSON 导入和 Shadow 分类表，显示精确/重叠 Anchor、双方独有项和“非准确率”说明；页面健康检查通过，主体上下文控件继续存在
+- 测试 Artifact：`stage4-legacy-shadow-input.json`、`stage4-window-contract-ir.json`、`stage4-shadow-request.json`、`stage4-shadow-response.json`、`stage4-classification-response-v2.json`
+- 数据边界：真实 Shadow 使用用户已经在页面生成并提供的 Window 结果，没有由代理重新发送合同；分类修正后的真实合同复跑因外部模型数据策略被拒绝，改用无敏感合成条款验证，用户后续可在隔离测试页面主动复跑
+- 代码提交：`功能：增加合同IR新旧链路影子对照`
+- 遗留问题：Shadow 一致率不是准确率；下一阶段必须在独立环境把 Window IR 接入后续风险 Stage，验证 Finding/Evidence 是否保持或提升，才能决定测试环境切换
+
+## 阶段 5：完整Finding/Evidence回归
+
+- 状态：完整技术链路通过，质量门未通过；当前实现保留在功能分支，禁止进入删除 Legacy 的阶段 6
+- 开始前设计复读：已完整复读改造设计、阶段记录及联合冻结稿第 14～20、33～39 节；确认本阶段只在隔离环境把 Window IR 接入现有风险审查、证据验证和最终结果，不修改 Java–Python API、公开 OpenAPI、状态机、Attempt、回调、Finding/Evidence DTO 或 `schema_version=1.0`
+- 实现：Contract Python 增加隐藏且类型化的内部 Window Plan 接口，从当前 Parse Generation 的持久化 Block 构建 300 Token Window 和 Coverage；Framework 增加 `CONTRACT_IR_ENGINE=legacy|window`，默认仍为 `legacy`，只有隔离 Compose 显式选择 `window`；Window 模式对外仍只有 `extract_contract_ir` Stage，并把 `resolve_parties` 的类型化投影作为 `context_only` 注入；后续五个风险 Stage、Evidence 验证、Result Sink 和 Result Hash 保持现有协议；新增可重复执行的无敏感 PDF 端到端脚本和隔离 Compose Override
+- 兼容修复：完整运行镜像中的 Capability 使用独立挂载路径，增加只在顶层 `services` 包不存在时生效的导入回退；隔离环境不再复用缺少锁定依赖的旧基础镜像，改为通过仓库多阶段 Dockerfile 构建包含 `langextract==1.6.0` 的运行镜像；真正缺失第三方依赖时仍原样抛错，不被路径回退掩盖
+- 自动测试：Framework 最终全量回归 `182 passed, 1 deselected`；排除项仍为隔离一次性容器未接 localhost Redis 的既有会话压缩现场测试；Contract Python 最终全量回归 `104 passed, 10 skipped`；测试页面 `4 passed`；`git diff --check` 通过
+- 独立容器验收：无敏感虚构英文服务合同通过真实 `deepseek-v4-pro`、Contract Python、Framework、PostgreSQL 全链路；任务 `SUCCEEDED`，`current_stage=FINALIZING`，Attempt 1；从创建请求到最终状态约 246 秒；得到 Finding `19` 条、Evidence `27` 条，高风险 `7`、中风险 `10`、低风险 `2`；Evidence 包含 `TEXT_QUOTE=20`、`CONTEXT=1`、`ABSENCE=6`；`relationships=[]`、全部 `bounding_boxes=[]`；Result Hash 为 `sha256:3a1edff305a625aa119ea27a2bebce60b9250a72ebc9b696cdbc0853fe1005e6`
+- 测试页面验收：继续复用 `contract-ir-window-stage1-ui` 和服务器本机 `127.0.0.1:19310`；新增“读取阶段5完整审查结果”按钮，展示状态、风险计数、Finding 标题、Evidence 数量和完整 JSON；`/health` 与只读 `/api/stage5-result` 均通过；正式前端、正式容器和正式数据未修改
+- 测试 Artifact：`stage5-neutral-demo.pdf`、`stage5-window-created.json`、`stage5-window-status.json`、`stage5-window-result.json`、`stage5-window-e2e-summary.json`
+- 质量门问题：现有五个下游风险 Stage 对同一语义生成了重复 Finding。短验收期/默示验收、验收标准未定义以及 IP 归属与提前解除冲突分别出现多条语义重合结果；当前 `merge_review_stage_results` 只能按结构和 ID 确定性合并，不能满足冻结稿“重复 Finding 已合并”的结果要求。该问题不说明 Window IR 遗漏，但会造成前端重复风险、计数虚高和人工复核负担
+- 后续门禁：在明确并实现跨 Stage Finding 合并规则，并至少用多份合同验证召回不下降前，不删除旧五个 IR Agent、不切换正式环境、不进入阶段 6。语义合并会改变法律审查结果，不能用未经确认的相似度阈值静默删除
+- 代码提交：本阶段功能提交和验收记录提交见 Git 历史
+
+## 阶段 5.1：跨 Stage Finding 语义合并
+
+- 状态：通过；仅完成内部 Finding 判重质量门，不删除 Legacy、不切换正式环境
+- 开始前设计复读：已重新完整阅读本设计、阶段记录以及联合冻结稿中 Framework 执行、Finding/Evidence、错误处理和冻结结论；确认本阶段不修改 Java–Python API、OpenAPI、状态机、Attempt、回调、公开 DTO 或 `schema_version=1.0`
+- Framework 实现：在现有 `verify_evidence` 网关内部构造候选 Finding 对；通过统一 `LlmRuntime`、`temperature=0`、`thinking_override=false` 做三态分类；正常一次调用，结构或覆盖失败最多修复一次；失败返回 `SKIPPED` 并保留全部 Finding
+- Contract Python 实现：新增严格内部判重 Artifact；按 `artifact_type + source_finding_id` 重新映射命名空间 Finding；只对同类别、同立场、同双方主体且组内两两 `SAME_RISK` 的结果执行确定性合并；选择最高风险和最完整保留项，Evidence 求并集后确定性去重；跨类别关系只记录不自动合并
+- 自动测试：Framework 合同相关回归 `57 passed`；Contract Python 全量 `107 passed, 10 skipped`；阶段定向测试先后为 Framework `18 passed`、Contract `7 passed`；`git diff --check` 通过
+- 隔离容器：重建并仅重启 `contract-review-dev-framework-1` 与 `contract-review-dev-ai-contract-1`；二者健康检查均为 `healthy`；Java、正式容器和正式数据库未修改
+- 上次结果重放：复用 Run `4a5c953e970e4da4a5c679053dad5489` 已持久化的五个风险 Stage Artifact，不重新解析合同、不重新执行五个风险 Agent；候选对 `36`，真实 `deepseek-v4-pro` 非思考调用 `1` 次、格式修复 `0` 次；结果为 `SAME_RISK=9`、`RELATED_DISTINCT=22`、`DISTINCT=5`
+- 确定性合并结果：原结果 Finding `19`、Evidence `27`；语义合并后 Finding `15`、Evidence `20`，删除安全重复 Finding `4`；剩余风险计数 `HIGH=4`、`MEDIUM=9`、`LOW=2`；保留项始终选择组内最高风险，Evidence 引用与归属完整性检查为 `true`
+- 安全边界验证：模型持续返回非法结果时两次调用后进入 `SKIPPED`；跨类别即使判为 `SAME_RISK` 也不自动合并；未知 Finding 引用和伪造 pair_id 被 Contract Python 拒绝；没有进入重复组的 Finding 不删除
+- 测试 Artifact：`stage51-source-review-artifacts.json`、`stage51-consolidation-decisions.json`、`stage51-finding-merge-replay.json`
+- 测试页面对比：保留阶段 5 的修改前完整结果按钮（Finding `19`、Evidence `27`），新增独立的“阶段 5.1 合并后对比”按钮（Finding `15`、Evidence `20`、安全删除重复项 `4`），同时展示候选对及 `SAME_RISK/RELATED_DISTINCT/DISTINCT` 判定统计和合并后保留项；只读取既有 Artifact，不重跑模型；`/health` 与 `/api/stage51-result` 均返回 `200`
+- 后续：跨 Stage 重复已不再阻塞现有完整链路；下一阶段单独设计风险审查层的输入裁剪、受控判断、并发和耗时优化，不在本阶段顺带修改五个风险 Agent
+
+## 阶段 5.2：DEFINITION 唯一溯源修复
+
+- 状态：自动测试与隔离服务加载通过，等待用户使用原测试页面对真实合同复测
+- 开始前设计复读：已完整重读 Window 改造设计、阶段记录和唯一联合冻结稿；确认本次只修 Framework 内部 `DEFINITION` Prompt、Alignment 局部重试和安全诊断，不修改 Java–Python API、OpenAPI、公开 DTO、状态机、Attempt、回调或 `schema_version=1.0`
+- 现场原因：真实合同 12 个 Window 中 11 个成功，第 1 个 Window 两次返回 `ALIGNMENT_AMBIGUOUS`；模型把重复短词作为 `DEFINITION.extraction_text`，系统无法唯一绑定原文且按安全规则拒绝返回残缺 IR；该问题与 `resolve_parties` 和用户所选甲乙方立场无关
+- 实现：合同当事人及“甲方/乙方/双方/我方/相对方/本合同”等指代禁止进入 `DEFINITION`；真正定义必须引用同时包含 `term` 和 `meaning`、且能在当前 Window 唯一定位的完整连续定义性原文；歧义时第二次局部调用接收具体短文本、候选数以及“删除主体定义或扩展完整定义句”的纠错动作
+- 隐私边界：具体歧义短文本只作为同一 Window 第二次模型调用的内部反馈；公开 Attempt 错误、HTTP 错误和日志只保存类别及候选数量，不记录该合同原文
+- 自动测试：Window 抽取与 Pipeline 针对性测试 `34 passed`；Framework 回归排除未启动 Smoke 服务的既有 `test_live_multi_capability` 后 `181 passed`；未排除时为 `181 passed, 1 failed`，唯一失败是一次性测试容器无法连接独立 Smoke 服务，与本次修改无关；`git diff --check` 通过
+- 隔离环境：源码同步到 `python-ir-window-source`，复用并重启 `contract-ir-window-stage2-framework`；已确认新 Prompt 加载，`127.0.0.1:19320/openapi.json` 返回 `200`；测试页面 `127.0.0.1:19310/health` 返回 `UP`；正式容器、正式环境和 Java 未修改
+- 用户验收：继续使用原测试页面上传《服务外包协议之补充协议0829.docx》，填写规范化甲乙方名称并触发全量 Window 抽取；该真实模型结果完成后再补充本阶段最终 Artifact 和验收结论
+
+## 阶段 5.3：组合校验重试与显式值完整性
+
+- 状态：通过；原第 7 个失败 Window 已在隔离容器中使用真实模型复测成功，等待用户从原测试页面复跑全合同
+- 开始前设计复读：已完整重读唯一联合冻结稿和本阶段记录；确认只修 Framework 内部 Window 抽取质量门，不修改 Java–Python API、OpenAPI、公开 DTO、状态机、Attempt、回调或 `schema_version=1.0`
+- 现场原因：第 1 个 Window 的旧 `DEFINITION` 歧义已修复并首轮成功；新的第 7 个 Window 含两处“30个工作日”，首轮短 `DATE` 无法唯一定位，第二轮虽修好定位却漏掉 `PAYMENT`，两个独立校验依次耗尽两次局部执行机会
+- 实现：重复 `DATE/AMOUNT` 要求引用能唯一确定业务归属的完整连续条款，值保留在 `object`；任何异常重试同时附带当前 Window 的全部强指示类别，避免修复一种错误时丢失其他类别；明确时间值和金额值纳入强指示完整性门；甲乙方、已解析主体名称及“本合同/本协议”等非业务术语定义由确定性代码过滤，不再仅依赖 Prompt
+- 通用边界：没有硬编码本合同的条款号、30个工作日或30000元；时间门识别显式数字/中文数字加时间单位，金额门识别币种、元/万元/亿元、百分数；仍禁止任选重复位置和语义模糊定位，单 Window 仍最多两次调用
+- 自动测试：Window 抽取与 Pipeline `38 passed`；Framework 合同相关回归 `56 passed`；`git diff --check` 通过
+- 真实模型定向验收：只复测原失败的第 7 个 Window，不重跑全合同；总耗时 `34317 ms`，首轮 `19530 ms` 因缺少 `PAYMENT、DATE` 进入局部复查，第二轮 `14787 ms` 成功；Coverage `14/14 Block`、`1/1 Window`；最终得到 `PAYMENT=1`、`DATE=3`、`AMOUNT=1`，三项日期分别精确绑定“五个工作日”、逾期付款“30个工作日”和设备支持整改“30个工作日”，金额精确绑定“30000元”
+- 隔离环境：源码同步并重启 `contract-ir-window-stage2-framework`，继续复用 `contract-ir-window-stage1-ui`；正式容器、正式环境和 Java 未修改
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage53-window7-result.json`
+
+## 阶段 5.4：随机改写的定向对齐重试
+
+- 状态：通过；本次第 2 个失败 Window 已定向复现并修复，12 Window 全量回归返回 `HTTP 200`
+- 开始前设计复读：已再次完整读取唯一联合冻结稿和本阶段记录；确认只修 Framework 内部 Window 局部纠错，不修改 Java–Python API、OpenAPI、公开 DTO、状态机、Attempt、回调或 `schema_version=1.0`
+- 现场原因：同一份合同重复运行时失败 Window 数量和位置会变化；本次只有第 2 个 Window 失败，上次有两个其他 Window 失败。模型偶发将 `OBLIGATION.extraction_text` 改写或拼接为非连续文本；第一次严格对齐正确拒绝，但旧的第二次调用只收到通用错误码和类别，不知道上一轮具体哪段文本未对齐，因此可能重复返回同一错误
+- 实现：对一次模型响应中的所有零候选抽取项先统一预检；只把类别和失败的 `extraction_text` 作为同一 Window 第二次调用的私有反馈，明确要求改为当前 `source_text` 的完整连续原文或删除无依据项；反馈最多列出 6 项且总长度限制 1500 字符；公开 Attempt、HTTP 错误和日志仍只记录类别/数量，不泄露合同原文
+- 安全边界：没有放宽 Anchor 校验，没有使用语义相似、编辑距离、同义词、拼音或任选候选位置；第二次结果仍必须通过相同的精确/排版规范化字面匹配，否则整个 Window 和 IR Stage 继续失败；成功 Window 不进入该反馈路径
+- 自动测试：Window 抽取与 Pipeline `39 passed`；Framework 合同相关回归 `54 passed`；覆盖单条改写、一次响应多条改写、私有反馈内容、公开错误脱敏以及既有 Pipeline 重试转发；本地 `git diff --check` 通过
+- 真实模型定向验收：第 2 个 Window 首轮 `3746 ms` 返回 `WINDOW_ALIGNMENT_FAILED`，第二轮收到定向反馈后 `3866 ms` 成功；总耗时 `7612 ms`、模型调用 `2` 次、局部重试 `1` 次；Coverage `6/6 Block`、`2/2 Section`、`1/1 Window`，得到 `OBLIGATION=3`、`DATE=1`，全部保存真实 Block、字符区间和逐字 `quoted_text`
+- 全量回归：同一份 93 Block、12 Section、12 Window 合同继续使用并发 10 完整抽取，隔离 API 返回 `HTTP 200`；证明修复没有破坏其他 11 个 Window 的 Schema、Alignment、Coverage 或确定性合并
+- 隔离环境：源码同步并重启 `contract-ir-window-stage2-framework`，继续复用 `contract-ir-window-stage1-ui`；用户可直接在原测试页面复测；正式容器、正式环境和 Java 未修改
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage54-window2-result.json`
+
+## 阶段 5.5：保留已验证项的增量重试与显式值补全
+
+- 状态：通过；原先反复失败的第 11 个 Window 定向验收一次成功，12 Window 全量回归成功
+- 开始前设计复读：已再次完整读取唯一联合冻结稿、Window 改造设计和本阶段记录；确认本次只调整 Framework 内部 Window 抽取、校验与局部重试，不修改 Java–Python API、OpenAPI、公开 DTO、状态机、Attempt、回调、Finding/Evidence 或 `schema_version=1.0`
+- 现场原因：旧逻辑把单次模型响应作为不可拆分的整体；任意一个抽取项未对齐或任意强指示类别缺失时，会丢弃同一响应中已经通过严格原文校验的其他项，第二次再要求模型重新生成全部内容。因此模型修好 `RIGHT` 时可能漏掉 `DATE`，修好日期后又可能漏掉其他类别，两个独立错误会依次耗尽两次局部执行机会
+- 增量重试实现：第一次响应逐项完成 Schema、字面对齐和 Source Span 映射；已通过项保存在当前 Window 的内存态；失败反馈只包含需要修复的抽取项和仍缺失的类别；第二次只接收增量结果，并按类别、渲染区间及真实 Block 字符区间确定性合并。后一次调用不能改写或覆盖前一次已经接受的语义项；第二次终检仍覆盖累计后的完整 Window 结果
+- 显式值补全：DATE 与 AMOUNT 使用通用原文字面模式生成 Source-backed 候选，不依赖模型重复召回；只识别数字/中文数字加时间单位、币种金额及百分数等明确文本，不硬编码合同条款号或本次样本值。候选直接继承 Offset Map、真实 Block 与 `[char_start,char_end)`；Python 只补中性 `时间约束为/数值约束为`，仅在 Span 能唯一确定关联时绑定业务项，不推断法律性质、不生成风险结论
+- 失败边界：两次执行后仍有错误时仍然失败并拒绝返回残缺 IR；没有放宽 Anchor、Coverage 或唯一定位规则；不使用语义相似、编辑距离、同义词或任选位置；已验证项只存在于单次 Window 执行内存中，不改变数据库和公开协议
+- 自动测试：Window 抽取与 Pipeline 定向测试 `42 passed`；合同相关回归 `60 passed`；Framework 全量排除依赖未启动独立 Smoke 服务的既有 `test_live_multi_capability.py` 后 `189 passed`。未排除时为 `189 passed, 1 failed`，唯一失败是连接该未启动服务被拒绝，与本次修改无关；`git diff --check` 通过
+- 第 11 个 Window 定向验收：真实 `deepseek-v4-pro` 第一次即成功，耗时 `8227 ms`，Coverage `4/4 Block`、`1/1 Section`、`1/1 Window`；得到 `12` 项 IR，其中 `RIGHT=3`、`OBLIGATION=2`、`PAYMENT=1`、`DATE=1`、`AMOUNT=2`；自动补出的 `DATE=一天` 精确定位到原始 Block `[16,18)`
+- 12 Window 全量回归：并发 `10`，总耗时 `16337 ms`，模型调用 `16` 次、局部重试 `4` 次；Coverage `93/93 Block`、`12/12 Section`、`12/12 Window`，失败 Window 为零，共得到 `101` 项 IR。第 7 个 Window 第一次保留 `9` 项并只补 `PAYMENT`，最终累计 `15` 项；第 10 个 Window 第一次保留 `3` 项并只补 `PAYMENT、DISPUTE`，最终累计 `5` 项，证明增量合并链路真实生效
+- 隔离环境：源码同步并重启 `contract-ir-window-stage2-framework`，继续复用 `contract-ir-window-stage1-ui`；测试页面和端口保持不变；正式容器、正式环境、Java、main 与 proof 分支均未修改
+- 测试 Artifact：`/home/aituge/workspace/contract-review-dev/test-artifacts/stage55-window11-result.json`、`/home/aituge/workspace/contract-review-dev/test-artifacts/stage55-full-window-result.json`
+- 后续观察：第 2、6 个 Window 的首项重复候选在尚未形成可保留项时仍会触发一次完整局部重试；本阶段已消除“已有正确结果被整体丢弃”的主要失败源，后续是否继续聚合全部 Alignment 错误应以真实失败率和质量数据决定，不继续堆叠 Prompt
+
+## 正式执行链收敛：Window IR成为唯一入口
+
+- 正式 `contract.review.run` 固定执行 `parse_contract -> resolve_parties -> extract_contract_ir(Window，并发10) -> finalize_review(Direct)`。
+- 删除 `CONTRACT_IR_ENGINE` 双轨开关及其 `legacy` 默认值，避免部署漏配时静默回退。
+- 删除五个旧 IR Fragment Agent Stage、Fragment Pydantic 模型、合并器、专属 Result Sink 校验、Gateway 映射和六个旧 IR Skill。
+- Java仍消费既有正式结果结构；本次不修改正式 Finding/Evidence DTO、Result Hash或回调协议。

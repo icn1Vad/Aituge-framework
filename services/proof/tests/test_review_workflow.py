@@ -35,6 +35,7 @@ class AuditState:
     def __init__(self, status: str, conflict_status: str = "completed", summary_status: str = "completed") -> None:
         self.status = status
         self.conflict_status = conflict_status
+        self.intra_conflict_status = "completed"
         self.summary_status = summary_status
 
     def get_state(self, document_id):
@@ -51,6 +52,9 @@ class AuditState:
 
     def conflict_state(self, document_id):
         return {"status": self.conflict_status, "error_message": None}
+    def intra_conflict_state(self, document_id):
+        return {"status": self.intra_conflict_status, "error_message": None}
+
 
     def findings(self, document_id):
         return []
@@ -58,12 +62,40 @@ class AuditState:
     def conflict_findings(self, document_id):
         return []
 
+    def intra_conflict_findings(self, document_id):
+        return []
+
+
+class ReusedPolicyPipeline:
+    def ingest_policy(self, **values):
+        return {
+            "policy": {"id": "policy-1", "status": "effective"},
+            "document": {"id": "document-1"},
+            "clauses": [],
+            "reused": True,
+            "ingestion_run_id": "ingestion-2",
+        }
+
+
+class DispatchingAuditState(AuditState):
+    def __init__(self) -> None:
+        super().__init__("completed", conflict_status="pending", summary_status="pending")
+        self.dispatched_documents = []
+
+    def ensure_dispatched(self, document_id):
+        self.dispatched_documents.append(document_id)
+        return {
+            **self.get_state(document_id),
+            "policy_summary": self.summary_state(document_id),
+            "conflict_audit": self.conflict_state(document_id),
+        }
+
 
 def service_for(*, audit_enabled: bool, audit_status: str, policy_status: str = "draft") -> ProofService:
     service = ProofService.__new__(ProofService)
     service.settings = Settings(semantic_audit_enabled=audit_enabled)
     service.repository = ReviewRepository(policy_status)
-    service.semantic_audit_service = AuditState(audit_status)
+    service.policy_audit_service = AuditState(audit_status)
     return service
 
 
@@ -74,7 +106,7 @@ def test_confirm_blocks_until_enabled_semantic_audit_completes() -> None:
         service.confirm_policy("policy-1")
 
     assert exc_info.value.code == "semantic_audit_incomplete"
-    service.semantic_audit_service.status = "completed"
+    service.policy_audit_service.status = "completed"
     assert service.confirm_policy("policy-1")["status"] == "effective"
     assert service.confirm_policy("policy-1")["status"] == "effective"
 
@@ -87,7 +119,7 @@ def test_disabled_semantic_audit_allows_explicit_confirmation() -> None:
 
 def test_confirm_blocks_until_conflict_audit_completes() -> None:
     service = service_for(audit_enabled=True, audit_status="completed")
-    service.semantic_audit_service.conflict_status = "failed"
+    service.policy_audit_service.conflict_status = "failed"
 
     with pytest.raises(ProofError) as exc_info:
         service.confirm_policy("policy-1")
@@ -95,9 +127,20 @@ def test_confirm_blocks_until_conflict_audit_completes() -> None:
     assert exc_info.value.code == "conflict_audit_incomplete"
 
 
+
+def test_confirm_blocks_until_intra_conflict_audit_completes() -> None:
+    service = service_for(audit_enabled=True, audit_status="completed")
+    service.policy_audit_service.intra_conflict_status = "failed"
+
+    with pytest.raises(ProofError) as exc_info:
+        service.confirm_policy("policy-1")
+
+    assert exc_info.value.code == "intra_conflict_audit_incomplete"
+
+
 def test_audit_status_is_lightweight_and_keeps_running_after_one_stage_fails() -> None:
     service = service_for(audit_enabled=True, audit_status="running")
-    service.semantic_audit_service.summary_status = "failed"
+    service.policy_audit_service.summary_status = "failed"
 
     status = service.get_audit_status("policy-1")
 
@@ -112,6 +155,7 @@ def test_audit_status_is_lightweight_and_keeps_running_after_one_stage_fails() -
             "policy_summary": {"status": "failed", "error_message": None},
             "semantic_audit": {"status": "running", "error_message": None},
             "conflict_audit": {"status": "completed", "error_message": None},
+            "intra_conflict_audit": {"status": "completed", "error_message": None},
         },
         "counts": {
             "clause_total": 0,
@@ -125,6 +169,11 @@ def test_audit_status_is_lightweight_and_keeps_running_after_one_stage_fails() -
             "authority_conflict": 0,
             "process_conflict": 0,
             "rule_reversal": 0,
+            "intra_conflict_total": 0,
+            "intra_numeric_conflict": 0,
+            "intra_authority_conflict": 0,
+            "intra_process_conflict": 0,
+            "intra_rule_reversal": 0,
         },
     }
 
@@ -147,6 +196,18 @@ def test_upload_audit_task_view_never_contains_stage_content() -> None:
         "framework_run_id": "run-1",
         "status": "running",
     }
+
+
+def test_reused_effective_policy_redispatches_missing_summary_and_conflict_stages() -> None:
+    service = object.__new__(ProofService)
+    service.ingestion_pipeline = ReusedPolicyPipeline()
+    service.policy_audit_service = DispatchingAuditState()
+
+    result = service.ingest_policy(content=b"same", filename="same.txt")
+
+    assert service.policy_audit_service.dispatched_documents == ["document-1"]
+    assert result["reused"] is True
+    assert result["audit_task"]["status"] == "pending"
 
 
 def test_draft_document_cannot_be_indexed() -> None:

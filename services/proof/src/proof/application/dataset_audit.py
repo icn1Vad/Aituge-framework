@@ -53,9 +53,9 @@ DATASET_GROUPS = (
 
 CATEGORY_NAMES = POLICY_GROUP_NAMES
 LEVEL_NAMES = {
-    "upper": "上级制度",
-    "peer": "本级/同级制度",
-    "lower": "下级制度",
+    "upper": "一级制度",
+    "peer": "二级制度",
+    "lower": "三级制度",
 }
 
 class DatasetAuditor:

@@ -31,6 +31,8 @@ def build_policy_quality_report(
     semantic_findings: list[dict[str, Any]] | None = None,
     conflict_audit: dict[str, Any] | None = None,
     conflict_findings: list[dict[str, Any]] | None = None,
+    intra_conflict_audit: dict[str, Any] | None = None,
+    intra_conflict_findings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     occurrences = _collect_number_occurrences(clauses)
     duplicate_findings = _duplicate_number_findings(occurrences)
@@ -42,8 +44,6 @@ def build_policy_quality_report(
             "id": item["id"],
             "message": item["problem"],
             "suggestion": item["suggestion"],
-            "clause_ordinal": item.get("clause_ordinal"),
-            "clause_no_raw": item.get("clause_no_raw"),
         }
         for item in (semantic_findings or [])
     ]
@@ -70,6 +70,16 @@ def build_policy_quality_report(
         for code in CONFLICT_TYPES
     }
     conflict_counts = {"total": len(conflict_items), **conflict_counts}
+    intra_conflict_state = intra_conflict_audit or {
+        "status": conflict_state.get("status"),
+        "error_message": conflict_state.get("error_message"),
+    }
+    intra_conflict_items = list(intra_conflict_findings or [])
+    intra_conflict_counts = {
+        code: sum(item.get("conflict_type") == code for item in intra_conflict_items)
+        for code in CONFLICT_TYPES
+    }
+    intra_conflict_counts = {"total": len(intra_conflict_items), **intra_conflict_counts}
     summary_state = policy_summary or {
         "status": "disabled" if audit_state.get("status") == "disabled" else "pending",
         "error_message": None,
@@ -77,12 +87,14 @@ def build_policy_quality_report(
     }
     semantic_status = audit_state.get("status")
     conflict_status = conflict_state.get("status")
+    intra_conflict_status = intra_conflict_state.get("status")
     summary_status = summary_state.get("status")
-    if semantic_status == "failed" or conflict_status == "failed":
+    if "failed" in {semantic_status, conflict_status, intra_conflict_status}:
         report_status = "failed"
     elif (
         semantic_status in {"completed", "disabled", "not_requested"}
         and conflict_status in {"completed", "disabled", "not_requested"}
+        and intra_conflict_status in {"completed", "disabled", "not_requested"}
         and summary_status in {"completed", "failed", "disabled", "not_requested"}
     ):
         report_status = "completed"
@@ -104,8 +116,9 @@ def build_policy_quality_report(
         "can_confirm": (
             semantic_status in {"completed", "disabled", "not_requested"}
             and conflict_status in {"completed", "disabled", "not_requested"}
+            and intra_conflict_status in {"completed", "disabled", "not_requested"}
         ),
-        "has_findings": bool(findings or conflict_items),
+        "has_findings": bool(findings or conflict_items or intra_conflict_items),
         "finding_counts": counts,
         "findings": findings,
         "policy_summary": summary_state,
@@ -113,6 +126,9 @@ def build_policy_quality_report(
         "conflict_audit": conflict_state,
         "conflict_counts": conflict_counts,
         "conflict_findings": conflict_items,
+        "intra_conflict_audit": intra_conflict_state,
+        "intra_conflict_counts": intra_conflict_counts,
+        "intra_conflict_findings": intra_conflict_items,
     }
 
 

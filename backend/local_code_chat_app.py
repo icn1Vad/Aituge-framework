@@ -1,6 +1,8 @@
 """Simple chat app with the local Python runtime tool enabled."""
 
+import asyncio
 from contextlib import asynccontextmanager
+import os
 from pathlib import Path
 import sys
 
@@ -27,6 +29,9 @@ from skill import ensure_default_skill_packages
 from task_manager import create_task_manager_router
 from tool import ToolBundle
 from tool.registry import ToolManager
+from backend.revision_llm_api import create_revision_llm_router
+from contract.api.app import create_app as create_contract_app
+from contract.persistence.postgres.migrate import run_migrations as run_contract_migrations
 
 
 TASK_MEMORY_TEST_DIR = Path(__file__).resolve().parents[1] / "frontend" / "task-memory-test"
@@ -122,6 +127,13 @@ def _create_local_rag_bundle() -> ToolBundle:
 
 
 def create_app() -> FastAPI:
+    embedded_contract_app = (
+        create_contract_app()
+        if os.getenv("CONTRACT_EMBEDDED_ENABLED", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+        else None
+    )
+
     async def tool_provider(_request):
         tool_bundle = await ToolManager(
             local_python_work_dir=LOCAL_PYTHON_WORK_DIR,
@@ -137,7 +149,17 @@ def create_app() -> FastAPI:
             await ensure_default_skill_packages(session)
             await ensure_default_agent_profiles(session)
             await mount_capabilities_from_env(session=session)
-        yield
+        if embedded_contract_app is None:
+            yield
+            return
+        await asyncio.to_thread(
+            run_contract_migrations,
+            embedded_contract_app.state.settings,
+        )
+        async with embedded_contract_app.router.lifespan_context(
+            embedded_contract_app
+        ):
+            yield
 
     app = create_simple_chat_app(tool_provider=tool_provider, lifespan=lifespan)
     scheduling_options = SchedulingRuntimeOptions(
@@ -147,6 +169,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(create_scheduling_router(scheduling_options))
     app.include_router(create_task_manager_router(scheduling_options))
+    app.include_router(create_revision_llm_router())
     app.mount(
         "/task-memory-test",
         StaticFiles(directory=TASK_MEMORY_TEST_DIR, html=True),
@@ -174,5 +197,8 @@ def create_app() -> FastAPI:
             return await RAG_STORE.ingest_upload(file.filename or "upload.pdf", content)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if embedded_contract_app is not None:
+        app.mount("/", embedded_contract_app, name="contract")
 
     return app

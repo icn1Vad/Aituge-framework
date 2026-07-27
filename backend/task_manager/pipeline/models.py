@@ -7,6 +7,7 @@ STAGE_TYPES = {"agent", "direct_model", "batch", "deterministic", "gateway", "fi
 FAILURE_POLICIES = {"fail_task", "continue_with_warning", "require_human", "skip_stage"}
 OUTPUT_POLICIES = {"strict", "repair_once", "accept_raw"}
 SESSION_POLICIES = {"isolated_stage", "reuse_previous_attempt", "reuse_named_session"}
+BATCH_ITEM_FAILURE_POLICIES = {"continue", "fail_fast"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +37,7 @@ class BatchStageConfig:
     tools: tuple[str, ...] = ()
     datasets: tuple[str, ...] = ()
     item_output_schema: str | None = None
+    item_failure_policy: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +127,14 @@ def validate_pipeline_definition(definition: PipelineDefinition) -> None:
         elif stage.stage_type == "batch":
             if stage.batch_config is None:
                 raise ValueError(f"Batch stage '{stage.stage_id}' requires batch_config.")
+            if (
+                stage.batch_config.item_failure_policy is not None
+                and stage.batch_config.item_failure_policy not in BATCH_ITEM_FAILURE_POLICIES
+            ):
+                raise ValueError(
+                    f"Batch stage '{stage.stage_id}' has invalid item failure policy "
+                    f"'{stage.batch_config.item_failure_policy}'."
+                )
         elif not stage.service_handler:
             raise ValueError(f"Stage '{stage.stage_id}' requires service_handler.")
 

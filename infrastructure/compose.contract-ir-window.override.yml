@@ -1,0 +1,18 @@
+services:
+  framework:
+    build:
+      context: ../python-ir-window-source
+      dockerfile: deploy/appliance/framework.Dockerfile
+      target: runtime
+    environment:
+      PYTHONPATH: /app:/app/backend:/app/backend/single-agent:/app/services/contract/src:/opt/contract-capabilities
+    volumes:
+      - framework-data:/app/runtime
+      - framework-tmp:/app/aituge-tmp
+      - ../python-ir-window-source/services/contract/capabilities:/opt/contract-capabilities:ro
+
+  ai-contract:
+    build:
+      context: ../python-ir-window-source
+      dockerfile: services/contract/Dockerfile
+      target: runtime

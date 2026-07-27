@@ -91,6 +91,7 @@ async def register(registry, settings):
         base_url=settings.require("MOUNTED_SERVICE_BASE_URL"),
         path="/v1/search",
         input_model=SearchInput,
+        request_id_header="X-Request-Id",
     )
     registry.register_skill_package(
         package_name="mounted-policy-qa-package",
@@ -179,11 +180,20 @@ def test_mounted_capability_registers_and_runs_through_task_scheduler(tmp_path, 
 
         skill_context = await SkillManager().create_context("mounted-policy-qa-package")
         assert "# Mounted Policy QA" in skill_context.task_prompt
+        tenant_skill_context = await SkillManager(tenant_id="mounted-tenant").create_context(
+            "mounted-policy-qa-package"
+        )
+        assert "# Mounted Policy QA" in tenant_skill_context.task_prompt
+
+        request_ids = []
 
         async def fake_request(client, method, url, **kwargs):
             assert method == "POST"
             assert url == "/v1/search"
             assert kwargs["json"] == {"query": "approval", "top_k": 2}
+            request_id = kwargs["headers"]["X-Request-Id"]
+            assert request_id.startswith("tool-") and len(request_id) == 37
+            request_ids.append(request_id)
             request = httpx.Request(method, "http://mounted-service.test/v1/search")
             return httpx.Response(
                 200,
@@ -200,6 +210,14 @@ def test_mounted_capability_registers_and_runs_through_task_scheduler(tmp_path, 
         assert [tool.metadata.name for tool in bundle.tools] == ["mounted_search"]
         output = await bundle.tools[0].acall(query="approval", top_k=2)
         assert json.loads(str(output))["data"]["results"][0]["clause_ordinal"] == 2
+        await bundle.tools[0].acall(query="approval", top_k=2)
+        assert len(request_ids) == 2
+        assert request_ids[0] != request_ids[1]
+        tenant_bundle = await ToolManager(
+            local_python_work_dir=tmp_path / "tenant-code-runs",
+            tenant_id="mounted-tenant",
+        ).create_bundle(["mounted_search"])
+        assert [tool.metadata.name for tool in tenant_bundle.tools] == ["mounted_search"]
 
         async def unavailable_request(client, method, url, **kwargs):
             request = httpx.Request(method, "http://mounted-service.test/v1/search")

@@ -46,11 +46,11 @@ Policy level values:
 
 | User wording | `level_code` | `level_name` |
 |---|---|---|
-| 上级制度 | `upper` | `上级制度` |
-| 本级制度、同级制度、本级/同级制度 | `peer` | `本级/同级制度` |
-| 下级制度 | `lower` | `下级制度` |
+| 一级制度 | `upper` | `一级制度` |
+| 二级制度 | `peer` | `二级制度` |
+| 三级制度 | `lower` | `三级制度` |
 
-Use `level_code` for exact filtering. For the business order 上级 → 本级/同级 → 下级, use:
+Use `level_code` for exact filtering. For the business order 一级 → 二级 → 三级, use:
 
 ```sql
 ORDER BY CASE level_code WHEN 'upper' THEN 1 WHEN 'peer' THEN 2 WHEN 'lower' THEN 3 ELSE 4 END

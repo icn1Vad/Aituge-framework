@@ -17,7 +17,7 @@ def utc_now() -> datetime:
 class TaskEntity(SQLModel, table=True):
     __tablename__ = "tuge_task"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "user_id", "idempotency_key", name="unique_tuge_task_idempotency"),
+        UniqueConstraint("service", "tenant_id", "idempotency_key", name="unique_tuge_task_idempotency"),
     )
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True, max_length=80)
@@ -25,6 +25,8 @@ class TaskEntity(SQLModel, table=True):
     root_task_id: Optional[str] = Field(default=None, max_length=80)
     task_key: Optional[str] = Field(default=None, max_length=160)
     idempotency_key: Optional[str] = Field(default=None, max_length=160)
+    request_fingerprint: str = Field(default="", max_length=64)
+    service: str = Field(default="external", max_length=80)
     task_type: str = Field(nullable=False, max_length=120)
     status: str = Field(default="created", max_length=32)
     title: str = Field(default="", sa_column=Column(Text))
@@ -111,6 +113,7 @@ class TaskRunEntity(SQLModel, table=True):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True, max_length=80)
     task_id: str = Field(foreign_key="tuge_task.id", nullable=False, index=True, max_length=80)
     idempotency_key: Optional[str] = Field(default=None, max_length=160)
+    request_fingerprint: str = Field(default="", max_length=64)
     pipeline_id: str = Field(default="", max_length=120)
     pipeline_version: str = Field(default="", max_length=32)
     status: str = Field(default="pending", max_length=32)
@@ -121,9 +124,40 @@ class TaskRunEntity(SQLModel, table=True):
     warning_count: int = 0
     error_code: Optional[str] = Field(default=None, max_length=120)
     error_message: str = Field(default="", sa_column=Column(Text))
+    lease_owner: Optional[str] = Field(default=None, max_length=120)
+    lease_until: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    lease_version: int = 0
+    last_heartbeat_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    quota_slot_released: bool = True
+    resource_pool: str = Field(default="default", max_length=80)
+    next_event_sequence: int = 0
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     started_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
     finished_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime))
+
+
+class TaskQuotaEntity(SQLModel, table=True):
+    """Concurrency quota and fair-scheduling cursor for one tenant resource pool."""
+
+    __tablename__ = "tuge_task_quota"
+    __table_args__ = (
+        UniqueConstraint(
+            "service",
+            "tenant_id",
+            "resource_pool",
+            name="unique_tuge_task_quota_scope",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True, max_length=80)
+    service: str = Field(nullable=False, max_length=80)
+    tenant_id: str = Field(nullable=False, max_length=64)
+    resource_pool: str = Field(default="default", max_length=80)
+    max_concurrency: int = Field(default=2, ge=1)
+    running_count: int = Field(default=0, ge=0)
+    last_scheduled_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
     created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime))
     updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime))
 
@@ -206,6 +240,8 @@ _SQLITE_COLUMN_MIGRATIONS = {
         "root_task_id": "VARCHAR(80)",
         "task_key": "VARCHAR(160)",
         "idempotency_key": "VARCHAR(160)",
+        "request_fingerprint": "VARCHAR(64) NOT NULL DEFAULT ''",
+        "service": "VARCHAR(80) NOT NULL DEFAULT 'external'",
         "handler_name": "VARCHAR(80) NOT NULL DEFAULT ''",
         "definition_snapshot_json": "JSON NOT NULL DEFAULT '{}'",
         "output_schema_json": "JSON NOT NULL DEFAULT '{}'",
@@ -231,19 +267,145 @@ _SQLITE_COLUMN_MIGRATIONS = {
         "error_code": "VARCHAR(80)",
         "visible": "BOOLEAN NOT NULL DEFAULT 1",
     },
+    "tuge_task_run": {
+        "request_fingerprint": "VARCHAR(64) NOT NULL DEFAULT ''",
+        "lease_owner": "VARCHAR(120)",
+        "lease_until": "DATETIME",
+        "lease_version": "INTEGER NOT NULL DEFAULT 0",
+        "last_heartbeat_at": "DATETIME",
+        "quota_slot_released": "BOOLEAN NOT NULL DEFAULT 1",
+        "resource_pool": "VARCHAR(80) NOT NULL DEFAULT 'default'",
+        "next_event_sequence": "INTEGER NOT NULL DEFAULT 0",
+    },
 }
 
 
 async def ensure_task_manager_schema(engine: AsyncEngine) -> None:
-    """Add TaskManager v1 columns to existing local SQLite databases."""
-    if engine.url.get_backend_name() != "sqlite":
+    """Add TaskManager columns and idempotency indexes to existing databases."""
+    backend = engine.url.get_backend_name()
+    if backend not in {"sqlite", "postgresql"}:
         return
 
     async with engine.begin() as conn:
-        for table_name, migrations in _SQLITE_COLUMN_MIGRATIONS.items():
-            result = await conn.execute(text(f"PRAGMA table_info({table_name})"))
-            existing = {row[1] for row in result.fetchall()}
-            for column_name, column_sql in migrations.items():
-                if column_name in existing:
-                    continue
-                await conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}"))
+        if backend == "sqlite":
+            for table_name, migrations in _SQLITE_COLUMN_MIGRATIONS.items():
+                result = await conn.execute(text(f"PRAGMA table_info({table_name})"))
+                existing = {row[1] for row in result.fetchall()}
+                for column_name, column_sql in migrations.items():
+                    if column_name in existing:
+                        continue
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE {table_name} "
+                            f"ADD COLUMN {column_name} {column_sql}"
+                        )
+                    )
+            await conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_tuge_task_service_tenant_idempotency "
+                    "ON tuge_task (service, tenant_id, idempotency_key)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_tuge_task_event_run_sequence "
+                    "ON tuge_task_event (run_id, sequence) "
+                    "WHERE run_id IS NOT NULL"
+                )
+            )
+            await conn.execute(
+                text(
+                    "UPDATE tuge_task_run SET next_event_sequence = "
+                    "COALESCE((SELECT MAX(sequence) FROM tuge_task_event "
+                    "WHERE tuge_task_event.run_id = tuge_task_run.id), 0)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "UPDATE tuge_task_run SET quota_slot_released = 1 "
+                    "WHERE lease_owner IS NULL AND quota_slot_released = 0"
+                )
+            )
+            return
+        await conn.execute(
+            text(
+                "ALTER TABLE tuge_task "
+                "ADD COLUMN IF NOT EXISTS service VARCHAR(80) "
+                "NOT NULL DEFAULT 'external'"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE tuge_task "
+                "ADD COLUMN IF NOT EXISTS request_fingerprint VARCHAR(64) "
+                "NOT NULL DEFAULT ''"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE tuge_task_run "
+                "ADD COLUMN IF NOT EXISTS request_fingerprint VARCHAR(64) "
+                "NOT NULL DEFAULT ''"
+            )
+        )
+        for column_name, column_sql in {
+            "lease_owner": "VARCHAR(120)",
+            "lease_until": "TIMESTAMP",
+            "lease_version": "BIGINT NOT NULL DEFAULT 0",
+            "last_heartbeat_at": "TIMESTAMP",
+            "quota_slot_released": "BOOLEAN NOT NULL DEFAULT TRUE",
+            "resource_pool": "VARCHAR(80) NOT NULL DEFAULT 'default'",
+            "next_event_sequence": "INTEGER NOT NULL DEFAULT 0",
+        }.items():
+            await conn.execute(
+                text(
+                    f"ALTER TABLE tuge_task_run ADD COLUMN IF NOT EXISTS "
+                    f"{column_name} {column_sql}"
+                )
+            )
+        await conn.execute(
+            text(
+                "ALTER TABLE tuge_task "
+                "DROP CONSTRAINT IF EXISTS unique_tuge_task_idempotency"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_tuge_task_service_tenant_idempotency "
+                "ON tuge_task (service, tenant_id, idempotency_key)"
+            )
+        )
+        await conn.execute(
+            text(
+                "UPDATE tuge_task_run SET next_event_sequence = "
+                "COALESCE((SELECT MAX(sequence) FROM tuge_task_event "
+                "WHERE tuge_task_event.run_id = tuge_task_run.id), 0)"
+            )
+        )
+        await conn.execute(
+            text(
+                "UPDATE tuge_task_run SET quota_slot_released = TRUE "
+                "WHERE lease_owner IS NULL AND quota_slot_released = FALSE"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_tuge_task_run_claim "
+                "ON tuge_task_run (status, lease_until, created_at)"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_tuge_task_event_run_sequence "
+                "ON tuge_task_event (run_id, sequence) WHERE run_id IS NOT NULL"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_tuge_task_quota_scope "
+                "ON tuge_task_quota (service, tenant_id, resource_pool)"
+            )
+        )

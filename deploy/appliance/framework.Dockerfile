@@ -4,7 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     POETRY_VIRTUALENVS_CREATE=false \
-    PYTHONPATH=/app:/app/backend:/app/backend/single-agent
+    PYTHONPATH=/app:/app/backend:/app/backend/single-agent:/app/services/contract/src
 
 WORKDIR /app
 
@@ -23,6 +23,9 @@ FROM dependencies AS runtime
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
 COPY scripts/ ./scripts/
+COPY services/contract/src/ ./services/contract/src/
+COPY services/contract/capabilities/ ./services/contract/capabilities/
+COPY services/contract/scripts/ ./services/contract/scripts/
 
 RUN mkdir -p /app/localdata /app/runtime /app/backend/tool/local_runtime/artifacts
 

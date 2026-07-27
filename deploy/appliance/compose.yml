@@ -132,9 +132,27 @@ services:
     environment:
       DB_TYPE: sqlite
       SQLITE_URL: sqlite+aiosqlite:////app/runtime/local.db
-      AITUGE_CAPABILITY_ENTRIES: '["/opt/proof-capabilities/register.py","/opt/smoke-capabilities/register.py"]'
+      AITUGE_CAPABILITY_ENTRIES: '["/opt/proof-capabilities/register.py","/opt/smoke-capabilities/register.py","/opt/contract-capabilities/register.py"]'
       PROOF_SERVICE_BASE_URL: http://proof:18100
       SMOKE_SERVICE_BASE_URL: http://smoke:18200
+      CONTRACT_SERVICE_BASE_URL: http://framework:8894
+      CONTRACT_EMBEDDED_ENABLED: "true"
+      CONTRACT_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/contract_review
+      CONTRACT_DATA_DIR: /app/data/contract
+      CONTRACT_MAX_FILE_SIZE: ${CONTRACT_MAX_FILE_SIZE:-26214400}
+      CONTRACT_SCHEMA_VERSION: ${CONTRACT_SCHEMA_VERSION:-1.0}
+      CONTRACT_INTERNAL_AUTH_ENABLED: "true"
+      CONTRACT_INTERNAL_TOKEN: ${CONTRACT_INTERNAL_TOKEN}
+      FRAMEWORK_BASE_URL: http://framework:8894
+      FRAMEWORK_CONNECT_TIMEOUT_SECONDS: ${FRAMEWORK_CONNECT_TIMEOUT_SECONDS:-5}
+      FRAMEWORK_READ_TIMEOUT_SECONDS: ${FRAMEWORK_READ_TIMEOUT_SECONDS:-30}
+      FRAMEWORK_CANCEL_WAIT_SECONDS: ${FRAMEWORK_CANCEL_WAIT_SECONDS:-5}
+      FRAMEWORK_STAGE_TIMEOUT_SECONDS: ${FRAMEWORK_STAGE_TIMEOUT_SECONDS:-1800}
+      FRAMEWORK_RECOVERY_GRACE_SECONDS: ${FRAMEWORK_RECOVERY_GRACE_SECONDS:-120}
+      FRAMEWORK_RESULT_SINK_INTERNAL_TOKEN: ${FRAMEWORK_RESULT_SINK_INTERNAL_TOKEN}
+      CONTRACT_RESULT_SINK_INTERNAL_TOKEN: ${CONTRACT_RESULT_SINK_INTERNAL_TOKEN}
+      CONTRACT_MODEL_ID: ${CONTRACT_MODEL_ID:-deepseek-v4-pro}
+      CONTRACT_MOCK_MODE: "false"
       SMOKE_MODEL_ID: ${SMOKE_MODEL_ID:-deepseek-v4-pro}
       PROOF_QA_MODEL_ID: ${PROOF_QA_MODEL_ID:-deepseek-v4-pro}
       PROOF_AUDIT_MODEL_ID: ${PROOF_AUDIT_MODEL_ID:-deepseek-v4-pro}
@@ -150,12 +168,16 @@ services:
     volumes:
       - ${AI_FRAMEWORK_RUNTIME_ROOT:-../../runtime}/framework:/app/runtime
       - ${AITUGE_TMP_ROOT:-../../../tmp}:/app/aituge-tmp
+      - contract_data:/app/data/contract
       - ../../services/proof/capabilities:/opt/proof-capabilities:ro
       - ../../services/smoke/capabilities:/opt/smoke-capabilities:ro
+      - ../../services/contract/capabilities:/opt/contract-capabilities:ro
     depends_on:
       proof:
         condition: service_healthy
       smoke:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -187,3 +209,7 @@ networks:
   agent_internal:
     external: true
     name: agent-internal
+
+volumes:
+  contract_data:
+    name: ai-framework-contract-data

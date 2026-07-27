@@ -931,3 +931,13 @@ def validate_stage_payload(schema_name: str | None, payload: Any) -> dict[str, A
         return schema.model_validate(payload).model_dump(exclude_none=True)
     except ValidationError as exc:
         raise ValueError(f"Stage payload does not match schema '{schema_name}': {exc.errors()}") from exc
+
+
+def get_stage_json_schema(schema_name: str | None) -> dict[str, Any] | None:
+    """Return the registered JSON Schema used to validate one pipeline stage."""
+    if not schema_name:
+        return None
+    schema = _OUTPUT_SCHEMAS.get(schema_name) or _INPUT_SCHEMAS.get(schema_name)
+    if schema is None:
+        raise ValueError(f"Unknown stage schema '{schema_name}'.")
+    return schema.model_json_schema()

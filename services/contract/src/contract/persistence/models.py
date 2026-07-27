@@ -1,0 +1,59 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentCreate:
+    document_id: str
+    tenant_id: str
+    user_id: str
+    contract_version_id: str
+    original_name: str
+    content_type: str
+    file_type: str
+    file_size: int
+    content_hash: str
+    storage_path: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewCreate:
+    review_id: str
+    tenant_id: str
+    user_id: str
+    business_task_id: str
+    contract_version_id: str
+    document_id: str
+    idempotency_key: str
+    request_id: str
+    request_fingerprint: str
+    file_sha256: str
+    perspective: str
+    our_party_name: str | None
+    contract_type: str
+    review_attitude: str
+    schema_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class ParseGenerationReservation:
+    generation_id: str
+    generation_no: int
+    reused: bool
+    completed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentBlockCreate:
+    block_id: str
+    block_no: int
+    block_type: str
+    text: str
+    page_number: int | None
+    paragraph_no: int | None
+    char_start: int
+    char_end: int
+    heading_path: list[str]
+    metadata: dict[str, Any]

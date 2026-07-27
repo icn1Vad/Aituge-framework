@@ -12,9 +12,15 @@ from proof.application.conflict_retrieval import (
 )
 from proof.application.conflict_retrieval.service import CONFLICT_RERANK_INSTRUCTION
 from proof.application.ingestion import PolicyIngestionPipeline
+from proof.application.intra_conflict_retrieval import IntraConflictRetrievalService
 from proof.application.quality_report import build_policy_quality_report
 from proof.application.retrieval import HybridPolicyRetriever, RetrievalFilters
-from proof.application.semantic_audit import SemanticAuditService
+from proof.application.semantic_audit import (
+    FindingValidationResult,
+    IntraConflictValidationResult,
+    PolicyAuditService,
+)
+from proof.application.short_refs import ref_id_map
 from proof.application.sql_query import PolicySqlQueryService
 from proof.config import Settings
 from proof.errors import ProofError
@@ -25,6 +31,14 @@ from proof.infrastructure.retrieval import PgvectorPolicyRetriever, PostgresKeyw
 
 
 logger = logging.getLogger(__name__)
+POLICY_LEVEL_NAMES = {"upper": "一级制度", "peer": "二级制度", "lower": "三级制度"}
+POLICY_LEVEL_RANKS = {"upper": 300, "peer": 200, "lower": 100}
+INTRA_CONFLICT_TYPES = {
+    "numeric_conflict",
+    "authority_conflict",
+    "process_conflict",
+    "rule_reversal",
+}
 
 
 class ProofService:
@@ -36,8 +50,9 @@ class ProofService:
         dataset_auditor: DatasetAuditor | None = None,
         retrieval_pipeline: HybridPolicyRetriever | None = None,
         sql_query_service: PolicySqlQueryService | None = None,
-        semantic_audit_service: SemanticAuditService | None = None,
+        policy_audit_service: PolicyAuditService | None = None,
         conflict_retrieval_service: ConflictRetrievalService | None = None,
+        intra_conflict_retrieval_service: IntraConflictRetrievalService | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository or ProofRepository(settings)
@@ -57,7 +72,15 @@ class ProofService:
             rerank_candidate_limit=settings.rerank_candidate_limit,
         )
         self.sql_query_service = sql_query_service or PolicySqlQueryService(settings, self.repository)
-        self.semantic_audit_service = semantic_audit_service or SemanticAuditService(settings, self.repository)
+        self.intra_conflict_retrieval_service = intra_conflict_retrieval_service or IntraConflictRetrievalService(
+            repository=self.repository,
+            settings=self.settings,
+        )
+        self.policy_audit_service = policy_audit_service or PolicyAuditService(
+            settings,
+            self.repository,
+            intra_conflict_retrieval_service=self.intra_conflict_retrieval_service,
+        )
         self.conflict_retrieval_service = conflict_retrieval_service
 
     def health(self) -> dict[str, Any]:
@@ -100,8 +123,8 @@ class ProofService:
         )
         policy = result["policy"]
         document = result["document"]
-        if policy.get("status") == "draft":
-            audit_state = self.semantic_audit_service.ensure_dispatched(document["id"])
+        if policy.get("status") == "draft" or result.get("reused"):
+            audit_state = self.policy_audit_service.ensure_dispatched(document["id"])
         else:
             audit_state = self._semantic_state_for_policy(policy, document["id"])
         result["audit_task"] = _audit_task_view(audit_state)
@@ -220,24 +243,30 @@ class ProofService:
         semantic = self._semantic_state_for_policy(policy, document_id)
         summary = self._summary_state_for_policy(policy, document_id)
         conflict = self._conflict_state_for_policy(policy, document_id)
+        intra_conflict = self._intra_conflict_state_for_policy(policy, document_id)
         stage_states = {
             "policy_summary": _stage_status(summary),
             "semantic_audit": _stage_status(semantic),
             "conflict_audit": _stage_status(conflict),
+            "intra_conflict_audit": _stage_status(intra_conflict),
         }
         clauses = self.repository.list_clauses(policy_id, include_text=True)
         report = build_policy_quality_report(
             policy,
             clauses,
             semantic_audit=semantic,
-            semantic_findings=self.semantic_audit_service.findings(document_id),
+            semantic_findings=self.policy_audit_service.findings(document_id),
             conflict_audit=conflict,
-            conflict_findings=self.semantic_audit_service.conflict_findings(document_id),
+            conflict_findings=self.policy_audit_service.conflict_findings(document_id),
+            intra_conflict_audit=intra_conflict,
+            intra_conflict_findings=self.policy_audit_service.intra_conflict_findings(document_id),
         )
         semantic_ready = semantic.get("status") == "completed"
         conflict_ready = conflict.get("status") == "completed"
+        intra_ready = intra_conflict.get("status") == "completed"
         finding_counts = report["finding_counts"]
         conflict_counts = report["conflict_counts"]
+        intra_counts = report["intra_conflict_counts"]
         status = _combined_audit_status(*(stage["status"] for stage in stage_states.values()))
         return {
             "id": semantic.get("id"),
@@ -248,6 +277,7 @@ class ProofService:
             "can_confirm": (
                 semantic.get("status") in {"completed", "disabled", "not_requested"}
                 and conflict.get("status") in {"completed", "disabled", "not_requested"}
+                and intra_conflict.get("status") in {"completed", "disabled", "not_requested"}
             ),
             "stages": stage_states,
             "counts": {
@@ -262,6 +292,11 @@ class ProofService:
                 "authority_conflict": conflict_counts["authority_conflict"] if conflict_ready else None,
                 "process_conflict": conflict_counts["process_conflict"] if conflict_ready else None,
                 "rule_reversal": conflict_counts["rule_reversal"] if conflict_ready else None,
+                "intra_conflict_total": intra_counts["total"] if intra_ready else None,
+                "intra_numeric_conflict": intra_counts["numeric_conflict"] if intra_ready else None,
+                "intra_authority_conflict": intra_counts["authority_conflict"] if intra_ready else None,
+                "intra_process_conflict": intra_counts["process_conflict"] if intra_ready else None,
+                "intra_rule_reversal": intra_counts["rule_reversal"] if intra_ready else None,
             },
         }
 
@@ -277,7 +312,7 @@ class ProofService:
             policy,
             self.repository.list_clauses(policy_id, include_text=True),
             semantic_audit=audit,
-            semantic_findings=self.semantic_audit_service.findings(document_id),
+            semantic_findings=self.policy_audit_service.findings(document_id),
         )
         return {
             **_stage_status(audit),
@@ -288,33 +323,79 @@ class ProofService:
         policy = self.get_policy(policy_id)
         document_id = policy["document_id"]
         audit = self._conflict_state_for_policy(policy, document_id)
+        findings = self.policy_audit_service.conflict_findings(document_id)
         return {
             **_stage_status(audit),
-            "findings": self.semantic_audit_service.conflict_findings(document_id),
+            "findings": self._with_conflict_candidate_availability(findings),
         }
 
+    def get_intra_conflict_findings(self, policy_id: str) -> dict[str, Any]:
+        policy = self.get_policy(policy_id)
+        document_id = policy["document_id"]
+        audit = self._intra_conflict_state_for_policy(policy, document_id)
+        return {
+            **_stage_status(audit),
+            "findings": self.policy_audit_service.intra_conflict_findings(document_id),
+        }
+
+    def _with_conflict_candidate_availability(
+        self,
+        findings: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        candidate_ids = list(
+            dict.fromkeys(
+                str(candidate_id)
+                for finding in findings
+                for candidate_id in (finding.get("candidate_ids") or [])
+            )
+        )
+        available_ids = {
+            str(unit["id"])
+            for unit in self.repository.fetch_units(candidate_ids)
+        }
+        return [
+            {
+                **finding,
+                "unavailable_candidate_ids": [
+                    str(candidate_id)
+                    for candidate_id in (finding.get("candidate_ids") or [])
+                    if str(candidate_id) not in available_ids
+                ],
+            }
+            for finding in findings
+        ]
+
     def _summary_state_for_policy(self, policy: dict[str, Any], document_id: str) -> dict[str, Any]:
-        state = self.semantic_audit_service.summary_state(document_id)
+        state = self.policy_audit_service.summary_state(document_id)
         if policy.get("status") == "effective" and state.get("status") == "pending":
             return {"status": "not_requested", "error_message": None, "content": None}
         return state
 
     def _semantic_state_for_policy(self, policy: dict[str, Any], document_id: str) -> dict[str, Any]:
-        state = self.semantic_audit_service.get_state(document_id)
+        state = self.policy_audit_service.get_state(document_id)
         if policy.get("status") == "effective" and state.get("status") == "pending" and not state.get("id"):
             return {"status": "not_requested", "error_message": None}
         return state
 
     def _conflict_state_for_policy(self, policy: dict[str, Any], document_id: str) -> dict[str, Any]:
-        state = self.semantic_audit_service.conflict_state(document_id)
+        state = self.policy_audit_service.conflict_state(document_id)
+        if policy.get("status") == "effective" and state.get("status") == "pending":
+            return {"status": "not_requested", "error_message": None}
+        return state
+
+    def _intra_conflict_state_for_policy(
+        self, policy: dict[str, Any], document_id: str
+    ) -> dict[str, Any]:
+        state = self.policy_audit_service.intra_conflict_state(document_id)
         if policy.get("status") == "effective" and state.get("status") == "pending":
             return {"status": "not_requested", "error_message": None}
         return state
 
     def accept_semantic_audit_result(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.semantic_audit_service.accept_result(
+        return self.policy_audit_service.accept_result(
             payload,
             conflict_output_validator=self._validate_conflict_output,
+            intra_conflict_output_validator=self._validate_intra_conflict_output,
         )
 
     def confirm_policy(self, policy_id: str) -> dict[str, Any]:
@@ -328,7 +409,7 @@ class ProofService:
                 status_code=409,
             )
         if self.settings.semantic_audit_enabled:
-            audit = self.semantic_audit_service.get_state(policy["document_id"])
+            audit = self.policy_audit_service.get_state(policy["document_id"])
             if audit["status"] != "completed":
                 raise ProofError(
                     "semantic_audit_incomplete",
@@ -336,13 +417,21 @@ class ProofService:
                     status_code=409,
                     details={"semantic_audit": audit},
                 )
-            conflict = self.semantic_audit_service.conflict_state(policy["document_id"])
+            conflict = self.policy_audit_service.conflict_state(policy["document_id"])
             if conflict["status"] != "completed":
                 raise ProofError(
                     "conflict_audit_incomplete",
                     "Conflict review must complete before the policy can be confirmed.",
                     status_code=409,
                     details={"conflict_audit": conflict},
+                )
+            intra_conflict = self._intra_conflict_state_for_policy(policy, policy["document_id"])
+            if intra_conflict["status"] != "completed":
+                raise ProofError(
+                    "intra_conflict_audit_incomplete",
+                    "Intra-policy conflict review must complete before the policy can be confirmed.",
+                    status_code=409,
+                    details={"intra_conflict_audit": intra_conflict},
                 )
         confirmed = self.repository.confirm_policy(policy_id)
         if confirmed is None:
@@ -359,13 +448,20 @@ class ProofService:
         deleted = self.repository.delete_draft_policy(policy_id)
         if deleted is None:
             raise ProofError("policy_not_found", "Policy not found.", status_code=404)
-        storage_path = (self.storage_root / Path(deleted["storage_path"])).resolve()
+        self._remove_stored_file(
+            deleted["storage_path"],
+            warning="Draft %s was deleted but its source file could not be removed.",
+            resource_id=policy_id,
+        )
+        return {"id": policy_id, "status": "discarded"}
+
+    def _remove_stored_file(self, relative_path: str, *, warning: str, resource_id: str) -> None:
+        storage_path = (self.storage_root / Path(relative_path)).resolve()
         if storage_path.is_relative_to(self.storage_root) and storage_path.is_file():
             try:
                 storage_path.unlink()
             except OSError:
-                logger.warning("Draft %s was deleted but its source file could not be removed.", policy_id)
-        return {"id": policy_id, "status": "discarded"}
+                logger.warning(warning, resource_id)
 
     def list_levels(self) -> list[dict[str, Any]]:
         return self.repository.list_levels()
@@ -373,11 +469,18 @@ class ProofService:
     def list_categories(self) -> list[dict[str, Any]]:
         return self.repository.list_categories()
 
-    def create_category(self, code: str, name: str, description: str = "") -> dict[str, Any]:
-        return self.repository.create_category(code, name, description)
-
     def fetch_units(self, unit_ids: list[str]) -> list[dict[str, Any]]:
-        return [_with_citation(unit) for unit in self.repository.fetch_units(unit_ids)]
+        results = []
+        for unit in self.repository.fetch_units(unit_ids):
+            enriched = _with_citation(unit)
+            results.append(
+                {
+                    "id": enriched["id"],
+                    "text": enriched["text"],
+                    "citation": enriched["citation"],
+                }
+            )
+        return results
 
     def index_document(self, document_id: str) -> dict[str, Any]:
         policy = self.repository.get_policy_by_document_id(document_id)
@@ -478,6 +581,9 @@ class ProofService:
             )
         return self.conflict_retrieval_service.retrieve_for_unit(unit_id, top_k=top_k).to_dict()
 
+    def retrieve_intra_conflict_candidates(self, unit_id: str) -> dict[str, Any]:
+        return self.intra_conflict_retrieval_service.retrieve_for_unit(unit_id)
+
     def accept_conflict_audit_result(self, payload: dict[str, Any]) -> dict[str, Any]:
         findings = self._validate_conflict_output(payload)
         return {
@@ -486,7 +592,81 @@ class ProofService:
             "finding_count": len(findings),
         }
 
-    def _validate_conflict_output(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    def _load_conflict_candidate_ref_map(self, source_id: str) -> dict[str, str]:
+        retrieval = self.retrieve_conflict_candidates(source_id, top_k=10)
+        source = retrieval.get("source") if isinstance(retrieval, dict) else None
+        if not isinstance(source, dict) or str(source.get("id") or "") != source_id:
+            raise ProofError(
+                "conflict_retrieval_mismatch",
+                "Cross-policy retrieval source does not match the current item target.",
+                status_code=422,
+                details={"target_id": source_id},
+            )
+        try:
+            return ref_id_map(retrieval.get("results") or [])
+        except ValueError as exc:
+            raise ProofError(
+                "invalid_conflict_retrieval_refs",
+                str(exc),
+                status_code=422,
+                details={"target_id": source_id},
+            ) from exc
+
+    def _resolve_conflict_candidate_refs(
+        self,
+        source_id: str,
+        raw_refs: Any,
+        *,
+        ref_mapping: dict[str, str] | None = None,
+    ) -> list[str]:
+        if not isinstance(raw_refs, list):
+            raise ProofError(
+                "invalid_conflict_result",
+                "Cross-policy candidate_refs must be a list.",
+                status_code=422,
+            )
+        candidate_refs = [str(value).strip().upper() for value in raw_refs]
+        if (
+            not candidate_refs
+            or len(candidate_refs) > 4
+            or len(candidate_refs) != len(set(candidate_refs))
+            or any(
+                len(value) != 3
+                or not value.startswith("C")
+                or not value[1:].isdigit()
+                or not 1 <= int(value[1:]) <= 10
+                for value in candidate_refs
+            )
+        ):
+            raise ProofError(
+                "invalid_conflict_result",
+                "Candidate refs must be unique values from C01 through C10.",
+                status_code=422,
+                details={"target_id": source_id, "candidate_refs": candidate_refs},
+            )
+
+        mapping = (
+            ref_mapping
+            if ref_mapping is not None
+            else self._load_conflict_candidate_ref_map(source_id)
+        )
+        invalid_refs = [value for value in candidate_refs if value not in mapping]
+        if invalid_refs:
+            raise ProofError(
+                "conflict_candidate_ref_not_found",
+                "Candidate refs must come from the current target retrieval results.",
+                status_code=422,
+                details={
+                    "target_id": source_id,
+                    "invalid_refs": invalid_refs,
+                    "allowed_refs": sorted(mapping),
+                },
+            )
+        return [mapping[value] for value in candidate_refs]
+
+    def _validate_conflict_output(
+        self, payload: dict[str, Any]
+    ) -> FindingValidationResult:
         task_type = payload.get("task_type")
         if task_type not in {None, "proof.conflict.audit", "proof.audit.run"}:
             raise ProofError("invalid_conflict_result", "Unexpected conflict task type.", status_code=422)
@@ -510,11 +690,12 @@ class ProofService:
         validated_findings: list[dict[str, Any]] = []
         covered_source_ids: list[str] = []
         finding_keys: set[tuple[str, tuple[str, ...], str]] = set()
+        warning_count = 0
         for item in output["items"]:
-            if not isinstance(item, dict) or item.get("status") != "succeeded":
+            if not isinstance(item, dict):
                 raise ProofError(
                     "invalid_conflict_result",
-                    "Every conflict audit item must succeed.",
+                    "Each conflict audit item must be an object.",
                     status_code=422,
                 )
             target_items = ((item.get("input") or {}).get("targets") or [])
@@ -529,28 +710,58 @@ class ProofService:
                     "Each integrated conflict item must contain exactly one source Chunk.",
                     status_code=422,
                 )
-            target_ids = set(target_id_list)
+            source_id = target_id_list[0]
+            target_ids = {source_id}
             covered_source_ids.extend(target_id_list)
-            findings = (((item.get("result") or {}).get("result") or {}).get("findings") or [])
+            if item.get("status") != "succeeded":
+                warning_count += 1
+                continue
+            result_wrapper = item.get("result") or {}
+            result = result_wrapper.get("result") if isinstance(result_wrapper, dict) else None
+            findings = result.get("findings") if isinstance(result, dict) else None
             if not isinstance(findings, list):
-                raise ProofError("invalid_conflict_result", "Conflict findings must be a list.", status_code=422)
+                warning_count += 1
+                continue
+            ref_mapping = self._load_conflict_candidate_ref_map(source_id) if findings else {}
             for finding in findings:
-                normalized = self._validate_conflict_finding(
-                    finding,
-                    target_ids=target_ids,
-                    expected_document_id=expected_document_id,
-                )
+                expected_fields = {
+                    "candidate_refs", "conflict_type", "problem", "suggestion"
+                }
+                if not isinstance(finding, dict) or set(finding) != expected_fields:
+                    warning_count += 1
+                    continue
+                try:
+                    candidate_ids = self._resolve_conflict_candidate_refs(
+                        source_id, finding.get("candidate_refs"), ref_mapping=ref_mapping
+                    )
+                    normalized = self._validate_conflict_finding(
+                        {
+                            "id": source_id,
+                            "candidate_ids": candidate_ids,
+                            "conflict_type": finding.get("conflict_type"),
+                            "problem": finding.get("problem"),
+                            "suggestion": finding.get("suggestion"),
+                        },
+                        target_ids=target_ids,
+                        expected_document_id=expected_document_id,
+                    )
+                except ProofError as exc:
+                    if exc.code not in {
+                        "invalid_conflict_result",
+                        "conflict_candidate_ref_not_found",
+                        "conflict_target_mismatch",
+                    }:
+                        raise
+                    warning_count += 1
+                    continue
                 key = (
                     normalized["id"],
                     tuple(sorted(normalized["candidate_ids"])),
                     str(normalized.get("conflict_type") or ""),
                 )
                 if key in finding_keys:
-                    raise ProofError(
-                        "invalid_conflict_result",
-                        "Duplicate conflict findings are not allowed.",
-                        status_code=422,
-                    )
+                    warning_count += 1
+                    continue
                 finding_keys.add(key)
                 validated_findings.append(normalized)
         if expected_source_ids is not None and (
@@ -562,7 +773,11 @@ class ProofService:
                 "Conflict audit items did not cover every source Chunk exactly once.",
                 status_code=422,
             )
-        return validated_findings
+        return FindingValidationResult(
+            findings=validated_findings,
+            warning_count=warning_count,
+            warning_label="模型引用无法解析",
+        )
 
     def _validate_conflict_finding(
         self,
@@ -620,13 +835,375 @@ class ProofService:
         text_fields = ("problem", "suggestion")
         if any(not str(finding.get(field) or "").strip() for field in text_fields):
             raise ProofError("invalid_conflict_result", "Conflict text fields must not be blank.", status_code=422)
+        problem = str(finding["problem"]).strip()
+        source_level = str(units[source_id].get("level_code") or "")
+        cross_level_candidates = [
+            candidate_id
+            for candidate_id in candidate_ids
+            if str(units[candidate_id].get("level_code") or "")
+            and str(units[candidate_id].get("level_code") or "") != source_level
+        ]
+        if (
+            source_level in POLICY_LEVEL_RANKS
+            and cross_level_candidates
+            and "层级关系：" not in problem
+        ):
+            candidate_context = "、".join(
+                f"候选 Chunk {candidate_id} 为"
+                f"{POLICY_LEVEL_NAMES.get(str(units[candidate_id].get('level_code') or ''), '未知层级')}"
+                for candidate_id in cross_level_candidates
+            )
+            involved_levels = [
+                source_level,
+                *[
+                    str(units[candidate_id].get("level_code") or "")
+                    for candidate_id in cross_level_candidates
+                ],
+            ]
+            highest_level = max(involved_levels, key=lambda code: POLICY_LEVEL_RANKS.get(code, -1))
+            problem = (
+                f"层级关系：当前制度为{POLICY_LEVEL_NAMES[source_level]}，{candidate_context}；"
+                f"按一级制度 > 二级制度 > 三级制度，{POLICY_LEVEL_NAMES[highest_level]}优先。"
+                f"{problem}"
+            )
         return {
             "id": source_id,
             "candidate_ids": candidate_ids,
             "conflict_type": conflict_type,
+            "problem": problem,
+            "suggestion": str(finding["suggestion"]).strip(),
+        }
+
+    def _load_intra_conflict_candidate_ref_map(
+        self, source_id: str
+    ) -> dict[str, str]:
+        retrieval = self.intra_conflict_retrieval_service.retrieve_for_unit(source_id)
+        source = retrieval.get("source") if isinstance(retrieval, dict) else None
+        if not isinstance(source, dict) or str(source.get("id") or "") != source_id:
+            raise ProofError(
+                "intra_conflict_retrieval_mismatch",
+                "Intra-policy retrieval source does not match the current item target.",
+                status_code=422,
+                details={"target_id": source_id},
+            )
+        try:
+            return ref_id_map(retrieval.get("results") or [])
+        except ValueError as exc:
+            raise ProofError(
+                "invalid_intra_conflict_retrieval_refs",
+                str(exc),
+                status_code=422,
+                details={"target_id": source_id},
+            ) from exc
+
+    def _resolve_intra_conflict_candidate_refs(
+        self,
+        source_id: str,
+        raw_refs: Any,
+        *,
+        ref_mapping: dict[str, str] | None = None,
+    ) -> list[str]:
+        if not isinstance(raw_refs, list):
+            raise ProofError(
+                "invalid_intra_conflict_result",
+                "Intra-policy candidate_refs must be a list.",
+                status_code=422,
+            )
+        candidate_refs = [str(value).strip().upper() for value in raw_refs]
+        if (
+            not candidate_refs
+            or len(candidate_refs) > 4
+            or len(candidate_refs) != len(set(candidate_refs))
+            or any(
+                len(value) != 3
+                or not value.startswith("C")
+                or not value[1:].isdigit()
+                or not 1 <= int(value[1:]) <= 10
+                for value in candidate_refs
+            )
+        ):
+            raise ProofError(
+                "invalid_intra_conflict_result",
+                "Candidate refs must be unique values from C01 through C10.",
+                status_code=422,
+                details={"target_id": source_id, "candidate_refs": candidate_refs},
+            )
+        mapping = (
+            ref_mapping
+            if ref_mapping is not None
+            else self._load_intra_conflict_candidate_ref_map(source_id)
+        )
+        invalid_refs = [value for value in candidate_refs if value not in mapping]
+        if invalid_refs:
+            raise ProofError(
+                "intra_conflict_candidate_ref_not_found",
+                "Candidate refs must come from the current target retrieval results.",
+                status_code=422,
+                details={
+                    "target_id": source_id,
+                    "invalid_refs": invalid_refs,
+                    "allowed_refs": sorted(mapping),
+                },
+            )
+        return [mapping[value] for value in candidate_refs]
+
+    @staticmethod
+    def _unresolved_intra_conflict_warning(
+        *,
+        target_id: str,
+        item_index: int,
+        finding_index: int | None,
+        reason: ProofError,
+    ) -> dict[str, Any]:
+        return {
+            "code": "model_reference_unresolved",
+            "message": "模型引用无法解析",
+            "reason_code": reason.code,
+            "target_id": target_id,
+            "item_index": item_index,
+            "finding_index": finding_index,
+        }
+
+    def _normalize_intra_conflict_finding(
+        self,
+        *,
+        target_id: str,
+        finding: dict[str, Any],
+        expected_ids: set[str],
+        ordinal_by_id: dict[str, int],
+        ref_mapping: dict[str, str] | None,
+        document_id: str,
+    ) -> dict[str, Any]:
+        fields = set(finding)
+        ref_contract = {
+            "candidate_refs", "conflict_type", "problem", "suggestion"
+        }
+        legacy_contract = {
+            "id", "candidate_ids", "conflict_type", "problem", "suggestion"
+        }
+        if fields == ref_contract:
+            source_id = target_id
+            candidate_ids = self._resolve_intra_conflict_candidate_refs(
+                source_id,
+                finding.get("candidate_refs"),
+                ref_mapping=ref_mapping,
+            )
+        elif fields == legacy_contract:
+            source_id = str(finding.get("id") or "")
+            raw_candidates = finding.get("candidate_ids")
+            if source_id != target_id or not isinstance(raw_candidates, list):
+                raise ProofError(
+                    "intra_conflict_target_mismatch",
+                    "Finding id must match the current item target.",
+                    status_code=422,
+                )
+            candidate_ids = [str(value) for value in raw_candidates]
+            if (
+                not candidate_ids
+                or len(candidate_ids) > 4
+                or len(candidate_ids) != len(set(candidate_ids))
+                or source_id in candidate_ids
+            ):
+                raise ProofError(
+                    "invalid_intra_conflict_result",
+                    "Candidate IDs must be non-empty, unique, and exclude the source ID.",
+                    status_code=422,
+                )
+        else:
+            raise ProofError(
+                "invalid_intra_conflict_result",
+                "Each intra-policy conflict finding must use the ref contract.",
+                status_code=422,
+                details={"fields": sorted(fields), "target_id": target_id},
+            )
+
+        all_ids = {source_id, *candidate_ids}
+        unexpected_ids = sorted(all_ids - expected_ids)
+        if unexpected_ids:
+            raise ProofError(
+                "intra_conflict_unit_not_found",
+                "All finding Chunk IDs must belong to the audited document.",
+                status_code=422,
+                details={
+                    "document_id": document_id,
+                    "target_id": target_id,
+                    "unexpected_ids": unexpected_ids,
+                },
+            )
+        conflict_type = str(finding.get("conflict_type") or "")
+        if conflict_type not in INTRA_CONFLICT_TYPES:
+            raise ProofError(
+                "invalid_intra_conflict_result",
+                "Invalid conflict type.",
+                status_code=422,
+            )
+        if any(
+            not str(finding.get(field) or "").strip()
+            for field in ("problem", "suggestion")
+        ):
+            raise ProofError(
+                "invalid_intra_conflict_result",
+                "Conflict text fields must not be blank.",
+                status_code=422,
+            )
+        ordered_ids = sorted(
+            all_ids, key=lambda value: (ordinal_by_id[value], value)
+        )
+        return {
+            "id": ordered_ids[0],
+            "candidate_ids": ordered_ids[1:],
+            "conflict_type": conflict_type,
             "problem": str(finding["problem"]).strip(),
             "suggestion": str(finding["suggestion"]).strip(),
         }
+
+    def _validate_intra_conflict_output(
+        self, payload: dict[str, Any]
+    ) -> IntraConflictValidationResult:
+        if payload.get("task_type") not in {None, "proof.audit.run"}:
+            raise ProofError(
+                "invalid_intra_conflict_result",
+                "Unexpected intra-policy conflict task type.",
+                status_code=422,
+            )
+        audit_id = str(payload.get("audit_id") or "")
+        run = self.repository.get_audit_run(audit_id)
+        if run is None:
+            raise ProofError(
+                "audit_run_not_found", "Audit run not found.", status_code=404
+            )
+        output = payload.get("output")
+        if not isinstance(output, dict) or not isinstance(output.get("items"), list):
+            raise ProofError(
+                "invalid_intra_conflict_result",
+                "Intra-policy conflict output items are required.",
+                status_code=422,
+            )
+
+        document_id = str(run["document_id"])
+        units = self.repository.get_document_units(document_id)
+        expected_ids = {str(unit["id"]) for unit in units}
+        ordinal_by_id = {
+            str(unit["id"]): (
+                int(unit["clause_ordinal"])
+                if unit.get("clause_ordinal") is not None
+                else 2**31
+            )
+            for unit in units
+        }
+        covered_ids: list[str] = []
+        normalized_by_key: dict[
+            tuple[tuple[str, ...], str], dict[str, Any]
+        ] = {}
+        warnings: list[dict[str, Any]] = []
+
+        for item_index, item in enumerate(output["items"]):
+            if not isinstance(item, dict):
+                raise ProofError(
+                    "invalid_intra_conflict_result",
+                    "Every intra-policy conflict audit item must be an object.",
+                    status_code=422,
+                )
+            targets = ((item.get("input") or {}).get("targets") or [])
+            target_ids = [
+                str(target.get("id"))
+                for target in targets
+                if isinstance(target, dict) and target.get("id")
+            ]
+            if len(target_ids) != 1 or target_ids[0] not in expected_ids:
+                raise ProofError(
+                    "invalid_intra_conflict_result",
+                    "Each intra-policy conflict item must contain exactly one audited source Chunk.",
+                    status_code=422,
+                )
+            target_id = target_ids[0]
+            covered_ids.append(target_id)
+
+            if item.get("status") != "succeeded":
+                warnings.append(
+                    {
+                        "code": "model_reference_unresolved",
+                        "message": "模型引用无法解析",
+                        "reason_code": str(
+                            (item.get("error") or {}).get("code")
+                            or "model_item_failed"
+                        ),
+                        "target_id": target_id,
+                        "item_index": item_index,
+                        "finding_index": None,
+                    }
+                )
+                continue
+
+            findings = (
+                ((item.get("result") or {}).get("result") or {}).get("findings")
+            )
+            if not isinstance(findings, list):
+                warnings.append(
+                    {
+                        "code": "model_reference_unresolved",
+                        "message": "模型引用无法解析",
+                        "reason_code": "invalid_intra_conflict_result",
+                        "target_id": target_id,
+                        "item_index": item_index,
+                        "finding_index": None,
+                    }
+                )
+                continue
+
+            ref_mapping: dict[str, str] | None = None
+            for finding_index, finding in enumerate(findings):
+                if not isinstance(finding, dict):
+                    warnings.append(
+                        self._unresolved_intra_conflict_warning(
+                            target_id=target_id,
+                            item_index=item_index,
+                            finding_index=finding_index,
+                            reason=ProofError(
+                                "invalid_intra_conflict_result",
+                                "Each intra-policy conflict finding must be an object.",
+                                status_code=422,
+                            ),
+                        )
+                    )
+                    continue
+                if set(finding) == {
+                    "candidate_refs", "conflict_type", "problem", "suggestion"
+                } and ref_mapping is None:
+                    ref_mapping = self._load_intra_conflict_candidate_ref_map(target_id)
+                try:
+                    normalized = self._normalize_intra_conflict_finding(
+                        target_id=target_id,
+                        finding=finding,
+                        expected_ids=expected_ids,
+                        ordinal_by_id=ordinal_by_id,
+                        ref_mapping=ref_mapping,
+                        document_id=document_id,
+                    )
+                except ProofError as exc:
+                    warnings.append(
+                        self._unresolved_intra_conflict_warning(
+                            target_id=target_id,
+                            item_index=item_index,
+                            finding_index=finding_index,
+                            reason=exc,
+                        )
+                    )
+                    continue
+                all_ids = {normalized["id"], *normalized["candidate_ids"]}
+                key = (tuple(sorted(all_ids)), normalized["conflict_type"])
+                normalized_by_key.setdefault(key, normalized)
+
+        if len(covered_ids) != len(set(covered_ids)) or set(covered_ids) != expected_ids:
+            raise ProofError(
+                "invalid_intra_conflict_result",
+                "Intra-policy conflict items must cover every Chunk exactly once.",
+                status_code=422,
+            )
+        return IntraConflictValidationResult(
+            findings=list(normalized_by_key.values()),
+            warnings=warnings,
+        )
 
     def execute_sql(self, *, question: str, sql: str) -> dict[str, Any]:
         return self.sql_query_service.execute(question=question, sql=sql)

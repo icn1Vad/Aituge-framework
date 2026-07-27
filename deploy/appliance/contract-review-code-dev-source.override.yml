@@ -1,0 +1,39 @@
+services:
+  framework:
+    build:
+      context: ${CONTRACT_REVIEW_DEV_PYTHON_SOURCE}
+      dockerfile: deploy/appliance/framework.runtime.Dockerfile
+    image: contract-review-code-dev-framework:local
+    command:
+      - sh
+      - -lc
+      - |
+        set -u
+        python -m task_manager.runtime.worker &
+        worker_pid=$$!
+        python -m uvicorn backend.local_code_chat_app:create_app --factory --host 0.0.0.0 --port 8894 &
+        server_pid=$$!
+        cleanup() {
+          kill "$$server_pid" "$$worker_pid" 2>/dev/null || true
+          wait "$$server_pid" 2>/dev/null || true
+          wait "$$worker_pid" 2>/dev/null || true
+        }
+        trap cleanup TERM INT
+        wait "$$server_pid"
+        status=$$?
+        cleanup
+        trap - TERM INT
+        exit "$$status"
+    environment:
+      DB_TYPE: postgresql
+      DB_NAME: ${CONTRACT_POSTGRES_DB}
+      DB_USER: ${CONTRACT_POSTGRES_USER}
+      DB_PASSWORD: ${CONTRACT_POSTGRES_PASSWORD}
+      DB_HOST: contract-postgres
+      DB_PORT: "5432"
+      TASK_EVENT_BROKER: redis
+      TASK_EXECUTOR_LOCK_BACKEND: redis
+      TASK_WORKER_LEASE_SECONDS: "120"
+      TASK_WORKER_HEARTBEAT_SECONDS: "30"
+    volumes:
+      - ${CONTRACT_REVIEW_DEV_PYTHON_SOURCE}/services/contract/capabilities:/opt/contract-capabilities:ro

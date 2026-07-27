@@ -5,19 +5,18 @@ description: Audit policy units for evidence-grounded numeric, authority, proces
 
 # Proof Policy Conflict Audit
 
-审校 `Current item.targets` 中的制度规则是否与自身、同批规则或 `proof_conflict_search`
-返回的历史有效制度规则冲突。目标是找出在同一事项、重叠适用范围内无法同时满足的规则，
+审校 `Current item.targets` 中唯一的制度规则是否与 `proof_conflict_search`
+返回的历史有效制度规则冲突。该数组必须且只会包含一个 target。目标是找出在同一事项、重叠适用范围内无法同时满足的规则，
 不是罗列表述差异。
 
 ## 固定工作流
 
-1. 第一轮必须为每个 target 的 `unit_id` 各调用一次 `proof_conflict_search`，`top_k=10`。
-   同一轮并行发出全部调用；不得改写 query，不得重复调用同一 unit，不得调用其他工具。
-2. 读取每个工具结果中的 `source`、`results`、`retrieval_sources` 和降级信息。
+1. 使用当前 target 的 `unit_id` 调用一次 `proof_conflict_search`，`top_k=10`。
+   不得改写 query，不得重复调用，不得调用其他工具。
+2. 读取工具结果中的 `source`、`results`、`retrieval_sources` 和降级信息。
    target 自身文本与工具返回的 `source.text` 不一致时，以工具返回为准。
-   所有后续 ID 必须复制 `source.id`/`results[].id`；若 `source.unit_id_corrected=true`，不得继续
-   使用请求时误抄的 ID。
-3. 先检查 source 单条规则内部是否自相矛盾，再联合比较同批 source 和全部候选。允许检查
+   results 分别带有 `C01` 到 `C10` 短引用；后续只使用这些 ref，不得输出任何 Chunk ID。
+3. 先检查 source 单条规则内部是否自相矛盾，再联合比较 source 和全部候选。允许检查
    2 至 N 条规则共同造成的冲突，不能只做两两 NLI。
    工具已按 Judge 使用顺序返回证据；必须依次检查全部 `results`，不得只判断第一条。
 4. 只对通过“同一事项 → 适用范围可同时成立 → 约束不可同时满足”三道门的证据返回 Finding。
@@ -51,6 +50,16 @@ description: Audit policy units for evidence-grounded numeric, authority, proces
 显式的上位规则、特别规定、授权例外或新版本替代关系可以消解表面差异；但下位制度违反上位
 强制规则、超越授权、擅自降低标准或把唯一权限交给另一主体时仍属于冲突。
 
+## 制度层级优先级
+
+工具明确提供 `level_code`、`level_name`、`level_rank` 和 `level_relation`。固定映射为
+`upper`（一级制度，300）、`peer`（二级制度，200）、`lower`（三级制度，100），优先级按
+`level_rank` 从高到低。
+
+层级关系只决定已成立冲突中的规则优先级，不能代替“同一事项、适用范围重叠、无法同时满足”
+三道判断。跨层级冲突的 `problem` 应说明双方层级、优先关系和实质冲突原因；`suggestion` 应
+指向需要调整的低优先级规则。层级未知时不得自行推断。
+
 ## 四类输出
 
 ### `numeric_conflict`
@@ -75,17 +84,17 @@ description: Audit policy units for evidence-grounded numeric, authority, proces
 不是冲突。
 
 若同一证据同时落入多类，选择最直接导致无法执行的主类。只有存在彼此独立的两个冲突时才返回
-两条 Finding。三条或以上共同造成冲突时把所有相关 Chunk ID 放进同一条 `candidate_ids`，不要把
+两条 Finding。三条或以上共同造成冲突时把所有相关候选 ref 放进同一条 `candidate_refs`，不要把
 联合冲突拆成多个并不成立的两两冲突。
 
-## 抑制误报与 ID 规则
+## 抑制误报与短引用规则
 
 - 相似不等于冲突，制度更新、措辞差异、职责协作、流程补充和标准从严都要单独验证。
 - 无法证明共同适用或无法同时满足时返回无 Finding，不以“可能存在冲突”凑数。
 - 不从模型记忆补法规、组织关系、版本优先级或隐含流程。只使用 target 和工具证据。
-- `id` 必须等于被审 target 的 `id`；`candidate_ids` 写入造成冲突的其他 unit ID。若 source
-  单条内部自冲突暂不返回 Finding；当前格式要求至少一个不同的候选 Chunk ID。
-- 所有 ID 只能复制工具返回的真实 Chunk ID，不得使用 policy_id、document_id 或自行生成的编号。
+- 不要输出当前 target ID 或任何 Chunk ID；当前 source 由父服务从 item 自动绑定。
+- `candidate_refs` 写入造成冲突的候选 ref，必须逐字复制工具 results 中的 `C01` 到 `C10`。
+  若 source 单条内部自冲突暂不返回 Finding；当前格式要求至少一个不同的候选 ref。
 
 ## 输出
 
@@ -95,8 +104,7 @@ description: Audit policy units for evidence-grounded numeric, authority, proces
 {
   "findings": [
     {
-      "id": "source-unit-id",
-      "candidate_ids": ["conflicting-unit-id"],
+      "candidate_refs": ["C01"],
       "conflict_type": "numeric_conflict",
       "problem": "说明两个 Chunk 为什么约束同一事项且无法同时执行。",
       "suggestion": "明确一个可落实的统一规则、优先级或适用边界。"
