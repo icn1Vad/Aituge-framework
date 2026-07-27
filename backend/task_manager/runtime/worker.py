@@ -52,6 +52,7 @@ class TaskWorker:
                 .where(TaskRunEntity.status == "running")
                 .where(TaskRunEntity.cancel_requested.is_(False))
                 .where(TaskEntity.status == "running")
+                .where(TaskEntity.handler_name != "external")
                 .where(TaskEntity.cancel_requested.is_(False))
                 .where(TaskEntity.current_run_id == TaskRunEntity.id)
                 .where(
