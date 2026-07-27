@@ -124,6 +124,13 @@ class TaskRunEntity(SQLModel, table=True):
     warning_count: int = 0
     error_code: Optional[str] = Field(default=None, max_length=120)
     error_message: str = Field(default="", sa_column=Column(Text))
+    lease_owner: Optional[str] = Field(default=None, max_length=120)
+    lease_until: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    lease_version: int = 0
+    last_heartbeat_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    quota_slot_released: bool = False
+    resource_pool: str = Field(default="default", max_length=80)
+    next_event_sequence: int = 0
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     started_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
     finished_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
@@ -238,6 +245,13 @@ _SQLITE_COLUMN_MIGRATIONS = {
     },
     "tuge_task_run": {
         "request_fingerprint": "VARCHAR(64) NOT NULL DEFAULT ''",
+        "lease_owner": "VARCHAR(120)",
+        "lease_until": "DATETIME",
+        "lease_version": "INTEGER NOT NULL DEFAULT 0",
+        "last_heartbeat_at": "DATETIME",
+        "quota_slot_released": "BOOLEAN NOT NULL DEFAULT 0",
+        "resource_pool": "VARCHAR(80) NOT NULL DEFAULT 'default'",
+        "next_event_sequence": "INTEGER NOT NULL DEFAULT 0",
     },
 }
 
@@ -269,6 +283,21 @@ async def ensure_task_manager_schema(engine: AsyncEngine) -> None:
                     "ON tuge_task (service, tenant_id, idempotency_key)"
                 )
             )
+            await conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_tuge_task_event_run_sequence "
+                    "ON tuge_task_event (run_id, sequence) "
+                    "WHERE run_id IS NOT NULL"
+                )
+            )
+            await conn.execute(
+                text(
+                    "UPDATE tuge_task_run SET next_event_sequence = "
+                    "COALESCE((SELECT MAX(sequence) FROM tuge_task_event "
+                    "WHERE tuge_task_event.run_id = tuge_task_run.id), 0)"
+                )
+            )
             return
         await conn.execute(
             text(
@@ -291,6 +320,21 @@ async def ensure_task_manager_schema(engine: AsyncEngine) -> None:
                 "NOT NULL DEFAULT ''"
             )
         )
+        for column_name, column_sql in {
+            "lease_owner": "VARCHAR(120)",
+            "lease_until": "TIMESTAMP",
+            "lease_version": "BIGINT NOT NULL DEFAULT 0",
+            "last_heartbeat_at": "TIMESTAMP",
+            "quota_slot_released": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "resource_pool": "VARCHAR(80) NOT NULL DEFAULT 'default'",
+            "next_event_sequence": "INTEGER NOT NULL DEFAULT 0",
+        }.items():
+            await conn.execute(
+                text(
+                    f"ALTER TABLE tuge_task_run ADD COLUMN IF NOT EXISTS "
+                    f"{column_name} {column_sql}"
+                )
+            )
         await conn.execute(
             text(
                 "ALTER TABLE tuge_task "
@@ -302,5 +346,24 @@ async def ensure_task_manager_schema(engine: AsyncEngine) -> None:
                 "CREATE UNIQUE INDEX IF NOT EXISTS "
                 "uq_tuge_task_service_tenant_idempotency "
                 "ON tuge_task (service, tenant_id, idempotency_key)"
+            )
+        )
+        await conn.execute(
+            text(
+                "UPDATE tuge_task_run SET next_event_sequence = "
+                "COALESCE((SELECT MAX(sequence) FROM tuge_task_event "
+                "WHERE tuge_task_event.run_id = tuge_task_run.id), 0)"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_tuge_task_run_claim "
+                "ON tuge_task_run (status, lease_until, created_at)"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_tuge_task_event_run_sequence "
+                "ON tuge_task_event (run_id, sequence) WHERE run_id IS NOT NULL"
             )
         )
