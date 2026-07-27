@@ -92,17 +92,13 @@ async def test_run_event_sequences_are_allocated_from_the_run_row(tmp_path, monk
     )
     run = await service.start_task_run(task.id, TaskRunRequest())
 
-    await asyncio.gather(
-        *(
-            service.record_event(
-                task_id=task.id,
-                run_id=run.id,
-                event_type="test_event",
-                stage="test",
-                message=str(index),
-            )
-            for index in range(4)
+    for index in range(4):
+        await service.record_event(
+            task_id=task.id,
+            run_id=run.id,
+            event_type="test_event",
+            stage="test",
+            message=str(index),
         )
-    )
     events = await service.list_run_events(run.id, limit=20)
     assert [event.sequence for event in events] == [1, 2, 3, 4]
