@@ -52,12 +52,19 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
     runtime, gateway, context, upload, request, tenant_id = _runtime(tmp_path)
     try:
         created = runtime.create_review(upload=upload, request=request, context=context)
+        assert created.status == ReviewStatus.CREATED
+        assert runtime.dispatch_pending_attempts() == 1
+        created = runtime.get_status(created.review_id, context=context)
         assert created.status == ReviewStatus.RUNNING
         assert created.framework_attempt_no == 1
 
         repository = ContractRepository(runtime.settings)
         callback_repository = FrameworkCallbackRepository(runtime.settings)
-        internal = ContractInternalService(repository, callback_repository)
+        internal = ContractInternalService(
+            repository,
+            callback_repository,
+            document_processor=runtime.document_processor,
+        )
         callbacks = FrameworkCallbackService(callback_repository, internal)
         task_input = FrameworkTaskInput(
             schema_version="1.0",
@@ -433,6 +440,8 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
             }
         )
         second = runtime.create_review(upload=upload, request=second_request, context=second_context)
+        assert runtime.dispatch_pending_attempts() == 1
+        second = runtime.get_status(second.review_id, context=second_context)
         assert second.document_id == created.document_id
         second_task_input = FrameworkTaskInput(
             schema_version="1.0",
@@ -544,7 +553,7 @@ def _stage_callback(created, sequence: int, stage_id: str, result):
             "framework_task_id": created.framework_task_id,
             "framework_run_id": created.framework_run_id,
             "event_sequence": sequence,
-            "callback_id": f"callback-{sequence}",
+            "callback_id": f"callback-{created.review_id}-{sequence}",
             "callback_type": "STAGE_RESULT",
             "stage_id": stage_id,
             "result": value,
@@ -562,7 +571,7 @@ def _terminal_callback(created, sequence: int, callback_type: str, *, error=None
             "framework_task_id": created.framework_task_id,
             "framework_run_id": created.framework_run_id,
             "event_sequence": sequence,
-            "callback_id": f"callback-{sequence}",
+            "callback_id": f"callback-{created.review_id}-{sequence}",
             "callback_type": callback_type,
             "stage_id": None,
             "result": None,

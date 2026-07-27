@@ -230,10 +230,10 @@ class FrameworkCallbackRepository:
             return finished
 
     def get_stage_execution_context(self, request: StageExecuteRequest) -> dict[str, Any]:
-        """Return the active execution context, claiming a matching CREATING Attempt if needed.
+        """Return the active execution context, claiming a matching pending Attempt if needed.
 
         Framework starts a Run before its create response reaches Contract Python.  The
-        first gateway stage can therefore arrive while the new Attempt is still CREATING.
+        first gateway stage can therefore arrive while the Dispatcher still owns the lease.
         Binding the exact Task/Run mapping here closes that race without performing any
         Framework HTTP request while the review row is locked.
         """
@@ -276,7 +276,8 @@ class FrameworkCallbackRepository:
                 can_claim = (
                     review["status"] in {"CREATED", "RUNNING"}
                     and not review["cancel_requested"]
-                    and attempt["status"] == "CREATING"
+                    and attempt["execution_status"] == "PENDING"
+                    and attempt["dispatch_status"] in {"CLAIMED", "SENT"}
                     and not attempt["is_active"]
                     and mapping_available
                     and (review["active_attempt_no"] or 0) < request.attempt_no
@@ -310,7 +311,8 @@ class FrameworkCallbackRepository:
                     """
                     UPDATE contract_framework_attempt
                     SET framework_task_id = %s, framework_run_id = %s,
-                        status = 'RUNNING', current_stage = %s,
+                        dispatch_status = 'SENT',
+                        status = 'RUNNING', execution_status = 'RUNNING', current_stage = %s,
                         last_activity_at = now(), started_at = COALESCE(started_at, now()),
                         is_active = true
                     WHERE review_id = %s AND attempt_no = %s
@@ -506,7 +508,8 @@ class FrameworkCallbackRepository:
                 conn.execute(
                     """
                     UPDATE contract_framework_attempt
-                    SET status = 'SUCCEEDED', last_event_sequence = GREATEST(last_event_sequence, %s),
+                    SET status = 'SUCCEEDED', execution_status = 'SUCCEEDED',
+                        last_event_sequence = GREATEST(last_event_sequence, %s),
                         last_activity_at = now(), finished_at = now()
                     WHERE review_id = %s AND attempt_no = %s
                     """,
@@ -520,7 +523,8 @@ class FrameworkCallbackRepository:
                 conn.execute(
                     """
                     UPDATE contract_framework_attempt
-                    SET status = 'FAILED', current_stage = COALESCE(%s, current_stage),
+                    SET status = 'FAILED', execution_status = 'FAILED',
+                        current_stage = COALESCE(%s, current_stage),
                         last_event_sequence = GREATEST(last_event_sequence, %s),
                         last_activity_at = now(), finished_at = now(), is_active = false
                     WHERE review_id = %s AND attempt_no = %s

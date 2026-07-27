@@ -258,7 +258,7 @@ class ContractRepository:
                 INSERT INTO contract_parse_generation (
                   id, tenant_id, document_id, generation_no, content_hash,
                   parser_version, status, started_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, 'RUNNING', now())
+                ) VALUES (%s, %s, %s, %s, %s, %s, 'CREATED', NULL)
                 """,
                 (
                     generation_id,
@@ -493,7 +493,7 @@ class ContractRepository:
                 JOIN contract_document document ON document.id = generation.document_id
                 WHERE generation.document_id = %s
                   AND generation.tenant_id = %s
-                  AND generation.status IN ('RUNNING', 'SUCCEEDED')
+                  AND generation.status IN ('CREATED', 'RUNNING', 'SUCCEEDED')
                 ORDER BY
                   CASE WHEN document.active_generation_id = generation.id THEN 0 ELSE 1 END,
                   generation.generation_no DESC

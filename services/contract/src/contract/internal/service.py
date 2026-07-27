@@ -5,6 +5,7 @@ from collections import Counter
 from typing import Any
 
 from contract.api.models import ContractProfile, Evidence, Finding, ReviewResultData, ReviewSummary
+from contract.application.document_processing import ContractDocumentProcessor
 from contract.application.result_hash import compute_result_hash
 from contract.callback.models import (
     CommercialTermsStageResult,
@@ -66,15 +67,33 @@ class ContractInternalService:
         self,
         repository: ContractRepository,
         callback_repository: FrameworkCallbackRepository,
+        document_processor: ContractDocumentProcessor | None = None,
         risk_plan_builder: RiskReviewPlanBuilder | None = None,
     ) -> None:
         self.repository = repository
         self.callback_repository = callback_repository
+        self.document_processor = document_processor
         self.risk_plan_builder = risk_plan_builder or RiskReviewPlanBuilder()
 
     def execute_stage(self, request: StageExecuteRequest):
         context = self._execution_context(request)
         if request.stage_id == "parse_contract":
+            generation = context.get("generation") or self.repository.get_current_generation(
+                context["document_id"],
+                tenant_id=context["tenant_id"],
+            )
+            if (
+                self.document_processor is not None
+                and generation is not None
+                and generation["status"] != "SUCCEEDED"
+            ):
+                generation = self.document_processor.parse_generation(
+                    generation_id=generation["id"],
+                    document_id=context["document_id"],
+                    tenant_id=context["tenant_id"],
+                    user_id=context["user_id"],
+                )
+            context["generation"] = generation
             generation = self._generation(context)
             return ParseContractStageResult(
                 result_type="PARSE_CONTRACT_STAGE_V1",
