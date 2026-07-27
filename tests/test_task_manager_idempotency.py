@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import httpx
 
 import pytest
 
+from backend.local_code_chat_app import create_app
 from db.db_context import create_db_session, init_db, reset_engine_for_test
 from scheduling.scheduler import SchedulingRuntimeOptions
 from task_manager.idempotency import IdempotencyConflictError
@@ -136,5 +138,66 @@ def test_run_idempotency_returns_original_run_and_rejects_changed_request(
             )
 
     from sqlmodel import select
+
+def test_http_idempotency_conflict_is_409_and_service_scoped(tmp_path, monkeypatch):
+    async def run():
+        monkeypatch.setenv("DB_TYPE", "sqlite")
+        monkeypatch.setenv(
+            "SQLITE_URL",
+            f"sqlite+aiosqlite:///{tmp_path / 'http-idempotency.db'}",
+        )
+        reset_engine_for_test()
+        await init_db()
+        app = create_app()
+        headers = {
+            "X-User-Id": "api-user",
+            "X-Tenant-Id": "tenant-1",
+            "X-Internal-Service": "ai-contract",
+            "Idempotency-Key": "api-task-key",
+        }
+        payload = {
+            "task_type": "pipeline.demo",
+            "title": "API idempotency",
+            "input": {"goal": "Check API idempotency"},
+            "client_context": {"source": "idempotency-test"},
+        }
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            first = await client.post("/task-manager/tasks", headers=headers, json=payload)
+            assert first.status_code == 200
+            first_id = first.json()["task"]["id"]
+
+            duplicate = await client.post(
+                "/task-manager/tasks",
+                headers=headers,
+                json=payload,
+            )
+            assert duplicate.status_code == 200
+            assert duplicate.json()["task"]["id"] == first_id
+
+            conflict = await client.post(
+                "/task-manager/tasks",
+                headers=headers,
+                json={**payload, "title": "Changed request"},
+            )
+            assert conflict.status_code == 409
+            assert conflict.json()["detail"]["code"] == "IDEMPOTENCY_CONFLICT"
+
+            other_service_headers = {
+                **headers,
+                "X-Internal-Service": "ai-policy",
+            }
+            other_service = await client.post(
+                "/task-manager/tasks",
+                headers=other_service_headers,
+                json=payload,
+            )
+            assert other_service.status_code == 200
+            assert other_service.json()["task"]["id"] != first_id
+
+    asyncio.run(run())
+
 
     asyncio.run(run())
