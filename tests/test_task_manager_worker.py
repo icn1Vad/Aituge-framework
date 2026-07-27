@@ -7,7 +7,7 @@ from sqlmodel import select
 
 from db.db_context import create_db_session, init_db, reset_engine_for_test
 from scheduling.scheduler import SchedulingRuntimeOptions
-from task_manager.models import TaskRunEntity, utc_now
+from task_manager.models import TaskEntity, TaskRunEntity, utc_now
 from task_manager.runtime.worker import TaskWorker
 from task_manager.schemas import TaskCreateRequest, TaskRunRequest
 from task_manager.service import TaskManagerService
@@ -102,3 +102,37 @@ async def test_run_event_sequences_are_allocated_from_the_run_row(tmp_path, monk
         )
     events = await service.list_run_events(run.id, limit=20)
     assert [event.sequence for event in events] == [1, 2, 3, 4]
+
+
+@pytest.mark.asyncio
+async def test_worker_does_not_claim_external_main_agent_runs(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_TYPE", "sqlite")
+    monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'external.db'}")
+    reset_engine_for_test()
+    await init_db()
+
+    async with create_db_session() as session:
+        task = TaskEntity(
+            id="external-task",
+            task_type="media.script.generate",
+            handler_name="external",
+            status="running",
+            current_run_id="external-run",
+            user_id="external-user",
+            tenant_id="external-tenant",
+        )
+        run = TaskRunEntity(
+            id="external-run",
+            task_id=task.id,
+            status="running",
+            started_at=utc_now(),
+        )
+        session.add(task)
+        session.add(run)
+        await session.commit()
+
+    worker = TaskWorker(
+        SchedulingRuntimeOptions(local_python_artifact_dir=tmp_path / "artifacts"),
+        worker_id="worker-external-skip",
+    )
+    assert await worker.claim_one() is None
