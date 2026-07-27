@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator, Optional
 
 from loguru import logger
 from sqlalchemy import desc
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
 from db.db_context import create_db_session
@@ -21,6 +22,11 @@ from .handlers.batch_item_scheduler import BatchItemSchedulerHandler
 from .handlers.pipeline_task import PipelineTaskHandler
 from .handlers.scheduler_task import SchedulerTaskHandler
 from .models import TaskEntity, TaskEventEntity, TaskItemEntity, TaskRunEntity, utc_now
+from .idempotency import (
+    assert_fingerprint_matches,
+    build_run_request_fingerprint,
+    build_task_request_fingerprint,
+)
 from .memory import TaskMemoryRefreshContext, TaskMemoryRefreshResult, TaskMemoryService
 from .output_parser import parse_json_output
 from .payload_schemas import validate_input_payload, validate_output_payload
@@ -49,7 +55,17 @@ class TaskManagerService:
     def __init__(self, options: SchedulingRuntimeOptions) -> None:
         self.options = options
 
-    async def create_task(self, request: TaskCreateRequest) -> TaskEntity:
+    async def create_task(
+        self,
+        request: TaskCreateRequest,
+        *,
+        service_name: str = "external",
+    ) -> TaskEntity:
+        request_fingerprint = (
+            build_task_request_fingerprint(service_name=service_name, request=request)
+            if request.idempotency_key
+            else ""
+        )
         definition = get_task_definition(request.task_type)
         if definition.required_task_key and request.task_key != definition.required_task_key:
             raise ValueError(
@@ -60,17 +76,18 @@ class TaskManagerService:
             async with create_db_session() as session:
                 result = await session.exec(
                     select(TaskEntity)
-                    .where(TaskEntity.user_id == request.user_id)
+                    .where(TaskEntity.service == service_name)
                     .where(TaskEntity.tenant_id == request.tenant_id)
                     .where(TaskEntity.idempotency_key == request.idempotency_key)
                 )
                 existing = result.first()
                 if existing is not None:
-                    if existing.task_type != request.task_type:
-                        raise ValueError(
-                            f"Idempotency key '{request.idempotency_key}' already belongs to "
-                            f"task_type '{existing.task_type}'."
-                        )
+                    assert_fingerprint_matches(
+                        stored_fingerprint=existing.request_fingerprint,
+                        request_fingerprint=request_fingerprint,
+                        resource="task",
+                        idempotency_key=request.idempotency_key,
+                    )
                     return existing
         raw_input_payload = await _prepare_input_payload(request.task_type, request.input_payload)
         input_payload = validate_input_payload(definition.input_schema_name, raw_input_payload)
@@ -89,6 +106,8 @@ class TaskManagerService:
             root_task_id=request.root_task_id or request.parent_task_id or task_id,
             task_key=request.task_key,
             idempotency_key=request.idempotency_key,
+            request_fingerprint=request_fingerprint,
+            service=service_name,
             task_type=request.task_type,
             title=request.title or definition.name,
             handler_name=definition.handler,
@@ -106,20 +125,41 @@ class TaskManagerService:
             expires_at=request.expires_at,
             metadata_json=request.metadata,
         )
-        async with create_db_session() as session:
-            session.add(task)
-            for index, item in enumerate(task_items, start=1):
-                session.add(
-                    TaskItemEntity(
-                        task_id=task.id,
-                        item_type=item["item_type"],
-                        item_key=item["item_key"],
-                        sequence=index,
-                        input_payload_json=item["payload"],
+        try:
+            async with create_db_session() as session:
+                session.add(task)
+                for index, item in enumerate(task_items, start=1):
+                    session.add(
+                        TaskItemEntity(
+                            task_id=task.id,
+                            item_type=item["item_type"],
+                            item_key=item["item_key"],
+                            sequence=index,
+                            input_payload_json=item["payload"],
+                        )
                     )
+                await session.commit()
+                await session.refresh(task)
+        except IntegrityError:
+            if not request.idempotency_key:
+                raise
+            async with create_db_session() as session:
+                result = await session.exec(
+                    select(TaskEntity)
+                    .where(TaskEntity.service == service_name)
+                    .where(TaskEntity.tenant_id == request.tenant_id)
+                    .where(TaskEntity.idempotency_key == request.idempotency_key)
                 )
-            await session.commit()
-            await session.refresh(task)
+                existing = result.first()
+            if existing is None:
+                raise
+            assert_fingerprint_matches(
+                stored_fingerprint=existing.request_fingerprint,
+                request_fingerprint=request_fingerprint,
+                resource="task",
+                idempotency_key=request.idempotency_key,
+            )
+            return existing
         await self.record_event(
             task_id=task.id,
             run_id=None,
@@ -368,7 +408,22 @@ class TaskManagerService:
         task_id: str,
         request: TaskRunRequest | None = None,
     ) -> TaskRunEntity:
-        if request and request.idempotency_key:
+        request = request or TaskRunRequest()
+        task = await self.get_task(task_id)
+        if task is None:
+            raise ValueError(f"Task '{task_id}' not found.")
+        request_fingerprint = (
+            build_run_request_fingerprint(
+                service_name=task.service,
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                user_id=request.user_id or task.user_id,
+                request=request,
+            )
+            if request.idempotency_key
+            else ""
+        )
+        if request.idempotency_key:
             async with create_db_session() as session:
                 result = await session.exec(
                     select(TaskRunEntity)
@@ -377,14 +432,55 @@ class TaskManagerService:
                 )
                 existing = result.first()
                 if existing is not None:
+                    assert_fingerprint_matches(
+                        stored_fingerprint=existing.request_fingerprint,
+                        request_fingerprint=request_fingerprint,
+                        resource="run",
+                        idempotency_key=request.idempotency_key,
+                    )
+                    if existing.status == "running":
+                        start_background_run(
+                            existing.id,
+                            self._drain_prepared_task(task.id),
+                        )
                     return existing
-        task = await self._prepare_run(task_id, request)
+        try:
+            task = await self._prepare_run(
+                task_id,
+                request,
+                request_fingerprint=request_fingerprint,
+            )
+        except IntegrityError:
+            if not request.idempotency_key:
+                raise
+            async with create_db_session() as session:
+                result = await session.exec(
+                    select(TaskRunEntity)
+                    .where(TaskRunEntity.task_id == task_id)
+                    .where(TaskRunEntity.idempotency_key == request.idempotency_key)
+                )
+                existing = result.first()
+            if existing is None:
+                raise
+            assert_fingerprint_matches(
+                stored_fingerprint=existing.request_fingerprint,
+                request_fingerprint=request_fingerprint,
+                resource="run",
+                idempotency_key=request.idempotency_key,
+            )
+            if existing.status == "running":
+                start_background_run(
+                    existing.id,
+                    self._drain_prepared_task(task_id),
+                )
+            return existing
         if not task.current_run_id:
             raise ValueError(f"Task '{task_id}' did not create a run.")
         run = await get_run(task.current_run_id)
         if run is None:
             raise ValueError(f"Run '{task.current_run_id}' not found.")
-        start_background_run(run.id, self._drain_prepared_task(task.id))
+        if run.status == "running":
+            start_background_run(run.id, self._drain_prepared_task(task.id))
         return run
 
     async def _drain_prepared_task(self, task_id: str) -> None:
@@ -980,14 +1076,52 @@ class TaskManagerService:
             return PipelineTaskHandler(self.options)
         raise ValueError(f"Unsupported task handler '{definition.handler}'.")
 
-    async def _prepare_run(self, task_id: str, request: TaskRunRequest | None) -> TaskEntity:
+    async def _prepare_run(
+        self,
+        task_id: str,
+        request: TaskRunRequest | None,
+        *,
+        request_fingerprint: str = "",
+    ) -> TaskEntity:
         async with create_db_session() as session:
-            task = await session.get(TaskEntity, task_id)
+            statement = select(TaskEntity).where(TaskEntity.id == task_id).with_for_update()
+            task = (await session.exec(statement)).first()
             if task is None:
                 raise ValueError(f"Task '{task_id}' not found.")
             if task.status == "running":
+                if request and request.idempotency_key and task.current_run_id:
+                    existing_run = await session.get(TaskRunEntity, task.current_run_id)
+                    if (
+                        existing_run is not None
+                        and existing_run.idempotency_key == request.idempotency_key
+                    ):
+                        expected_fingerprint = request_fingerprint or build_run_request_fingerprint(
+                            service_name=task.service,
+                            task_id=task.id,
+                            tenant_id=task.tenant_id,
+                            user_id=request.user_id or task.user_id,
+                            request=request,
+                        )
+                        assert_fingerprint_matches(
+                            stored_fingerprint=existing_run.request_fingerprint,
+                            request_fingerprint=expected_fingerprint,
+                            resource="run",
+                            idempotency_key=request.idempotency_key,
+                        )
+                        return task
                 raise ValueError(f"Task '{task_id}' is already running.")
             definition = get_task_definition(task.task_type)
+            run_fingerprint = request_fingerprint or (
+                build_run_request_fingerprint(
+                    service_name=task.service,
+                    task_id=task.id,
+                    tenant_id=task.tenant_id,
+                    user_id=request.user_id or task.user_id,
+                    request=request,
+                )
+                if request and request.idempotency_key
+                else ""
+            )
 
             if request:
                 if request.stream is not None:
@@ -1019,6 +1153,7 @@ class TaskManagerService:
                 id=task.current_run_id,
                 task_id=task.id,
                 idempotency_key=request.idempotency_key if request else None,
+                request_fingerprint=run_fingerprint,
                 pipeline_id=pipeline_id,
                 pipeline_version=pipeline_version,
                 status="running",

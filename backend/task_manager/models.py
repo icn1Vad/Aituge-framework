@@ -17,7 +17,7 @@ def utc_now() -> datetime:
 class TaskEntity(SQLModel, table=True):
     __tablename__ = "tuge_task"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "user_id", "idempotency_key", name="unique_tuge_task_idempotency"),
+        UniqueConstraint("service", "tenant_id", "idempotency_key", name="unique_tuge_task_idempotency"),
     )
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True, max_length=80)
@@ -25,6 +25,8 @@ class TaskEntity(SQLModel, table=True):
     root_task_id: Optional[str] = Field(default=None, max_length=80)
     task_key: Optional[str] = Field(default=None, max_length=160)
     idempotency_key: Optional[str] = Field(default=None, max_length=160)
+    request_fingerprint: str = Field(default="", max_length=64)
+    service: str = Field(default="external", max_length=80)
     task_type: str = Field(nullable=False, max_length=120)
     status: str = Field(default="created", max_length=32)
     title: str = Field(default="", sa_column=Column(Text))
@@ -111,6 +113,7 @@ class TaskRunEntity(SQLModel, table=True):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True, max_length=80)
     task_id: str = Field(foreign_key="tuge_task.id", nullable=False, index=True, max_length=80)
     idempotency_key: Optional[str] = Field(default=None, max_length=160)
+    request_fingerprint: str = Field(default="", max_length=64)
     pipeline_id: str = Field(default="", max_length=120)
     pipeline_version: str = Field(default="", max_length=32)
     status: str = Field(default="pending", max_length=32)
@@ -206,6 +209,8 @@ _SQLITE_COLUMN_MIGRATIONS = {
         "root_task_id": "VARCHAR(80)",
         "task_key": "VARCHAR(160)",
         "idempotency_key": "VARCHAR(160)",
+        "request_fingerprint": "VARCHAR(64) NOT NULL DEFAULT ''",
+        "service": "VARCHAR(80) NOT NULL DEFAULT 'external'",
         "handler_name": "VARCHAR(80) NOT NULL DEFAULT ''",
         "definition_snapshot_json": "JSON NOT NULL DEFAULT '{}'",
         "output_schema_json": "JSON NOT NULL DEFAULT '{}'",
@@ -231,19 +236,71 @@ _SQLITE_COLUMN_MIGRATIONS = {
         "error_code": "VARCHAR(80)",
         "visible": "BOOLEAN NOT NULL DEFAULT 1",
     },
+    "tuge_task_run": {
+        "request_fingerprint": "VARCHAR(64) NOT NULL DEFAULT ''",
+    },
 }
 
 
 async def ensure_task_manager_schema(engine: AsyncEngine) -> None:
-    """Add TaskManager v1 columns to existing local SQLite databases."""
-    if engine.url.get_backend_name() != "sqlite":
+    """Add TaskManager columns and idempotency indexes to existing databases."""
+    backend = engine.url.get_backend_name()
+    if backend not in {"sqlite", "postgresql"}:
         return
 
     async with engine.begin() as conn:
-        for table_name, migrations in _SQLITE_COLUMN_MIGRATIONS.items():
-            result = await conn.execute(text(f"PRAGMA table_info({table_name})"))
-            existing = {row[1] for row in result.fetchall()}
-            for column_name, column_sql in migrations.items():
-                if column_name in existing:
-                    continue
-                await conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}"))
+        if backend == "sqlite":
+            for table_name, migrations in _SQLITE_COLUMN_MIGRATIONS.items():
+                result = await conn.execute(text(f"PRAGMA table_info({table_name})"))
+                existing = {row[1] for row in result.fetchall()}
+                for column_name, column_sql in migrations.items():
+                    if column_name in existing:
+                        continue
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE {table_name} "
+                            f"ADD COLUMN {column_name} {column_sql}"
+                        )
+                    )
+            await conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_tuge_task_service_tenant_idempotency "
+                    "ON tuge_task (service, tenant_id, idempotency_key)"
+                )
+            )
+            return
+        await conn.execute(
+            text(
+                "ALTER TABLE tuge_task "
+                "ADD COLUMN IF NOT EXISTS service VARCHAR(80) "
+                "NOT NULL DEFAULT 'external'"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE tuge_task "
+                "ADD COLUMN IF NOT EXISTS request_fingerprint VARCHAR(64) "
+                "NOT NULL DEFAULT ''"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE tuge_task_run "
+                "ADD COLUMN IF NOT EXISTS request_fingerprint VARCHAR(64) "
+                "NOT NULL DEFAULT ''"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE tuge_task "
+                "DROP CONSTRAINT IF EXISTS unique_tuge_task_idempotency"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_tuge_task_service_tenant_idempotency "
+                "ON tuge_task (service, tenant_id, idempotency_key)"
+            )
+        )

@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from scheduling.scheduler import SchedulingRuntimeOptions
 
 from .access import TaskAccessContext, assert_can_access_task, task_access_context
+from .idempotency import IdempotencyConflictError
 from .artifact_service import resolve_artifact_path
 from .conversation_service import TaskConversationService
 from .memory import TaskMemoryMaterial, TaskMemoryService
@@ -52,6 +53,14 @@ def _track_background(coroutine) -> asyncio.Task:
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)
     return task
+def _task_manager_http_error(exc: ValueError) -> HTTPException:
+    if isinstance(exc, IdempotencyConflictError):
+        return HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": str(exc)},
+        )
+    return HTTPException(status_code=400, detail=str(exc))
+
 
 
 async def _run_task_to_queue(
@@ -201,10 +210,13 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
                     "idempotency_key": idempotency_key or request.idempotency_key,
                 }
             )
-            task = await TaskManagerService(options).create_task(scoped_request)
+            task = await TaskManagerService(options).create_task(
+                scoped_request,
+                service_name=context.service_name,
+            )
             return TaskCreateResponse(task=task_to_read(task))
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _task_manager_http_error(exc) from exc
 
     @router.get("/tasks")
     async def tasks(
@@ -334,7 +346,7 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
             async for event in service.stream_task(task_id, run_request):
                 events.append(event)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _task_manager_http_error(exc) from exc
         task = await service.get_task(task_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
@@ -362,7 +374,7 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
             )
             run = await service.start_task_run(task_id, run_request)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _task_manager_http_error(exc) from exc
         return TaskRunStartResponse(
             task_id=task_id,
             run_id=run.id,
@@ -598,7 +610,7 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
         service = TaskManagerService(options)
         try:
             scoped_request = request.model_copy(update={"user_id": context.user_id, "tenant_id": context.tenant_id})
-            task = await service.create_task(scoped_request)
+            task = await service.create_task(scoped_request, service_name=context.service_name)
             events: list[TaskEventRead] = []
             async for event in service.stream_task(task.id, TaskRunRequest(stream=False, user_id=context.user_id)):
                 events.append(event)
@@ -607,7 +619,7 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
                 raise HTTPException(status_code=404, detail="Task disappeared after run.")
             return TaskRunResponse(task=task_to_read(task), events=events)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _task_manager_http_error(exc) from exc
 
     @router.post("/stream")
     async def create_and_stream(
@@ -617,9 +629,9 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
         service = TaskManagerService(options)
         try:
             scoped_request = request.model_copy(update={"user_id": context.user_id, "tenant_id": context.tenant_id})
-            task = await service.create_task(scoped_request)
+            task = await service.create_task(scoped_request, service_name=context.service_name)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _task_manager_http_error(exc) from exc
 
         created = TaskEventRead.model_validate((await service.list_events(task.id, limit=1))[0])
         queue: asyncio.Queue | None = None
