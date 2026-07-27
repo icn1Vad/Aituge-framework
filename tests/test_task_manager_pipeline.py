@@ -27,6 +27,8 @@ from task_manager.pipeline.stage_registry import StageServiceResult
 from task_manager.result_sink import RequiredResultSinkError, ResultSinkRejectedError
 from task_manager.runtime.broker import reset_event_broker_for_test
 from task_manager.runtime.execution import executor_lock
+from task_manager.runtime.worker import TaskWorker
+from scheduling.scheduler import SchedulingRuntimeOptions
 
 
 class RetryThenPipelineAgent:
@@ -68,6 +70,19 @@ class SlowPipelineAgent:
                 yield TextChunk(delta="x" * 30)
 
         return generate()
+
+
+def _start_persistent_test_worker(tmp_path):
+    stop_event = asyncio.Event()
+    worker = TaskWorker(
+        SchedulingRuntimeOptions(
+            local_python_artifact_dir=tmp_path / "artifacts",
+            local_python_work_dir=tmp_path / "work",
+        ),
+        worker_id=f"pipeline-test-worker-{id(stop_event)}",
+        poll_seconds=0.05,
+    )
+    return stop_event, asyncio.create_task(worker.run_forever(stop_event))
 
 
 async def _seed_llm_config():
@@ -466,6 +481,7 @@ def test_pipeline_run_retry_replay_and_human_review(tmp_path, monkeypatch):
         await init_db()
         await _seed_llm_config()
         RetryThenPipelineAgent.calls = 0
+        worker_stop, worker_task = _start_persistent_test_worker(tmp_path)
         monkeypatch.setattr(runner_mod, "ReactAgent", RetryThenPipelineAgent)
 
         app = create_app()
@@ -607,6 +623,7 @@ def test_pipeline_cancel_is_cooperative(tmp_path, monkeypatch):
         await init_db()
         await _seed_llm_config()
         monkeypatch.setattr(runner_mod, "ReactAgent", SlowPipelineAgent)
+        worker_stop, worker_task = _start_persistent_test_worker(tmp_path)
         app = create_app()
         headers = {"X-User-Id": "pipeline-user", "X-Tenant-Id": DEFAULT_TENANT_ID}
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
