@@ -5,6 +5,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Iterator
 
+from db.db_context import create_db_session
 from sqlmodel import select
 
 from task_manager.models import TaskRunEntity
@@ -91,5 +92,17 @@ async def verify_execution_lease(
             f"Run '{run_id}' is no longer owned by worker '{lease.owner}' "
             f"at lease version {lease.version}."
         )
+    lease.assert_active()
+    return run
+
+
+async def verify_current_execution_lease(run_id: str) -> TaskRunEntity | None:
+    """Recheck the bound execution lease immediately before an external side effect."""
+
+    lease = assert_execution_lease_scope(run_id)
+    if lease is None:
+        return None
+    async with create_db_session() as session:
+        run = await verify_execution_lease(session, run_id)
     lease.assert_active()
     return run

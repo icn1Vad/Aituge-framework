@@ -129,33 +129,17 @@ services:
       dockerfile: deploy/appliance/framework.runtime.Dockerfile
       network: host
     restart: unless-stopped
-    command:
-      - sh
-      - -lc
-      - |
-        set -u
-        python -m task_manager.runtime.worker &
-        worker_pid=$$!
-        python -m uvicorn backend.local_code_chat_app:create_app --factory --host 0.0.0.0 --port 8894 &
-        server_pid=$$!
-        cleanup() {
-          kill "$$server_pid" "$$worker_pid" 2>/dev/null || true
-          wait "$$server_pid" 2>/dev/null || true
-          wait "$$worker_pid" 2>/dev/null || true
-        }
-        trap cleanup TERM INT
-        wait "$$server_pid"
-        status=$$?
-        cleanup
-        trap - TERM INT
-        exit "$$status"
-    environment:
+    environment: &framework_environment
       DB_TYPE: postgresql
       DB_NAME: ${CONTRACT_POSTGRES_DB:-contract_review}
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: postgres
       DB_PORT: "5432"
+      TASK_TENANT_CONCURRENCY: ${TASK_TENANT_CONCURRENCY:-10}
+      TASK_WORKER_LEASE_SECONDS: ${TASK_WORKER_LEASE_SECONDS:-120}
+      TASK_WORKER_HEARTBEAT_SECONDS: ${TASK_WORKER_HEARTBEAT_SECONDS:-30}
+      TASK_WORKER_POLL_SECONDS: ${TASK_WORKER_POLL_SECONDS:-1}
       AITUGE_CAPABILITY_ENTRIES: '["/opt/proof-capabilities/register.py","/opt/smoke-capabilities/register.py","/opt/contract-capabilities/register.py"]'
       PROOF_SERVICE_BASE_URL: http://proof:18100
       SMOKE_SERVICE_BASE_URL: http://smoke:18200
@@ -185,11 +169,6 @@ services:
       REDIS_PORT: "6379"
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       REDIS_DB: "0"
-      TASK_EVENT_BROKER: redis
-      TASK_EXECUTOR_LOCK_BACKEND: redis
-      TASK_WORKER_LEASE_SECONDS: ${TASK_WORKER_LEASE_SECONDS:-120}
-      TASK_WORKER_HEARTBEAT_SECONDS: ${TASK_WORKER_HEARTBEAT_SECONDS:-30}
-      TASK_TENANT_CONCURRENCY: ${TASK_TENANT_CONCURRENCY:-2}
       PYTHONUNBUFFERED: "1"
       AITUGE_TMP_ROOT: /app/aituge-tmp
     ports:
@@ -228,6 +207,36 @@ services:
       agent_internal:
         aliases:
           - ai-framework
+
+  framework-worker:
+    image: ai-framework-core:local
+    restart: unless-stopped
+    command: ["python", "-m", "task_manager.runtime.worker"]
+    environment: *framework_environment
+    volumes:
+      - ${AI_FRAMEWORK_RUNTIME_ROOT:-../../runtime}/framework:/app/runtime
+      - ${AITUGE_TMP_ROOT:-../../../tmp}:/app/aituge-tmp
+      - contract_data:/app/data/contract
+      - ../../services/proof/capabilities:/opt/proof-capabilities:ro
+      - ../../services/smoke/capabilities:/opt/smoke-capabilities:ro
+      - ../../services/contract/capabilities:/opt/contract-capabilities:ro
+    depends_on:
+      framework:
+        condition: service_healthy
+      proof:
+        condition: service_healthy
+      smoke:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      replicas: ${FRAMEWORK_WORKER_REPLICAS:-20}
+    networks:
+      - ai_internal
+      - proofspace
+      - agent_internal
 
 networks:
   ai_internal:

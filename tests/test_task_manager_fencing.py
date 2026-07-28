@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from sqlmodel import select
@@ -14,12 +15,17 @@ from task_manager.pipeline.store import (
     update_run,
     update_stage_run,
 )
+from task_manager.result_sink import deliver_task_result
 from task_manager.runtime.fencing import (
     ExecutionLease,
     RunLeaseLost,
     bind_execution_lease,
 )
-from task_manager.runtime.worker import RunLease, TaskWorker
+from task_manager.runtime.worker import (
+    LeaseHeartbeatSupervisor,
+    RunLease,
+    TaskWorker,
+)
 from task_manager.schemas import TaskCreateRequest, TaskRunRequest
 from task_manager.service import TaskManagerService
 
@@ -27,7 +33,7 @@ from task_manager.service import TaskManagerService
 @pytest.mark.asyncio
 async def test_execution_fencing_blocks_worker_writes_after_lease_loss(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_TYPE", "sqlite")
-    monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///${tmp_path / 'fencing.db'}")
+    monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'fencing.db'}")
     reset_engine_for_test()
     await init_db()
 
@@ -132,7 +138,7 @@ async def test_execution_fencing_blocks_worker_writes_after_lease_loss(tmp_path,
 @pytest.mark.asyncio
 async def test_execution_fencing_rejects_stale_database_owner(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_TYPE", "sqlite")
-    monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///${tmp_path / 'stale-fencing.db'}")
+    monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'stale-fencing.db'}")
     reset_engine_for_test()
     await init_db()
 
@@ -180,6 +186,48 @@ async def test_execution_fencing_rejects_stale_database_owner(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_result_sink_rechecks_database_lease_before_http(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_TYPE", "sqlite")
+    monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'sink-fencing.db'}")
+    reset_engine_for_test()
+    await init_db()
+
+    options = SchedulingRuntimeOptions(local_python_artifact_dir=tmp_path / "artifacts")
+    service = TaskManagerService(options)
+    task = await service.create_task(
+        TaskCreateRequest(
+            task_type="pipeline.demo",
+            input_payload={"goal": "sink fencing"},
+            user_id="sink-user",
+            tenant_id="sink-tenant",
+        ),
+        service_name="ai-contract",
+    )
+    run = await service.start_task_run(task.id, TaskRunRequest())
+    task = await service.get_task(task.id)
+    assert task is not None
+    first_worker = TaskWorker(options, worker_id="sink-a", lease_seconds=30)
+    first = await first_worker.claim_one()
+    assert first is not None
+    async with create_db_session() as session:
+        row = await session.get(TaskRunEntity, run.id)
+        assert row is not None
+        row.lease_until = utc_now()
+        session.add(row)
+        await session.commit()
+    second_worker = TaskWorker(options, worker_id="sink-b", lease_seconds=30)
+    second = await second_worker.claim_one()
+    assert second is not None
+
+    stale_lease = ExecutionLease(run_id=first.run_id, owner=first.owner, version=first.version)
+    with bind_execution_lease(stale_lease):
+        with pytest.raises(RunLeaseLost):
+            await deliver_task_result(task, SimpleNamespace(result_sink_url="http://unused"), {})
+
+    assert await second_worker.release_lease(second) is True
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_marks_execution_lease_lost_after_two_failures(tmp_path, monkeypatch):
     worker = TaskWorker(
         SchedulingRuntimeOptions(local_python_artifact_dir=tmp_path / "artifacts"),
@@ -200,3 +248,22 @@ async def test_heartbeat_marks_execution_lease_lost_after_two_failures(tmp_path,
     assert execution_lease.lost is True
     assert "two consecutive" in execution_lease.loss_reason
 
+
+
+@pytest.mark.asyncio
+async def test_thread_heartbeat_marks_execution_lease_lost_after_two_failures(monkeypatch):
+    lease = RunLease(task_id="task", run_id="run", owner="thread-worker", version=3)
+    execution_lease = ExecutionLease(run_id="run", owner="thread-worker", version=3)
+    supervisor = LeaseHeartbeatSupervisor(
+        lease=lease,
+        execution_lease=execution_lease,
+        lease_seconds=120,
+        heartbeat_seconds=1,
+    )
+    supervisor.heartbeat_seconds = 0.001
+    monkeypatch.setattr(supervisor, "_renew_once", lambda: False)
+
+    await asyncio.wait_for(asyncio.to_thread(supervisor._run), timeout=1)
+
+    assert execution_lease.lost is True
+    assert "two consecutive" in execution_lease.loss_reason

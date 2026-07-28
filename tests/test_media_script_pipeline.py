@@ -9,12 +9,14 @@ from common.llm.models import TextChunk
 from common.system_constants import DEFAULT_TENANT_ID
 from db.db_context import create_db_session, init_db, reset_engine_for_test
 from db.models.llm import LlmModelEntity
+from scheduling.scheduler import SchedulingRuntimeOptions
 import service.agent.single_agent_runner as runner_mod
 from service.cache.session_history_manager import session_history_manager
 from task_manager.models import TaskMemoryEntity
 from task_manager.memory import TaskMemoryService
 from task_manager.pipeline import media_script as media_pipeline
 from task_manager.runtime.broker import reset_event_broker_for_test
+from task_manager.runtime.worker import TaskWorker
 
 
 class MediaPipelineAgent:
@@ -174,6 +176,13 @@ def test_media_script_lite_pipeline_runs_writer_and_storyboard_agents(tmp_path, 
             started = await client.post(f"/task-manager/tasks/{task_id}/runs", headers=headers, json={})
             assert started.status_code == 200, started.text
             run_id = started.json()["run_id"]
+            worker = TaskWorker(
+                SchedulingRuntimeOptions(
+                    local_python_artifact_dir=tmp_path / "artifacts"
+                ),
+                worker_id="media-pipeline-test-worker",
+            )
+            assert await worker.run_once() is True
             for _ in range(300):
                 run_response = await client.get(f"/task-manager/runs/{run_id}", headers=headers)
                 status = run_response.json()["run"]["status"]

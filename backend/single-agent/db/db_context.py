@@ -5,7 +5,7 @@ dotenv.load_dotenv()
 
 from loguru import logger
 from sqlmodel import SQLModel
-from sqlalchemy import event
+from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncEngine
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -208,12 +208,28 @@ async def init_db():
     import task_manager.models  # noqa: F401
     import tool.registry.models  # noqa: F401
 
-    async with get_engine().begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all)
-    from task_manager.models import ensure_task_manager_schema
-    await ensure_task_manager_schema(get_engine())
-    from scheduling.main_agent.models import ensure_main_agent_schema
-    await ensure_main_agent_schema(get_engine())
+    engine = get_engine()
+
+    async def initialize_schema() -> None:
+        async with engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.create_all)
+        from task_manager.models import ensure_task_manager_schema
+        await ensure_task_manager_schema(engine)
+        from scheduling.main_agent.models import ensure_main_agent_schema
+        await ensure_main_agent_schema(engine)
+
+    if engine.url.get_backend_name() != "postgresql":
+        await initialize_schema()
+        return
+
+    # API and Worker processes start together. Serialize their idempotent DDL so
+    # PostgreSQL does not deadlock on concurrent ALTER TABLE statements.
+    async with engine.connect() as lock_conn:
+        await lock_conn.execute(text("SELECT pg_advisory_lock(1827000)"))
+        try:
+            await initialize_schema()
+        finally:
+            await lock_conn.execute(text("SELECT pg_advisory_unlock(1827000)"))
 
 
 @asynccontextmanager
