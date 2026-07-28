@@ -106,6 +106,8 @@ async def test_twenty_workers_respect_tenant_limits_and_rotate_users(tmp_path, m
 @pytest.mark.asyncio
 async def test_concurrent_claim_and_cancel_preserves_quota_consistency(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_TYPE", "postgresql")
+    reset_engine_for_test()
+    await init_db()
     options = SchedulingRuntimeOptions(local_python_artifact_dir=tmp_path / "race-artifacts")
     service = TaskManagerService(options)
     runs: list[TaskRunEntity] = []
