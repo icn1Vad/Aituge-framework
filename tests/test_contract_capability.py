@@ -519,13 +519,36 @@ def test_contract_result_sink_emits_three_frozen_callback_shapes(monkeypatch) ->
                 "parse_contract",
                 "completed",
                 None,
+                lease_version=7,
             )
         )
     )
-    asyncio.run(handler(ResultSinkDelivery(task, definition, {"ignored": True}, None, "completed", None)))
+    asyncio.run(
+        handler(
+            ResultSinkDelivery(
+                task,
+                definition,
+                {"ignored": True},
+                None,
+                "completed",
+                None,
+                lease_version=7,
+            )
+        )
+    )
     long_error = "bad" * 1000
     asyncio.run(
-        handler(ResultSinkDelivery(task, definition, None, "resolve_parties", "failed", long_error))
+        handler(
+            ResultSinkDelivery(
+                task,
+                definition,
+                None,
+                "resolve_parties",
+                "failed",
+                long_error,
+                lease_version=7,
+            )
+        )
     )
 
     assert [item[2]["callback_type"] for item in calls] == [
@@ -541,6 +564,7 @@ def test_contract_result_sink_emits_three_frozen_callback_shapes(monkeypatch) ->
     assert calls[2][2]["error"]["code"] == "FRAMEWORK_RUN_FAILED"
     assert len(calls[2][2]["error"]["message"]) == 2000
     assert all(item[1]["X-Internal-Token"] == "secret" for item in calls)
+    assert all(item[2]["lease_version"] == 7 for item in calls)
 
 
 def test_contract_failed_callback_maps_stable_business_errors() -> None:
@@ -579,6 +603,7 @@ def test_contract_failed_callback_maps_stable_business_errors() -> None:
                 "candidate_parties": ["Acme Company", "Beta Company"],
                 "requested_our_party_name": "Gamma Company",
             },
+            lease_version=7,
         )
     )
     _, evidence = capability._callback_envelope(
@@ -591,6 +616,7 @@ def test_contract_failed_callback_maps_stable_business_errors() -> None:
             error_message="evidence rejected",
             error_code="EVIDENCE_INVALID",
             retryable=False,
+            lease_version=7,
         )
     )
     _, model_failure = capability._callback_envelope(
@@ -603,6 +629,7 @@ def test_contract_failed_callback_maps_stable_business_errors() -> None:
             error_message="LLM model is unavailable",
             error_code="invalid_output",
             retryable=True,
+            lease_version=7,
         )
     )
     _, review_evidence = capability._callback_envelope(
@@ -615,6 +642,7 @@ def test_contract_failed_callback_maps_stable_business_errors() -> None:
             error_message="evidence range rejected",
             error_code="required_result_sink_failed",
             retryable=True,
+            lease_version=7,
         )
     )
     assert party["error"] == {
@@ -683,6 +711,7 @@ def test_contract_result_sink_preserves_safe_rejection_detail(monkeypatch) -> No
         "parse_contract",
         "completed",
         None,
+        lease_version=7,
     )
 
     with pytest.raises(capability.ResultSinkRejectedError, match="source anchor rejected") as caught:

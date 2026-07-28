@@ -397,6 +397,7 @@ class RuntimeContractReviewService:
                 error_code=exc.code,
                 error_message=str(exc),
                 retryable=False,
+                retry_delay_seconds=0,
             )
             logger.error(
                 "Framework dispatch permanently failed for review %s attempt %s: %s",

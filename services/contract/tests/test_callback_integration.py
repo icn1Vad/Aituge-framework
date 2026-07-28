@@ -87,6 +87,14 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
         first = callbacks.accept(created.review_id, parse_callback)
         repeated = callbacks.accept(created.review_id, parse_callback)
         assert first.accepted is True and first.duplicate is False
+        stale_lease = parse_callback.model_copy(
+            update={
+                "lease_version": 1,
+                "callback_id": "callback-stale-lease",
+            }
+        )
+        stale = callbacks.accept(created.review_id, stale_lease)
+        assert stale.accepted is False and stale.ignored_reason == "STALE_LEASE"
         assert repeated.accepted is True and repeated.duplicate is True
 
         changed_replay = parse_callback.model_copy(
@@ -552,8 +560,9 @@ def _stage_callback(created, sequence: int, stage_id: str, result):
             "attempt_no": 1,
             "framework_task_id": created.framework_task_id,
             "framework_run_id": created.framework_run_id,
+            "lease_version": 2,
             "event_sequence": sequence,
-            "callback_id": f"callback-{created.review_id}-{sequence}",
+            "callback_id": f"callback-{created.review_id}-lease-2-{sequence}",
             "callback_type": "STAGE_RESULT",
             "stage_id": stage_id,
             "result": value,
@@ -571,7 +580,8 @@ def _terminal_callback(created, sequence: int, callback_type: str, *, error=None
             "framework_task_id": created.framework_task_id,
             "framework_run_id": created.framework_run_id,
             "event_sequence": sequence,
-            "callback_id": f"callback-{created.review_id}-{sequence}",
+            "callback_id": f"callback-{created.review_id}-lease-2-{sequence}",
+            "lease_version": 2,
             "callback_type": callback_type,
             "stage_id": None,
             "result": None,

@@ -8,6 +8,7 @@ import psycopg
 import pytest
 
 from contract.api.models import ReviewStatus
+from contract.application.framework_gateway import FrameworkProtocolError
 from contract.persistence.postgres.review_state import ReviewStateRepository
 from test_runtime_reliability_integration import _cleanup, _runtime
 
@@ -73,6 +74,37 @@ def test_dispatch_retry_reuses_the_frozen_framework_keys(tmp_path: Path) -> None
     finally:
         _cleanup(tenant_id)
 
+
+@pytest.mark.skipif(not DATABASE_URL, reason="CONTRACT_TEST_DATABASE_URL is not configured")
+def test_non_retryable_dispatch_failure_becomes_terminal(tmp_path: Path) -> None:
+    service, gateway, context, request, upload, tenant_id = _runtime(tmp_path)
+
+    def reject_create(_request):
+        raise FrameworkProtocolError("idempotency conflict")
+
+    gateway.create_execution = reject_create
+    try:
+        created = service.create_review(upload=upload, request=request, context=context)
+
+        assert service.dispatch_pending_attempts() == 0
+        with psycopg.connect(DATABASE_URL) as conn:
+            attempt = conn.execute(
+                """
+                SELECT execution_status, dispatch_status, lease_owner, lease_until
+                FROM contract_framework_attempt
+                WHERE review_id = %s AND attempt_no = 1
+                """,
+                (created.review_id,),
+            ).fetchone()
+            review = conn.execute(
+                "SELECT status, error_code FROM contract_review_run WHERE id = %s",
+                (created.review_id,),
+            ).fetchone()
+
+        assert attempt == ("FAILED", "DISPATCH_FAILED", None, None)
+        assert review == ("FAILED", "FRAMEWORK_PROTOCOL_ERROR")
+    finally:
+        _cleanup(tenant_id)
 
 @pytest.mark.skipif(not DATABASE_URL, reason="CONTRACT_TEST_DATABASE_URL is not configured")
 def test_two_dispatchers_cannot_claim_one_attempt(tmp_path: Path) -> None:

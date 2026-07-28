@@ -425,6 +425,19 @@ class FrameworkCallbackRepository:
             ):
                 raise self._mismatch("Framework Task or Run does not match the Attempt")
 
+            latest_lease_version = int(attempt["latest_lease_version"] or 0)
+            if callback.lease_version < latest_lease_version:
+                return CallbackOutcome(False, False, "STALE_LEASE")
+            if callback.lease_version > latest_lease_version:
+                conn.execute(
+                    """
+                    UPDATE contract_framework_attempt
+                    SET latest_lease_version = %s, updated_at = now()
+                    WHERE review_id = %s AND attempt_no = %s
+                    """,
+                    (callback.lease_version, callback.review_id, callback.attempt_no),
+                )
+
             existing = conn.execute(
                 """
                 SELECT * FROM contract_review_stage_result
@@ -572,11 +585,11 @@ class FrameworkCallbackRepository:
             """
             INSERT INTO contract_review_stage_result (
               id, tenant_id, review_id, attempt_no, framework_task_id, framework_run_id,
-              callback_id, callback_type, event_sequence, stage_id, result_type,
+              callback_id, callback_type, lease_version, event_sequence, stage_id, result_type,
               result_json, error_json, validation_status, ignored_reason
             )
             SELECT %s, tenant_id, %s, %s, %s, %s,
-                   %s, %s, %s, %s, %s, %s, %s, %s, %s
+                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             FROM contract_review_run WHERE id = %s
             """,
             (
@@ -587,6 +600,7 @@ class FrameworkCallbackRepository:
                 callback.framework_run_id,
                 callback.callback_id,
                 callback.callback_type,
+                callback.lease_version,
                 callback.event_sequence,
                 callback.stage_id,
                 result.get("result_type") if result else None,
@@ -604,6 +618,7 @@ class FrameworkCallbackRepository:
             payload["framework_task_id"],
             payload["framework_run_id"],
             payload["callback_type"],
+            payload["lease_version"],
             payload["event_sequence"],
             payload.get("stage_id"),
             payload.get("result"),
@@ -613,6 +628,7 @@ class FrameworkCallbackRepository:
             existing["framework_task_id"],
             existing["framework_run_id"],
             existing["callback_type"],
+            existing["lease_version"],
             existing["event_sequence"],
             existing["stage_id"],
             existing["result_json"],
