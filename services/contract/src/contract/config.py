@@ -18,6 +18,17 @@ class Settings(BaseSettings):
     )
 
     database_url: str = ""
+    database_max_connections: int = Field(default=5, ge=1, le=100)
+    database_connection_acquire_timeout_seconds: float = Field(
+        default=30,
+        gt=0,
+        le=300,
+    )
+    database_application_name: str = Field(
+        default="ai-contract",
+        min_length=1,
+        max_length=63,
+    )
     data_dir: Path = Path(".contract-data")
     max_file_size: int = Field(default=25 * 1024 * 1024, gt=0)
     schema_version: Literal["1.0"] = "1.0"

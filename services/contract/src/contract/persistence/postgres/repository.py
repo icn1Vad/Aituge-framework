@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Iterable
 
-import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -17,19 +16,17 @@ from contract.persistence.models import (
     ReviewCreate,
 )
 
+from contract.persistence.postgres.connections import open_contract_database_connection
 
 class ContractRepository:
     def __init__(self, settings: Settings) -> None:
         if not settings.database_url:
             raise ConfigurationError("CONTRACT_DATABASE_URL is required")
+        self.settings = settings
         self.database_url = settings.database_url
 
     def connect(self):
-        return psycopg.connect(
-            self.database_url,
-            row_factory=dict_row,
-            connect_timeout=5,
-        )
+        return open_contract_database_connection(self.settings, row_factory=dict_row)
 
     def health(self) -> dict[str, Any]:
         with self.connect() as conn:

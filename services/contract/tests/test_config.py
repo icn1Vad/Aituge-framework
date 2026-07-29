@@ -37,8 +37,14 @@ def test_framework_timeouts_can_be_overridden_in_code() -> None:
 def test_contract_environment_variables_keep_contract_prefix(monkeypatch) -> None:
     monkeypatch.setenv("CONTRACT_INTERNAL_TOKEN", "java-token")
     monkeypatch.setenv("CONTRACT_SCHEMA_VERSION", "1.0")
+    monkeypatch.setenv("CONTRACT_DATABASE_MAX_CONNECTIONS", "4")
+    monkeypatch.setenv("CONTRACT_DATABASE_CONNECTION_ACQUIRE_TIMEOUT_SECONDS", "12.5")
+    monkeypatch.setenv("CONTRACT_DATABASE_APPLICATION_NAME", "contract-test")
 
     settings = Settings(_env_file=None)
 
     assert settings.internal_token == "java-token"
     assert settings.schema_version == "1.0"
+    assert settings.database_max_connections == 4
+    assert settings.database_connection_acquire_timeout_seconds == 12.5
+    assert settings.database_application_name == "contract-test"

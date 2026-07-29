@@ -14,7 +14,12 @@ from sqlalchemy import update
 from sqlmodel import select
 
 from capability_mount import mount_capabilities_from_env
-from db.db_context import create_db_session, init_db
+from db.db_context import (
+    create_db_session,
+    get_database_pool_metrics,
+    init_db,
+    reset_database_pool_metrics,
+)
 from scheduling.agent_registry import ensure_default_agent_profiles
 from scheduling.scheduler import SchedulingRuntimeOptions
 from skill import ensure_default_skill_packages
@@ -89,6 +94,10 @@ class LeaseHeartbeatSupervisor:
             host=os.environ.get("DB_HOST", "localhost"),
             port=int(os.environ.get("DB_PORT", "5432")),
             connect_timeout=5,
+            application_name=(
+                f"{os.environ.get('DB_APPLICATION_NAME', 'framework-worker')}"
+                f"-heartbeat:{self.lease.owner}"[:63]
+            ),
             autocommit=True,
         ) as conn:
             row = conn.execute(
@@ -183,6 +192,7 @@ class TaskWorker:
         lease = await self.claim_one()
         if lease is None:
             return False
+        reset_database_pool_metrics()
         service = TaskManagerService(self.options)
         execution_lease = ExecutionLease(
             run_id=lease.run_id,
@@ -228,6 +238,13 @@ class TaskWorker:
                         pass
                 if not execution_lease.lost:
                     await self.release_lease(lease)
+                pool_metrics = get_database_pool_metrics()
+                if pool_metrics:
+                    logger.info(
+                        "TaskManager Run {} database pool metrics: {}",
+                        lease.run_id,
+                        pool_metrics,
+                    )
         return True
 
     async def run_forever(self, stop_event: asyncio.Event | None = None) -> None:

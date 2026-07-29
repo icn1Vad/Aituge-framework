@@ -10,6 +10,7 @@ services:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
     restart: unless-stopped
+    command: ["postgres", "-c", "max_connections=${POSTGRES_MAX_CONNECTIONS:-150}"]
     env_file:
       - .env
     environment:

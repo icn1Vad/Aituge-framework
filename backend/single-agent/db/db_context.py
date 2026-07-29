@@ -12,14 +12,92 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.ext.asyncio import create_async_engine
 from contextlib import asynccontextmanager
 from functools import wraps
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional
 
 from urllib.parse import quote_plus
 import os
+import threading
 from pathlib import Path
 
 
 DEFAULT_SQLITE_URL = f"sqlite+aiosqlite:///{Path(__file__).resolve().parent.parent / 'tmp' / 'sqlite' / 'local.db'}"
+
+
+_POOL_METRICS_LOCK = threading.Lock()
+_pool_checkout_total = 0
+_pool_checkout_peak = 0
+
+
+def _read_nonnegative_int_env(name: str, default: int, *, minimum: int = 0) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
+    if value < minimum:
+        raise ValueError(f"{name} must be >= {minimum}, got {value}")
+    return value
+
+
+def get_database_pool_settings() -> dict[str, int | str]:
+    """Return PostgreSQL pool settings shared by API and Worker processes."""
+    application_name = os.getenv("DB_APPLICATION_NAME", "ai-framework").strip()
+    if not application_name:
+        application_name = "ai-framework"
+    hostname = os.getenv("HOSTNAME", "").strip()
+    if hostname:
+        application_name = f"{application_name}:{hostname}"
+
+    return {
+        "pool_size": _read_nonnegative_int_env("DB_POOL_SIZE", 5, minimum=1),
+        "max_overflow": _read_nonnegative_int_env("DB_MAX_OVERFLOW", 10),
+        "pool_timeout_seconds": _read_nonnegative_int_env(
+            "DB_POOL_TIMEOUT_SECONDS",
+            30,
+            minimum=1,
+        ),
+        "application_name": application_name[:63],
+    }
+
+
+def _install_pool_metrics(async_engine: AsyncEngine) -> None:
+    @event.listens_for(async_engine.sync_engine, "checkout")
+    def _record_pool_checkout(_dbapi_connection, _connection_record, _connection_proxy) -> None:
+        global _pool_checkout_total, _pool_checkout_peak
+        checked_out = async_engine.sync_engine.pool.checkedout()
+        with _POOL_METRICS_LOCK:
+            _pool_checkout_total += 1
+            _pool_checkout_peak = max(_pool_checkout_peak, checked_out)
+
+
+def reset_database_pool_metrics() -> None:
+    """Reset process-local checkout counters, primarily at a Run boundary."""
+    global _pool_checkout_total, _pool_checkout_peak
+    with _POOL_METRICS_LOCK:
+        _pool_checkout_total = 0
+        _pool_checkout_peak = 0
+
+
+def get_database_pool_metrics() -> dict[str, Any]:
+    """Return lightweight pool telemetry without opening a database connection."""
+    engine = _engine
+    if engine is None or engine.url.get_backend_name() != "postgresql":
+        return {}
+
+    pool = engine.sync_engine.pool
+    with _POOL_METRICS_LOCK:
+        total_checkouts = _pool_checkout_total
+        peak_checked_out = _pool_checkout_peak
+    return {
+        **get_database_pool_settings(),
+        "checked_out": pool.checkedout(),
+        "checked_in": pool.checkedin(),
+        "overflow": pool.overflow(),
+        "total_checkouts": total_checkouts,
+        "peak_checked_out": peak_checked_out,
+    }
 
 
 def _ensure_sqlite_parent_dir(db_url: str) -> None:
@@ -51,13 +129,34 @@ def get_async_db_engine() -> AsyncEngine:
         encoded_db_password = quote_plus(db_password)
 
         db_url = f"postgresql+asyncpg://{encoded_db_user}:{encoded_db_password}@{db_host}:{db_port}/{db_name}"
+        pool_settings = get_database_pool_settings()
         async_engine = create_async_engine(
             db_url,
             echo=False,
             pool_pre_ping=True,
-            pool_recycle=300)
+            pool_recycle=300,
+            pool_size=pool_settings["pool_size"],
+            max_overflow=pool_settings["max_overflow"],
+            pool_timeout=pool_settings["pool_timeout_seconds"],
+            pool_use_lifo=True,
+            connect_args={
+                "server_settings": {
+                    "application_name": pool_settings["application_name"],
+                },
+            },
+        )
+        _install_pool_metrics(async_engine)
         logger.info(
-            f"created async engine with {db_user}@{db_host}:{db_port}/{db_name}"
+            "Created PostgreSQL async engine with {}@{}:{}/{}; "
+            "pool_size={}, max_overflow={}, pool_timeout={}s, application_name={}",
+            db_user,
+            db_host,
+            db_port,
+            db_name,
+            pool_settings["pool_size"],
+            pool_settings["max_overflow"],
+            pool_settings["pool_timeout_seconds"],
+            pool_settings["application_name"],
         )
 
         return async_engine
@@ -163,6 +262,7 @@ def reset_engine_for_test() -> None:
     global _engine, _session_factory
     _engine = None
     _session_factory = None
+    reset_database_pool_metrics()
 
 
 def set_engine_for_test(engine: AsyncEngine) -> None:

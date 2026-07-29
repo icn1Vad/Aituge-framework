@@ -10,6 +10,7 @@ services:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
     restart: unless-stopped
+    command: ["postgres", "-c", "max_connections=${POSTGRES_MAX_CONNECTIONS:-150}"]
     environment:
       POSTGRES_DB: postgres
       POSTGRES_USER: ${POSTGRES_USER}
@@ -133,6 +134,9 @@ services:
       network: host
     restart: unless-stopped
     environment:
+      CONTRACT_DATABASE_MAX_CONNECTIONS: ${CONTRACT_DATABASE_MAX_CONNECTIONS:-5}
+      CONTRACT_DATABASE_CONNECTION_ACQUIRE_TIMEOUT_SECONDS: ${CONTRACT_DATABASE_CONNECTION_ACQUIRE_TIMEOUT_SECONDS:-30}
+      CONTRACT_DATABASE_APPLICATION_NAME: ai-contract
       CONTRACT_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/contract_review
       CONTRACT_DATA_DIR: /app/data/contract
       CONTRACT_MAX_FILE_SIZE: ${CONTRACT_MAX_FILE_SIZE:-26214400}
@@ -181,6 +185,10 @@ services:
     environment: &framework_environment
       DB_TYPE: postgresql
       DB_NAME: ${CONTRACT_POSTGRES_DB:-contract_review}
+      DB_POOL_SIZE: ${FRAMEWORK_API_DB_POOL_SIZE:-3}
+      DB_MAX_OVERFLOW: ${FRAMEWORK_API_DB_MAX_OVERFLOW:-2}
+      DB_POOL_TIMEOUT_SECONDS: ${FRAMEWORK_API_DB_POOL_TIMEOUT_SECONDS:-30}
+      DB_APPLICATION_NAME: framework-api
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: postgres
@@ -263,7 +271,12 @@ services:
     image: ai-framework-core:local
     restart: unless-stopped
     command: ["python", "-m", "task_manager.runtime.worker"]
-    environment: *framework_environment
+    environment:
+      <<: *framework_environment
+      DB_POOL_SIZE: ${FRAMEWORK_WORKER_DB_POOL_SIZE:-3}
+      DB_MAX_OVERFLOW: ${FRAMEWORK_WORKER_DB_MAX_OVERFLOW:-1}
+      DB_POOL_TIMEOUT_SECONDS: ${FRAMEWORK_WORKER_DB_POOL_TIMEOUT_SECONDS:-30}
+      DB_APPLICATION_NAME: framework-worker
     volumes:
       - ${AI_FRAMEWORK_RUNTIME_ROOT:-../../runtime}/framework:/app/runtime
       - ${AITUGE_TMP_ROOT:-../../../tmp}:/app/aituge-tmp

@@ -3,10 +3,9 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-import psycopg
-
 from contract.config import Settings, get_settings
 from contract.errors import ConfigurationError
+from contract.persistence.postgres.connections import open_contract_database_connection
 
 
 MIGRATIONS_DIR = Path(__file__).with_name("migrations")
@@ -19,7 +18,7 @@ def run_migrations(settings: Settings | None = None) -> list[str]:
         raise ConfigurationError("CONTRACT_DATABASE_URL is required to run migrations")
 
     applied: list[str] = []
-    with psycopg.connect(settings.database_url, connect_timeout=5) as conn:
+    with open_contract_database_connection(settings) as conn:
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (MIGRATION_LOCK_ID,))
         conn.execute(
             """

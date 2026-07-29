@@ -6,7 +6,6 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
-import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -18,6 +17,7 @@ from contract.config import Settings
 from contract.errors import ConfigurationError, ContractError
 from contract.ir.models import ContractIR
 
+from contract.persistence.postgres.connections import open_contract_database_connection
 
 STAGE_TO_REVIEW_STAGE = {
     "parse_contract": "PARSING",
@@ -90,10 +90,11 @@ class FrameworkCallbackRepository:
     def __init__(self, settings: Settings) -> None:
         if not settings.database_url:
             raise ConfigurationError("CONTRACT_DATABASE_URL is required")
+        self.settings = settings
         self.database_url = settings.database_url
 
     def connect(self):
-        return psycopg.connect(self.database_url, row_factory=dict_row, connect_timeout=5)
+        return open_contract_database_connection(self.settings, row_factory=dict_row)
 
     def get_review_context(self, review_id: str) -> dict[str, Any]:
         with self.connect() as conn:
