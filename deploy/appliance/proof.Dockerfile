@@ -12,7 +12,8 @@ COPY services/proof/pyproject.toml services/proof/README.md ./
 COPY services/proof/src/ ./src/
 COPY services/proof/examples/ ./examples/
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir /aituge_model_config \
+    && pip install --no-cache-dir .
 
 RUN mkdir -p /app/.proof-data
 
