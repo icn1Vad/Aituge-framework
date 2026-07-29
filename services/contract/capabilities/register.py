@@ -1033,7 +1033,7 @@ def _stage_gateway_handler(
                 code="FRAMEWORK_RUN_FAILED",
                 retryable=False,
             )
-        return StageServiceResult(output=body["data"], metadata=consolidation_metadata)
+        return StageServiceResult(output=body["data"])
 
     return execute
 

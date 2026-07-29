@@ -767,3 +767,55 @@ def test_contract_stage_gateway_preserves_safe_rejection_detail(monkeypatch) -> 
         asyncio.run(handler(context))
     assert caught.value.code == "RESULT_INVALID"
     assert caught.value.retryable is False
+
+
+def test_contract_stage_gateway_returns_successful_stage_output(monkeypatch) -> None:
+    class Response:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"success": True, "data": {"result_type": "PARSE_CONTRACT_STAGE_V1"}}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(capability.httpx, "AsyncClient", Client)
+    handler = capability._stage_gateway_handler("http://ai-contract:18200", "secret")
+    context = SimpleNamespace(
+        task=SimpleNamespace(
+            id="task-1",
+            input_payload_json={
+                "schema_version": "1.0",
+                "review_id": "review-1",
+                "attempt_no": 1,
+                "business_task_id": "business-1",
+                "contract_version_id": "version-1",
+                "document_id": "document-1",
+                "perspective": "PARTY_A",
+                "our_party_name": None,
+                "contract_type": "AUTO",
+                "review_attitude": "NEUTRAL",
+            },
+        ),
+        run=SimpleNamespace(id="run-1"),
+        stage=SimpleNamespace(stage_id="parse_contract"),
+        stage_input={"artifacts": {}},
+    )
+
+    result = asyncio.run(handler(context))
+
+    assert result.output == {"result_type": "PARSE_CONTRACT_STAGE_V1"}
+    assert result.metadata == {}
