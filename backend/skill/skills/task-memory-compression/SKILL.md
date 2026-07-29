@@ -1,10 +1,10 @@
 ---
-name: media-script-memory-compression
+name: task-memory-compression
 description: Merge user-confirmed information into one concise shared Task Memory.
-tags: [media, script, memory, compression]
+tags: [task, memory, compression]
 ---
 
-# Media Script Task Memory Compression
+# Task Memory Compression
 
 ## Responsibility
 
@@ -21,7 +21,7 @@ Produce the complete next version of one business Task's shared memory. The memo
 - Do not invent preferences, facts, decisions, or user intent.
 - Do not include implementation details, database fields, Agent reasoning, or temporary execution status.
 - Keep the memory concise enough to inject into every later Skill call.
-- The current request only updates memory; do not generate or rewrite a script.
+- The current request only updates memory; do not execute the business task.
 
 ## Output
 

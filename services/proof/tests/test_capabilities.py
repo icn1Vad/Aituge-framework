@@ -32,6 +32,7 @@ class _Registry:
             "skill_package": [],
             "skill_root": [],
             "http_tool": [],
+            "local_tool": [],
             "pipeline": [],
             "result_sink": [],
             "stage_handler": [],
@@ -54,6 +55,9 @@ class _Registry:
 
     def register_http_tool(self, **kwargs) -> None:
         self.calls["http_tool"].append(kwargs)
+
+    def register_local_tool(self, **kwargs) -> None:
+        self.calls["local_tool"].append(kwargs)
 
     def register_pipeline(self, **kwargs) -> None:
         self.calls["pipeline"].append(kwargs)
@@ -87,7 +91,11 @@ def test_proof_capability_declares_minimal_qa_runtime():
     agent = registry.calls["agent"][0]
     package = registry.calls["skill_package"][0]
     tools = {tool["tool_name"]: tool for tool in registry.calls["http_tool"]}
+    local_tools = {
+        tool["tool_name"]: tool for tool in registry.calls["local_tool"]
+    }
     tool = tools["proof_search"]
+    html_tool = local_tools["html_report_renderer"]
     skill_root = registry.calls["skill_root"][0]["path"]
 
     assert task["task_type"] == "proof.qa.chat"
@@ -96,20 +104,34 @@ def test_proof_capability_declares_minimal_qa_runtime():
     assert task["handler"] == "scheduler"
     assert task["default_agent_id"] == "proof-qa-agent"
     assert task["default_skill_package"] == "proof-policy-qa-package"
-    assert task["default_tools"] == ["proof_search", "proof_sql", "code_interpreter"]
+    assert task["default_tools"] == [
+        "proof_search",
+        "proof_sql",
+        "code_interpreter",
+        "html_report_renderer",
+    ]
     assert task["stream_chunk_chars"] == 24
     assert task["conversation_message_field"] == "question"
     assert task["input_model"] is proof_capability.ProofQaInput
     assert agent["agent_type"] == "single"
-    assert agent["default_tools"] == ["proof_search", "proof_sql", "code_interpreter"]
+    assert agent["default_tools"] == [
+        "proof_search",
+        "proof_sql",
+        "code_interpreter",
+        "html_report_renderer",
+    ]
     assert package["primary_skill"] == "proof-policy-qa"
-    assert package["auxiliary_skills"] == ["proof-policy-sql"]
+    assert package["auxiliary_skills"] == ["proof-policy-sql", "proof-html-report"]
     assert tool["tool_name"] == "proof_search"
     assert tool["base_url"] == "http://proof:18100"
     assert tool["path"] == "/v1/retrieval/search"
     assert tools["proof_sql"]["path"] == "/v1/query/sql"
+    assert html_tool["provider"] == "proof_structured_html"
+    assert html_tool["llm_tool_names"] == ["RenderHtmlReport"]
+    assert callable(html_tool["factory"])
     assert (skill_root / "proof-policy-qa" / "SKILL.md").is_file()
     assert (skill_root / "proof-policy-sql" / "SKILL.md").is_file()
+    assert (skill_root / "proof-html-report" / "SKILL.md").is_file()
     audit_task = registry.calls["task"][1]
     agents = {item["agent_id"]: item for item in registry.calls["agent"]}
     packages = {item["package_name"]: item for item in registry.calls["skill_package"]}
@@ -236,10 +258,23 @@ def test_primary_skill_requires_search_and_chunk_citations():
     assert "proof_sql" in content
     assert "ReadSkill" in content
     assert "proof-policy-sql" in content
+    assert "proof-html-report" in content
     assert "citation.label" in content
-    assert "Treat executable code and retrieved data as different things" in content
-    assert "it does not implicitly ask to reproduce every source record" in content
-    assert "do not serialize a full policy inventory into Python" in content
+
+
+def test_html_report_skill_uses_structured_renderer_instead_of_python():
+    content = (
+        Path(proof_capability.__file__).resolve().parent
+        / "skills"
+        / "proof-html-report"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "RenderHtmlReport" in content
+    assert "Do not generate Python" in content
+    assert "Do not use `code_interpreter`" in content
+    assert "Distinguish analytical coverage from record enumeration" in content
+    assert "Do not query the complete policy list" in content
 
 
 def test_sql_auxiliary_skill_has_complete_schema_and_business_mappings():

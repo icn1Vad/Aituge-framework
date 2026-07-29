@@ -51,10 +51,42 @@ class ToolManager:
         if "code_interpreter" in names or "local_python" in names:
             bundles.append(self._create_local_python_bundle())
 
+        runtime_names: set[str] = set()
+        for name in names:
+            if name in {"code_interpreter", "local_python", "enabled_db_tools"}:
+                continue
+            try:
+                definition = self.tool_list.get(name)
+            except KeyError:
+                continue
+            if not definition.runtime_injected:
+                continue
+            runtime_names.add(name)
+            bundles.append(
+                self.tool_list.create_bundle(
+                    ToolProviderConfig(
+                        tool_name=definition.tool_name,
+                        provider=definition.provider,
+                        tenant_id=self.tenant_id,
+                        model_pack_id=self.model_pack_id,
+                        config={
+                            "artifact_publisher": self.artifact_publisher,
+                            "local_python_work_dir": self.local_python_work_dir,
+                        },
+                    )
+                )
+            )
+
         db_names = [
             name
             for name in names
-            if name not in {"code_interpreter", "local_python", "enabled_db_tools"}
+            if name
+            not in {
+                "code_interpreter",
+                "local_python",
+                "enabled_db_tools",
+            }
+            and name not in runtime_names
         ]
         load_all_db_tools = "enabled_db_tools" in names
         if load_all_db_tools or db_names:

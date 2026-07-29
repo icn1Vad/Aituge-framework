@@ -103,7 +103,7 @@ Artifacts, not shared Agent conversations, are the formal stage-to-stage contrac
 
 ## Business-Neutral Demo
 
-`pipeline.demo` validates the runtime without media-specific code:
+`pipeline.demo` validates the runtime without business-specific code:
 
 ```text
 analyze (Agent)

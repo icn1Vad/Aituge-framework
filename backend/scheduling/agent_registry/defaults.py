@@ -16,16 +16,7 @@ REPORT_AGENT_PROMPT = (
     "You are Report Agent, a TUGE single agent specialized in complete, "
     "evidence-grounded reports."
 )
-LEGACY_MEDIA_WRITER_AGENT_PROMPT = (
-    "You are Media Writer Agent. Write one complete speakable short-video script from verified research, "
-    "persona, and master-library context. Do not perform unrelated research."
-)
-LEGACY_MEDIA_STORYBOARD_AGENT_PROMPT = (
-    "You are Media Storyboard Agent. Convert the approved script draft into executable shots while "
-    "preserving narration, persona, timing, and visual continuity."
-)
-MEDIA_WRITER_AGENT_PROMPT = "You are Media Writer Agent."
-MEDIA_STORYBOARD_AGENT_PROMPT = "You are Media Storyboard Agent."
+
 def _profile_definition(
     agent_id: str,
     name: str,
@@ -65,61 +56,6 @@ DEFAULT_AGENT_PROFILE_DEFINITIONS = [
         default_datasets=["local_rag"],
         system_prompt=REPORT_AGENT_PROMPT,
     ),
-    _profile_definition(
-        agent_id="media-writer-agent",
-        name="Media Writer Agent",
-        description="Structured short-video script writer.",
-        default_tools=[],
-        system_prompt=MEDIA_WRITER_AGENT_PROMPT,
-        runtime_config={
-            "delegation": {
-                "enabled": True,
-                "use_when": "A complete or revised speakable media script must be saved to the Workspace.",
-                "modes": {
-                    "consult": {
-                        "skill_package": "media-writer-consult-package",
-                        "workspace_tools": ["read_script_workspace"],
-                    },
-                    "delegate": {
-                        "skill_package": "media-writer-delegate-package",
-                        "extra_tools": ["media_master_library"],
-                        "workspace_tools": [
-                            "read_script_workspace",
-                            "write_script_workspace",
-                        ],
-                        "required_success_tool": "write_script_workspace",
-                    },
-                },
-            }
-        },
-    ),
-    _profile_definition(
-        agent_id="media-storyboard-agent",
-        name="Media Storyboard Agent",
-        description="Executable storyboard generator for media scripts.",
-        default_tools=[],
-        system_prompt=MEDIA_STORYBOARD_AGENT_PROMPT,
-        runtime_config={
-            "delegation": {
-                "enabled": True,
-                "use_when": "The latest Workspace script must be converted into an executable shot list.",
-                "modes": {
-                    "consult": {
-                        "skill_package": "media-storyboard-consult-package",
-                        "workspace_tools": ["read_script_workspace"],
-                    },
-                    "delegate": {
-                        "skill_package": "media-storyboard-delegate-package",
-                        "workspace_tools": [
-                            "read_script_workspace",
-                            "write_storyboard_workspace",
-                        ],
-                        "required_success_tool": "write_storyboard_workspace",
-                    },
-                },
-            }
-        },
-    ),
 ]
 
 
@@ -132,19 +68,16 @@ RETIRED_DEFAULT_AGENT_IDS = {
     "code-agent",
     "media-research-agent",
     "media-review-agent",
+    "media-writer-agent",
+    "media-storyboard-agent",
 }
 
 
-LEGACY_DEFAULT_SYSTEM_PROMPTS = {
-    "media-writer-agent": {LEGACY_MEDIA_WRITER_AGENT_PROMPT},
-    "media-storyboard-agent": {LEGACY_MEDIA_STORYBOARD_AGENT_PROMPT},
-}
+LEGACY_DEFAULT_SYSTEM_PROMPTS: dict[str, set[str]] = {}
 
 # Default profile migrations are limited to values previously owned by this
 # registry. Explicitly configured non-default tool lists remain untouched.
-LEGACY_DEFAULT_TOOLS = {
-    "media-writer-agent": {(), ("media_master_library",)},
-}
+LEGACY_DEFAULT_TOOLS: dict[str, set[tuple[str, ...]]] = {}
 
 
 def build_default_agent_profiles() -> list[AgentProfileEntity]:

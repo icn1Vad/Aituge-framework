@@ -32,12 +32,6 @@ class DiscussionAgent:
                 "content": "default contribution",
                 "reason": "default agent has useful context",
             }
-        elif "You are Media Writer Agent" in self.system_prompt:
-            decision = {
-                "action": "pass",
-                "content": "",
-                "reason": "no script needed",
-            }
         else:
             saw_default = "default contribution" in user_text
             decision = {
@@ -87,7 +81,6 @@ def test_discussion_run_uses_public_thread_messages(tmp_path, monkeypatch):
                     "topic": "讨论内部审计制度如何检索和写报告",
                     "participant_agent_ids": [
                         "default-single-agent",
-                        "media-writer-agent",
                         "report-agent",
                     ],
                     "moderator_agent_id": "report-agent",
@@ -113,33 +106,28 @@ def test_discussion_run_uses_public_thread_messages(tmp_path, monkeypatch):
         assert payload["run"]["public_thread_id"]
         assert [item["agent_id"] for item in payload["participants"]] == [
             "default-single-agent",
-            "media-writer-agent",
             "report-agent",
         ]
 
         turns = payload["turns"]
-        assert [turn["action"] for turn in turns] == ["speak", "pass", "speak"]
+        assert [turn["action"] for turn in turns] == ["speak", "speak"]
         assert turns[0]["public_message_id"]
         assert turns[1]["public_message_id"]
-        assert turns[2]["public_message_id"]
         assert turns[0]["response"]["choices"][0]["message"]["content"]
         assert turns[0]["steps"] == []
-        assert turns[2]["skills"] is None
+        assert turns[1]["skills"] is None
 
         messages = payload["messages"]
         public_texts = [message["text"] for message in messages]
         assert public_texts == [
             "讨论内部审计制度如何检索和写报告",
             "default contribution",
-            "no script needed",
             "report saw default",
             "补充：请优先考虑可验证依据",
         ]
         assert messages[1]["discussion"]["speaker_id"] == "default-single-agent"
         assert messages[1]["discussion"]["turn_id"] == turns[0]["id"]
-        assert messages[2]["discussion"]["speaker_id"] == "media-writer-agent"
-        assert messages[2]["turn"]["action"] == "pass"
-        assert messages[3]["turn"]["agent_id"] == "report-agent"
+        assert messages[2]["turn"]["agent_id"] == "report-agent"
 
         for participant in payload["participants"]:
             await session_history_manager.clear_history(
@@ -307,9 +295,9 @@ def test_discussion_stream_wraps_single_agent_events(tmp_path, monkeypatch):
                     "topic": "stream discussion",
                     "participant_agent_ids": [
                         "default-single-agent",
-                        "media-writer-agent",
+                        "report-agent",
                     ],
-                    "moderator_agent_id": "media-writer-agent",
+                    "moderator_agent_id": "report-agent",
                     "user_id": "discussion-stream-user",
                     "max_rounds": 1,
                     "stream": True,

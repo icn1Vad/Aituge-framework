@@ -203,7 +203,6 @@ async def init_db():
     import db.models.thread  # noqa: F401
     import scheduling.agent_registry.models  # noqa: F401
     import scheduling.discussion.models  # noqa: F401
-    import scheduling.main_agent.models  # noqa: F401
     import skill.package_models  # noqa: F401
     import task_manager.models  # noqa: F401
     import tool.registry.models  # noqa: F401
@@ -215,8 +214,6 @@ async def init_db():
             await conn.run_sync(SQLModel.metadata.create_all)
         from task_manager.models import ensure_task_manager_schema
         await ensure_task_manager_schema(engine)
-        from scheduling.main_agent.models import ensure_main_agent_schema
-        await ensure_main_agent_schema(engine)
 
     if engine.url.get_backend_name() != "postgresql":
         await initialize_schema()

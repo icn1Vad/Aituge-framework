@@ -117,6 +117,20 @@ class _HttpToolRegistration:
 
 
 @dataclass(frozen=True, slots=True)
+class _LocalToolRegistration:
+    tool_name: str
+    provider: str
+    display_name: str
+    description: str
+    llm_tool_names: tuple[str, ...]
+    factory: Any
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return self.tool_name, self.provider
+
+
+@dataclass(frozen=True, slots=True)
 class _StageHandlerRegistration:
     name: str
     handler: Any
@@ -143,6 +157,7 @@ class CapabilityRegistry:
         self._skill_packages: dict[str, _SkillPackageRegistration] = {}
         self._skill_roots: list[Path] = []
         self._http_tools: dict[tuple[str, str], _HttpToolRegistration] = {}
+        self._local_tools: dict[tuple[str, str], _LocalToolRegistration] = {}
         self._stage_handlers: dict[str, _StageHandlerRegistration] = {}
         self._result_sinks: dict[str, _ResultSinkRegistration] = {}
         self._input_schemas: dict[str, type[BaseModel]] = {}
@@ -485,6 +500,43 @@ class CapabilityRegistry:
         if root not in self._skill_roots:
             self._skill_roots.append(root)
 
+    def register_local_tool(
+        self,
+        *,
+        tool_name: str,
+        provider: str,
+        display_name: str,
+        description: str,
+        factory: Any,
+        llm_tool_names: list[str] | None = None,
+    ) -> None:
+        """Register a trusted in-process tool owned by this capability.
+
+        The factory receives a ToolProviderConfig whose config mapping contains
+        task-scoped runtime dependencies such as ``artifact_publisher``.
+        """
+
+        normalized_name = tool_name.strip()
+        normalized_provider = provider.strip()
+        if not normalized_name or not normalized_provider:
+            raise ValueError("Local tool name and provider are required.")
+        if not callable(factory):
+            raise ValueError(f"Local tool '{normalized_name}' factory must be callable.")
+        if any(item.tool_name == normalized_name for item in self._http_tools.values()):
+            raise ValueError(f"Tool name '{normalized_name}' is declared more than once.")
+        if any(item.tool_name == normalized_name for item in self._local_tools.values()):
+            raise ValueError(f"Local tool name '{normalized_name}' is declared more than once.")
+
+        registration = _LocalToolRegistration(
+            tool_name=normalized_name,
+            provider=normalized_provider,
+            display_name=display_name.strip() or normalized_name,
+            description=description.strip(),
+            llm_tool_names=tuple(_dedupe(llm_tool_names or [normalized_name])),
+            factory=factory,
+        )
+        self._local_tools[registration.key] = registration
+
     def register_http_tool(
         self,
         *,
@@ -553,6 +605,8 @@ class CapabilityRegistry:
         )
         if any(item.tool_name == normalized_name for item in self._http_tools.values()):
             raise ValueError(f"HTTP tool name '{normalized_name}' is declared more than once.")
+        if any(item.tool_name == normalized_name for item in self._local_tools.values()):
+            raise ValueError(f"Tool name '{normalized_name}' is declared more than once.")
         if registration.key in self._http_tools:
             raise ValueError(
                 f"HTTP tool '{normalized_name}/{normalized_provider}' is declared more than once."
@@ -601,6 +655,8 @@ class CapabilityRegistry:
             register_pipeline_definition(pipeline, source=self.source_id)
         for task in self._tasks.values():
             register_task_definition(task, source=self.source_id)
+        for tool in self._local_tools.values():
+            _register_local_tool_definition(tool, source_id=self.source_id)
         for tool in self._http_tools.values():
             _register_http_tool_definition(tool, source_id=self.source_id)
 
@@ -722,7 +778,12 @@ class CapabilityRegistry:
             "agents": sorted(self._agents),
             "skill_packages": sorted(self._skill_packages),
             "skill_roots": [str(path) for path in self._skill_roots],
-            "tools": sorted(tool.tool_name for tool in self._http_tools.values()),
+            "tools": sorted(
+                [
+                    *(tool.tool_name for tool in self._local_tools.values()),
+                    *(tool.tool_name for tool in self._http_tools.values()),
+                ]
+            ),
             "stage_handlers": sorted(self._stage_handlers),
             "result_sinks": sorted(self._result_sinks),
         }
@@ -828,7 +889,11 @@ def _capability_entries_from_env() -> list[Path]:
 def _load_entry_module(entry: Path) -> ModuleType:
     digest = hashlib.sha256(str(entry).encode("utf-8")).hexdigest()[:16]
     module_name = f"_aituge_capability_{digest}"
-    spec = importlib.util.spec_from_file_location(module_name, entry)
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        entry,
+        submodule_search_locations=[str(entry.parent)],
+    )
     if spec is None or spec.loader is None:
         raise ValueError(f"Unable to load capability entry: {entry}")
     module = importlib.util.module_from_spec(spec)
@@ -866,6 +931,39 @@ def _register_http_tool_definition(
             description=registration.description,
             llm_tool_names=(registration.tool_name,),
             factory=_http_tool_factory(registration),
+        ),
+        make_default=True,
+    )
+    _TOOL_SOURCES[registration.key] = source_id
+
+
+def _register_local_tool_definition(
+    registration: _LocalToolRegistration,
+    *,
+    source_id: str,
+) -> None:
+    tool_list = get_default_tool_list()
+    existing = tool_list.providers_for(registration.tool_name)
+    owned_keys = {
+        key for key, owner in _TOOL_SOURCES.items() if owner == source_id
+    }
+    foreign = [item for item in existing if item.key not in owned_keys]
+    if foreign:
+        providers = ", ".join(sorted(item.provider for item in foreign))
+        raise ValueError(
+            f"Tool name '{registration.tool_name}' is already registered by "
+            f"provider(s): {providers}."
+        )
+
+    tool_list.register(
+        ToolDefinition(
+            tool_name=registration.tool_name,
+            provider=registration.provider,
+            display_name=registration.display_name,
+            description=registration.description,
+            llm_tool_names=registration.llm_tool_names,
+            factory=registration.factory,
+            runtime_injected=True,
         ),
         make_default=True,
     )

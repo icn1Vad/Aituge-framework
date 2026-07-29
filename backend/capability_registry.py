@@ -11,7 +11,11 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from common.system_constants import DEFAULT_TENANT_ID
 from db.db_context import create_db_session
 from skill import ensure_default_skill_packages, list_skill_packages
-from tool.registry import ToolConfigEntity, get_default_tool_list
+from tool.registry import (
+    ToolConfigEntity,
+    get_default_tool_list,
+    remove_retired_framework_tool_configs,
+)
 
 
 def _tool_tags(tool_name: str, provider: str) -> list[str]:
@@ -27,6 +31,7 @@ async def list_capabilities(
 ) -> list[dict[str, Any]]:
     """Return a unified display catalog without exposing executable secrets."""
 
+    await remove_retired_framework_tool_configs(session, tenant_id=tenant_id)
     await ensure_default_skill_packages(session, tenant_id=tenant_id)
     tool_configs = await _list_tool_configs(session, tenant_id)
     tool_config_by_key = {

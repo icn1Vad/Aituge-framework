@@ -7,6 +7,7 @@ from .registry import ToolDefinition, ToolList
 from .service import (
     get_enabled_tool_configs,
     get_tool_configs_by_names,
+    remove_retired_framework_tool_configs,
 )
 from .tool_list import DEFAULT_TOOL_LIST, create_default_tool_list, get_default_tool_list
 
@@ -21,4 +22,5 @@ __all__ = [
     "get_default_tool_list",
     "get_enabled_tool_configs",
     "get_tool_configs_by_names",
+    "remove_retired_framework_tool_configs",
 ]

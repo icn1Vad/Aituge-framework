@@ -7,7 +7,6 @@ from pathlib import Path
 import sys
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.staticfiles import StaticFiles
 
 from backend.simple_chat_app import (
     LOCAL_PYTHON_ARTIFACT_DIR,
@@ -28,14 +27,13 @@ from scheduling.scheduler import SchedulingRuntimeOptions
 from skill import ensure_default_skill_packages
 from task_manager import create_task_manager_router
 from tool import ToolBundle
-from tool.registry import ToolManager
+from tool.registry import ToolManager, remove_retired_framework_tool_configs
 from backend.revision_llm_api import create_revision_llm_router
 from backend.chat_title_llm_api import create_chat_title_llm_router
 from contract.api.app import create_app as create_contract_app
 from contract.persistence.postgres.migrate import run_migrations as run_contract_migrations
 
 
-TASK_MEMORY_TEST_DIR = Path(__file__).resolve().parents[1] / "frontend" / "task-memory-test"
 DEFAULT_RAG_PDF_PATH = (
     BACKEND_DIR
     / "data"
@@ -147,6 +145,7 @@ def create_app() -> FastAPI:
     async def lifespan(_app):
         await init_db()
         async with create_db_session() as session:
+            await remove_retired_framework_tool_configs(session)
             await ensure_default_skill_packages(session)
             await ensure_default_agent_profiles(session)
             await mount_capabilities_from_env(session=session)
@@ -172,11 +171,6 @@ def create_app() -> FastAPI:
     app.include_router(create_task_manager_router(scheduling_options))
     app.include_router(create_revision_llm_router())
     app.include_router(create_chat_title_llm_router())
-    app.mount(
-        "/task-memory-test",
-        StaticFiles(directory=TASK_MEMORY_TEST_DIR, html=True),
-        name="task-memory-test",
-    )
     @app.get("/rag/status")
     async def rag_status():
         return _rag_status_payload()

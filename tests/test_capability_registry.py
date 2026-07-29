@@ -2,6 +2,7 @@ import asyncio
 import json
 
 import httpx
+from sqlmodel import select
 
 from backend.local_code_chat_app import create_app
 from capability_registry import list_capabilities
@@ -17,18 +18,33 @@ def test_capability_catalog_lists_tools_and_skill_packages(tmp_path, monkeypatch
         reset_engine_for_test()
         await init_db()
         async with create_db_session() as session:
-            session.add(
-                ToolConfigEntity(
+            session.add_all(
+                [
+                    ToolConfigEntity(
                     tenant_id=DEFAULT_TENANT_ID,
                     tool_name="web_search",
                     provider="aliyun",
                     enabled=True,
                     config_json='{"search_count": 3}',
                     encrypted_secrets_json=encrypt_key('{"api_key": "secret-iqs-key"}'),
-                )
+                    ),
+                    ToolConfigEntity(
+                        tenant_id=DEFAULT_TENANT_ID,
+                        tool_name="media_master_library",
+                        provider="media_military_http",
+                        enabled=True,
+                    ),
+                ]
             )
             await session.flush()
             capabilities = await list_capabilities(session)
+            retired = (
+                await session.exec(
+                    select(ToolConfigEntity).where(
+                        ToolConfigEntity.tool_name == "media_master_library"
+                    )
+                )
+            ).first()
 
         by_key = {
             (
@@ -51,14 +67,17 @@ def test_capability_catalog_lists_tools_and_skill_packages(tmp_path, monkeypatch
         assert local_python["configured"] is False
         assert local_python["enabled"] is True
 
-        script_package = by_key[("skill_package", "media-script-select-package", None)]
-        assert script_package["display_name"] == "Media Script Select Package"
-        assert script_package["primary"] == "media-script-selector"
-        assert script_package["auxiliary"] == ["media-script-generator"]
+        memory_package = by_key[
+            ("skill_package", "task-memory-compression-package", None)
+        ]
+        assert memory_package["display_name"] == "Task Memory Compression Package"
+        assert memory_package["primary"] == "task-memory-compression"
+        assert memory_package["auxiliary"] == []
 
         payload = json.dumps(capabilities, ensure_ascii=False)
         assert "secret-iqs-key" not in payload
         assert "encrypted_secrets_json" not in payload
+        assert retired is None
 
     try:
         asyncio.run(run())

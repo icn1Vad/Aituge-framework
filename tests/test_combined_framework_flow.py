@@ -60,7 +60,6 @@ class _ToolCallingFakeLlm:
                     if tool.get("type") == "function"
                 }
                 assert {
-                    "ReadSkill",
                     "LimitedLocalPythonInterpreter",
                     "aliyun-websearch",
                     "search-knowledgebase-kb_project",
@@ -70,11 +69,6 @@ class _ToolCallingFakeLlm:
                     tool_calls=[
                         _tool_call(
                             0,
-                            "ReadSkill",
-                            {"skill_name": "media-script-generator"},
-                        ),
-                        _tool_call(
-                            1,
                             "LimitedLocalPythonInterpreter",
                             {
                                 "code": (
@@ -88,12 +82,12 @@ class _ToolCallingFakeLlm:
                             },
                         ),
                         _tool_call(
-                            2,
+                            1,
                             "aliyun-websearch",
                             {"query": "TUGE single agent framework test"},
                         ),
                         _tool_call(
-                            3,
+                            2,
                             "search-knowledgebase-kb_project",
                             {"query": "internal audit board report"},
                         ),
@@ -104,7 +98,7 @@ class _ToolCallingFakeLlm:
 
         async def final_pass():
             tool_context = "\n".join(str(message.get("content") or "") for message in messages)
-            assert "You are a short-video script creator" in tool_context
+            assert "source-backed search requests" in tool_context
             assert "drawing artifact ready" in tool_context
             assert '"artifacts":[]' in tool_context
             assert "Aliyun mocked result" in tool_context
@@ -212,7 +206,7 @@ def test_combined_skill_artifact_search_and_rag_flow(monkeypatch, tmp_path: Path
                 json={
                     "message": "Run the full framework acceptance flow.",
                     "user_id": "combined-framework-test-user",
-                    "skill_package": "media-script-select-package",
+                    "skill_package": "ai-search-package",
                     "stream": False,
                 },
             )
@@ -222,13 +216,12 @@ def test_combined_skill_artifact_search_and_rag_flow(monkeypatch, tmp_path: Path
         content = body["response"]["choices"][0]["message"]["content"]
         assert "combined framework ok" in content
         assert body["skills"]["active_package"]["primary"]["name"] == (
-            "media-script-selector"
+            "ai-search"
         )
 
         steps = body["response"]["steps"]
         step_names = {step["tool"]["function"]["name"] for step in steps}
         assert {
-            "ReadSkill",
             "LimitedLocalPythonInterpreter",
             "aliyun-websearch",
             "search-knowledgebase-kb_project",

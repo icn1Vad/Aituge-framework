@@ -48,15 +48,12 @@ def test_outer_backend_serves_frontend_and_chat(monkeypatch):
             assert "PAI-RAG" in page.text
             assert "新建对话" in page.text
             assert "agentSelect" in page.text
-            assert 'fetch("/scheduling/main/chat"' in page.text
-            assert "sendMainAgentStream" in page.text
-            assert "turn_started" in page.text
-            assert "Media Main Agent · 主" in page.text
-            assert "/scheduling/main-agents/" not in page.text
-            assert "media-main-agent" not in page.text
-            assert "taskManagerApiBase}/conversations" in page.text
-            assert "loadProofConversation" in page.text
-            assert "resumeProofRun" in page.text
+            assert 'requestJson("/single-agent/chat"' in page.text
+            assert "proof.qa.chat" in page.text
+            assert "ai.search.chat" in page.text
+            assert "pipeline.demo" in page.text
+            assert "table.audit" in page.text
+            assert "runTask" in page.text
 
             non_stream = await client.post(
                 "/single-agent/chat",

@@ -24,6 +24,7 @@ class ToolDefinition:
     description: str
     factory: BundleFactory
     llm_tool_names: tuple[str, ...] = field(default_factory=tuple)
+    runtime_injected: bool = False
 
     @property
     def key(self) -> tuple[str, str]:
@@ -74,4 +75,3 @@ class ToolList:
             return ToolBundle.empty()
         definition = self.get(config.tool_name, config.provider)
         return definition.factory(config)
-

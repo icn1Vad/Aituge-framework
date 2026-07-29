@@ -14,8 +14,6 @@ from skill import SkillManager
 from task_manager.memory import TaskMemoryRefreshContext, TaskMemoryService, render_task_memory
 from task_manager.models import TaskEntity
 from task_manager.registry import ConversationTaskType, get_task_definition
-from task_manager.schemas import TaskCreateRequest
-from task_manager.service import TaskManagerService
 import task_manager.memory as memory_module
 
 
@@ -48,9 +46,9 @@ def test_task_memory_versions_are_scoped_by_user_and_injected_as_prompt(tmp_path
                 assert max_tokens is None
                 assert temperature is None
                 if "Previous memory:\n(empty)" in message:
-                    memory = "脚本开头优先直接给出核心结论。"
+                    memory = "回答开头优先直接给出核心结论。"
                 elif "不要使用公文表达" in message:
-                    memory = "脚本开头优先直接给出核心结论；使用自然口语，避免公文化表达。"
+                    memory = "回答开头优先直接给出核心结论；使用自然语言，避免公文化表达。"
                 else:
                     memory = "另一个用户的独立记忆。"
                 return '{"memory":"' + memory + '"}'
@@ -60,19 +58,15 @@ def test_task_memory_versions_are_scoped_by_user_and_injected_as_prompt(tmp_path
         app = create_app()
         user_headers = {"X-User-Id": "lzt", "X-Tenant-Id": DEFAULT_TENANT_ID}
         other_headers = {"X-User-Id": "nrx", "X-Tenant-Id": DEFAULT_TENANT_ID}
-        task_key = "media_script"
+        task_key = "report_preferences"
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",
         ) as client:
-            page = await client.get("/task-memory-test/")
-            assert page.status_code == 200
-            assert "Task Memory Test" in page.text
-
             first = await client.post(
                 f"/task-manager/memories/{task_key}/compress",
                 headers=user_headers,
-                json={"new_information": "以后脚本开头直接给结论。"},
+                json={"new_information": "以后回答开头直接给结论。"},
             )
             assert first.status_code == 200, first.text
             assert first.json()["memory"]["version"] == 1
@@ -84,9 +78,9 @@ def test_task_memory_versions_are_scoped_by_user_and_injected_as_prompt(tmp_path
             )
             assert second.status_code == 200, second.text
             assert second.json()["memory"]["version"] == 2
-            assert "自然口语" in second.json()["memory"]["content"]
-            assert "脚本开头优先直接给出核心结论" in captured_messages[1]
-            assert "# Media Script Task Memory Compression" in captured_system_prompts[0]
+            assert "自然语言" in second.json()["memory"]["content"]
+            assert "回答开头优先直接给出核心结论" in captured_messages[1]
+            assert "# Task Memory Compression" in captured_system_prompts[0]
 
             latest = await client.get(
                 f"/task-manager/memories/{task_key}",
@@ -111,12 +105,12 @@ def test_task_memory_versions_are_scoped_by_user_and_injected_as_prompt(tmp_path
         prompt = render_task_memory(latest_row)
         assert "# Task Memory" in prompt
         assert "current request always takes priority" in prompt
-        assert "自然口语" in prompt
+        assert "自然语言" in prompt
 
         skill_context = await SkillManager(tenant_id=DEFAULT_TENANT_ID).create_context(
-            "media-script-memory-compression-package"
+            "task-memory-compression-package"
         )
-        assert "# Media Script Task Memory Compression" in skill_context.task_prompt
+        assert "# Task Memory Compression" in skill_context.task_prompt
         assert "Preserve the force and scope" in skill_context.task_prompt
 
     try:
@@ -150,11 +144,11 @@ def test_task_type_refresh_is_explicit_and_conversation_aware(tmp_path, monkeypa
         await init_db()
         options = SchedulingRuntimeOptions(local_python_artifact_dir=tmp_path / "artifacts")
 
-        default_task_type = get_task_definition("media.script.select")
+        default_task_type = get_task_definition("table.audit")
         skipped = await default_task_type.refresh_memory(
             TaskEntity(
                 id="default-task",
-                task_type="media.script.select",
+                task_type="table.audit",
                 task_key="default-memory",
                 user_id="memory-user",
                 tenant_id=DEFAULT_TENANT_ID,
@@ -169,7 +163,10 @@ def test_task_type_refresh_is_explicit_and_conversation_aware(tmp_path, monkeypa
             task_key="default-memory",
         ) is None
 
-        task_type = get_task_definition("media.chat")
+        task_type = ConversationTaskType(
+            task_type="test.conversation",
+            name="Test conversation task",
+        )
         assert isinstance(task_type, ConversationTaskType)
         async with create_db_session() as session:
             thread = await ThreadService(session).create_thread(
@@ -179,7 +176,7 @@ def test_task_type_refresh_is_explicit_and_conversation_aware(tmp_path, monkeypa
             message_service = MessageService(session)
             for role, text in [
                 ("system", "internal"),
-                ("user", "以后开头直接说结论。"),
+                ("user", "以后回答开头直接说结论。"),
                 ("tool", "temporary tool output"),
                 ("assistant", "明白，我会保持直接。"),
             ]:
@@ -193,17 +190,14 @@ def test_task_type_refresh_is_explicit_and_conversation_aware(tmp_path, monkeypa
                 )
             await session.commit()
 
-        service = TaskManagerService(options)
-        task = await service.create_task(
-            TaskCreateRequest(
-                task_type="media.chat",
-                task_key="media-chat-memory",
-                input_payload={"message": "继续优化脚本"},
-                user_id="memory-user",
-                thread_id=thread.id,
-                session_id="media-chat-session",
-                stream=False,
-            )
+        task = TaskEntity(
+            id="conversation-task",
+            task_type="test.conversation",
+            task_key="conversation-memory",
+            user_id="memory-user",
+            tenant_id=DEFAULT_TENANT_ID,
+            thread_id=thread.id,
+            session_id="conversation-session",
         )
 
         captured = {}
@@ -211,16 +205,19 @@ def test_task_type_refresh_is_explicit_and_conversation_aware(tmp_path, monkeypa
         class FakeLlmRuntime:
             def __init__(self, tenant_id, model_pack_id=None):
                 assert tenant_id == DEFAULT_TENANT_ID
-                assert model_pack_id == "api-rerank"
+                assert model_pack_id == ""
 
             async def complete(self, messages, model_id=None, **kwargs):
                 assert model_id is None
                 captured["message"] = messages[-1]["content"]
-                return '{"memory":"脚本开头直接给出结论。"}'
+                return '{"memory":"回答开头直接给出结论。"}'
 
         monkeypatch.setattr(memory_module, "LlmRuntime", FakeLlmRuntime)
 
-        refreshed = await service.refresh_task_memory(task.id)
+        refreshed = await task_type.refresh_memory(
+            task,
+            TaskMemoryRefreshContext(options=options),
+        )
         assert refreshed.status == "updated"
         assert refreshed.memory is not None
         assert refreshed.memory.version == 1
@@ -247,19 +244,16 @@ def test_task_type_refresh_is_explicit_and_conversation_aware(tmp_path, monkeypa
                 ThreadCreate(user_id="memory-user", title="Empty memory source"),
                 DEFAULT_TENANT_ID,
             )
-            task_row = await session.get(TaskEntity, task.id)
-            assert task_row is not None
-            task_row.thread_id = empty_thread.id
-            session.add(task_row)
-            await session.commit()
-
-        empty = await service.refresh_task_memory(task.id)
+        empty = await task_type.refresh_memory(
+            task.model_copy(update={"thread_id": empty_thread.id}),
+            TaskMemoryRefreshContext(options=options),
+        )
         assert empty.status == "skipped"
         assert empty.reason == "no_memory_material"
         latest = await TaskMemoryService(options).get_latest(
             tenant_id=DEFAULT_TENANT_ID,
             user_id="memory-user",
-            task_key="media-chat-memory",
+            task_key="conversation-memory",
         )
         assert latest is not None
         assert latest.version == 1

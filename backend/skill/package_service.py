@@ -23,90 +23,6 @@ DEFAULT_SKILL_PACKAGES = [
         "auxiliary_skills": [],
     },
     {
-        "package_name": "media-script-chat-package",
-        "display_name": "Media Script Chat Package",
-        "description": "Read-only, context-grounded conversation about one current media script.",
-        "tags": ["media", "script", "chat", "task-manager"],
-        "primary_skill": "media-script-chat",
-        "auxiliary_skills": [],
-    },
-    {
-        "package_name": "media-script-main-agent-package",
-        "display_name": "Media Script MainAgent Package",
-        "description": "Run a formal script Task through MainAgent, Writer, and Storyboard Workspace stages.",
-        "tags": ["main-agent", "media", "script", "task-manager"],
-        "primary_skill": "media-script-task-orchestration",
-        "auxiliary_skills": [
-            "main-agent-orchestration",
-            "media-script-writer",
-            "workspace-storyboard-editor",
-        ],
-    },
-    {
-        "package_name": "media-writer-consult-package",
-        "display_name": "Media Writer Consult Package",
-        "description": "Read-only script consultation grounded in the shared Workspace.",
-        "tags": ["main-agent", "consult", "media", "script"],
-        "primary_skill": "managed-agent-consult",
-        "auxiliary_skills": ["media-script-writer"],
-    },
-    {
-        "package_name": "media-writer-delegate-package",
-        "display_name": "Media Writer Delegate Package",
-        "description": "Delegated script execution with a required Workspace save.",
-        "tags": ["main-agent", "delegate", "media", "script"],
-        "primary_skill": "managed-agent-delegate",
-        "auxiliary_skills": ["media-script-writer"],
-    },
-    {
-        "package_name": "media-storyboard-consult-package",
-        "display_name": "Media Storyboard Consult Package",
-        "description": "Read-only storyboard consultation grounded in the shared Workspace.",
-        "tags": ["main-agent", "consult", "media", "storyboard"],
-        "primary_skill": "managed-agent-consult",
-        "auxiliary_skills": ["workspace-storyboard-editor"],
-    },
-    {
-        "package_name": "media-storyboard-delegate-package",
-        "display_name": "Media Storyboard Delegate Package",
-        "description": "Delegated storyboard execution with a required Workspace save.",
-        "tags": ["main-agent", "delegate", "media", "storyboard"],
-        "primary_skill": "managed-agent-delegate",
-        "auxiliary_skills": ["workspace-storyboard-editor"],
-    },
-    {
-        "package_name": "media-script-memory-compression-package",
-        "display_name": "Media Script Memory Compression Package",
-        "description": "Compress confirmed user information into the next shared Task Memory version.",
-        "tags": ["media", "script", "memory", "task-manager"],
-        "primary_skill": "media-script-memory-compression",
-        "auxiliary_skills": [],
-    },
-    {
-        "package_name": "media-script-writer-package",
-        "display_name": "Media Script Writer Package",
-        "description": "Write a structured short-video script from verified Pipeline artifacts.",
-        "tags": ["media", "script", "writer", "pipeline"],
-        "primary_skill": "media-script-writer",
-        "auxiliary_skills": [],
-    },
-    {
-        "package_name": "media-storyboard-package",
-        "display_name": "Media Storyboard Package",
-        "description": "Generate executable shots from a structured script draft.",
-        "tags": ["media", "script", "storyboard", "pipeline"],
-        "primary_skill": "media-storyboard",
-        "auxiliary_skills": [],
-    },
-    {
-        "package_name": "media-script-select-package",
-        "display_name": "Media Script Select Package",
-        "description": "Select and explain the best script candidate for reusable TaskManager media tasks.",
-        "tags": ["media", "script", "selection", "task-manager"],
-        "primary_skill": "media-script-selector",
-        "auxiliary_skills": ["media-script-generator"],
-    },
-    {
         "package_name": "table-audit-package",
         "display_name": "Table Audit Package",
         "description": "Audit table rows one by one and return structured item-level decisions.",
@@ -123,19 +39,11 @@ DEFAULT_SKILL_PACKAGES = [
         "auxiliary_skills": [],
     },
     {
-        "package_name": "media-topic-search-package",
-        "display_name": "Media Topic Search Package",
-        "description": "Freshness-first source search and topic aggregation for new-media planning.",
-        "tags": ["media", "topic", "search", "task-manager"],
-        "primary_skill": "media-topic-search",
-        "auxiliary_skills": [],
-    },
-    {
-        "package_name": "douyin-account-report-package",
-        "display_name": "Douyin Account Report Package",
-        "description": "Fact-grounded Douyin account operations reporting across all available data or a requested range.",
-        "tags": ["douyin", "analytics", "report", "task-manager"],
-        "primary_skill": "douyin-account-report",
+        "package_name": "task-memory-compression-package",
+        "display_name": "Task Memory Compression Package",
+        "description": "Compress confirmed conversation facts into durable task memory.",
+        "tags": ["memory", "task-manager"],
+        "primary_skill": "task-memory-compression",
         "auxiliary_skills": [],
     },
 ]
@@ -155,6 +63,18 @@ RETIRED_DEFAULT_SKILL_PACKAGE_NAMES = {
     "media-industry-calendar-topic-copy-package",
     "media-calendar-official-date-lookup-package",
     "douyin-content-analysis-package",
+    "media-script-chat-package",
+    "media-script-main-agent-package",
+    "media-writer-consult-package",
+    "media-writer-delegate-package",
+    "media-storyboard-consult-package",
+    "media-storyboard-delegate-package",
+    "media-script-memory-compression-package",
+    "media-script-writer-package",
+    "media-storyboard-package",
+    "media-script-select-package",
+    "media-topic-search-package",
+    "douyin-account-report-package",
     "smart-fill-project-package",
     "smart-fill-company-package",
     "smart-fill-financial-package",
@@ -183,21 +103,6 @@ async def ensure_default_skill_packages(
         result = await session.exec(statement)
         existing = result.first()
         if existing is not None:
-            legacy_auxiliary = {
-                "media-writer-consult-package": ["workspace-script-editor"],
-                "media-writer-delegate-package": ["workspace-script-editor"],
-            }.get(definition["package_name"])
-            if (
-                legacy_auxiliary is not None
-                and existing.primary_skill == definition["primary_skill"]
-                and existing.auxiliary_skills == legacy_auxiliary
-            ):
-                existing.auxiliary_skills_json = json.dumps(
-                    definition["auxiliary_skills"],
-                    ensure_ascii=True,
-                )
-                existing.updated_at = datetime.utcnow()
-                session.add(existing)
             continue
         session.add(
             SkillPackageEntity(

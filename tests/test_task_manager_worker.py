@@ -144,7 +144,7 @@ async def test_resource_task_inheritance_is_frozen_on_the_run(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_worker_does_not_claim_external_main_agent_runs(tmp_path, monkeypatch):
+async def test_worker_does_not_claim_external_runs(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_TYPE", "sqlite")
     monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'external.db'}")
     reset_engine_for_test()
@@ -153,7 +153,7 @@ async def test_worker_does_not_claim_external_main_agent_runs(tmp_path, monkeypa
     async with create_db_session() as session:
         task = TaskEntity(
             id="external-task",
-            task_type="media.script.generate",
+            task_type="pipeline.demo",
             handler_name="external",
             status="running",
             current_run_id="external-run",

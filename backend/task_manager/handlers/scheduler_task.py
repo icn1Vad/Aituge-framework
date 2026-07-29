@@ -193,48 +193,6 @@ def _build_task_message(task: TaskEntity, definition: TaskType) -> str:
     task_type = task.task_type
     pretty_payload = json.dumps(payload, ensure_ascii=False, indent=2)
 
-    if task_type == "media.script.generate":
-        return "\n".join(
-            [
-                "Generate a short-video script from the media task input below.",
-                "Follow the media-script-generator skill output structure and boundaries.",
-                "Return exactly one valid JSON object. Do not add Markdown or explanation outside the JSON.",
-                "",
-                f"Task title: {task.title or definition.name}",
-                "Task input:",
-                pretty_payload,
-            ]
-        )
-
-    if task_type == "media.script.select":
-        return "\n".join(
-            [
-                "Select the best media script candidate from the input below.",
-                "Follow the media-script-selector skill and return a structured selection result.",
-                "Return exactly one valid JSON object. Do not add Markdown or explanation outside the JSON.",
-                "",
-                f"Task title: {task.title or definition.name}",
-                "Task input:",
-                pretty_payload,
-            ]
-        )
-
-    if task_type == "media.chat":
-        user_message = payload.get("message") or payload.get("question") or ""
-        return "\n".join(
-            [
-                "Answer as a read-only media script conversation assistant.",
-                "Use the media-script-chat skill and the bounded current-script context below.",
-                "Do not rewrite or mutate the script, create artifacts, rerun a Pipeline, or claim that an edit was saved.",
-                "If the user requests an edit, explain the suggested change in natural language only.",
-                "Return a concise natural-language answer, not a complete script JSON object.",
-                "",
-                f"User message: {user_message}",
-                "Additional input:",
-                pretty_payload,
-            ]
-        )
-
     if task_type == "ai.search.chat":
         user_message = payload.get("message") or ""
         search_goal = payload.get("search_goal") or ""
@@ -242,15 +200,13 @@ def _build_task_message(task: TaskEntity, definition: TaskType) -> str:
         return "\n".join(
             [
                 "Run a source-backed AI search task using the configured web search tool.",
-                "Use the ai-search skill as a freshness-first search and new-media topic discovery workflow.",
+                "Use the ai-search skill as a freshness-first source discovery workflow.",
                 "First plan 1-3 executable Chinese search queries with reasons. Then call the web search tool.",
-                "Use at most 3 web search tool calls for one task, then select the best source cards and topic suggestions.",
+                "Use at most 3 web search tool calls for one task, then select the best source cards.",
                 "Preserve the user's concrete search intent and main nouns/entities in every planned query.",
-                "Do not replace a specific search request with generic business-axis fallback topics.",
                 "If the user message is unreadable or too ambiguous, return status='needs_clarification' instead of searching a guessed broad topic.",
-                "Inspect source authority, freshness, relevance, and business bridge before producing final results.",
-                "If the user is looking for new-media topics or reliable material sources, aggregate sources into topic_suggestions.",
-                "Do not force weak sources into business conversion. Put weak evidence and caveats in evidence_summary or risks.",
+                "Inspect source authority, freshness, and relevance before producing final results.",
+                "Put weak evidence and caveats in evidence_summary or risks.",
                 "Return exactly one valid JSON object matching the ai_search_output schema.",
                 "Do not add Markdown or explanation outside the JSON.",
                 "The JSON must parse with json.loads. Do not put raw ASCII double quotes inside string values; escape them or use Chinese quotes.",
@@ -259,74 +215,6 @@ def _build_task_message(task: TaskEntity, definition: TaskType) -> str:
                 f"User search message: {user_message}",
                 f"Search goal: {search_goal}",
                 f"Maximum result cards: {max_results}",
-                "Full task input:",
-                pretty_payload,
-            ]
-        )
-
-    if task_type == "media.topic.search":
-        user_message = payload.get("message") or payload.get("topic_query") or ""
-        search_goal = payload.get("search_goal") or ""
-        search_mode = payload.get("search_mode") or "specific_search"
-        max_results = payload.get("max_results") or 5
-        max_topics = payload.get("max_topics") or 5
-        mode_instruction = (
-            "Treat this as broad current-hotspot discovery. Search across recent signals and keep only naturally related topics."
-            if search_mode == "hotspot_discovery"
-            else "Treat this as a specific search. Preserve the user's concrete target in every query."
-        )
-        return "\n".join(
-            [
-                "Run a reusable new-media topic search task using the configured web search tool.",
-                "Use the media-topic-search skill as the task authority.",
-                "This task should produce reliable source cards and operator-ready topic suggestions.",
-                "First plan 2-5 executable Chinese search queries with reasons. Then call the web search tool.",
-                "Preserve the user's concrete search intent and main nouns/entities in every planned query.",
-                "Do not replace a specific search request with generic business-axis fallback topics.",
-                "If the user message is unreadable or too ambiguous, return status='needs_clarification' instead of searching a guessed broad topic.",
-                "Inspect source authority, freshness, relevance, and media business bridge before producing final results.",
-                f"Requested search mode: {search_mode}. This value is authoritative; query_plan.mode must equal it exactly.",
-                mode_instruction,
-                "Return exactly one valid JSON object matching the media_topic_search_output schema.",
-                "Do not add Markdown or explanation outside the JSON.",
-                "The JSON must parse with json.loads. Do not put raw ASCII double quotes inside string values; escape them or use Chinese quotes.",
-                "",
-                f"Task title: {task.title or definition.name}",
-                f"User topic search message: {user_message}",
-                f"Search goal: {search_goal}",
-                f"Search mode: {search_mode}",
-                f"Maximum source cards: {max_results}",
-                f"Maximum topic suggestions: {max_topics}",
-                "Full task input:",
-                pretty_payload,
-            ]
-        )
-
-    if task_type == "analytics.douyin.account_report.generate":
-        analysis_scope = payload.get("analysis_scope") or "all_data"
-        report_goal = payload.get("report_goal") or ""
-        return "\n".join(
-            [
-                "Generate a fact-grounded Douyin account operations analysis report.",
-                "Use the douyin-account-report skill as the task authority.",
-                "Default to analyzing all available account data, not only one calendar month.",
-                "Only use month or date range boundaries when analysis_scope explicitly requests them.",
-                "Do not call any tools for this first TaskManager version. Do not call ReadSkill or code tools.",
-                "Use only the data already present in Full task input.",
-                "Do not invent metrics, audience profiles, comments, benchmarks, retention, or script quality evidence.",
-                "If data is missing, explain the limitation and still produce a useful partial report.",
-                "Return exactly one valid JSON object matching the douyin_account_report_output schema.",
-                "Do not add Markdown or explanation outside the JSON.",
-                "The JSON must parse with json.loads. Escape raw double quotes inside string values.",
-                "Set export_markdown to an empty string for now; do not put multi-line Markdown inside JSON.",
-                "Keep each section concise: summary plus up to 4 findings, 4 evidence strings, 4 limitations, and 4 next_actions.",
-                "Keep the complete JSON under 6000 Chinese characters.",
-                "top_content_analysis must contain at most 3 items. low_content_analysis must contain at most 2 items.",
-                "Each top/low content item should only include id, title, play_count, reason, and recommended_action.",
-                "",
-                f"Task title: {task.title or definition.name}",
-                f"Analysis scope: {analysis_scope}",
-                f"Report goal: {report_goal}",
                 "Full task input:",
                 pretty_payload,
             ]

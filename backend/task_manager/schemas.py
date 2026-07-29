@@ -276,20 +276,5 @@ class HumanReviewRequest(BaseModel):
     resume_from_stage: Optional[str] = None
 
 
-class ScriptChangeApplyRequest(BaseModel):
-    proposal_artifact_id: str = Field(min_length=1)
-    comment: str = ""
-
-
-class ScriptChangeApplyResponse(BaseModel):
-    proposal_task_id: str
-    proposal_run_id: str
-    proposal_artifact_id: str
-    revision_task_id: str
-    revision_run_id: str
-    status: str
-    stream_url: str
-
-
 class StageRetryRequest(BaseModel):
     comment: str = ""

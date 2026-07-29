@@ -8,8 +8,7 @@ class DiscussionRunCreateRequest(BaseModel):
     participant_agent_ids: list[str] = Field(
         default_factory=lambda: [
             "default-single-agent",
-            "media-writer-agent",
-            "media-storyboard-agent",
+            "report-agent",
         ]
     )
     moderator_agent_id: str | None = None

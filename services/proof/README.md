@@ -79,10 +79,12 @@ export AITUGE_CAPABILITY_ENTRY="$PWD/capabilities/register.py"
 export PROOF_SERVICE_BASE_URL=http://127.0.0.1:18100
 ```
 
-挂载后可通过 TaskManager 执行 `proof.qa.chat`。生产审校只创建一个 `proof.audit.run`，其内部并行
+挂载后可通过 TaskManager 执行 `proof.qa.chat`。问答默认提供 `proof_search`、`proof_sql`、
+`code_interpreter` 和结构化 `html_report_renderer`；遇到 HTML/可视化调研报告时，主 Skill
+先按需加载 `proof-html-report`，由模型提交紧凑的报告结构，渲染器负责校验、转义和发布 HTML
+产物，不让模型生成 Python 或原始 HTML。生产审校只创建一个 `proof.audit.run`，其内部并行
 执行制度概览、清晰性/可执行性和制度冲突 Stage；`proof.conflict.audit` 仅保留用于诊断。该问答 Task 仍走现有
-Scheduler 和 SingleAgent，仅注入 `proof_search`、`proof_sql`、`code_interpreter` 与
-`proof-policy-qa`，不会使用 Framework 本地 RAG。
+Scheduler 和 SingleAgent，使用 `proof-policy-qa`，不会使用 Framework 本地 RAG。
 
 该审校流程默认关闭。启用前配置：
 

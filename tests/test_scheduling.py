@@ -30,7 +30,7 @@ class CapturingAgent:
         async def gen():
             tool_names = ",".join(tool.metadata.name for tool in self.tools)
             has_report_identity = "You are Report Agent" in self.system_prompt
-            has_selected_skill = "# Media Script Selector" in self.system_prompt
+            has_selected_skill = "# AI Search" in self.system_prompt
             yield TextChunk(
                 delta=(
                     f"tools={tool_names}; "
@@ -107,8 +107,6 @@ def test_agent_registry_creates_default_profiles(tmp_path, monkeypatch):
         assert {profile.agent_id for profile in profiles} == {
             "default-single-agent",
             "report-agent",
-            "media-writer-agent",
-            "media-storyboard-agent",
         }
         assert report_agent is not None
         assert report_agent.system_prompt.startswith("You are Report Agent")
@@ -221,10 +219,10 @@ def test_scheduling_chat_uses_only_explicit_skill_package(tmp_path, monkeypatch)
             explicit_response = await client.post(
                 "/scheduling/agents/report-agent/chat",
                 json={
-                    "message": "select a media script",
+                    "message": "search official documentation",
                     "user_id": "scheduling-skill-test-user",
                     "stream": False,
-                    "skill_package": "media-script-select-package",
+                    "skill_package": "ai-search-package",
                 },
             )
 
@@ -243,9 +241,9 @@ def test_scheduling_chat_uses_only_explicit_skill_package(tmp_path, monkeypatch)
         assert explicit_response.status_code == 200
         explicit_body = explicit_response.json()
         explicit_content = explicit_body["response"]["choices"][0]["message"]["content"]
-        assert explicit_body["skills"]["active_package"]["package_name"] == "media-script-select-package"
-        assert explicit_body["skills"]["active_package"]["primary"]["name"] == "media-script-selector"
-        assert "ReadSkill" in explicit_content
+        assert explicit_body["skills"]["active_package"]["package_name"] == "ai-search-package"
+        assert explicit_body["skills"]["active_package"]["primary"]["name"] == "ai-search"
+        assert "ReadSkill" not in explicit_content
         assert "selected_skill_prompt=True" in explicit_content
 
         await session_history_manager.clear_history(

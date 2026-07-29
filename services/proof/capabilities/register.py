@@ -11,6 +11,8 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from aituge_model_config import ModelRuntimeProvider
 
+from .tools.html_report import create_capability_html_report_bundle
+
 
 CAPABILITY_ID = "proof"
 CAPABILITY_DIR = Path(__file__).resolve().parent
@@ -504,6 +506,17 @@ async def register(registry, settings) -> None:
         handler=_proof_policy_action_handler(base_url),
     )
     registry.register_skill_root(CAPABILITY_DIR / "skills")
+    registry.register_local_tool(
+        tool_name="html_report_renderer",
+        provider="proof_structured_html",
+        display_name="Proof Structured HTML Report Renderer",
+        description=(
+            "Render a compact evidence-grounded Proof policy report as a "
+            "task-owned HTML artifact."
+        ),
+        factory=create_capability_html_report_bundle,
+        llm_tool_names=["RenderHtmlReport"],
+    )
     registry.register_http_tool(
         tool_name="proof_search",
         provider="proof_http",
@@ -571,7 +584,7 @@ async def register(registry, settings) -> None:
         description="Evidence-grounded question answering over indexed company policies.",
         tags=["proof", "policy", "qa", "rag"],
         primary_skill="proof-policy-qa",
-        auxiliary_skills=["proof-policy-sql"],
+        auxiliary_skills=["proof-policy-sql", "proof-html-report"],
     )
     registry.register_agent(
         agent_id="proof-qa-agent",
@@ -584,7 +597,12 @@ async def register(registry, settings) -> None:
             "Search before making policy claims, combine structured facts into one SQL tool call, "
             "preserve uncertainty, and never invent citations."
         ),
-        default_tools=["proof_search", "proof_sql", "code_interpreter"],
+        default_tools=[
+            "proof_search",
+            "proof_sql",
+            "code_interpreter",
+            "html_report_renderer",
+        ],
         default_datasets=[],
     )
     registry.register_skill_package(
@@ -620,7 +638,12 @@ async def register(registry, settings) -> None:
         default_agent_id="proof-qa-agent",
         default_skill_package="proof-policy-qa-package",
         default_primary_skill="proof-policy-qa",
-        default_tools=["proof_search", "proof_sql", "code_interpreter"],
+        default_tools=[
+            "proof_search",
+            "proof_sql",
+            "code_interpreter",
+            "html_report_renderer",
+        ],
         default_datasets=[],
         stream_chunk_chars=24,
         conversation_message_field="question",

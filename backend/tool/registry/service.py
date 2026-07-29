@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from loguru import logger
+from sqlalchemy import delete
 from sqlalchemy.exc import OperationalError
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -10,6 +11,28 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from common.system_constants import DEFAULT_TENANT_ID
 
 from .models import ToolConfigEntity
+
+
+RETIRED_FRAMEWORK_TOOL_CONFIGS = {
+    ("media_master_library", "media_military_http"),
+}
+
+
+async def remove_retired_framework_tool_configs(
+    session: AsyncSession,
+    tenant_id: str = DEFAULT_TENANT_ID,
+) -> None:
+    """Delete only tool rows previously seeded by this repository."""
+
+    for tool_name, provider in RETIRED_FRAMEWORK_TOOL_CONFIGS:
+        await session.exec(
+            delete(ToolConfigEntity).where(
+                ToolConfigEntity.tenant_id == tenant_id,
+                ToolConfigEntity.tool_name == tool_name,
+                ToolConfigEntity.provider == provider,
+            )
+        )
+    await session.commit()
 
 
 async def get_enabled_tool_configs(

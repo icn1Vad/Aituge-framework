@@ -16,7 +16,7 @@ from .models import TaskEntity, TaskMemoryEntity
 from .output_parser import parse_json_output
 
 
-DEFAULT_MEMORY_SKILL_PACKAGE = "media-script-memory-compression-package"
+DEFAULT_MEMORY_SKILL_PACKAGE = "task-memory-compression-package"
 MEMORY_MATERIAL_MAX_CHARS = 8000
 
 TaskMemoryMaterialKind = Literal["manual", "conversation", "artifact", "result"]

@@ -9,10 +9,6 @@ from tool.local_runtime import (
     LimitedLocalPythonConfig,
     create_limited_local_python_bundle,
 )
-from tool.media_master_library import (
-    MediaMasterLibraryConfig,
-    create_media_master_library_bundle,
-)
 from tool.search import AliyunSearchConfig, create_aliyun_web_search_bundle
 
 from .config import ToolProviderConfig
@@ -39,12 +35,6 @@ def _create_aliyun_web_search_bundle(config: ToolProviderConfig):
     return create_aliyun_web_search_bundle(search_config)
 
 
-def _create_media_master_library_http_bundle(config: ToolProviderConfig):
-    raw = {**dict(config.config), **dict(config.secrets)}
-    library_config = MediaMasterLibraryConfig(**raw)
-    return create_media_master_library_bundle(library_config)
-
-
 def create_default_tool_list() -> ToolList:
     tool_list = ToolList()
     tool_list.register(
@@ -66,24 +56,6 @@ def create_default_tool_list() -> ToolList:
             description="Search the web with Aliyun IQS and return PAI-style JSON results.",
             llm_tool_names=("aliyun-websearch",),
             factory=_create_aliyun_web_search_bundle,
-        ),
-        make_default=True,
-    )
-    tool_list.register(
-        ToolDefinition(
-            tool_name="media_master_library",
-            provider="media_military_http",
-            display_name="Media Master Library",
-            description="Read media personas, strategies, templates, script types, and examples through the media Gateway.",
-            llm_tool_names=(
-                "media_get_master_library_manifest",
-                "media_search_master_library",
-                "media_fetch_master_library_item",
-                "media_recommend_templates_for_strategy",
-                "media_get_random_script_type_candidates",
-                "media_get_script_examples_by_strategy",
-            ),
-            factory=_create_media_master_library_http_bundle,
         ),
         make_default=True,
     )

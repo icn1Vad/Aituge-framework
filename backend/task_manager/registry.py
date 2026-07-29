@@ -157,22 +157,6 @@ _TASK_DEFINITIONS: dict[str, TaskType] = {
         input_schema_name="ai_search_chat_input",
         output_schema_name="ai_search_output",
     ),
-    "analytics.douyin.account_report.generate": TaskType(
-        task_type="analytics.douyin.account_report.generate",
-        name="Douyin Account Data Report",
-        description=(
-            "Generate a fact-grounded Douyin account analysis report from all available "
-            "account data by default, with optional month or custom range support."
-        ),
-        default_agent_id="report-agent",
-        default_skill_package="douyin-account-report-package",
-        default_primary_skill="douyin-account-report",
-        default_candidate_skills=[],
-        default_tools=[],
-        default_datasets=[],
-        input_schema_name="douyin_account_report_input",
-        output_schema_name="douyin_account_report_output",
-    ),
     "table.audit": TaskType(
         task_type="table.audit",
         name="Table Row Audit",

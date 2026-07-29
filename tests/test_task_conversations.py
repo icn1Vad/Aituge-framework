@@ -94,7 +94,7 @@ def test_task_conversation_views_group_filter_and_paginate(tmp_path, monkeypatch
                 [
                     TaskEntity(
                         id="task-a-old",
-                        task_type="media.chat",
+                        task_type="ai.search.chat",
                         status="succeeded",
                         handler_name="scheduler",
                         thread_id="thread-a",
@@ -105,7 +105,7 @@ def test_task_conversation_views_group_filter_and_paginate(tmp_path, monkeypatch
                     ),
                     TaskEntity(
                         id="task-a-latest",
-                        task_type="media.chat",
+                        task_type="ai.search.chat",
                         status="running",
                         handler_name="scheduler",
                         thread_id="thread-a",
@@ -117,7 +117,7 @@ def test_task_conversation_views_group_filter_and_paginate(tmp_path, monkeypatch
                     ),
                     TaskEntity(
                         id="task-b",
-                        task_type="media.chat",
+                        task_type="ai.search.chat",
                         status="succeeded",
                         handler_name="scheduler",
                         thread_id="thread-b",
@@ -128,7 +128,7 @@ def test_task_conversation_views_group_filter_and_paginate(tmp_path, monkeypatch
                     ),
                     TaskEntity(
                         id="task-other-user",
-                        task_type="media.chat",
+                        task_type="ai.search.chat",
                         status="succeeded",
                         handler_name="scheduler",
                         thread_id="thread-other-user",
@@ -137,7 +137,7 @@ def test_task_conversation_views_group_filter_and_paginate(tmp_path, monkeypatch
                     ),
                     TaskEntity(
                         id="task-other-type",
-                        task_type="media.script.select",
+                        task_type="table.audit",
                         status="succeeded",
                         handler_name="scheduler",
                         thread_id="thread-other-type",
@@ -157,7 +157,7 @@ def test_task_conversation_views_group_filter_and_paginate(tmp_path, monkeypatch
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             first_page = await client.get(
                 "/task-manager/conversations",
-                params={"task_type": "media.chat", "limit": 1, "offset": 0},
+                params={"task_type": "ai.search.chat", "limit": 1, "offset": 0},
                 headers=headers,
             )
             assert first_page.status_code == 200, first_page.text
@@ -168,7 +168,7 @@ def test_task_conversation_views_group_filter_and_paginate(tmp_path, monkeypatch
 
             all_rows = await client.get(
                 "/task-manager/conversations",
-                params={"task_type": "media.chat"},
+                params={"task_type": "ai.search.chat"},
                 headers=headers,
             )
             assert all_rows.status_code == 200, all_rows.text
@@ -188,7 +188,7 @@ def test_task_conversation_views_group_filter_and_paginate(tmp_path, monkeypatch
 
             detail = await client.get(
                 "/task-manager/conversations/thread-a",
-                params={"task_type": "media.chat"},
+                params={"task_type": "ai.search.chat"},
                 headers=headers,
             )
             assert detail.status_code == 200, detail.text
@@ -202,7 +202,7 @@ def test_task_conversation_views_group_filter_and_paginate(tmp_path, monkeypatch
 
             hidden = await client.get(
                 "/task-manager/conversations/thread-a",
-                params={"task_type": "media.chat"},
+                params={"task_type": "ai.search.chat"},
                 headers={
                     "X-User-Id": "other-user",
                     "X-Tenant-Id": DEFAULT_TENANT_ID,
@@ -213,7 +213,7 @@ def test_task_conversation_views_group_filter_and_paginate(tmp_path, monkeypatch
 
             wrong_type = await client.get(
                 "/task-manager/conversations/thread-a",
-                params={"task_type": "media.script.select"},
+                params={"task_type": "table.audit"},
                 headers=headers,
             )
             assert wrong_type.status_code == 404
