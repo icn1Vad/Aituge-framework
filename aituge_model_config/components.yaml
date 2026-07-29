@@ -14,6 +14,17 @@ llms:
     enable_thinking: false
     vision_support: false
 
+  local-qwen3-30b-q5:
+    mode: local
+    provider: openai_compatible
+    model: qwen3-30b-a3b-q5_k_m
+    base_url: http://qwen-main-service:11434/v1
+    context_window: 32768
+    max_tokens: 8000
+    temperature: 0.1
+    enable_thinking: false
+    vision_support: false
+
 embeddings:
   policy-embedding-v4:
     mode: api

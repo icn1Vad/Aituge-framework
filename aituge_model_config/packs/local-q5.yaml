@@ -1,0 +1,5 @@
+id: local-q5
+display_name: Local Qwen3 30B A3B Q5
+llm: local-qwen3-30b-q5
+embedding: policy-embedding-v4
+reranker: api-qwen3-rerank

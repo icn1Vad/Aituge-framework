@@ -26,6 +26,20 @@ def test_api_modes_share_llm_and_embedding_but_change_rerank_instruction() -> No
     assert public_pack.reranker.instruction != private_pack.reranker.instruction
 
 
+def test_local_q5_pack_uses_registered_ollama_llm() -> None:
+    registry = load_model_registry()
+    pack = registry.resolve_pack("local-q5")
+
+    assert pack.llm.id == "local-qwen3-30b-q5"
+    assert pack.llm.mode == "local"
+    assert pack.llm.provider == "openai_compatible"
+    assert pack.llm.model == "qwen3-30b-a3b-q5_k_m"
+    assert pack.llm.base_url == "http://qwen-main-service:11434/v1"
+    assert pack.llm.context_window == 32_768
+    assert pack.embedding.id == "policy-embedding-v4"
+    assert pack.reranker.id == "api-qwen3-rerank"
+
+
 def test_ai_modes_resolve_to_registered_packages() -> None:
     assert get_model_pack_for_ai_mode("public").id == "api-rerank"
     assert get_model_pack_for_ai_mode("private").id == "api-rerank-similarity"

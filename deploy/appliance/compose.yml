@@ -256,6 +256,7 @@ services:
       agent_internal:
         aliases:
           - ai-framework
+      model_runtime:
 
   framework-worker:
     image: ai-framework-core:local
@@ -288,6 +289,7 @@ services:
       - ai_internal
       - proofspace
       - agent_internal
+      - model_runtime
 
 networks:
   ai_internal:
@@ -298,6 +300,9 @@ networks:
   agent_internal:
     external: true
     name: agent-internal
+  model_runtime:
+    external: true
+    name: ${AI_MODEL_RUNTIME_NETWORK:-ai-model-runtime-net}
 
 volumes:
   contract_data:
