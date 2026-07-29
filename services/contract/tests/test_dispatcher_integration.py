@@ -125,6 +125,7 @@ def test_two_dispatchers_cannot_claim_one_attempt(tmp_path: Path) -> None:
         assert sorted((len(first), len(second))) == [0, 1]
         claimed = first[0] if first else second[0]
         assert claimed.review_id == created.review_id
+        assert claimed.model_pack_id == "api-rerank"
         with psycopg.connect(DATABASE_URL) as conn:
             row = conn.execute(
                 """
