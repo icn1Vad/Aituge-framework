@@ -161,7 +161,7 @@ def test_legacy_ir_execution_path_is_removed() -> None:
 def test_direct_final_stage_builds_formal_result_without_legacy_review_stages(
     monkeypatch,
 ) -> None:
-    from services.contract.capabilities import direct_runtime
+    import services.contract.scripts.contract_risk_stage66_direct_e2e as direct_script
 
     class Response:
         def raise_for_status(self):
@@ -183,7 +183,7 @@ def test_direct_final_stage_builds_formal_result_without_legacy_review_stages(
                             "paragraph_no": 1,
                             "char_start": 0,
                             "char_end": 4,
-                            "text": "Test",
+                            "text": "测试合同",
                             "heading_path": [],
                             "metadata": {},
                         }
@@ -205,26 +205,54 @@ def test_direct_final_stage_builds_formal_result_without_legacy_review_stages(
         async def post(self, *_args, **_kwargs):
             return Response()
 
+    class Payload:
+        def model_dump(self, **_kwargs):
+            return {
+                "schema_version": "1.0",
+                "review_id": "review-1",
+                "business_task_id": "business-1",
+                "contract_version_id": "version-1",
+                "contract_profile": {
+                    "contract_type": "SERVICE",
+                    "party_a": {"name": "甲方"},
+                    "party_b": {"name": "乙方"},
+                    "perspective": "PARTY_A",
+                    "our_party": "甲方",
+                    "counterparty": "乙方",
+                    "review_attitude": "NEUTRAL",
+                },
+                "summary": {
+                    "overview": "未发现需要人工复核的实质合同风险。",
+                    "high_count": 0,
+                    "medium_count": 0,
+                    "low_count": 0,
+                    "info_count": 0,
+                },
+                "findings": [],
+                "evidences": [],
+                "relationships": [],
+                "result_hash": "sha256:" + "1" * 64,
+            }
+
     captured = {}
 
-    async def fake_execute_direct_bundle(**kwargs):
+    async def fake_execute_one(**kwargs):
         captured.update(kwargs)
         return (
-            SimpleNamespace(
-                status="COMPLETED",
-                review_id="review-1",
-                findings=[],
-            ),
             {
-                "total_model_calls": 0,
+                "total_model_calls": 10,
                 "total_repairs": 0,
                 "total_tool_calls": 0,
                 "core_result_signature": "sha256:" + "2" * 64,
             },
+            {},
+            Payload(),
+            object(),
+            object(),
         )
 
     monkeypatch.setattr(capability.httpx, "AsyncClient", Client)
-    monkeypatch.setattr(direct_runtime, "execute_direct_bundle", fake_execute_direct_bundle)
+    monkeypatch.setattr(direct_script, "_execute_one", fake_execute_one)
     task_input = {
         "schema_version": "1.0",
         "review_id": "review-1",
@@ -233,7 +261,7 @@ def test_direct_final_stage_builds_formal_result_without_legacy_review_stages(
         "contract_version_id": "version-1",
         "document_id": "document-1",
         "perspective": "PARTY_A",
-        "our_party_name": "Party A",
+        "our_party_name": "甲方",
         "contract_type": "AUTO",
         "review_attitude": "NEUTRAL",
     }
@@ -260,12 +288,12 @@ def test_direct_final_stage_builds_formal_result_without_legacy_review_stages(
             "resolve_parties": SimpleNamespace(
                 content_json={
                     "result_type": "PARTY_RESOLUTION_STAGE_V1",
-                    "contract_type": "AUTO",
-                    "party_a": {"name": "Party A"},
-                    "party_b": {"name": "Party B"},
+                    "contract_type": "SERVICE",
+                    "party_a": {"name": "甲方"},
+                    "party_b": {"name": "乙方"},
                     "perspective": "PARTY_A",
-                    "our_party": "Party A",
-                    "counterparty": "Party B",
+                    "our_party": "甲方",
+                    "counterparty": "乙方",
                 }
             ),
             "extract_contract_ir": SimpleNamespace(
@@ -279,7 +307,7 @@ def test_direct_final_stage_builds_formal_result_without_legacy_review_stages(
 
     result = asyncio.run(
         capability._direct_contract_review_handler(
-            "http://framework:8894",
+            "http://ai-contract:18200",
             "callback-secret",
             "contract-model",
         )(context)
@@ -291,6 +319,7 @@ def test_direct_final_stage_builds_formal_result_without_legacy_review_stages(
     assert result.metadata["review_unit_count"] == 7
     assert result.metadata["check_count"] == 45
     assert captured["allow_dynamic_base_batch_count"] is True
+    assert captured["diagnostic_allow_oracle_drift"] is True
 
 
 def test_legacy_react_review_stages_and_skills_are_not_registered() -> None:

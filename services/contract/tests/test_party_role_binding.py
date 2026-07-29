@@ -10,6 +10,9 @@ from services.contract.capabilities.risk_review import (
 from services.contract.capabilities.risk_review_bundle import (
     _po_item_burdens_our_party,
 )
+from services.contract.scripts.contract_risk_stage66_direct_e2e import (
+    _compatibility_context,
+)
 
 
 def _request(
@@ -63,6 +66,28 @@ def test_contract_party_roles_are_symmetric_for_both_perspectives() -> None:
     assert party_b_view.party_b_name == "乙公司"
     assert party_b_view.our_role == "乙方"
     assert party_b_view.counterparty_role == "甲方"
+
+
+def test_compatibility_context_does_not_turn_party_b_into_party_a() -> None:
+    value = SimpleNamespace(
+        review_id="review-1",
+        document_id="document-1",
+        generation_id="generation-1",
+        contract_type="SERVICE",
+        perspective="PARTY_B",
+        our_party="乙公司",
+        counterparty="甲公司",
+        review_attitude="NEUTRAL",
+    )
+
+    context = _compatibility_context(
+        value, "sha256:" + "1" * 64
+    )
+
+    assert context.contract_profile.party_a.name == "甲公司"
+    assert context.contract_profile.party_b.name == "乙公司"
+    assert context.contract_profile.our_party == "乙公司"
+    assert context.contract_profile.counterparty == "甲公司"
 
 
 def test_po_directional_evidence_is_adverse_only_to_the_burdened_side() -> None:

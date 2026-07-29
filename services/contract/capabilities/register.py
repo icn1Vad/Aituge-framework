@@ -16,6 +16,7 @@ from task_manager.pipeline.stage_registry import StageExecutionContext, StageSer
 from task_manager.result_sink import ResultSinkDelivery, ResultSinkRejectedError
 from task_manager.runtime.fencing import verify_current_execution_lease
 try:
+    from services.contract.capabilities.finding_consolidation import FindingConsolidationEngine
     from services.contract.capabilities.grounded_answer import (
         GroundedAnswerDraft,
         GroundedAnswerPipelineContext,
@@ -32,6 +33,7 @@ try:
 except ModuleNotFoundError as exc:  # standalone capability mount in the runtime image
     if exc.name != "services":
         raise
+    from finding_consolidation import FindingConsolidationEngine
     from grounded_answer import (
         GroundedAnswerDraft,
         GroundedAnswerPipelineContext,
@@ -645,22 +647,16 @@ def _direct_contract_review_handler(base_url: str, token: str, model_id: str):
             from contract.callback.models import (
                 ExtractContractIrStageResult as DirectExtractContractIrStageResult,
             )
-            try:
-                from services.contract.capabilities.direct_result import (
-                    build_direct_final_stage,
-                )
-                from services.contract.capabilities.direct_runtime import (
-                    execute_direct_bundle,
-                )
-            except ModuleNotFoundError as exc:
-                if exc.name not in {
-                    "services.contract.capabilities.direct_result",
-                    "services.contract.capabilities.direct_runtime",
-                }:
-                    raise
-                from direct_result import build_direct_final_stage
-                from direct_runtime import execute_direct_bundle
+            from services.contract.capabilities.direct_e2e import (
+                DirectRiskReviewEndToEndRequest,
+            )
+            from services.contract.capabilities.legacy_compatibility import (
+                LegacyCompatibilityContext,
+            )
             from services.contract.capabilities.party_roles import contract_party_roles
+            from services.contract.scripts.contract_risk_stage66_direct_e2e import (
+                _execute_one,
+            )
         except ImportError as exc:
             raise StageExecutionError(
                 f"Direct risk-review runtime is unavailable: {exc}",
@@ -764,34 +760,44 @@ def _direct_contract_review_handler(base_url: str, token: str, model_id: str):
             our_party=value.our_party,
             counterparty=value.counterparty,
         )
-        profile = DirectContractProfile(
-            contract_type=value.contract_type,
-            party_a={"name": roles.party_a_name},
-            party_b={"name": roles.party_b_name},
-            perspective=value.perspective,
-            our_party=value.our_party,
-            counterparty=value.counterparty,
-            review_attitude=value.review_attitude,
+        compatibility_context = LegacyCompatibilityContext(
+            review_id=value.review_id,
+            business_task_id=task_input.business_task_id,
+            contract_version_id=task_input.contract_version_id,
+            generation_id=value.generation_id,
+            contract_hash=parsed.ir_hash,
+            contract_profile=DirectContractProfile(
+                contract_type=value.contract_type,
+                party_a={"name": roles.party_a_name},
+                party_b={"name": roles.party_b_name},
+                perspective=value.perspective,
+                our_party=value.our_party,
+                counterparty=value.counterparty,
+                review_attitude=value.review_attitude,
+            ),
+        )
+        request = DirectRiskReviewEndToEndRequest(
+            review_id=value.review_id,
+            generation_id=value.generation_id,
+            contract_hash=parsed.ir_hash,
+            fixture_id=f"formal:{value.document_id}",
+            contract_ir_stage_result=stage_result.model_dump(mode="json"),
+            risk_review_context={
+                "resolve_parties_artifact": party.model_dump(mode="json"),
+                "execution_source": "FORMAL_DIRECT_PIPELINE",
+            },
         )
         try:
-            bundle, summary = await execute_direct_bundle(
+            summary, _attempt, payload, _compatible, _extended = await _execute_one(
+                run_index=task_input.attempt_no,
                 value=value,
+                request=request,
+                context=compatibility_context,
                 tenant_id=str(context.task.tenant_id),
                 model_id=model_id,
-                contract_hash=parsed.ir_hash,
-                fixture_id=f"formal:{value.document_id}",
-                framework_run_id=str(context.run.id),
+                run_id_prefix=f"formal-direct-{context.run.id}",
                 allow_dynamic_base_batch_count=True,
-            )
-            validated = build_direct_final_stage(
-                bundle=bundle,
-                contract_profile=profile,
-                business_task_id=task_input.business_task_id,
-                contract_version_id=task_input.contract_version_id,
-                blocks=[
-                    item.model_dump(mode="json")
-                    for item in value.source_blocks
-                ],
+                diagnostic_allow_oracle_drift=True,
             )
         except Exception as exc:
             code = getattr(exc, "code", "FRAMEWORK_RUN_FAILED")
@@ -800,6 +806,11 @@ def _direct_contract_review_handler(base_url: str, token: str, model_id: str):
                 code=code if code in FROZEN_ASYNC_ERROR_CODES else "FRAMEWORK_RUN_FAILED",
                 retryable=False,
             ) from exc
+
+        formal = payload.model_dump(mode="json")
+        formal.pop("result_hash", None)
+        formal["result_type"] = "FINAL_REVIEW_STAGE_V1"
+        validated = FinalizeReviewStageResult.model_validate(formal)
         return StageServiceResult(
             output=validated.model_dump(mode="json"),
             summary=(
@@ -968,10 +979,26 @@ def _stage_gateway_handler(
     base_url: str,
     token: str,
     model_id: str = "deepseek-v4-pro",
+    consolidation_engine: FindingConsolidationEngine | None = None,
 ):
+    engine = consolidation_engine or FindingConsolidationEngine()
+
     async def execute(context: StageExecutionContext) -> StageServiceResult:
         task_input = ContractTaskInput.model_validate(context.task.input_payload_json or {})
         artifacts = dict(context.stage_input.get("artifacts", {}))
+        consolidation_metadata: dict[str, Any] = {}
+        if context.stage.stage_id == "verify_evidence":
+            consolidation = await engine.consolidate(
+                artifacts,
+                tenant_id=str(getattr(context.task, "tenant_id", None) or "0"),
+                model_id=model_id,
+            )
+            artifacts["contract_finding_consolidation"] = consolidation
+            consolidation_metadata = {
+                "finding_consolidation_status": consolidation["status"],
+                "finding_consolidation_candidates": consolidation["candidate_count"],
+                "finding_consolidation_model_calls": consolidation["model_call_count"],
+            }
         payload = {
             "schema_version": "1.0",
             "review_id": task_input.review_id,

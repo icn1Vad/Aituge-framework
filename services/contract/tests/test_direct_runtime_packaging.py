@@ -11,7 +11,7 @@ def test_formal_direct_runtime_import_does_not_require_fixture_loader(
 ) -> None:
     """Production images deliberately omit acceptance-only test helpers."""
 
-    module_name = "services.contract.capabilities.direct_runtime"
+    module_name = "services.contract.scripts.contract_risk_stage66_direct_e2e"
     sys.modules.pop(module_name, None)
     original_import = builtins.__import__
 
@@ -24,8 +24,8 @@ def test_formal_direct_runtime_import_does_not_require_fixture_loader(
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
     module = importlib.import_module(module_name)
-    parameters = inspect.signature(module.execute_direct_bundle).parameters
+    parameters = inspect.signature(module._execute_one).parameters
 
-    assert "value" in parameters
-    assert "framework_run_id" in parameters
+    assert "run_id_prefix" in parameters
     assert "allow_dynamic_base_batch_count" in parameters
+    assert "diagnostic_allow_oracle_drift" in parameters
