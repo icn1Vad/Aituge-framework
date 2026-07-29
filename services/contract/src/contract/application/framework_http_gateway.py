@@ -118,6 +118,7 @@ class FrameworkHttpGateway(FrameworkGateway):
                 "schema_version": request.schema_version,
                 "contract_review_id": request.review_id,
                 "contract_attempt_no": request.attempt_no,
+                "contract_request_fingerprint": request.request_fingerprint,
             },
         }
         task_data = self._request_json(

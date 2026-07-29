@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from task_manager.pipeline.errors import StageExecutionError
 from task_manager.pipeline.stage_registry import StageExecutionContext, StageServiceResult
 from task_manager.result_sink import ResultSinkDelivery, ResultSinkRejectedError
+from task_manager.runtime.fencing import verify_current_execution_lease
 try:
     from services.contract.capabilities.finding_consolidation import FindingConsolidationEngine
     from services.contract.capabilities.grounded_answer import (
@@ -833,6 +834,9 @@ def _direct_contract_review_handler(base_url: str, token: str, model_id: str):
 
 def _callback_envelope(delivery: ResultSinkDelivery) -> tuple[str, dict[str, Any]]:
     review_id, attempt_no, task_id, run_id = _callback_identity(delivery)
+    if delivery.lease_version is None:
+        raise RuntimeError("Contract callback requires an active Framework execution lease")
+    lease_version = delivery.lease_version
     if delivery.status == "failed":
         callback_type = "RUN_FAILED"
         internal_stage_id = delivery.stage_id
@@ -892,7 +896,9 @@ def _callback_envelope(delivery: ResultSinkDelivery) -> tuple[str, dict[str, Any
         sequence = 1000
         result = None
         error = None
-    callback_id = f"contract:{run_id}:{callback_type}:{stage_id or 'run'}:{sequence}"
+    callback_id = (
+        f"contract:{run_id}:lease:{lease_version}:{callback_type}:{stage_id or 'run'}:{sequence}"
+    )
     return review_id, {
         "schema_version": "1.0",
         "review_id": review_id,
@@ -901,6 +907,7 @@ def _callback_envelope(delivery: ResultSinkDelivery) -> tuple[str, dict[str, Any
         "framework_run_id": run_id,
         "stage_id": stage_id,
         "event_sequence": sequence,
+        "lease_version": lease_version,
         "callback_id": callback_id,
         "callback_type": callback_type,
         "result": result,
@@ -915,6 +922,7 @@ def _result_sink_handler(base_url: str, token: str):
         last_error: Exception | None = None
         for attempt in range(3):
             try:
+                await verify_current_execution_lease(delivery.task.current_run_id or "")
                 async with httpx.AsyncClient(base_url=base_url, timeout=15) as client:
                     response = await client.post(
                         f"/v1/internal/contract-reviews/{review_id}/framework-result",
@@ -1052,7 +1060,7 @@ def _stage_gateway_handler(
                 code="FRAMEWORK_RUN_FAILED",
                 retryable=False,
             )
-        return StageServiceResult(output=body["data"], metadata=consolidation_metadata)
+        return StageServiceResult(output=body["data"])
 
     return execute
 

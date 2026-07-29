@@ -33,7 +33,11 @@ from .payload_schemas import validate_input_payload, validate_output_payload
 from .registry import TaskType, get_task_definition
 from .runtime import executor_lock, get_event_broker, start_background_run
 from .runtime.fencing import RunLeaseLost, current_execution_lease, verify_execution_lease
-from .runtime.quota import release_quota_slot
+from .runtime.quota import (
+    DEFAULT_TENANT_CONCURRENCY,
+    lock_quota_scope,
+    release_quota_slot,
+)
 from .schemas import TaskCreateRequest, TaskEventRead, TaskItemRead, TaskRead, TaskRunRequest
 from .pipeline.registry import get_pipeline_definition
 from .pipeline.store import (
@@ -485,34 +489,123 @@ class TaskManagerService:
         async with executor_lock(effective_run_id) as acquired:
             if not acquired:
                 return
-            async for _ in self._stream_prepared_task(task):
-                pass
+            try:
+                async for _ in self._stream_prepared_task(task):
+                    pass
+            except RunLeaseLost:
+                raise
+            except Exception as exc:
+                current = await self.get_task(task.id)
+                if (
+                    current is not None
+                    and current.status == "running"
+                    and current.current_run_id == effective_run_id
+                ):
+                    error = {
+                        "type": exc.__class__.__name__,
+                        "stage": "task_manager",
+                        "message": str(exc),
+                        "retryable": False,
+                    }
+                    await self.record_event(
+                        task_id=task.id,
+                        run_id=effective_run_id,
+                        event_type="task_failed",
+                        level="error",
+                        stage="task_manager",
+                        message=str(exc),
+                        payload=error,
+                        step_id="task_finish",
+                        step_index=99,
+                        error_code=exc.__class__.__name__,
+                    )
+                    await self._finish_task(
+                        task.id,
+                        status="failed",
+                        error=error,
+                        outcome="failure",
+                    )
+                raise
 
     async def request_cancel(self, run_id: str) -> TaskRunEntity:
-        run = await get_run(run_id)
-        if run is None:
-            raise ValueError(f"Run '{run_id}' not found.")
-        run = await update_run(run_id, cancel_requested=True)
+        cancelled_immediately = False
         async with create_db_session() as session:
-            task = await session.get(TaskEntity, run.task_id)
-            if task is not None:
-                task.cancel_requested = True
-                task.updated_at = utc_now()
-                session.add(task)
-                await session.commit()
-        if run.status == "waiting_human":
-            await update_run(run_id, status="cancelled", outcome="cancelled", finished_at=utc_now())
-            await self._finish_task(run.task_id, status="cancelled", outcome="cancelled")
+            initial_run = await session.get(TaskRunEntity, run_id)
+            if initial_run is None:
+                raise ValueError(f"Run '{run_id}' not found.")
+            initial_task = await session.get(TaskEntity, initial_run.task_id)
+            if initial_task is None:
+                raise ValueError(f"Task '{initial_run.task_id}' not found.")
+            if not initial_run.quota_slot_released:
+                await lock_quota_scope(
+                    session,
+                    service=initial_task.service,
+                    tenant_id=initial_task.tenant_id,
+                    resource_pool=initial_run.resource_pool,
+                    max_concurrency=DEFAULT_TENANT_CONCURRENCY,
+                    sync_limit=False,
+                )
+            run_result = await session.exec(
+                select(TaskRunEntity)
+                .where(TaskRunEntity.id == run_id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+            run = run_result.first()
+            if run is None:
+                raise ValueError(f"Run '{run_id}' not found.")
+            task_result = await session.exec(
+                select(TaskEntity)
+                .where(TaskEntity.id == run.task_id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+            task = task_result.first()
+            if task is None:
+                raise ValueError(f"Task '{run.task_id}' not found.")
+            if run.status in {"succeeded", "failed", "cancelled"}:
+                return run
+            now = utc_now()
+            lease_is_active = (
+                run.lease_owner is not None
+                and run.lease_until is not None
+                and run.lease_until > now
+            )
+            run.cancel_requested = True
+            task.cancel_requested = True
+            if not lease_is_active:
+                if not run.quota_slot_released:
+                    await release_quota_slot(
+                        session,
+                        service=task.service,
+                        tenant_id=task.tenant_id,
+                        resource_pool=run.resource_pool,
+                    )
+                    run.quota_slot_released = True
+                run.status = "cancelled"
+                run.outcome = "cancelled"
+                run.finished_at = now
+                run.lease_owner = None
+                run.lease_until = None
+                task.status = "cancelled"
+                task.finished_at = now
+                cancelled_immediately = True
+            run.updated_at = now
+            task.updated_at = now
+            session.add(run)
+            session.add(task)
+            await session.commit()
+            await session.refresh(run)
+        if cancelled_immediately:
             await self.record_event(
                 task_id=run.task_id,
                 run_id=run.id,
                 event_type="task_cancelled",
-                stage=run.current_stage_id or "pipeline",
-                message="Run cancelled while waiting for human review.",
+                stage=run.current_stage_id or "task_manager",
+                message="Run cancelled before an active Worker could continue it.",
                 payload={"run_id": run.id},
                 source={"type": "task_manager", "id": run.task_id},
             )
-            run = (await get_run(run_id)) or run
         return run
 
     async def submit_human_review(
@@ -1296,24 +1389,46 @@ class TaskManagerService:
         outcome: str | None = None,
     ) -> TaskEntity:
         async with create_db_session() as session:
+            initial_task = await session.get(TaskEntity, task_id)
+            if initial_task is None:
+                raise ValueError(f"Task '{task_id}' not found.")
+            initial_run = (
+                await session.get(TaskRunEntity, initial_task.current_run_id)
+                if initial_task.current_run_id
+                else None
+            )
+            if initial_run is not None and not initial_run.quota_slot_released:
+                await lock_quota_scope(
+                    session,
+                    service=initial_task.service,
+                    tenant_id=initial_task.tenant_id,
+                    resource_pool=initial_run.resource_pool,
+                    max_concurrency=DEFAULT_TENANT_CONCURRENCY,
+                    sync_limit=False,
+                )
+            locked_run = None
+            if initial_run is not None:
+                run_result = await session.exec(
+                    select(TaskRunEntity)
+                    .where(TaskRunEntity.id == initial_run.id)
+                    .execution_options(populate_existing=True)
+                    .with_for_update()
+                )
+                locked_run = run_result.first()
+                if locked_run is None:
+                    raise ValueError(f"Run '{initial_run.id}' not found.")
+                await verify_execution_lease(session, initial_run.id, run=locked_run)
             task_result = await session.exec(
                 select(TaskEntity)
                 .where(TaskEntity.id == task_id)
+                .execution_options(populate_existing=True)
                 .with_for_update()
             )
             task = task_result.first()
             if task is None:
                 raise ValueError(f"Task '{task_id}' not found.")
-            locked_run = None
-            if task.current_run_id:
-                locked_run = await verify_execution_lease(session, task.current_run_id)
-                if locked_run is None:
-                    run_result = await session.exec(
-                        select(TaskRunEntity)
-                        .where(TaskRunEntity.id == task.current_run_id)
-                        .with_for_update()
-                    )
-                    locked_run = run_result.first()
+            if task.current_run_id != (initial_run.id if initial_run is not None else None):
+                raise RuntimeError(f"Task '{task_id}' changed its active Run while finishing.")
             task.status = status
             task.result_payload_json = result
             task.error_payload_json = error

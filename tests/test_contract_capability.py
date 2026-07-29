@@ -548,13 +548,36 @@ def test_contract_result_sink_emits_three_frozen_callback_shapes(monkeypatch) ->
                 "parse_contract",
                 "completed",
                 None,
+                lease_version=7,
             )
         )
     )
-    asyncio.run(handler(ResultSinkDelivery(task, definition, {"ignored": True}, None, "completed", None)))
+    asyncio.run(
+        handler(
+            ResultSinkDelivery(
+                task,
+                definition,
+                {"ignored": True},
+                None,
+                "completed",
+                None,
+                lease_version=7,
+            )
+        )
+    )
     long_error = "bad" * 1000
     asyncio.run(
-        handler(ResultSinkDelivery(task, definition, None, "resolve_parties", "failed", long_error))
+        handler(
+            ResultSinkDelivery(
+                task,
+                definition,
+                None,
+                "resolve_parties",
+                "failed",
+                long_error,
+                lease_version=7,
+            )
+        )
     )
 
     assert [item[2]["callback_type"] for item in calls] == [
@@ -570,6 +593,7 @@ def test_contract_result_sink_emits_three_frozen_callback_shapes(monkeypatch) ->
     assert calls[2][2]["error"]["code"] == "FRAMEWORK_RUN_FAILED"
     assert len(calls[2][2]["error"]["message"]) == 2000
     assert all(item[1]["X-Internal-Token"] == "secret" for item in calls)
+    assert all(item[2]["lease_version"] == 7 for item in calls)
 
 
 def test_contract_failed_callback_maps_stable_business_errors() -> None:
@@ -608,6 +632,7 @@ def test_contract_failed_callback_maps_stable_business_errors() -> None:
                 "candidate_parties": ["Acme Company", "Beta Company"],
                 "requested_our_party_name": "Gamma Company",
             },
+            lease_version=7,
         )
     )
     _, evidence = capability._callback_envelope(
@@ -620,6 +645,7 @@ def test_contract_failed_callback_maps_stable_business_errors() -> None:
             error_message="evidence rejected",
             error_code="EVIDENCE_INVALID",
             retryable=False,
+            lease_version=7,
         )
     )
     _, model_failure = capability._callback_envelope(
@@ -632,6 +658,7 @@ def test_contract_failed_callback_maps_stable_business_errors() -> None:
             error_message="LLM model is unavailable",
             error_code="invalid_output",
             retryable=True,
+            lease_version=7,
         )
     )
     _, review_evidence = capability._callback_envelope(
@@ -644,6 +671,7 @@ def test_contract_failed_callback_maps_stable_business_errors() -> None:
             error_message="evidence range rejected",
             error_code="required_result_sink_failed",
             retryable=True,
+            lease_version=7,
         )
     )
     assert party["error"] == {
@@ -712,6 +740,7 @@ def test_contract_result_sink_preserves_safe_rejection_detail(monkeypatch) -> No
         "parse_contract",
         "completed",
         None,
+        lease_version=7,
     )
 
     with pytest.raises(capability.ResultSinkRejectedError, match="source anchor rejected") as caught:
@@ -767,3 +796,55 @@ def test_contract_stage_gateway_preserves_safe_rejection_detail(monkeypatch) -> 
         asyncio.run(handler(context))
     assert caught.value.code == "RESULT_INVALID"
     assert caught.value.retryable is False
+
+
+def test_contract_stage_gateway_returns_successful_stage_output(monkeypatch) -> None:
+    class Response:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"success": True, "data": {"result_type": "PARSE_CONTRACT_STAGE_V1"}}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(capability.httpx, "AsyncClient", Client)
+    handler = capability._stage_gateway_handler("http://ai-contract:18200", "secret")
+    context = SimpleNamespace(
+        task=SimpleNamespace(
+            id="task-1",
+            input_payload_json={
+                "schema_version": "1.0",
+                "review_id": "review-1",
+                "attempt_no": 1,
+                "business_task_id": "business-1",
+                "contract_version_id": "version-1",
+                "document_id": "document-1",
+                "perspective": "PARTY_A",
+                "our_party_name": None,
+                "contract_type": "AUTO",
+                "review_attitude": "NEUTRAL",
+            },
+        ),
+        run=SimpleNamespace(id="run-1"),
+        stage=SimpleNamespace(stage_id="parse_contract"),
+        stage_input={"artifacts": {}},
+    )
+
+    result = asyncio.run(handler(context))
+
+    assert result.output == {"result_type": "PARSE_CONTRACT_STAGE_V1"}
+    assert result.metadata == {}

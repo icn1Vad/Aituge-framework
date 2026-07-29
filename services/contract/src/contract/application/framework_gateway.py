@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from contract.application.idempotency import build_framework_request_fingerprint
+
 
 FRAMEWORK_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
 
@@ -31,6 +33,22 @@ class FrameworkExecutionRequest:
     def run_idempotency_key(self) -> str:
         return f"{self.task_idempotency_key}:run"
 
+    @property
+    def request_fingerprint(self) -> str:
+        return build_framework_request_fingerprint(
+            tenant_id=self.tenant_id,
+            user_id=self.user_id,
+            review_id=self.review_id,
+            attempt_no=self.attempt_no,
+            business_task_id=self.business_task_id,
+            contract_version_id=self.contract_version_id,
+            document_id=self.document_id,
+            perspective=self.perspective,
+            our_party_name=self.our_party_name,
+            contract_type=self.contract_type,
+            review_attitude=self.review_attitude,
+            schema_version=self.schema_version,
+        )
 
 @dataclass(frozen=True, slots=True)
 class FrameworkRunSnapshot:

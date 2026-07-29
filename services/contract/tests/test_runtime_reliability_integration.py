@@ -126,14 +126,24 @@ def test_transient_dispatch_is_resumed_with_frozen_framework_keys(tmp_path: Path
         created = service.create_review(upload=upload, request=request, context=context)
         assert created.status == ReviewStatus.CREATED
         assert created.framework_attempt_no is None
+        assert service.dispatch_pending_attempts() == 0
 
         restarted_service = _recreate_service(service.settings, gateway)
-        assert restarted_service.reconcile_nonterminal_reviews() == 1
+        assert restarted_service.reconcile_nonterminal_reviews() == 0
         assert gateway.cancelled_run_ids == []
 
-        resumed = restarted_service.create_review(upload=upload, request=request, context=context)
-        assert resumed.review_id == created.review_id
-        assert resumed.reused is True
+        with psycopg.connect(DATABASE_URL) as conn:
+            conn.execute(
+                """
+                UPDATE contract_framework_attempt
+                SET next_dispatch_at = now()
+                WHERE review_id = %s AND attempt_no = 1
+                """,
+                (created.review_id,),
+            )
+            conn.commit()
+        assert restarted_service.dispatch_pending_attempts() == 1
+        resumed = restarted_service.get_status(created.review_id, context=context)
         assert resumed.status == ReviewStatus.RUNNING
         assert resumed.framework_attempt_no == 1
         assert gateway.requests[-1].task_idempotency_key == (
@@ -156,14 +166,17 @@ def test_orphaned_attempt_is_recovered_once_then_fails_retryably(tmp_path: Path)
     service, gateway, context, request, upload, tenant_id = _runtime(tmp_path)
     try:
         created = service.create_review(upload=upload, request=request, context=context)
-        assert created.framework_attempt_no == 1
-        _age_attempt(created.review_id, 1)
-        gateway.make_stale(created.review_id, 1)
+        assert service.dispatch_pending_attempts() == 1
+        started = service.get_status(created.review_id, context=context)
+        _age_attempt(started.review_id, 1)
+        gateway.make_stale(started.review_id, 1)
 
-        recovered = service.get_status(created.review_id, context=context)
+        assert service.reconcile_active_reviews() == 1
+        assert service.dispatch_pending_attempts() == 1
+        recovered = service.get_status(started.review_id, context=context)
         assert recovered.status == ReviewStatus.RUNNING
         assert recovered.framework_attempt_no == 2
-        assert created.framework_run_id in gateway.cancelled_run_ids
+        assert started.framework_run_id in gateway.cancelled_run_ids
         with psycopg.connect(DATABASE_URL) as conn:
             rows = conn.execute(
                 """
@@ -172,13 +185,14 @@ def test_orphaned_attempt_is_recovered_once_then_fails_retryably(tmp_path: Path)
                 WHERE review_id = %s
                 ORDER BY attempt_no
                 """,
-                (created.review_id,),
+                (started.review_id,),
             ).fetchall()
         assert rows == [(1, "ORPHANED", False), (2, "RUNNING", True)]
 
-        _age_attempt(created.review_id, 2)
-        gateway.make_stale(created.review_id, 2)
-        failed = service.get_status(created.review_id, context=context)
+        _age_attempt(started.review_id, 2)
+        gateway.make_stale(started.review_id, 2)
+        assert service.reconcile_active_reviews() == 1
+        failed = service.get_status(started.review_id, context=context)
         assert failed.status == ReviewStatus.FAILED
         assert failed.error is not None
         assert failed.error.code == "FRAMEWORK_RUN_ORPHANED"
@@ -205,12 +219,15 @@ def test_recovery_attempt_is_claimed_by_stage_before_create_returns(tmp_path: Pa
     internal = ContractInternalService(
         service.repository,
         FrameworkCallbackRepository(service.settings),
+        document_processor=service.document_processor,
     )
     immediate_results = []
     try:
         created = service.create_review(upload=upload, request=request, context=context)
-        _age_attempt(created.review_id, 1)
-        gateway.make_stale(created.review_id, 1)
+        assert service.dispatch_pending_attempts() == 1
+        started = service.get_status(created.review_id, context=context)
+        _age_attempt(started.review_id, 1)
+        gateway.make_stale(started.review_id, 1)
 
         def execute_before_create_returns(execution: FrameworkExecutionRequest) -> None:
             snapshot = gateway.executions[(execution.review_id, execution.attempt_no)]
@@ -220,7 +237,9 @@ def test_recovery_attempt_is_claimed_by_stage_before_create_returns(tmp_path: Pa
             immediate_results.append(internal.execute_stage(stage_request))
 
         gateway.on_create = execute_before_create_returns
-        recovered = service.get_status(created.review_id, context=context)
+        assert service.reconcile_active_reviews() == 1
+        assert service.dispatch_pending_attempts() == 1
+        recovered = service.get_status(started.review_id, context=context)
 
         assert recovered.status == ReviewStatus.RUNNING
         assert recovered.framework_attempt_no == 2
@@ -234,10 +253,10 @@ def test_recovery_attempt_is_claimed_by_stage_before_create_returns(tmp_path: Pa
                 WHERE review_id = %s
                 ORDER BY attempt_no
                 """,
-                (created.review_id,),
+                (started.review_id,),
             ).fetchall()
         assert attempts == [
-            (1, "ORPHANED", created.framework_task_id, created.framework_run_id, False),
+            (1, "ORPHANED", started.framework_task_id, started.framework_run_id, False),
             (
                 2,
                 "RUNNING",
@@ -249,10 +268,10 @@ def test_recovery_attempt_is_claimed_by_stage_before_create_returns(tmp_path: Pa
         stale = FrameworkCallbackRepository(service.settings).process(
             RunFailedCallback(
                 schema_version="1.0",
-                review_id=created.review_id,
+                review_id=started.review_id,
                 attempt_no=1,
-                framework_task_id=created.framework_task_id,
-                framework_run_id=created.framework_run_id,
+                framework_task_id=started.framework_task_id,
+                framework_run_id=started.framework_run_id,
                 event_sequence=1000,
                 callback_id=f"late-attempt-1-{uuid.uuid4().hex}",
                 callback_type="RUN_FAILED",
@@ -272,7 +291,7 @@ def test_recovery_attempt_is_claimed_by_stage_before_create_returns(tmp_path: Pa
         with psycopg.connect(DATABASE_URL) as conn:
             current = conn.execute(
                 "SELECT status, active_attempt_no FROM contract_review_run WHERE id = %s",
-                (created.review_id,),
+                (started.review_id,),
             ).fetchone()
         assert current == ("RUNNING", 2)
     finally:
@@ -284,18 +303,22 @@ def test_result_query_triggers_orphan_recovery(tmp_path: Path) -> None:
     service, gateway, context, request, upload, tenant_id = _runtime(tmp_path)
     try:
         created = service.create_review(upload=upload, request=request, context=context)
-        _age_attempt(created.review_id, 1)
-        gateway.make_stale(created.review_id, 1)
+        assert service.dispatch_pending_attempts() == 1
+        started = service.get_status(created.review_id, context=context)
+        _age_attempt(started.review_id, 1)
+        gateway.make_stale(started.review_id, 1)
 
         with pytest.raises(ContractError) as captured:
-            service.get_result(created.review_id, context=context)
+            service.get_result(started.review_id, context=context)
 
         assert captured.value.code == "REVIEW_NOT_READY"
         assert captured.value.retryable is True
         assert captured.value.details == {"current_status": "RUNNING"}
-        recovered = service.get_status(created.review_id, context=context)
+        assert service.reconcile_active_reviews() == 1
+        assert service.dispatch_pending_attempts() == 1
+        recovered = service.get_status(started.review_id, context=context)
         assert recovered.framework_attempt_no == 2
-        assert recovered.framework_run_id != created.framework_run_id
+        assert recovered.framework_run_id != started.framework_run_id
     finally:
         _cleanup(tenant_id)
 
@@ -305,15 +328,17 @@ def test_cancel_uses_two_transactions_and_is_idempotent(tmp_path: Path) -> None:
     service, gateway, context, request, upload, tenant_id = _runtime(tmp_path)
     try:
         created = service.create_review(upload=upload, request=request, context=context)
-        cancelled = service.cancel_review(created.review_id, context=context)
+        assert service.dispatch_pending_attempts() == 1
+        started = service.get_status(created.review_id, context=context)
+        cancelled = service.cancel_review(started.review_id, context=context)
         assert cancelled.status == ReviewStatus.CANCELLED
         assert cancelled.already_terminal is False
-        assert gateway.cancelled_run_ids == [created.framework_run_id]
+        assert gateway.cancelled_run_ids == [started.framework_run_id]
 
-        repeated = service.cancel_review(created.review_id, context=context)
+        repeated = service.cancel_review(started.review_id, context=context)
         assert repeated.status == ReviewStatus.CANCELLED
         assert repeated.already_terminal is True
-        state = service.get_status(created.review_id, context=context)
+        state = service.get_status(started.review_id, context=context)
         assert state.status == ReviewStatus.CANCELLED
     finally:
         _cleanup(tenant_id)
@@ -324,9 +349,13 @@ def test_cancel_after_recovery_waits_only_for_active_attempt(tmp_path: Path) -> 
     service, gateway, context, request, upload, tenant_id = _runtime(tmp_path)
     try:
         created = service.create_review(upload=upload, request=request, context=context)
-        _age_attempt(created.review_id, 1)
-        gateway.make_stale(created.review_id, 1)
-        recovered = service.get_status(created.review_id, context=context)
+        assert service.dispatch_pending_attempts() == 1
+        started = service.get_status(created.review_id, context=context)
+        _age_attempt(started.review_id, 1)
+        gateway.make_stale(started.review_id, 1)
+        assert service.reconcile_active_reviews() == 1
+        assert service.dispatch_pending_attempts() == 1
+        recovered = service.get_status(started.review_id, context=context)
         assert recovered.framework_attempt_no == 2
 
         gateway.cancelled_run_ids.clear()
@@ -342,7 +371,7 @@ def test_cancel_after_recovery_waits_only_for_active_attempt(tmp_path: Path) -> 
                 WHERE review_id = %s
                 ORDER BY attempt_no
                 """,
-                (created.review_id,),
+                (started.review_id,),
             ).fetchall()
         assert attempts == [(1, "ORPHANED", False), (2, "CANCELLED", False)]
     finally:
@@ -355,6 +384,7 @@ def test_cancel_during_framework_create_prevents_attempt_activation(tmp_path: Pa
     internal = ContractInternalService(
         service.repository,
         FrameworkCallbackRepository(service.settings),
+        document_processor=service.document_processor,
     )
     stage_errors: list[ContractError] = []
 
@@ -380,6 +410,12 @@ def test_cancel_during_framework_create_prevents_attempt_activation(tmp_path: Pa
     try:
         response = service.create_review(upload=upload, request=request, context=context)
         assert response.status == ReviewStatus.CREATED
+        reservation = service.state_repository.claim_pending_attempts(
+            owner="cancel-test",
+            limit=1,
+            lease_seconds=120,
+        )[0]
+        assert service.dispatch_claimed_attempt(reservation) is False
         state = service.get_status(response.review_id, context=context)
         assert state.status == ReviewStatus.CANCELLED
         assert state.framework_attempt_no is None
@@ -388,13 +424,19 @@ def test_cancel_during_framework_create_prevents_attempt_activation(tmp_path: Pa
         with psycopg.connect(DATABASE_URL) as conn:
             attempt = conn.execute(
                 """
-                SELECT status, framework_task_id, framework_run_id, is_active
+                SELECT status, dispatch_status, framework_task_id, framework_run_id, is_active
                 FROM contract_framework_attempt
                 WHERE review_id = %s AND attempt_no = 1
                 """,
                 (response.review_id,),
             ).fetchone()
-        assert attempt == ("CANCELLED", None, None, False)
+        assert attempt == (
+            "CANCELLED",
+            "SENT",
+            f"framework-task-{response.review_id}-1",
+            f"framework-run-{response.review_id}-1",
+            False,
+        )
     finally:
         _cleanup(tenant_id)
 

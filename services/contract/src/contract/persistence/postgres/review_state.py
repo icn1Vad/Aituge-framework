@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from contract.application.idempotency import (
+    build_dispatch_response_fingerprint,
+    build_framework_request_fingerprint,
+)
 from contract.application.framework_gateway import FrameworkRunSnapshot
 from contract.config import Settings
 from contract.errors import ConfigurationError, ContractError
@@ -42,8 +46,11 @@ class AttemptReservation:
     contract_type: str
     review_attitude: str
     schema_version: str
+    request_fingerprint: str = ""
     previous_task_id: str | None = None
     previous_run_id: str | None = None
+    lease_owner: str | None = None
+    lease_version: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +129,12 @@ class ReviewStateRepository:
                 """
                 SELECT *
                 FROM contract_framework_attempt
-                WHERE review_id = %s AND status = 'CREATING'
+                WHERE review_id = %s
+                  AND is_active = false
+                  AND execution_status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'ORPHANED')
+                  AND dispatch_status IN (
+                    'PENDING_DISPATCH', 'CLAIMED', 'RETRY_WAIT', 'DISPATCH_FAILED'
+                  )
                 ORDER BY attempt_no DESC
                 LIMIT 1
                 """,
@@ -146,6 +158,471 @@ class ReviewStateRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def ensure_initial_attempt(
+        self,
+        review_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> bool:
+        """Create the durable first Attempt without making a Framework call."""
+        with self.connect() as conn:
+            review = self._lock_owned_review(conn, review_id, tenant_id=tenant_id, user_id=user_id)
+            if (
+                review["status"] in TERMINAL_REVIEW_STATUSES
+                or review["cancel_requested"]
+                or review["active_attempt_no"] is not None
+            ):
+                conn.commit()
+                return False
+            existing = conn.execute(
+                """
+                SELECT attempt_no
+                FROM contract_framework_attempt
+                WHERE review_id = %s
+                ORDER BY attempt_no DESC
+                LIMIT 1
+                FOR UPDATE
+                """,
+                (review_id,),
+            ).fetchone()
+            if existing is not None:
+                conn.commit()
+                return False
+            fingerprint = self._framework_request_fingerprint(review, 1)
+            conn.execute(
+                """
+                INSERT INTO contract_framework_attempt (
+                  review_id, attempt_no, tenant_id, status, execution_status,
+                  dispatch_status, request_fingerprint, next_dispatch_at, is_active
+                ) VALUES (%s, 1, %s, 'PENDING', 'PENDING',
+                          'PENDING_DISPATCH', %s, now(), false)
+                """,
+                (review_id, tenant_id, fingerprint),
+            )
+            conn.commit()
+        return True
+
+    def reconcile_nonterminal_attempts(self) -> int:
+        """Repair a Review/Attempt gap left by a process crash."""
+        repaired = 0
+        for review in self.list_nonterminal_reviews():
+            try:
+                if self.ensure_initial_attempt(
+                    review["id"],
+                    tenant_id=review["tenant_id"],
+                    user_id=review["user_id"],
+                ):
+                    repaired += 1
+            except ContractError as exc:
+                if exc.code != "REVIEW_NOT_FOUND":
+                    raise
+        return repaired
+
+    def reconcile_expired_dispatch_leases(self) -> int:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                UPDATE contract_framework_attempt
+                SET dispatch_status = 'RETRY_WAIT',
+                    next_dispatch_at = now(),
+                    lease_owner = NULL,
+                    lease_until = NULL,
+                    last_heartbeat_at = now()
+                WHERE dispatch_status = 'CLAIMED'
+                  AND lease_until IS NOT NULL
+                  AND lease_until <= now()
+                  AND framework_task_id IS NULL
+                RETURNING review_id, attempt_no
+                """
+            ).fetchall()
+            conn.commit()
+        return len(rows)
+
+    def claim_pending_attempts(
+        self,
+        *,
+        owner: str,
+        limit: int,
+        lease_seconds: int,
+    ) -> list[AttemptReservation]:
+        if limit <= 0:
+            return []
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                  review.id AS review_id,
+                  review.tenant_id AS review_tenant_id,
+                  review.user_id AS review_user_id,
+                  review.version AS review_version,
+                  review.active_attempt_no,
+                  review.business_task_id,
+                  review.contract_version_id,
+                  review.document_id,
+                  review.perspective,
+                  review.our_party_name,
+                  review.contract_type,
+                  review.review_attitude,
+                  review.schema_version,
+                  attempt.attempt_no,
+                  attempt.framework_task_id,
+                  attempt.framework_run_id,
+                  attempt.request_fingerprint,
+                  attempt.lease_version,
+                  (
+                    SELECT previous.framework_task_id
+                    FROM contract_framework_attempt previous
+                    WHERE previous.review_id = attempt.review_id
+                      AND previous.attempt_no = review.active_attempt_no
+                  ) AS previous_task_id,
+                  (
+                    SELECT previous.framework_run_id
+                    FROM contract_framework_attempt previous
+                    WHERE previous.review_id = attempt.review_id
+                      AND previous.attempt_no = review.active_attempt_no
+                  ) AS previous_run_id
+                FROM contract_framework_attempt attempt
+                JOIN contract_review_run review ON review.id = attempt.review_id
+                WHERE review.status IN ('CREATED', 'RUNNING')
+                  AND review.cancel_requested = false
+                  AND attempt.execution_status = 'PENDING'
+                  AND attempt.dispatch_status IN ('PENDING_DISPATCH', 'RETRY_WAIT')
+                  AND attempt.next_dispatch_at <= now()
+                  AND (attempt.lease_until IS NULL OR attempt.lease_until <= now())
+                ORDER BY attempt.next_dispatch_at, attempt.created_at, attempt.review_id, attempt.attempt_no
+                FOR UPDATE OF attempt SKIP LOCKED
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+            claimed: list[AttemptReservation] = []
+            for row in rows:
+                updated = conn.execute(
+                    """
+                    UPDATE contract_framework_attempt
+                    SET status = 'PENDING',
+                        execution_status = 'PENDING',
+                        dispatch_status = 'CLAIMED',
+                        dispatch_attempts = dispatch_attempts + 1,
+                        lease_owner = %s,
+                        lease_until = now() + (%s * interval '1 second'),
+                        lease_version = lease_version + 1,
+                        last_heartbeat_at = now()
+                    WHERE review_id = %s AND attempt_no = %s
+                    RETURNING lease_version
+                    """,
+                    (owner, lease_seconds, row["review_id"], row["attempt_no"]),
+                ).fetchone()
+                claimed.append(
+                    self._reservation(
+                        {
+                            "id": row["review_id"],
+                            "tenant_id": row["review_tenant_id"],
+                            "user_id": row["review_user_id"],
+                            "version": row["review_version"],
+                            "business_task_id": row["business_task_id"],
+                            "contract_version_id": row["contract_version_id"],
+                            "document_id": row["document_id"],
+                            "perspective": row["perspective"],
+                            "our_party_name": row["our_party_name"],
+                            "contract_type": row["contract_type"],
+                            "review_attitude": row["review_attitude"],
+                            "schema_version": row["schema_version"],
+                        },
+                        row["attempt_no"],
+                        attempt={
+                            "framework_task_id": row["framework_task_id"],
+                            "framework_run_id": row["framework_run_id"],
+                            "request_fingerprint": row["request_fingerprint"],
+                            "lease_owner": owner,
+                            "lease_version": updated["lease_version"],
+                        },
+                        previous=(
+                            {"framework_task_id": row["previous_task_id"], "framework_run_id": row["previous_run_id"]}
+                            if row["previous_task_id"] and row["previous_run_id"]
+                            else None
+                        ),
+                    )
+                )
+            conn.commit()
+        return claimed
+
+    def mark_dispatch_sent(
+        self,
+        reservation: AttemptReservation,
+        snapshot: FrameworkRunSnapshot,
+        *,
+        response_fingerprint: str | None = None,
+    ) -> bool:
+        response_fingerprint = response_fingerprint or build_dispatch_response_fingerprint(
+            review_id=reservation.review_id,
+            attempt_no=reservation.attempt_no,
+            tenant_id=reservation.tenant_id,
+            framework_task_id=snapshot.task_id,
+            framework_run_id=snapshot.run_id,
+        )
+        stage = self._stage(snapshot.current_stage_id)
+        execution_status = (
+            "RUNNING"
+            if snapshot.status in {"running", "paused", "waiting_human"}
+            else "PENDING"
+        )
+        with self.connect() as conn:
+            attempt = conn.execute(
+                """
+                SELECT *
+                FROM contract_framework_attempt
+                WHERE review_id = %s AND attempt_no = %s
+                FOR UPDATE
+                """,
+                (reservation.review_id, reservation.attempt_no),
+            ).fetchone()
+            if attempt is None:
+                conn.commit()
+                return False
+            if attempt["dispatch_status"] == "SENT":
+                if (
+                    attempt["framework_task_id"] != snapshot.task_id
+                    or attempt["framework_run_id"] != snapshot.run_id
+                ):
+                    conn.commit()
+                    return False
+                conn.execute(
+                    """
+                    UPDATE contract_framework_attempt
+                    SET dispatch_response_fingerprint = COALESCE(
+                          dispatch_response_fingerprint, %s
+                        ),
+                        lease_owner = NULL, lease_until = NULL,
+                        last_heartbeat_at = now()
+                    WHERE review_id = %s AND attempt_no = %s
+                    """,
+                    (response_fingerprint, reservation.review_id, reservation.attempt_no),
+                )
+                conn.commit()
+                return True
+            if (
+                attempt["dispatch_status"] == "DISPATCH_FAILED"
+                and attempt["execution_status"] == "CANCELLED"
+                and attempt["framework_task_id"] is None
+                and attempt["framework_run_id"] is None
+            ):
+                conn.execute(
+                    """
+                    UPDATE contract_framework_attempt
+                    SET dispatch_status = 'SENT',
+                        framework_task_id = %s, framework_run_id = %s,
+                        dispatch_response_fingerprint = %s,
+                        lease_owner = NULL, lease_until = NULL,
+                        last_heartbeat_at = now()
+                    WHERE review_id = %s AND attempt_no = %s
+                    """,
+                    (
+                        snapshot.task_id,
+                        snapshot.run_id,
+                        response_fingerprint,
+                        reservation.review_id,
+                        reservation.attempt_no,
+                    ),
+                )
+                conn.commit()
+                return False
+            if (
+                attempt["dispatch_status"] != "CLAIMED"
+                or attempt["lease_owner"] != reservation.lease_owner
+                or attempt["lease_version"] != reservation.lease_version
+            ):
+                conn.commit()
+                return False
+            review = conn.execute(
+                """
+                SELECT *
+                FROM contract_review_run
+                WHERE id = %s
+                FOR UPDATE
+                """,
+                (reservation.review_id,),
+            ).fetchone()
+            if review is None or review["cancel_requested"] or review["status"] in TERMINAL_REVIEW_STATUSES:
+                conn.execute(
+                    """
+                    UPDATE contract_framework_attempt
+                    SET dispatch_status = 'SENT',
+                        framework_task_id = %s, framework_run_id = %s,
+                        dispatch_response_fingerprint = %s,
+                        lease_owner = NULL, lease_until = NULL,
+                        last_heartbeat_at = now()
+                    WHERE review_id = %s AND attempt_no = %s
+                    """,
+                    (
+                        snapshot.task_id,
+                        snapshot.run_id,
+                        response_fingerprint,
+                        reservation.review_id,
+                        reservation.attempt_no,
+                    ),
+                )
+                conn.commit()
+                return False
+            conn.execute(
+                """
+                UPDATE contract_framework_attempt
+                SET framework_task_id = %s, framework_run_id = %s,
+                    dispatch_status = 'SENT',
+                    dispatch_response_fingerprint = %s,
+                    status = %s, execution_status = %s,
+                    current_stage = %s,
+                    last_activity_at = %s,
+                    started_at = CASE WHEN %s = 'RUNNING'
+                                     THEN COALESCE(started_at, now())
+                                     ELSE started_at END,
+                    is_active = %s,
+                    lease_owner = NULL, lease_until = NULL,
+                    last_heartbeat_at = now()
+                WHERE review_id = %s AND attempt_no = %s
+                """,
+                (
+                    snapshot.task_id,
+                    snapshot.run_id,
+                    response_fingerprint,
+                    execution_status,
+                    execution_status,
+                    stage,
+                    snapshot.updated_at,
+                    execution_status,
+                    execution_status == "RUNNING",
+                    reservation.review_id,
+                    reservation.attempt_no,
+                ),
+            )
+            if execution_status == "RUNNING":
+                conn.execute(
+                    """
+                    UPDATE contract_review_run
+                    SET status = 'RUNNING', current_stage = %s,
+                        active_attempt_no = %s,
+                        started_at = COALESCE(started_at, now()),
+                        version = version + 1
+                    WHERE id = %s AND status IN ('CREATED', 'RUNNING')
+                    """,
+                    (stage, reservation.attempt_no, reservation.review_id),
+                )
+            conn.commit()
+        return True
+
+    def should_cancel_unaccepted_dispatch(
+        self,
+        reservation: AttemptReservation,
+        snapshot: FrameworkRunSnapshot,
+    ) -> bool:
+        """Cancel only a remote Run explicitly owned by a cancelled local Attempt."""
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT attempt.dispatch_status, attempt.execution_status,
+                       attempt.framework_task_id, attempt.framework_run_id,
+                       review.status, review.cancel_requested
+                FROM contract_framework_attempt attempt
+                JOIN contract_review_run review ON review.id = attempt.review_id
+                WHERE attempt.review_id = %s AND attempt.attempt_no = %s
+                """,
+                (reservation.review_id, reservation.attempt_no),
+            ).fetchone()
+        if row is None:
+            return False
+        if (
+            row["dispatch_status"] != "SENT"
+            or row["framework_task_id"] != snapshot.task_id
+            or row["framework_run_id"] != snapshot.run_id
+        ):
+            return False
+        return bool(
+            row["cancel_requested"]
+            or row["execution_status"] == "CANCELLED"
+            or row["status"] in TERMINAL_REVIEW_STATUSES
+        )
+
+    def mark_dispatch_retry(
+        self,
+        reservation: AttemptReservation,
+        *,
+        error_code: str,
+        error_message: str,
+        retryable: bool,
+        retry_delay_seconds: int,
+    ) -> bool:
+        with self.connect() as conn:
+            attempt = conn.execute(
+                """
+                SELECT *
+                FROM contract_framework_attempt
+                WHERE review_id = %s AND attempt_no = %s
+                FOR UPDATE
+                """,
+                (reservation.review_id, reservation.attempt_no),
+            ).fetchone()
+            if (
+                attempt is None
+                or attempt["dispatch_status"] != "CLAIMED"
+                or attempt["lease_owner"] != reservation.lease_owner
+                or attempt["lease_version"] != reservation.lease_version
+            ):
+                conn.commit()
+                return False
+            if retryable:
+                conn.execute(
+                    """
+                    UPDATE contract_framework_attempt
+                    SET dispatch_status = 'RETRY_WAIT',
+                        next_dispatch_at = now() + (%s * interval '1 second'),
+                        lease_owner = NULL, lease_until = NULL,
+                        last_heartbeat_at = now()
+                    WHERE review_id = %s AND attempt_no = %s
+                    """,
+                    (max(1, retry_delay_seconds), reservation.review_id, reservation.attempt_no),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE contract_framework_attempt
+                    SET dispatch_status = 'DISPATCH_FAILED',
+                        status = 'FAILED', execution_status = 'FAILED',
+                        is_active = false, finished_at = now(),
+                        lease_owner = NULL, lease_until = NULL,
+                        last_heartbeat_at = now()
+                    WHERE review_id = %s AND attempt_no = %s
+                    """,
+                    (reservation.review_id, reservation.attempt_no),
+                )
+                conn.execute(
+                    """
+                    UPDATE contract_review_run
+                    SET status = 'FAILED', current_stage = NULL,
+                        active_attempt_no = NULL, error_code = %s,
+                        error_message = %s, retryable = false,
+                        completed_at = now(), version = version + 1
+                    WHERE id = %s AND status IN ('CREATED', 'RUNNING')
+                    """,
+                    (error_code, error_message, reservation.review_id),
+                )
+            conn.commit()
+        return True
+
+    def list_active_attempts(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, tenant_id, user_id
+                FROM contract_review_run
+                WHERE status = 'RUNNING'
+                  AND cancel_requested = false
+                  AND active_attempt_no IS NOT NULL
+                ORDER BY updated_at, id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def reserve_initial_attempt(
         self,
         review_id: str,
@@ -162,7 +639,7 @@ class ReviewStateRepository:
                 """
                 SELECT attempt_no
                 FROM contract_framework_attempt
-                WHERE review_id = %s AND status = 'CREATING'
+                WHERE review_id = %s AND status = 'PENDING'
                 ORDER BY attempt_no DESC
                 LIMIT 1
                 FOR UPDATE
@@ -193,10 +670,12 @@ class ReviewStateRepository:
             conn.execute(
                 """
                 INSERT INTO contract_framework_attempt (
-                  review_id, attempt_no, tenant_id, status, is_active
-                ) VALUES (%s, 1, %s, 'CREATING', false)
+                  review_id, attempt_no, tenant_id, status, execution_status,
+                  dispatch_status, request_fingerprint, next_dispatch_at, is_active
+                ) VALUES (%s, 1, %s, 'PENDING', 'PENDING',
+                          'PENDING_DISPATCH', %s, now(), false)
                 """,
-                (review_id, tenant_id),
+                (review_id, tenant_id, self._framework_request_fingerprint(review, 1)),
             )
             reservation = self._reservation(review, 1)
             conn.commit()
@@ -239,7 +718,7 @@ class ReviewStateRepository:
                 or review["status"] not in {"CREATED", "RUNNING"}
                 or review["cancel_requested"]
                 or attempt is None
-                or attempt["status"] != "CREATING"
+                or attempt["status"] != "PENDING"
                 or (review["active_attempt_no"] or 0) >= reservation.attempt_no
             ):
                 conn.commit()
@@ -311,7 +790,7 @@ class ReviewStateRepository:
                 review["version"] != reservation.expected_version
                 or review["status"] not in {"CREATED", "RUNNING"}
                 or attempt is None
-                or attempt["status"] != "CREATING"
+                or attempt["status"] != "PENDING"
             ):
                 conn.commit()
                 return False
@@ -499,7 +978,7 @@ class ReviewStateRepository:
                 """
                 SELECT attempt_no
                 FROM contract_framework_attempt
-                WHERE review_id = %s AND status = 'CREATING'
+                WHERE review_id = %s AND status = 'PENDING'
                 ORDER BY attempt_no DESC
                 LIMIT 1
                 FOR UPDATE
@@ -573,10 +1052,17 @@ class ReviewStateRepository:
             conn.execute(
                 """
                 INSERT INTO contract_framework_attempt (
-                  review_id, attempt_no, tenant_id, status, is_active
-                ) VALUES (%s, %s, %s, 'CREATING', false)
+                  review_id, attempt_no, tenant_id, status, execution_status,
+                  dispatch_status, request_fingerprint, next_dispatch_at, is_active
+                ) VALUES (%s, %s, %s, 'PENDING', 'PENDING',
+                          'PENDING_DISPATCH', %s, now(), false)
                 """,
-                (review_id, next_attempt_no, tenant_id),
+                (
+                    review_id,
+                    next_attempt_no,
+                    tenant_id,
+                    self._framework_request_fingerprint(review, next_attempt_no),
+                ),
             )
             updated = conn.execute(
                 """
@@ -620,9 +1106,9 @@ class ReviewStateRepository:
                 SELECT attempt_no, framework_task_id, framework_run_id
                 FROM contract_framework_attempt
                 WHERE review_id = %s
-                  AND status = 'RUNNING'
-                  AND is_active = true
+                  AND execution_status IN ('PENDING', 'RUNNING')
                   AND framework_task_id IS NOT NULL
+                  AND dispatch_status = 'SENT'
                 ORDER BY attempt_no
                 """,
                 (review_id,),
@@ -669,7 +1155,13 @@ class ReviewStateRepository:
             conn.execute(
                 """
                 UPDATE contract_framework_attempt
-                SET status = 'CANCELLED', is_active = false, finished_at = now()
+                SET status = 'CANCELLED', execution_status = 'CANCELLED',
+                    dispatch_status = CASE
+                      WHEN framework_task_id IS NULL THEN 'DISPATCH_FAILED'
+                      ELSE dispatch_status
+                    END,
+                    lease_owner = NULL, lease_until = NULL,
+                    is_active = false, finished_at = now()
                 WHERE review_id = %s
                   AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'ORPHANED')
                 """,
@@ -692,8 +1184,10 @@ class ReviewStateRepository:
         review: dict[str, Any],
         attempt_no: int,
         *,
+        attempt: dict[str, Any] | None = None,
         previous: dict[str, Any] | None = None,
     ) -> AttemptReservation:
+        attempt = attempt or {}
         return AttemptReservation(
             review_id=review["id"],
             attempt_no=attempt_no,
@@ -708,8 +1202,29 @@ class ReviewStateRepository:
             contract_type=review["contract_type"],
             review_attitude=review["review_attitude"],
             schema_version=review["schema_version"],
+            request_fingerprint=attempt.get("request_fingerprint")
+            or ReviewStateRepository._framework_request_fingerprint(review, attempt_no),
             previous_task_id=previous["framework_task_id"] if previous else None,
             previous_run_id=previous["framework_run_id"] if previous else None,
+            lease_owner=attempt.get("lease_owner"),
+            lease_version=attempt.get("lease_version", 0),
+        )
+
+    @staticmethod
+    def _framework_request_fingerprint(review: dict[str, Any], attempt_no: int) -> str:
+        return build_framework_request_fingerprint(
+            tenant_id=review["tenant_id"],
+            user_id=review["user_id"],
+            review_id=review["id"],
+            attempt_no=attempt_no,
+            business_task_id=review["business_task_id"],
+            contract_version_id=review["contract_version_id"],
+            document_id=review["document_id"],
+            perspective=review["perspective"],
+            our_party_name=review["our_party_name"],
+            contract_type=review["contract_type"],
+            review_attitude=review["review_attitude"],
+            schema_version=review["schema_version"],
         )
 
     @staticmethod

@@ -62,6 +62,21 @@ class Settings(BaseSettings):
         ge=0,
         validation_alias="FRAMEWORK_RECOVERY_GRACE_SECONDS",
     )
+    dispatcher_poll_seconds: float = Field(
+        default=1,
+        gt=0,
+        validation_alias="CONTRACT_DISPATCHER_POLL_SECONDS",
+    )
+    dispatcher_batch_size: int = Field(
+        default=8,
+        gt=0,
+        validation_alias="CONTRACT_DISPATCHER_BATCH_SIZE",
+    )
+    dispatch_lease_seconds: int = Field(
+        default=120,
+        gt=0,
+        validation_alias="CONTRACT_DISPATCH_LEASE_SECONDS",
+    )
 
     mock_mode: bool = True
 

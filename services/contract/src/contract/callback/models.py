@@ -243,6 +243,7 @@ class CallbackBase(StrictModel):
     attempt_no: int = Field(ge=1, le=2)
     framework_task_id: str = Field(min_length=1, max_length=160)
     framework_run_id: str = Field(min_length=1, max_length=160)
+    lease_version: int = Field(default=1, ge=1)
     event_sequence: int = Field(ge=0)
     callback_id: str = Field(min_length=1, max_length=200)
 

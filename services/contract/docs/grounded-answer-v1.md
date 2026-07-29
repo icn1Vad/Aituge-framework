@@ -52,3 +52,29 @@ Markdown 引用格式固定为：
 - 输出继续使用相同Markdown引用和`references[]`。
 
 REPORT 与 CHAT 使用不同业务指令，但共用 Evidence 引用和定位数据结构。
+
+## 阶段 3：问答流式输出
+
+同步接口继续保留，新增：
+
+```text
+POST /v1/contract-reviews/{review_id}/chat/stream
+Content-Type: text/event-stream
+```
+
+流式接口仍执行同一个`contract.grounded.answer` ReAct Task，不创建第二套问答 Agent。Contract
+Python订阅Framework Run事件，只把结构化模型输出中的`content_markdown`增量转成`delta`，
+不向Java暴露半截JSON。事件类型固定为：
+
+```text
+meta      任务、请求和合同标识
+tool      Framework工具调用状态
+delta     仅包含可展示的Markdown增量
+snapshot  幂等复用已完成任务时返回完整结果
+done      最终GroundedAnswerData
+error     流开始后的标准错误
+```
+
+`delta`只能用于即时展示，不代表引用已经可用。`references[]`仍须经过Framework Citation
+Finalizer，并由Java再次对照正式Finding和Evidence验证；只有`done`通过后，前端才可激活
+`#docref-*`小飞机定位。

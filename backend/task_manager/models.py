@@ -162,6 +162,30 @@ class TaskQuotaEntity(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime))
 
 
+class TaskUserScheduleEntity(SQLModel, table=True):
+    """Least-recently-scheduled cursor for one user in a tenant resource pool."""
+
+    __tablename__ = "tuge_task_user_schedule"
+    __table_args__ = (
+        UniqueConstraint(
+            "service",
+            "tenant_id",
+            "resource_pool",
+            "user_id",
+            name="unique_tuge_task_user_schedule_scope",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True, max_length=80)
+    service: str = Field(nullable=False, max_length=80)
+    tenant_id: str = Field(nullable=False, max_length=64)
+    resource_pool: str = Field(default="default", max_length=80)
+    user_id: str = Field(nullable=False, max_length=120)
+    last_scheduled_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime))
+
+
 class TaskStageRunEntity(SQLModel, table=True):
     __tablename__ = "tuge_task_stage_run"
     __table_args__ = (

@@ -52,11 +52,36 @@ def test_document_processing_persists_parse_draft_then_activates_atomically(tmp_
         assert first.document_reused is False
         assert first.generation_reused is False
         assert first.parse_completed is False
-        assert first.block_count == 5
-        assert first.structural_ir is not None
+        assert first.block_count == 0
+        assert first.structural_ir is None
+
+        generation = repository.get_parse_generation(
+            first.generation_id,
+            document_id=first.document_id,
+            tenant_id=tenant_id,
+        )
+        assert generation is not None and generation["status"] == "CREATED"
+        assert repository.get_active_generation(first.document_id, tenant_id=tenant_id) is None
+        document = repository.get_document(
+            first.document_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+        assert document is not None and document["active_generation_id"] is None
+        assert (tmp_path / document["storage_path"]).read_bytes() == upload.content
+
+        staged = processor.parse_generation(
+            generation_id=first.generation_id,
+            document_id=first.document_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+        assert staged["status"] == "RUNNING"
+        assert staged["block_count"] == 5
+        assert staged["contract_ir_json"] is not None
         assert [
             (party["role"], party["name"])
-            for party in first.structural_ir["parties"]
+            for party in staged["contract_ir_json"]["parties"]
         ] == [
             ("PARTY_A", "某某采购单位"),
             ("PARTY_B", "某某服务单位"),
@@ -109,7 +134,7 @@ def test_document_processing_persists_parse_draft_then_activates_atomically(tmp_
             document_id=first.document_id,
             tenant_id=tenant_id,
             blocks=blocks,
-            contract_ir=first.structural_ir,
+            contract_ir=staged["contract_ir_json"],
         )
         assert reused is False
         assert completed["status"] == "SUCCEEDED"

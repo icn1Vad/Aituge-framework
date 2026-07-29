@@ -130,13 +130,11 @@ class RuntimeContractReviewService:
         else:
             review_id = existing["id"]
 
-        reservation = self.state_repository.reserve_initial_attempt(
+        self.state_repository.ensure_initial_attempt(
             review_id,
             tenant_id=context.tenant_id,
             user_id=context.user_id,
         )
-        if reservation is not None:
-            self._dispatch(reservation)
         state = self.state_repository.get_state(
             review_id,
             tenant_id=context.tenant_id,
@@ -150,30 +148,6 @@ class RuntimeContractReviewService:
             tenant_id=context.tenant_id,
             user_id=context.user_id,
         )
-        pending = state["pending_attempt"]
-        needs_dispatch = pending is not None or (
-            state["status"] == "CREATED" and state["active_attempt_no"] is None
-        )
-        if needs_dispatch and state["status"] in {"CREATED", "RUNNING"} and not state["cancel_requested"]:
-            reservation = self.state_repository.reserve_initial_attempt(
-                review_id,
-                tenant_id=context.tenant_id,
-                user_id=context.user_id,
-            )
-            if reservation is not None:
-                self._dispatch(reservation)
-                state = self.state_repository.get_state(
-                    review_id,
-                    tenant_id=context.tenant_id,
-                    user_id=context.user_id,
-                )
-
-        if state["pending_attempt"] is not None:
-            return self._status_data(state)
-
-        attempt = state["active_attempt"]
-        if state["status"] == "RUNNING" and attempt is not None and attempt["framework_run_id"]:
-            state = self._reconcile_running(state, context=context)
         return self._status_data(state)
 
     def get_result(self, review_id: str, *, context: InternalRequestContext) -> ReviewResultData:
@@ -199,21 +173,48 @@ class RuntimeContractReviewService:
             raise ContractError("RESULT_INVALID", "合同审查结果不符合冻结协议", status_code=500) from exc
 
     def reconcile_nonterminal_reviews(self) -> int:
-        """Resume recoverable reviews after a Contract Python process restart."""
-        reviews = self.state_repository.list_nonterminal_reviews()
+        """Repair only durable Review/Attempt state; never call Framework."""
+        return self.state_repository.reconcile_nonterminal_attempts()
+
+    def dispatch_pending_attempts(self) -> int:
+        """Claim and dispatch durable Attempts without depending on a user query."""
+        self.state_repository.reconcile_expired_dispatch_leases()
+        self.state_repository.reconcile_nonterminal_attempts()
+        owner = getattr(self, "_dispatcher_owner", None)
+        if owner is None:
+            owner = f"contract-dispatcher-{uuid.uuid4().hex}"
+            self._dispatcher_owner = owner
+        reservations = self.state_repository.claim_pending_attempts(
+            owner=owner,
+            limit=getattr(self.settings, "dispatcher_batch_size", 8),
+            lease_seconds=getattr(self.settings, "dispatch_lease_seconds", 120),
+        )
+        dispatched = 0
+        for reservation in reservations:
+            if self.dispatch_claimed_attempt(reservation):
+                dispatched += 1
+        return dispatched
+
+    def reconcile_active_reviews(self) -> int:
+        """Poll active Framework Runs from the reconciler, not from status queries."""
         reconciled = 0
-        for review in reviews:
+        for item in self.state_repository.list_active_attempts():
             context = InternalRequestContext(
-                tenant_id=review["tenant_id"],
-                user_id=review["user_id"],
-                request_id=f"startup-reconcile-{review['id']}",
+                tenant_id=item["tenant_id"],
+                user_id=item["user_id"],
+                request_id=f"framework-reconcile-{item['id']}",
                 idempotency_key=None,
             )
             try:
-                self.get_status(review["id"], context=context)
+                state = self.state_repository.get_state(
+                    item["id"],
+                    tenant_id=item["tenant_id"],
+                    user_id=item["user_id"],
+                )
+                self._reconcile_running(state, context=context)
                 reconciled += 1
             except ContractError:
-                logger.exception("Unable to reconcile contract review %s during startup", review["id"])
+                logger.exception("Unable to reconcile contract review %s", item["id"])
         return reconciled
 
     def cancel_review(self, review_id: str, *, context: InternalRequestContext) -> CancelReviewData:
@@ -336,13 +337,11 @@ class RuntimeContractReviewService:
             attempt_no=attempt["attempt_no"],
             stale_before=stale_before,
         )
-        if reservation is not None:
-            self._dispatch(reservation)
         return self.state_repository.get_state(
             state["id"], tenant_id=context.tenant_id, user_id=context.user_id
         )
 
-    def _dispatch(self, reservation: AttemptReservation) -> bool:
+    def dispatch_claimed_attempt(self, reservation: AttemptReservation) -> bool:
         if reservation.previous_task_id and reservation.previous_run_id:
             try:
                 self.framework_gateway.cancel_run(
@@ -382,16 +381,35 @@ class RuntimeContractReviewService:
                     reservation.attempt_no,
                     exc,
                 )
+                self.state_repository.mark_dispatch_retry(
+                    reservation,
+                    error_code=exc.code,
+                    error_message=str(exc),
+                    retryable=True,
+                    retry_delay_seconds=min(
+                        60,
+                        max(1, 2 ** min(reservation.lease_version, 6)),
+                    ),
+                )
                 return False
-            self.state_repository.mark_dispatch_failed(
+            self.state_repository.mark_dispatch_retry(
                 reservation,
-                error_code="FRAMEWORK_PROTOCOL_ERROR",
+                error_code=exc.code,
                 error_message=str(exc),
                 retryable=False,
+                retry_delay_seconds=0,
             )
-            raise self._gateway_error(exc) from exc
-        activated = self.state_repository.activate_attempt(reservation, snapshot)
-        if not activated:
+            logger.error(
+                "Framework dispatch permanently failed for review %s attempt %s: %s",
+                reservation.review_id,
+                reservation.attempt_no,
+                exc,
+            )
+            return False
+        dispatched = self.state_repository.mark_dispatch_sent(reservation, snapshot)
+        if not dispatched and self.state_repository.should_cancel_unaccepted_dispatch(
+            reservation, snapshot
+        ):
             try:
                 self.framework_gateway.cancel_run(
                     snapshot.task_id,
@@ -401,7 +419,7 @@ class RuntimeContractReviewService:
                 )
             except FrameworkGatewayError:
                 logger.warning("Unable to cancel superseded Framework Run %s", snapshot.run_id)
-        return activated
+        return dispatched
 
     @staticmethod
     def _create_data(state: dict, *, reused: bool) -> CreateReviewData:

@@ -8,6 +8,10 @@ import httpx
 
 from task_manager.models import TaskEntity
 from task_manager.registry import TaskType
+from task_manager.runtime.fencing import (
+    current_execution_lease,
+    verify_current_execution_lease,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +28,7 @@ class ResultSinkDelivery:
     domain_retryable: bool = False
     user_action_required: bool = False
     error_details: dict[str, Any] | None = None
+    lease_version: int | None = None
 
 
 ResultSinkHandler = Callable[[ResultSinkDelivery], Awaitable[None]]
@@ -108,6 +113,10 @@ async def deliver_task_result(
     user_action_required: bool = False,
     error_details: dict[str, Any] | None = None,
 ) -> None:
+    run_id = str(task.current_run_id or "").strip()
+    if run_id:
+        await verify_current_execution_lease(run_id)
+    execution_lease = current_execution_lease()
     registered = _RESULT_SINKS.get(task.task_type)
     if registered is not None:
         delivery = ResultSinkDelivery(
@@ -123,6 +132,7 @@ async def deliver_task_result(
             domain_retryable=domain_retryable,
             user_action_required=user_action_required,
             error_details=error_details,
+            lease_version=execution_lease.version if execution_lease is not None else None,
         )
         try:
             await registered.handler(delivery)
@@ -163,6 +173,8 @@ async def deliver_task_result(
     last_error: Exception | None = None
     for _attempt in range(3):
         try:
+            if run_id:
+                await verify_current_execution_lease(run_id)
             async with httpx.AsyncClient(timeout=15) as client:
                 response = await client.post(url, json=payload)
                 response.raise_for_status()

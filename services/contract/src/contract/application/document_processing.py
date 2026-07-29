@@ -92,14 +92,51 @@ class ContractDocumentProcessor:
                 document_reused=document_reused,
                 generation_reused=True,
             )
+        return self._result(
+            document_id=effective_document_id,
+            generation=generation,
+            document_reused=document_reused,
+            generation_reused=reservation.reused,
+        )
 
+    def parse_generation(
+        self,
+        *,
+        generation_id: str,
+        document_id: str,
+        tenant_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        """Parse the immutable technical copy from a Framework parse Stage."""
+        document = self.repository.get_document(
+            document_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+        if document is None:
+            raise ContractError("REVIEW_NOT_FOUND", "合同技术文档不存在", status_code=404)
+        generation = self.repository.get_parse_generation(
+            generation_id,
+            document_id=document_id,
+            tenant_id=tenant_id,
+        )
+        if generation is None:
+            raise ContractError("REVIEW_NOT_FOUND", "解析Generation不存在", status_code=404)
+        if generation["status"] == "SUCCEEDED":
+            return generation
+        if generation["status"] not in {"CREATED", "RUNNING"}:
+            raise ContractError(
+                "IDEMPOTENCY_CONFLICT",
+                "失败的解析Generation不能再次执行",
+                status_code=409,
+            )
         source_path = self.file_store.resolve(document["storage_path"])
         try:
-            parsed = self.parser.parse(source_path, generation_id=reservation.generation_id)
+            parsed = self.parser.parse(source_path, generation_id=generation_id)
             structural_ir: ContractIR = build_structural_contract_ir(
                 parsed,
-                document_id=effective_document_id,
-                generation_id=reservation.generation_id,
+                document_id=document_id,
+                generation_id=generation_id,
                 content_hash=document["content_hash"],
                 parser_version=self.parser.version,
             )
@@ -119,18 +156,18 @@ class ContractDocumentProcessor:
                 for block in parsed.blocks
             ]
             staged, reused = self.repository.stage_parse_generation(
-                generation_id=reservation.generation_id,
-                document_id=effective_document_id,
+                generation_id=generation_id,
+                document_id=document_id,
                 tenant_id=tenant_id,
                 blocks=block_values,
                 structural_ir=structural_ir.model_dump(mode="json"),
             )
         except ContractError as exc:
-            self._fail_generation(reservation.generation_id, tenant_id=tenant_id, error_code=exc.code)
+            self._fail_generation(generation_id, tenant_id=tenant_id, error_code=exc.code)
             raise
         except Exception as exc:
             self._fail_generation(
-                reservation.generation_id,
+                generation_id,
                 tenant_id=tenant_id,
                 error_code="CONTRACT_PARSE_FAILED",
             )
@@ -140,12 +177,7 @@ class ContractDocumentProcessor:
                 status_code=422,
                 user_action_required=True,
             ) from exc
-        return self._result(
-            document_id=effective_document_id,
-            generation=staged,
-            document_reused=document_reused,
-            generation_reused=reservation.reused or reused,
-        )
+        return staged
 
     @staticmethod
     def _result(

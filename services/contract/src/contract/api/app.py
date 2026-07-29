@@ -13,7 +13,7 @@ from typing import Annotated
 from fastapi import Body, Depends, FastAPI, File, Form, Header, Query, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
 from contract.api.models import (
@@ -28,6 +28,8 @@ from contract.api.models import (
     ReviewStatusData,
     SuccessResponse,
 )
+from contract.application.dispatcher import ContractDispatcher
+from contract.application.document_processing import ContractDocumentProcessor
 from contract.application.mock_service import InMemoryContractReviewService
 from contract.application.ports import ContractReviewService, InternalRequestContext, UploadedContract
 from contract.application.runtime_service import build_runtime_contract_review_service
@@ -110,6 +112,8 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
+        dispatcher_task: asyncio.Task | None = None
+        dispatcher_stop: asyncio.Event | None = None
         if not application.state.settings.mock_mode:
             runtime_service = application.state.contract_service
             if runtime_service is None:
@@ -119,7 +123,18 @@ def create_app(
             if callable(reconcile):
                 count = await asyncio.to_thread(reconcile)
                 logger.info("Reconciled %s nonterminal contract reviews during startup", count)
-        yield
+            if callable(getattr(runtime_service, "dispatch_pending_attempts", None)):
+                dispatcher = ContractDispatcher(runtime_service, application.state.settings)
+                dispatcher_stop = asyncio.Event()
+                application.state.contract_dispatcher = dispatcher
+                dispatcher_task = asyncio.create_task(dispatcher.run_forever(dispatcher_stop))
+        try:
+            yield
+        finally:
+            if dispatcher_stop is not None:
+                dispatcher_stop.set()
+            if dispatcher_task is not None:
+                await dispatcher_task
 
     app = FastAPI(title="Contract Agent", version="1.0.0", lifespan=lifespan)
     app.state.settings = app_settings
@@ -493,6 +508,85 @@ def create_app(
         return SuccessResponse(data=data, request_id=context.request_id)
 
     @app.post(
+        "/v1/contract-reviews/{review_id}/chat/stream",
+        response_class=StreamingResponse,
+        responses={
+            200: {
+                "description": "合同问答SSE事件流",
+                "content": {
+                    "text/event-stream": {
+                        "schema": {"type": "string"},
+                    }
+                },
+            },
+            **ERROR_RESPONSES,
+        },
+    )
+    async def stream_grounded_chat(
+        review_id: str,
+        payload: GroundedChatRequest,
+        http_request: Request,
+        context: Annotated[InternalRequestContext, Depends(_create_internal_context)],
+    ) -> StreamingResponse:
+        await _require_grounded_review(
+            http_request,
+            context,
+            review_id=review_id,
+            document_id=payload.document_id,
+        )
+        service = _grounded_answer_service(http_request)
+
+        async def event_stream():
+            try:
+                async for event_type, event_data in service.stream_chat(
+                    review_id=review_id,
+                    request=payload,
+                    context=context,
+                ):
+                    yield _sse_event(event_type, event_data)
+            except ContractError as exc:
+                yield _sse_event(
+                    "error",
+                    {
+                        "request_id": context.request_id,
+                        "error": {
+                            "code": exc.code,
+                            "message": str(exc),
+                            "retryable": exc.retryable,
+                            "user_action_required": exc.user_action_required,
+                            "details": exc.details,
+                        },
+                    },
+                )
+            except Exception:
+                logging.exception(
+                    "Unexpected grounded chat stream failure; request_id=%s",
+                    context.request_id,
+                )
+                yield _sse_event(
+                    "error",
+                    {
+                        "request_id": context.request_id,
+                        "error": {
+                            "code": "INTERNAL_ERROR",
+                            "message": "合同问答流式生成失败",
+                            "retryable": False,
+                            "user_action_required": False,
+                            "details": None,
+                        },
+                    },
+                )
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.post(
         "/v1/contract-reviews/{review_id}/cancel",
         response_model=SuccessResponse[CancelReviewData],
         responses=ERROR_RESPONSES,
@@ -569,6 +663,13 @@ def _grounded_answer_service(request: Request) -> FrameworkGroundedAnswerService
     configured = FrameworkGroundedAnswerService(request.app.state.settings)
     request.app.state.grounded_answer_service = configured
     return configured
+
+
+def _sse_event(event_type: str, data: dict[str, object]) -> str:
+    return (
+        f"event: {event_type}\n"
+        f"data: {json.dumps(data, ensure_ascii=False, separators=(',', ':'))}\n\n"
+    )
 
 
 async def _generate_revision_drafts(
@@ -689,7 +790,12 @@ def _ensure_internal_components(request: Request) -> None:
     settings: Settings = request.app.state.settings
     repository = ContractRepository(settings)
     callback_repository = FrameworkCallbackRepository(settings)
-    internal_service = ContractInternalService(repository, callback_repository)
+    document_processor = ContractDocumentProcessor(settings, repository)
+    internal_service = ContractInternalService(
+        repository,
+        callback_repository,
+        document_processor=document_processor,
+    )
     request.app.state.contract_internal_service = internal_service
     request.app.state.framework_callback_service = FrameworkCallbackService(
         callback_repository,

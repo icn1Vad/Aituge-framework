@@ -17,7 +17,10 @@ from contract.grounded.models import (
     GroundedChatRequest,
     GroundedReportRequest,
 )
-from contract.grounded.service import FrameworkGroundedAnswerService
+from contract.grounded.service import (
+    ContentMarkdownStreamDecoder,
+    FrameworkGroundedAnswerService,
+)
 
 
 TOKEN = "contract-test-token"
@@ -242,6 +245,157 @@ def test_framework_service_does_not_restart_a_terminal_failed_task() -> None:
     assert [request.url.path for request in requests] == ["/task-manager/tasks"]
 
 
+def test_content_markdown_stream_decoder_handles_split_field_and_escapes() -> None:
+    decoder = ContentMarkdownStreamDecoder()
+
+    assert decoder.feed('{"schema_version":"1.0","content_mark') == ""
+    assert decoder.feed('down":"第一行\\n付款见 ') == "第一行\n付款见 "
+    assert decoder.feed('[条款](#docref-evidence-1)。","citations":[]}') == (
+        "[条款](#docref-evidence-1)。"
+    )
+
+
+def test_framework_service_streams_markdown_and_returns_validated_answer() -> None:
+    requests: list[httpx.Request] = []
+    task_read_count = 0
+    draft_json = json.dumps(
+        {
+            "schema_version": "1.0",
+            "mode": "CHAT",
+            "content_markdown": "合同结论见 [付款条款](#docref-ref-1)。",
+            "citations": [{"evidence_id": "ref-1", "label": "付款条款"}],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    split_at = draft_json.index("付款条款")
+
+    def envelope(sequence: int, delta: str) -> str:
+        value = {
+            "schema_version": "1.0",
+            "event_id": f"event-{sequence}",
+            "task_id": "task-stream",
+            "run_id": "run-stream",
+            "sequence": sequence,
+            "event_type": "agent_delta",
+            "stage_id": "generate_grounded_answer",
+            "payload": {"delta": delta},
+        }
+        return (
+            "event: agent_delta\n"
+            f"data: {json.dumps(value, ensure_ascii=False)}\n\n"
+        )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal task_read_count
+        requests.append(request)
+        if request.url.path == "/task-manager/tasks":
+            body = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={
+                    "task": {
+                        "id": "task-stream",
+                        "task_type": "contract.grounded.answer",
+                        "status": "created",
+                        "input_payload_json": {
+                            key: value
+                            for key, value in body["input_payload"].items()
+                            if value is not None
+                        },
+                        "result_payload_json": None,
+                        "error_payload_json": None,
+                        "tenant_id": "tenant-1",
+                        "user_id": "user-1",
+                        "current_run_id": None,
+                    }
+                },
+            )
+        if request.url.path == "/task-manager/tasks/task-stream/stream":
+            terminal = {
+                "schema_version": "1.0",
+                "event_id": "event-3",
+                "task_id": "task-stream",
+                "run_id": "run-stream",
+                "sequence": 3,
+                "event_type": "task_succeeded",
+                "payload": {},
+            }
+            body = (
+                envelope(1, draft_json[:split_at])
+                + envelope(2, draft_json[split_at:])
+                + "event: task_succeeded\n"
+                + f"data: {json.dumps(terminal)}\n\n"
+            )
+            return httpx.Response(
+                200,
+                text=body,
+                headers={"Content-Type": "text/event-stream"},
+            )
+        if request.url.path == "/task-manager/tasks/task-stream":
+            task_read_count += 1
+            status = "running" if task_read_count == 1 else "succeeded"
+            return httpx.Response(
+                200,
+                json={
+                    "task": {
+                        "id": "task-stream",
+                        "task_type": "contract.grounded.answer",
+                        "status": status,
+                        "input_payload_json": {
+                            "schema_version": "1.0",
+                            "mode": "CHAT",
+                            "review_id": "review-1",
+                            "document_id": "document-1",
+                            "question": "付款条件是什么？",
+                            "conversation_history": [],
+                        },
+                        "result_payload_json": (
+                            {"structured": _answer("CHAT")}
+                            if status == "succeeded"
+                            else None
+                        ),
+                        "error_payload_json": None,
+                        "tenant_id": "tenant-1",
+                        "user_id": "user-1",
+                        "current_run_id": "run-stream",
+                    }
+                },
+            )
+        raise AssertionError(request.url.path)
+
+    service = FrameworkGroundedAnswerService(
+        _settings(),
+        transport=httpx.MockTransport(handler),
+    )
+
+    async def collect() -> list[tuple[str, dict[str, object]]]:
+        return [
+            event
+            async for event in service.stream_chat(
+                review_id="review-1",
+                request=GroundedChatRequest(
+                    document_id="document-1",
+                    question="付款条件是什么？",
+                ),
+                context=_context(),
+            )
+        ]
+
+    events = asyncio.run(collect())
+    assert [event[0] for event in events] == ["meta", "delta", "delta", "done"]
+    assert "".join(
+        str(data["delta"]) for event_type, data in events if event_type == "delta"
+    ) == "合同结论见 [付款条款](#docref-ref-1)。"
+    assert events[-1][1]["answer"] == _answer("CHAT")
+    assert [request.url.path for request in requests] == [
+        "/task-manager/tasks",
+        "/task-manager/tasks/task-stream/stream",
+        "/task-manager/tasks/task-stream",
+        "/task-manager/tasks/task-stream",
+    ]
+
+
 class _SucceededReviewService:
     def get_status(
         self,
@@ -266,6 +420,12 @@ class _FakeGroundedService:
 
     async def answer_chat(self, **_kwargs: object) -> GroundedAnswerData:
         return GroundedAnswerData.model_validate(_answer("CHAT"))
+
+    async def stream_chat(self, **_kwargs: object):
+        yield "meta", {"request_id": "request-1", "task_id": "task-1"}
+        yield "delta", {"delta": "合同结论见 "}
+        yield "delta", {"delta": "[付款条款](#docref-ref-1)。"}
+        yield "done", {"answer": _answer("CHAT")}
 
 
 def _api_client() -> TestClient:
@@ -314,6 +474,28 @@ def test_report_and_chat_business_endpoints_return_grounded_references() -> None
     assert chat.status_code == 200
     assert chat.json()["data"]["mode"] == "CHAT"
     assert chat.json()["data"]["references"][0]["chunk_id"] == "block-1"
+
+
+def test_chat_stream_endpoint_returns_sse_events() -> None:
+    client = _api_client()
+
+    response = client.post(
+        "/v1/contract-reviews/review-1/chat/stream",
+        headers=_headers(),
+        json={
+            "schema_version": "1.0",
+            "document_id": "document-1",
+            "question": "付款条件是什么？",
+            "conversation_history": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: meta" in response.text
+    assert "event: delta" in response.text
+    assert "event: done" in response.text
+    assert '"reference_id":"docref-ref-1"' in response.text
 
 
 def test_grounded_endpoints_require_idempotency_and_matching_document() -> None:

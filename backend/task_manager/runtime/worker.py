@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
+import psycopg
 from loguru import logger
 from sqlalchemy import update
 from sqlmodel import select
@@ -25,6 +27,85 @@ class RunLease:
     run_id: str
     owner: str
     version: int
+
+
+class LeaseHeartbeatSupervisor:
+    """Renew a PostgreSQL Run lease outside the task execution event loop."""
+
+    def __init__(
+        self,
+        *,
+        lease: RunLease,
+        execution_lease: ExecutionLease,
+        lease_seconds: int,
+        heartbeat_seconds: int,
+    ) -> None:
+        self.lease = lease
+        self.execution_lease = execution_lease
+        self.lease_seconds = lease_seconds
+        self.heartbeat_seconds = heartbeat_seconds
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"task-manager-heartbeat:{lease.run_id}",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=7)
+        if self._thread.is_alive():
+            self.execution_lease.mark_lost("heartbeat supervisor did not stop cleanly")
+            logger.error("TaskManager Run {} heartbeat supervisor did not stop", self.lease.run_id)
+
+    def _run(self) -> None:
+        failures = 0
+        while not self._stop.wait(self.heartbeat_seconds):
+            try:
+                if self._renew_once():
+                    failures = 0
+                    continue
+                failures += 1
+            except Exception:
+                failures += 1
+                logger.exception("TaskManager Run {} heartbeat failed", self.lease.run_id)
+            if failures >= 2:
+                self.execution_lease.mark_lost("two consecutive lease renewal failures")
+                logger.error("TaskManager Run {} lost its execution lease", self.lease.run_id)
+                return
+
+    def _renew_once(self) -> bool:
+        now = utc_now()
+        with psycopg.connect(
+            dbname=os.environ["DB_NAME"],
+            user=os.environ["DB_USER"],
+            password=os.environ["DB_PASSWORD"],
+            host=os.environ.get("DB_HOST", "localhost"),
+            port=int(os.environ.get("DB_PORT", "5432")),
+            connect_timeout=5,
+            autocommit=True,
+        ) as conn:
+            row = conn.execute(
+                """
+                UPDATE tuge_task_run
+                SET lease_until = %s, last_heartbeat_at = %s, updated_at = %s
+                WHERE id = %s AND status = 'running'
+                  AND lease_owner = %s AND lease_version = %s
+                RETURNING id
+                """,
+                (
+                    now + timedelta(seconds=self.lease_seconds),
+                    now,
+                    now,
+                    self.lease.run_id,
+                    self.lease.owner,
+                    self.lease.version,
+                ),
+            ).fetchone()
+        return row is not None
 
 
 class TaskWorker:
@@ -106,11 +187,23 @@ class TaskWorker:
             version=lease.version,
         )
         with bind_execution_lease(execution_lease):
-            heartbeat_stop = asyncio.Event()
-            heartbeat = asyncio.create_task(
-                self._heartbeat_loop(lease, heartbeat_stop, execution_lease),
-                name=f"task-manager-heartbeat:{lease.run_id}",
-            )
+            heartbeat_stop: asyncio.Event | None = None
+            heartbeat: asyncio.Task | None = None
+            heartbeat_supervisor: LeaseHeartbeatSupervisor | None = None
+            if os.environ.get("DB_TYPE", "sqlite") == "postgresql":
+                heartbeat_supervisor = LeaseHeartbeatSupervisor(
+                    lease=lease,
+                    execution_lease=execution_lease,
+                    lease_seconds=self.lease_seconds,
+                    heartbeat_seconds=self.heartbeat_seconds,
+                )
+                heartbeat_supervisor.start()
+            else:
+                heartbeat_stop = asyncio.Event()
+                heartbeat = asyncio.create_task(
+                    self._heartbeat_loop(lease, heartbeat_stop, execution_lease),
+                    name=f"task-manager-heartbeat:{lease.run_id}",
+                )
             try:
                 await service._drain_prepared_task(
                     lease.task_id,
@@ -121,12 +214,15 @@ class TaskWorker:
             except Exception:
                 logger.exception("TaskManager worker failed for Run {}", lease.run_id)
             finally:
-                heartbeat_stop.set()
-                heartbeat.cancel()
-                try:
-                    await heartbeat
-                except asyncio.CancelledError:
-                    pass
+                if heartbeat_supervisor is not None:
+                    await asyncio.to_thread(heartbeat_supervisor.stop)
+                elif heartbeat_stop is not None and heartbeat is not None:
+                    heartbeat_stop.set()
+                    heartbeat.cancel()
+                    try:
+                        await heartbeat
+                    except asyncio.CancelledError:
+                        pass
                 if not execution_lease.lost:
                     await self.release_lease(lease)
         return True
@@ -183,14 +279,18 @@ def build_worker_options() -> SchedulingRuntimeOptions:
 
 
 async def main() -> None:
+    from capability_mount import mount_capabilities_from_env
+
     await init_db()
+    async with create_db_session() as session:
+        await mount_capabilities_from_env(session=session)
     worker = TaskWorker(
         build_worker_options(),
         worker_id=os.environ.get("TASK_WORKER_ID") or None,
         lease_seconds=int(os.environ.get("TASK_WORKER_LEASE_SECONDS", "120")),
         heartbeat_seconds=int(os.environ.get("TASK_WORKER_HEARTBEAT_SECONDS", "30")),
         poll_seconds=float(os.environ.get("TASK_WORKER_POLL_SECONDS", "1")),
-        tenant_concurrency=int(os.environ.get("TASK_TENANT_CONCURRENCY", "2")),
+        tenant_concurrency=int(os.environ.get("TASK_TENANT_CONCURRENCY", "10")),
     )
     await worker.run_forever()
 
