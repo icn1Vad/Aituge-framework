@@ -33,7 +33,7 @@ class OpenAICompatiblePolicyReranker:
         self.registration_id = config.id
         self.mode = config.mode
         self.endpoint = config.base_url.rstrip("/")
-        if not self.endpoint.endswith("/reranks"):
+        if not self.endpoint.endswith(("/rerank", "/reranks")):
             self.endpoint += "/reranks"
         self.api_key = config.api_key
         self.model = config.model.strip()

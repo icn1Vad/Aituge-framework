@@ -36,8 +36,14 @@ def test_local_q5_pack_uses_registered_ollama_llm() -> None:
     assert pack.llm.model == "qwen3-30b-a3b-q5_k_m"
     assert pack.llm.base_url == "http://qwen-main-service:11434/v1"
     assert pack.llm.context_window == 32_768
-    assert pack.embedding.id == "policy-embedding-v4"
-    assert pack.reranker.id == "api-qwen3-rerank"
+    assert pack.embedding.id == "local-qwen3-embedding-8b"
+    assert pack.embedding.mode == "local"
+    assert pack.embedding.base_url == "http://qwen-embedding-service:18081/v1"
+    assert pack.embedding.dimensions == 4096
+    assert pack.reranker.id == "local-qwen3-rerank"
+    assert pack.reranker.mode == "local"
+    assert pack.reranker.base_url == "http://qwen-reranker-service:18082/v1/rerank"
+    assert pack.reranker.model == "qwen3-reranker-8b"
 
 
 def test_ai_modes_resolve_to_registered_packages() -> None:
