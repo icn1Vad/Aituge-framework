@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from collections.abc import Callable
 from typing import Optional
 
+from aituge_model_config import ModelRuntimeProvider
 from common.system_constants import DEFAULT_TENANT_ID
 from data.RAG.tool_retrieval import ToolRetrievalRAG
 from llama_index.core.tools.function_tool import FunctionTool
@@ -51,9 +52,15 @@ class SchedulingService:
         self,
         options: SchedulingRuntimeOptions,
         tenant_id: str = DEFAULT_TENANT_ID,
+        model_pack_id: str | None = None,
     ) -> None:
         self.options = options
         self.tenant_id = tenant_id
+        self.model_runtime_provider = ModelRuntimeProvider.from_environment(
+            pack_id=model_pack_id or ""
+        )
+        self.model_pack_id = self.model_runtime_provider.active_pack.id
+        self._task_pack_override = bool(str(model_pack_id or "").strip())
 
     async def chat(
         self,
@@ -69,10 +76,15 @@ class SchedulingService:
             runtime_context=runtime_context,
             artifact_publisher=artifact_publisher,
         )
-        model_id = request.model or profile.model_id
+        model_id = request.model or (
+            self.model_runtime_provider.active_pack.llm.id
+            if self._task_pack_override
+            else profile.model_id
+        )
         runner = SingleAgentRunner(
             tenant_id=self.tenant_id,
             default_model_id=model_id,
+            model_pack_id=self.model_pack_id,
         )
         try:
             result = await runner.chat(
@@ -107,10 +119,15 @@ class SchedulingService:
             runtime_context=runtime_context,
             artifact_publisher=artifact_publisher,
         )
-        model_id = request.model or profile.model_id
+        model_id = request.model or (
+            self.model_runtime_provider.active_pack.llm.id
+            if self._task_pack_override
+            else profile.model_id
+        )
         runner = SingleAgentRunner(
             tenant_id=self.tenant_id,
             default_model_id=model_id,
+            model_pack_id=self.model_pack_id,
         )
         try:
             first = True
@@ -187,6 +204,7 @@ class SchedulingService:
                 ),
                 artifact_publisher=artifact_publisher,
                 tenant_id=self.tenant_id,
+                model_pack_id=self.model_pack_id,
             ).create_bundle(non_rag_tool_names)
         )
         if wants_rag:

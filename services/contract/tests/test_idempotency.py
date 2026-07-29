@@ -40,11 +40,12 @@ def test_request_fingerprint_matches_golden_vector() -> None:
         '{"business_task_id":"10001","contract_type":"AUTO",'
         '"contract_version_id":"20001",'
         '"file_sha256":"sha256:0000000000000000000000000000000000000000000000000000000000000000",'
+        '"model_pack_id":"api-rerank",'
         '"our_party_name":"某某 单位","perspective":"PARTY_B",'
         '"review_attitude":"NEUTRAL","schema_version":"1.0",'
         '"tenant_id":"1","user_id":"1"}'
     )
-    assert fingerprint == "sha256:9b26f390f4c578e88f83ccd7ca8c491d1ae00c9f09515c16e7c01d56677c413c"
+    assert fingerprint == "sha256:c114fef1e1076bb272d1f163af92d8553bd4ab7b488b607b401d2eed2ceb4906"
 
 
 def test_file_hash_uses_raw_bytes() -> None:

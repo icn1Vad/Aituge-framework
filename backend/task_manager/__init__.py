@@ -1,5 +1,6 @@
 from .api import create_task_manager_router
 from .registry import (
+    ResourceTaskType,
     TaskType,
     get_task_definition,
     list_task_definitions,
@@ -7,6 +8,7 @@ from .registry import (
 )
 
 __all__ = [
+    "ResourceTaskType",
     "TaskType",
     "create_task_manager_router",
     "get_task_definition",

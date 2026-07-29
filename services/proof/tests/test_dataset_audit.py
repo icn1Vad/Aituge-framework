@@ -6,7 +6,10 @@ import pytest
 from docx import Document
 
 from proof.application.dataset_audit import DatasetAuditor
+from proof.application.service import ProofService
+from proof.config import Settings
 from proof.errors import ProofError
+from proof.tenant import tenant_scope
 
 
 def test_dataset_audit_classifies_files_and_exposes_complete_chunks(tmp_path: Path) -> None:
@@ -58,6 +61,22 @@ def test_subsidiary_filename_does_not_override_title_classification(tmp_path: Pa
 
     assert item["title"] == "采购管理办法"
     assert item["category_code"] == "procurement_supply"
+
+
+def test_dataset_roots_are_derived_only_from_current_java_tenant(tmp_path: Path) -> None:
+    service = object.__new__(ProofService)
+    service.settings = Settings(_env_file=None)
+    service.dataset_root = tmp_path / "datasets"
+    service.dataset_auditor = None
+    service._tenant_dataset_auditors = {}
+
+    with tenant_scope("1"):
+        main = service._dataset_auditor()
+    with tenant_scope("2"):
+        demo = service._dataset_auditor()
+
+    assert main.root.parent == demo.root.parent == (tmp_path / "datasets" / "tenants")
+    assert main.root != demo.root
 
 
 def _write_docx(path: Path, lines: list[str]) -> None:

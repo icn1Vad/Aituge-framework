@@ -9,7 +9,7 @@ import json
 import os
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Mapping
@@ -23,11 +23,12 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from common.system_constants import DEFAULT_TENANT_ID
+from common.llm.constants import DEFAULT_LLM_MODEL_ID
 from db.db_context import create_db_session
 from scheduling.agent_registry import get_agent_profile, upsert_agent_profile
 from skill import register_skill_root, upsert_skill_package
 from skill.package_models import SkillPackageEntity
-from task_manager import TaskType, register_task_definition
+from task_manager import ResourceTaskType, TaskType, register_task_definition
 from task_manager.payload_schemas import register_input_schema, register_output_schema
 from task_manager.pipeline.models import (
     AgentStageConfig,
@@ -238,6 +239,31 @@ class CapabilityRegistry:
             conversation_message_field=normalized_message_field,
         )
 
+    def register_resource_task(
+        self,
+        *,
+        resource_pool: str,
+        access_mode: str,
+        **task_kwargs: Any,
+    ) -> None:
+        """Register a capability task with inherited shared/exclusive access semantics."""
+
+        normalized_pool = str(resource_pool or "").strip()
+        normalized_mode = str(access_mode or "").strip().lower()
+        if not normalized_pool:
+            raise ValueError("Capability resource task resource_pool is required.")
+        if normalized_mode not in {"read", "write"}:
+            raise ValueError("Capability resource task access_mode must be read or write.")
+        self.register_task(**task_kwargs)
+        normalized_type = str(task_kwargs.get("task_type") or "").strip()
+        base = self._tasks[normalized_type]
+        values = {item.name: getattr(base, item.name) for item in fields(TaskType)}
+        self._tasks[normalized_type] = ResourceTaskType(
+            **values,
+            resource_pool=normalized_pool,
+            access_mode=normalized_mode,
+        )
+
     def register_pipeline(
         self,
         *,
@@ -371,7 +397,7 @@ class CapabilityRegistry:
         name: str,
         description: str = "",
         agent_type: str = "single",
-        model_id: str = "deepseek-v4-pro",
+        model_id: str = DEFAULT_LLM_MODEL_ID,
         system_prompt: str = "",
         default_tools: list[str] | None = None,
         default_datasets: list[str] | None = None,
@@ -388,7 +414,7 @@ class CapabilityRegistry:
             name=name.strip() or normalized,
             description=description.strip(),
             agent_type=agent_type.strip() or "single",
-            model_id=model_id.strip() or "deepseek-v4-pro",
+            model_id=model_id.strip() or DEFAULT_LLM_MODEL_ID,
             system_prompt=system_prompt.strip(),
             default_tools=tuple(_dedupe(default_tools or [])),
             default_datasets=tuple(_dedupe(default_datasets or [])),
@@ -859,6 +885,10 @@ def _http_tool_factory(registration: _HttpToolRegistration):
 
         async def invoke_http_tool(**payload: Any) -> str:
             headers = dict(registration.headers)
+            if config.tenant_id:
+                headers["X-Tenant-ID"] = config.tenant_id
+            if config.model_pack_id:
+                headers["X-Model-Pack-ID"] = config.model_pack_id
             if registration.request_id_header is not None:
                 headers[registration.request_id_header] = f"tool-{uuid.uuid4().hex}"
             try:

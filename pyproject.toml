@@ -11,6 +11,7 @@ version = "0.1.0"
 description = "TUGE single-agent, scheduling, tool, RAG, and discussion framework."
 authors = ["AI-tuge"]
 packages = [
+  {include = "aituge_model_config"},
   {include = "backend"},
   {include = "api", from = "backend/single-agent"},
   {include = "agent", from = "backend/single-agent"},

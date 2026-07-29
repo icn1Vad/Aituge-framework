@@ -5,6 +5,8 @@ import pytest
 from proof.application.semantic_audit import PolicyAuditService
 from proof.config import Settings
 from proof.errors import ProofError
+from proof.tenant import tenant_scope
+from proof.model_pack import model_pack_scope
 
 
 class FakeAuditRepository:
@@ -528,3 +530,21 @@ def test_dispatch_failure_is_recorded_without_raising(monkeypatch) -> None:
 
     assert state["status"] == "failed"
     assert state["error_message"] == "down"
+
+
+def test_framework_task_headers_follow_current_tenant() -> None:
+    service = PolicyAuditService(
+        Settings(semantic_audit_enabled=True),
+        FakeAuditRepository(),
+    )
+
+    with tenant_scope("1"), model_pack_scope("api-rerank"):
+        main_headers = service._headers()
+    with tenant_scope("2"), model_pack_scope("local-rerank"):
+        demo_headers = service._headers()
+
+    assert main_headers["X-Tenant-ID"] == "1"
+    assert demo_headers["X-Tenant-ID"] == "2"
+    assert main_headers["X-Model-Pack-ID"] == "api-rerank"
+    assert demo_headers["X-Model-Pack-ID"] == "local-rerank"
+    assert main_headers["X-User-ID"] == demo_headers["X-User-ID"] == "proof-service"

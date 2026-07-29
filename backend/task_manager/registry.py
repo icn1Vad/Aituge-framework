@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 from service.conversation import load_durable_conversation_messages
 from task_manager.memory import (
@@ -61,8 +62,17 @@ class TaskType:
             task_key=task.task_key,
             materials=materials,
             skill_package=self.memory_skill_package(),
+            model_pack_id=task.model_pack_id,
         )
         return TaskMemoryRefreshResult(status="updated", memory=memory)
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceTaskType(TaskType):
+    """Task definition that participates in a durable shared/exclusive resource queue."""
+
+    resource_pool: str = "default"
+    access_mode: Literal["read", "write"] = "read"
 
 
 class ConversationTaskType(TaskType):
@@ -135,55 +145,6 @@ _TASK_DEFINITIONS: dict[str, TaskType] = {
         output_schema_name="pipeline_demo_result",
         pipeline_id="pipeline-demo-v1",
     ),
-    "media.script.generate": ConversationTaskType(
-        task_type="media.script.generate",
-        name="Media Script Generation",
-        description="Run one formal script Workspace task through MainAgent and its managed specialists.",
-        required_task_key="media_script",
-        handler="external",
-        default_agent_id="main-agent-runtime",
-        default_skill_package="media-script-main-agent-package",
-        default_primary_skill="media-script-task-orchestration",
-        default_candidate_skills=[],
-        default_tools=[],
-        default_datasets=[],
-        input_schema_name="media_script_main_agent_input",
-        output_schema_name="media_script_workspace_output",
-    ),
-    "media.script.pipeline.generate": TaskType(
-        task_type="media.script.pipeline.generate",
-        name="Media Script Pipeline Generation",
-        description="Generate a short-video script and storyboard from provided media context without Agent research or review.",
-        handler="pipeline",
-        default_agent_id="media-writer-agent",
-        default_skill_package="media-script-writer-package",
-        default_primary_skill="media-script-writer",
-        input_schema_name="media_script_generate_input",
-        output_schema_name="media_script_output",
-        pipeline_id="media-script-lite-pipeline-v1",
-    ),
-    "media.script.select": TaskType(
-        task_type="media.script.select",
-        name="Media Script Selection",
-        description="Select the best script candidate and return a structured decision card.",
-        default_skill_package="media-script-select-package",
-        default_primary_skill="media-script-selector",
-        default_candidate_skills=["media-script-generator"],
-        default_tools=["rag_retrieval"],
-        default_datasets=["local_rag"],
-        input_schema_name="media_script_select_input",
-    ),
-    "media.chat": ConversationTaskType(
-        task_type="media.chat",
-        name="Media Script Chat",
-        description="Answer questions about the current media script without mutating artifacts or rerunning its Pipeline.",
-        default_skill_package="media-script-chat-package",
-        default_primary_skill="media-script-chat",
-        default_candidate_skills=[],
-        default_tools=[],
-        default_datasets=[],
-        input_schema_name="media_chat_input",
-    ),
     "ai.search.chat": TaskType(
         task_type="ai.search.chat",
         name="AI Search Chat",
@@ -195,18 +156,6 @@ _TASK_DEFINITIONS: dict[str, TaskType] = {
         default_datasets=[],
         input_schema_name="ai_search_chat_input",
         output_schema_name="ai_search_output",
-    ),
-    "media.topic.search": TaskType(
-        task_type="media.topic.search",
-        name="Media Topic Search",
-        description="Search reliable sources and aggregate them into reusable new-media topic suggestions.",
-        default_skill_package="media-topic-search-package",
-        default_primary_skill="media-topic-search",
-        default_candidate_skills=[],
-        default_tools=["web_search"],
-        default_datasets=[],
-        input_schema_name="media_topic_search_input",
-        output_schema_name="media_topic_search_output",
     ),
     "analytics.douyin.account_report.generate": TaskType(
         task_type="analytics.douyin.account_report.generate",

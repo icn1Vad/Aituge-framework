@@ -30,6 +30,9 @@ class ReviewRepository:
     def list_clauses(self, policy_id, *, include_text=False):
         return []
 
+    def get_latest_policy_operation(self, policy_id):
+        return None
+
 
 class AuditState:
     def __init__(self, status: str, conflict_status: str = "completed", summary_status: str = "completed") -> None:
@@ -77,6 +80,25 @@ class ReusedPolicyPipeline:
         }
 
 
+class SimilarDraftPipeline:
+    def ingest_policy(self, **values):
+        return {
+            "policy": {
+                "id": "policy-new",
+                "status": "draft",
+                "similarity_state": "decision_required",
+            },
+            "document": {"id": "document-new"},
+            "clauses": [],
+            "similarity": {
+                "status": "decision_required",
+                "candidates": [{"policy_id": "policy-old"}],
+            },
+            "reused": False,
+            "ingestion_run_id": "ingestion-new",
+        }
+
+
 class DispatchingAuditState(AuditState):
     def __init__(self) -> None:
         super().__init__("completed", conflict_status="pending", summary_status="pending")
@@ -96,6 +118,15 @@ def service_for(*, audit_enabled: bool, audit_status: str, policy_status: str = 
     service.settings = Settings(semantic_audit_enabled=audit_enabled)
     service.repository = ReviewRepository(policy_status)
     service.policy_audit_service = AuditState(audit_status)
+    service._dispatch_policy_action = lambda **values: {
+        "id": values["policy_id"],
+        "status": "accepted",
+        "operation_id": values["operation_id"],
+        "operation": values["action"],
+        "operation_status": "ACCEPTED",
+        "framework_task_id": "mutation-task-1",
+        "framework_run_id": "mutation-run-1",
+    }
     return service
 
 
@@ -107,14 +138,24 @@ def test_confirm_blocks_until_enabled_semantic_audit_completes() -> None:
 
     assert exc_info.value.code == "semantic_audit_incomplete"
     service.policy_audit_service.status = "completed"
-    assert service.confirm_policy("policy-1")["status"] == "effective"
-    assert service.confirm_policy("policy-1")["status"] == "effective"
+    assert service.confirm_policy("policy-1", idempotency_key="confirm-1")["status"] == "accepted"
+    assert service.repository.policy["status"] == "draft"
 
 
 def test_disabled_semantic_audit_allows_explicit_confirmation() -> None:
     service = service_for(audit_enabled=False, audit_status="disabled")
 
-    assert service.confirm_policy("policy-1")["status"] == "effective"
+    assert service.confirm_policy("policy-1", idempotency_key="confirm-1")["status"] == "accepted"
+    assert service.repository.policy["status"] == "draft"
+
+
+def test_policy_lifecycle_action_requires_idempotency_key() -> None:
+    service = service_for(audit_enabled=False, audit_status="disabled")
+
+    with pytest.raises(ProofError) as exc_info:
+        service.confirm_policy("policy-1")
+
+    assert exc_info.value.code == "invalid_idempotency_key"
 
 
 def test_confirm_blocks_until_conflict_audit_completes() -> None:
@@ -150,6 +191,8 @@ def test_audit_status_is_lightweight_and_keeps_running_after_one_stage_fails() -
         "framework_task_id": "task-1",
         "framework_run_id": "run-1",
         "status": "running",
+        "policy_status": "draft",
+        "policy_operation": None,
         "can_confirm": False,
         "stages": {
             "policy_summary": {"status": "failed", "error_message": None},
@@ -208,6 +251,38 @@ def test_reused_effective_policy_redispatches_missing_summary_and_conflict_stage
     assert service.policy_audit_service.dispatched_documents == ["document-1"]
     assert result["reused"] is True
     assert result["audit_task"]["status"] == "pending"
+
+
+def test_similarity_draft_does_not_dispatch_review_before_decision() -> None:
+    service = object.__new__(ProofService)
+    service.ingestion_pipeline = SimilarDraftPipeline()
+    service.policy_audit_service = DispatchingAuditState()
+
+    result = service.ingest_policy(content=b"similar", filename="similar.txt")
+
+    assert service.policy_audit_service.dispatched_documents == []
+    assert result["audit_task"] == {
+        "id": None,
+        "framework_task_id": None,
+        "framework_run_id": None,
+        "status": "not_started",
+        "reason": "similarity_decision_required",
+    }
+
+
+def test_new_version_embedding_failure_does_not_activate_policy() -> None:
+    service = service_for(audit_enabled=False, audit_status="disabled")
+    service.repository.policy["supersedes_policy_id"] = "policy-old"
+    service.model_runtime = type("Runtime", (), {"embedding_configured": True})()
+    service._index_document = lambda *args, **kwargs: (_ for _ in ()).throw(
+        ProofError("embedding_failed", "Embedding failed.", status_code=502)
+    )
+
+    with pytest.raises(ProofError) as exc_info:
+        service.confirm_policy("policy-1")
+
+    assert exc_info.value.code == "embedding_failed"
+    assert service.repository.policy["status"] == "draft"
 
 
 def test_draft_document_cannot_be_indexed() -> None:

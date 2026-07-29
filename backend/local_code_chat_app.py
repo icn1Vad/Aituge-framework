@@ -30,6 +30,7 @@ from task_manager import create_task_manager_router
 from tool import ToolBundle
 from tool.registry import ToolManager
 from backend.revision_llm_api import create_revision_llm_router
+from backend.chat_title_llm_api import create_chat_title_llm_router
 from contract.api.app import create_app as create_contract_app
 from contract.persistence.postgres.migrate import run_migrations as run_contract_migrations
 
@@ -170,6 +171,7 @@ def create_app() -> FastAPI:
     app.include_router(create_scheduling_router(scheduling_options))
     app.include_router(create_task_manager_router(scheduling_options))
     app.include_router(create_revision_llm_router())
+    app.include_router(create_chat_title_llm_router())
     app.mount(
         "/task-memory-test",
         StaticFiles(directory=TASK_MEMORY_TEST_DIR, html=True),

@@ -37,6 +37,7 @@ class TaskEntity(SQLModel, table=True):
     definition_snapshot_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     output_schema_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     agent_id: str = Field(default="", max_length=80)
+    model_pack_id: str = Field(default="", max_length=120)
     thread_id: Optional[str] = Field(default=None, max_length=80)
     session_id: Optional[str] = Field(default=None, max_length=160)
     user_id: str = Field(default="default_user", max_length=120)
@@ -116,6 +117,7 @@ class TaskRunEntity(SQLModel, table=True):
     request_fingerprint: str = Field(default="", max_length=64)
     pipeline_id: str = Field(default="", max_length=120)
     pipeline_version: str = Field(default="", max_length=32)
+    model_pack_id: str = Field(default="", max_length=120)
     status: str = Field(default="pending", max_length=32)
     outcome: Optional[str] = Field(default=None, max_length=32)
     current_stage_id: Optional[str] = Field(default=None, max_length=120)
@@ -130,6 +132,7 @@ class TaskRunEntity(SQLModel, table=True):
     last_heartbeat_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
     quota_slot_released: bool = True
     resource_pool: str = Field(default="default", max_length=80)
+    resource_access_mode: Optional[str] = Field(default=None, max_length=8)
     next_event_sequence: int = 0
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     started_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
@@ -269,6 +272,7 @@ _SQLITE_COLUMN_MIGRATIONS = {
         "handler_name": "VARCHAR(80) NOT NULL DEFAULT ''",
         "definition_snapshot_json": "JSON NOT NULL DEFAULT '{}'",
         "output_schema_json": "JSON NOT NULL DEFAULT '{}'",
+        "model_pack_id": "VARCHAR(120) NOT NULL DEFAULT ''",
         "progress_current": "INTEGER NOT NULL DEFAULT 0",
         "progress_total": "INTEGER NOT NULL DEFAULT 0",
         "cancel_requested": "BOOLEAN NOT NULL DEFAULT 0",
@@ -293,12 +297,14 @@ _SQLITE_COLUMN_MIGRATIONS = {
     },
     "tuge_task_run": {
         "request_fingerprint": "VARCHAR(64) NOT NULL DEFAULT ''",
+        "model_pack_id": "VARCHAR(120) NOT NULL DEFAULT ''",
         "lease_owner": "VARCHAR(120)",
         "lease_until": "DATETIME",
         "lease_version": "INTEGER NOT NULL DEFAULT 0",
         "last_heartbeat_at": "DATETIME",
         "quota_slot_released": "BOOLEAN NOT NULL DEFAULT 1",
         "resource_pool": "VARCHAR(80) NOT NULL DEFAULT 'default'",
+        "resource_access_mode": "VARCHAR(8)",
         "next_event_sequence": "INTEGER NOT NULL DEFAULT 0",
     },
 }
@@ -374,6 +380,20 @@ async def ensure_task_manager_schema(engine: AsyncEngine) -> None:
                 "NOT NULL DEFAULT ''"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE tuge_task "
+                "ADD COLUMN IF NOT EXISTS model_pack_id VARCHAR(120) "
+                "NOT NULL DEFAULT ''"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE tuge_task_run "
+                "ADD COLUMN IF NOT EXISTS model_pack_id VARCHAR(120) "
+                "NOT NULL DEFAULT ''"
+            )
+        )
         for column_name, column_sql in {
             "lease_owner": "VARCHAR(120)",
             "lease_until": "TIMESTAMP",
@@ -381,6 +401,7 @@ async def ensure_task_manager_schema(engine: AsyncEngine) -> None:
             "last_heartbeat_at": "TIMESTAMP",
             "quota_slot_released": "BOOLEAN NOT NULL DEFAULT TRUE",
             "resource_pool": "VARCHAR(80) NOT NULL DEFAULT 'default'",
+            "resource_access_mode": "VARCHAR(8)",
             "next_event_sequence": "INTEGER NOT NULL DEFAULT 0",
         }.items():
             await conn.execute(
@@ -419,6 +440,13 @@ async def ensure_task_manager_schema(engine: AsyncEngine) -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS idx_tuge_task_run_claim "
                 "ON tuge_task_run (status, lease_until, created_at)"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_tuge_task_run_resource_claim "
+                "ON tuge_task_run "
+                "(resource_pool, resource_access_mode, status, created_at)"
             )
         )
         await conn.execute(

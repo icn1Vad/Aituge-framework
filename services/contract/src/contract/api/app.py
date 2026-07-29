@@ -15,6 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
+from aituge_model_config import ModelRuntimeProvider, get_model_pack_for_ai_mode
 
 from contract.api.models import (
     CancelReviewData,
@@ -225,6 +226,19 @@ def create_app(
                 user_action_required=True,
                 details={"reason": _safe_validation_reason(exc)},
             ) from exc
+        ai_mode = str(context.ai_mode or "").strip()
+        if ai_mode:
+            try:
+                payload = payload.model_copy(
+                    update={"model_pack_id": get_model_pack_for_ai_mode(ai_mode).id}
+                )
+            except ValueError as exc:
+                raise ContractError(
+                    "INVALID_AI_MODE",
+                    "X-AI-Mode必须为public或private，且映射到已注册的模型包",
+                    status_code=400,
+                    user_action_required=True,
+                ) from exc
         content = await file.read(settings.max_file_size + 1)
         upload = _validate_upload(
             filename=file.filename or "",
@@ -724,13 +738,7 @@ def _revision_draft_service(
     if cache is None:
         cache = default_cache()
         request.app.state.revision_draft_cache = cache
-    model_id = os.getenv("CONTRACT_MODEL_ID", "deepseek-v4-pro").strip()
-    if not model_id:
-        raise ContractError(
-            "REVISION_GENERATION_FAILED",
-            "CONTRACT_MODEL_ID is not configured",
-            status_code=503,
-        )
+    model_id = ModelRuntimeProvider.from_environment().active_pack.llm.id
     callback_repository = request.app.state.contract_internal_service.callback_repository
     return RevisionDraftService(
         source_provider=PostgresRevisionSourceProvider(
@@ -814,6 +822,7 @@ def _create_internal_context(
         str,
         Header(alias="Idempotency-Key", min_length=1, max_length=200),
     ],
+    ai_mode: Annotated[str | None, Header(alias="X-AI-Mode")] = None,
 ) -> InternalRequestContext:
     return _java_context(
         request,
@@ -823,6 +832,7 @@ def _create_internal_context(
         tenant_id=tenant_id,
         request_id=request_id,
         idempotency_key=_optional_header(idempotency_key),
+        ai_mode=_optional_header(ai_mode),
     )
 
 
@@ -833,6 +843,7 @@ def _internal_context(
     user_id: Annotated[str, Header(alias="X-User-Id")],
     tenant_id: Annotated[str, Header(alias="X-Tenant-Id")],
     request_id: Annotated[str, Header(alias="X-Request-Id")],
+    ai_mode: Annotated[str | None, Header(alias="X-AI-Mode")] = None,
 ) -> InternalRequestContext:
     return _java_context(
         request,
@@ -842,6 +853,7 @@ def _internal_context(
         tenant_id=tenant_id,
         request_id=request_id,
         idempotency_key=None,
+        ai_mode=_optional_header(ai_mode),
     )
 
 
@@ -854,6 +866,7 @@ def _java_context(
     tenant_id: str,
     request_id: str,
     idempotency_key: str | None,
+    ai_mode: str | None,
 ) -> InternalRequestContext:
     settings: Settings = request.app.state.settings
     if internal_service != "continew-java":
@@ -874,6 +887,7 @@ def _java_context(
         user_id=_required_header("X-User-Id", user_id),
         request_id=_required_header("X-Request-Id", request_id),
         idempotency_key=idempotency_key,
+        ai_mode=ai_mode,
     )
 
 

@@ -13,6 +13,7 @@ class ToolProviderConfig:
     tool_name: str
     provider: str
     enabled: bool = True
+    tenant_id: str = ""
+    model_pack_id: str = ""
     config: Mapping[str, Any] = field(default_factory=dict)
     secrets: Mapping[str, Any] = field(default_factory=dict)
-

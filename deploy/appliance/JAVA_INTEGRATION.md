@@ -14,7 +14,7 @@ POST /task-manager/stream
 Content-Type: application/json
 Accept: text/event-stream
 X-User-Id: <stable-user-id>
-X-Tenant-Id: __default_tenant_id__
+X-Tenant-Id: <current-tenant-id>
 ```
 
 ```json
@@ -23,6 +23,7 @@ X-Tenant-Id: __default_tenant_id__
   "task_key": "proof-qa-<business-request-id>",
   "title": "制度问答",
   "stream": true,
+  "model_pack_id": "api-rerank",
   "input_payload": {
     "question": "关联交易需要履行哪些程序？",
     "top_k": 5
@@ -32,6 +33,12 @@ X-Tenant-Id: __default_tenant_id__
   }
 }
 ```
+
+`model_pack_id` is optional. Java may copy the current user's model-package
+preference into this field; when omitted, Framework freezes the deployment
+default on the Task. Java should only send IDs from the registered package
+list. Package selection is not an AI tool argument and cannot be changed after
+the Task is created.
 
 Use a stable business request ID in `task_key`. Keep the HTTP response open and
 parse standard SSE blocks separated by a blank line:
@@ -62,11 +69,12 @@ stream can still terminate with `task_failed`.
 ## Curl smoke test
 
 ```bash
+# Tenant 1 is only a smoke-test example; real requests use the current Java tenant.
 curl -N --max-time 180 \
   -H 'Content-Type: application/json' \
   -H 'Accept: text/event-stream' \
   -H 'X-User-Id: java-smoke' \
-  -H 'X-Tenant-Id: __default_tenant_id__' \
+  -H 'X-Tenant-Id: 1' \
   --data '{
     "task_type":"proof.qa.chat",
     "task_key":"proof-qa-java-smoke-001",

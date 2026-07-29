@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 
+from db.db_context import create_db_session
 from scheduling.scheduler import SchedulingRuntimeOptions
 
 from .access import TaskAccessContext, assert_can_access_task, task_access_context
@@ -16,6 +18,7 @@ from .memory import TaskMemoryMaterial, TaskMemoryService
 from .registry import list_task_definitions
 from .pipeline.registry import list_pipeline_definitions
 from .runtime import get_event_broker
+from .runtime.quota import describe_resource_wait
 from .schemas import (
     HumanReviewRequest,
     ScriptChangeApplyRequest,
@@ -48,6 +51,14 @@ _STREAM_DONE = object()
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 
+def _uses_persistent_worker() -> bool:
+    return os.environ.get("TASK_EXECUTION_MODE", "inline").strip().lower() == "worker"
+
+
+def _should_enqueue_run(handler_name: str) -> bool:
+    return handler_name == "pipeline" or _uses_persistent_worker()
+
+
 def _track_background(coroutine) -> asyncio.Task:
     task = asyncio.create_task(coroutine)
     _BACKGROUND_TASKS.add(task)
@@ -60,6 +71,21 @@ def _task_manager_http_error(exc: ValueError) -> HTTPException:
             detail={"code": exc.code, "message": str(exc)},
         )
     return HTTPException(status_code=400, detail=str(exc))
+
+
+def _scope_task_create_request(
+    request: TaskCreateRequest,
+    context: TaskAccessContext,
+    **updates,
+) -> TaskCreateRequest:
+    scoped_updates = {
+        "user_id": context.user_id,
+        "tenant_id": context.tenant_id,
+        **updates,
+    }
+    if context.model_pack_id:
+        scoped_updates["model_pack_id"] = context.model_pack_id
+    return request.model_copy(update=scoped_updates)
 
 
 
@@ -118,6 +144,8 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
                     pipeline_id=item.pipeline_id,
                     stream_chunk_chars=item.stream_chunk_chars,
                     conversation_message_field=item.conversation_message_field,
+                    resource_pool=getattr(item, "resource_pool", None),
+                    access_mode=getattr(item, "access_mode", None),
                 )
                 for item in list_task_definitions()
             ]
@@ -203,12 +231,10 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
         context: TaskAccessContext = Depends(task_access_context),
     ):
         try:
-            scoped_request = request.model_copy(
-                update={
-                    "user_id": context.user_id,
-                    "tenant_id": context.tenant_id,
-                    "idempotency_key": idempotency_key or request.idempotency_key,
-                }
+            scoped_request = _scope_task_create_request(
+                request,
+                context,
+                idempotency_key=idempotency_key or request.idempotency_key,
             )
             task = await TaskManagerService(options).create_task(
                 scoped_request,
@@ -395,7 +421,15 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
         if task_row is None:
             raise HTTPException(status_code=404, detail=f"Task '{run.task_id}' not found.")
         assert_can_access_task(task_row, context)
-        return {"run": TaskRunRead.model_validate(run)}
+        async with create_db_session() as session:
+            execution_state, blocking_reader_count = await describe_resource_wait(session, run)
+        view = TaskRunRead.model_validate(run).model_copy(
+            update={
+                "execution_state": execution_state,
+                "blocking_reader_count": blocking_reader_count,
+            }
+        )
+        return {"run": view}
 
     @router.get("/runs/{run_id}/stages")
     async def run_stages(
@@ -587,7 +621,7 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
             raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
         assert_can_access_task(task_row, context)
         run_request = (request or TaskRunRequest(stream=True)).model_copy(update={"user_id": context.user_id})
-        if task_row.handler_name == "pipeline":
+        if _should_enqueue_run(task_row.handler_name):
             run = await service.start_task_run(task_id, run_request)
             return StreamingResponse(
                 _stream_run_sse(service, run),
@@ -609,7 +643,7 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
     ):
         service = TaskManagerService(options)
         try:
-            scoped_request = request.model_copy(update={"user_id": context.user_id, "tenant_id": context.tenant_id})
+            scoped_request = _scope_task_create_request(request, context)
             task = await service.create_task(scoped_request, service_name=context.service_name)
             events: list[TaskEventRead] = []
             async for event in service.stream_task(task.id, TaskRunRequest(stream=False, user_id=context.user_id)):
@@ -628,14 +662,14 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
     ):
         service = TaskManagerService(options)
         try:
-            scoped_request = request.model_copy(update={"user_id": context.user_id, "tenant_id": context.tenant_id})
+            scoped_request = _scope_task_create_request(request, context)
             task = await service.create_task(scoped_request, service_name=context.service_name)
         except ValueError as exc:
             raise _task_manager_http_error(exc) from exc
 
         created = TaskEventRead.model_validate((await service.list_events(task.id, limit=1))[0])
         queue: asyncio.Queue | None = None
-        if task.handler_name != "pipeline":
+        if not _should_enqueue_run(task.handler_name):
             queue = asyncio.Queue()
             _track_background(
                 _run_task_to_queue(
@@ -652,7 +686,7 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
                     "event: task_created\n"
                     f"data: {created.model_dump_json()}\n\n"
                 )
-                if task.handler_name == "pipeline":
+                if _should_enqueue_run(task.handler_name):
                     run = await service.start_task_run(
                         task.id,
                         TaskRunRequest(stream=True, user_id=context.user_id),

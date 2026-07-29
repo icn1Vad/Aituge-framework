@@ -9,6 +9,7 @@ from proof.application.retrieval import (
     RetrievalFilters,
 )
 from proof.errors import ProofError
+from proof.tenant import current_tenant_id
 
 
 def candidate(unit_id: str, text_hash: str, score: float) -> dict:
@@ -54,6 +55,23 @@ def test_hybrid_retrieval_deduplicates_and_reranks() -> None:
     assert result["degraded"] is False
     assert result["candidate_counts"] == {"keyword": 2, "vector": 2, "deduplicated": 3, "returned": 2}
     assert result["results"][0]["retrieval_sources"] == ["keyword", "vector"]
+
+
+def test_hybrid_retrieval_propagates_tenant_context_to_parallel_branches() -> None:
+    class TenantAwareRetriever(FakeRetriever):
+        def retrieve(self, query, *, limit, filters):
+            assert current_tenant_id() == "1"
+            return super().retrieve(query, limit=limit, filters=filters)
+
+    retriever = HybridPolicyRetriever(
+        keyword=TenantAwareRetriever("keyword", [candidate("u1", "h1", 2)]),
+        vector=TenantAwareRetriever("vector", [candidate("u2", "h2", 1)]),
+        reranker=None,
+    )
+
+    result = retriever.search("审批", top_k=2, mode="hybrid", filters=RetrievalFilters())
+
+    assert result["candidate_counts"]["returned"] == 2
 
 
 def test_hybrid_retrieval_degrades_to_one_recall_path() -> None:

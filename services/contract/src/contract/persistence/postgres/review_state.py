@@ -40,6 +40,7 @@ class AttemptReservation:
     expected_version: int
     business_task_id: str
     contract_version_id: str
+    model_pack_id: str
     document_id: str
     perspective: str
     our_party_name: str | None
@@ -670,12 +671,18 @@ class ReviewStateRepository:
             conn.execute(
                 """
                 INSERT INTO contract_framework_attempt (
-                  review_id, attempt_no, tenant_id, status, execution_status,
+                  review_id, attempt_no, tenant_id, model_pack_id,
+                  status, execution_status,
                   dispatch_status, request_fingerprint, next_dispatch_at, is_active
-                ) VALUES (%s, 1, %s, 'PENDING', 'PENDING',
+                ) VALUES (%s, 1, %s, %s, 'PENDING', 'PENDING',
                           'PENDING_DISPATCH', %s, now(), false)
                 """,
-                (review_id, tenant_id, self._framework_request_fingerprint(review, 1)),
+                (
+                    review_id,
+                    tenant_id,
+                    review["model_pack_id"],
+                    self._framework_request_fingerprint(review, 1),
+                ),
             )
             reservation = self._reservation(review, 1)
             conn.commit()
@@ -1052,15 +1059,17 @@ class ReviewStateRepository:
             conn.execute(
                 """
                 INSERT INTO contract_framework_attempt (
-                  review_id, attempt_no, tenant_id, status, execution_status,
+                  review_id, attempt_no, tenant_id, model_pack_id,
+                  status, execution_status,
                   dispatch_status, request_fingerprint, next_dispatch_at, is_active
-                ) VALUES (%s, %s, %s, 'PENDING', 'PENDING',
+                ) VALUES (%s, %s, %s, %s, 'PENDING', 'PENDING',
                           'PENDING_DISPATCH', %s, now(), false)
                 """,
                 (
                     review_id,
                     next_attempt_no,
                     tenant_id,
+                    review["model_pack_id"],
                     self._framework_request_fingerprint(review, next_attempt_no),
                 ),
             )
@@ -1196,6 +1205,7 @@ class ReviewStateRepository:
             expected_version=review["version"],
             business_task_id=review["business_task_id"],
             contract_version_id=review["contract_version_id"],
+            model_pack_id=review["model_pack_id"],
             document_id=review["document_id"],
             perspective=review["perspective"],
             our_party_name=review["our_party_name"],

@@ -21,8 +21,8 @@ def test_registered_batch_result_sink_receives_audit_identity(monkeypatch):
         async def __aexit__(self, *args):
             return None
 
-        async def post(self, url, *, json):
-            calls.append((url, json))
+        async def post(self, url, *, json, headers):
+            calls.append((url, json, headers))
             return Response()
 
     monkeypatch.setattr(result_sink.httpx, "AsyncClient", Client)
@@ -31,6 +31,7 @@ def test_registered_batch_result_sink_receives_audit_identity(monkeypatch):
         current_run_id="run-1",
         task_type="proof.audit.run",
         input_payload_json={"audit_id": "audit-1"},
+        tenant_id="2",
     )
     definition = SimpleNamespace(result_sink_url="http://proof/v1/internal/semantic-audits/result")
     output = {"summary": {"total": 1, "succeeded": 1, "failed": 0, "skipped": 0}, "items": []}
@@ -48,5 +49,6 @@ def test_registered_batch_result_sink_receives_audit_identity(monkeypatch):
                 "status": "completed",
                 "output": output,
             },
+            {"X-Tenant-ID": "2"},
         )
     ]

@@ -19,6 +19,7 @@ class FakeResponse:
 
 def configured_settings() -> Settings:
     return Settings(
+        _env_file=None,
         database_url="postgresql://unused",
         embedding_base_url="https://embedding.example/v1",
         embedding_api_key="secret",

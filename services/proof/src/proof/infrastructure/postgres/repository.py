@@ -7,15 +7,26 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+from rapidfuzz.distance import Levenshtein
 
 from proof.config import Settings
 from proof.domain import DocumentBlock, RetrievalUnit
 from proof.errors import ConfigurationError, ProofError
 from proof.infrastructure.embedding import EmbeddingProfile
+from proof.tenant import current_tenant_id
+from proof.versioning import format_policy_version
 
 
 def _vector_text(vector: list[float]) -> str:
     return "[" + ",".join(format(value, ".12g") for value in vector) + "]"
+
+
+def _lengths_are_candidate_compatible(left: int, right: int) -> bool:
+    if left <= 0:
+        return False
+    if right <= 0:
+        return True
+    return min(left, right) / max(left, right) >= 0.75
 
 
 def _retrieval_filters(
@@ -24,7 +35,7 @@ def _retrieval_filters(
     level_codes: list[str],
     category_codes: list[str],
 ) -> tuple[list[str], list[Any]]:
-    where: list[str] = []
+    where: list[str] = ["p.tenant_id = current_setting('proof.tenant_id')"]
     params: list[Any] = []
     for column, values in (
         ("p.id", policy_ids),
@@ -44,10 +55,22 @@ class ProofRepository:
         self.database_url = settings.database_url
 
     def connect(self):
-        return psycopg.connect(self.database_url, row_factory=dict_row, connect_timeout=5)
+        conn = psycopg.connect(
+            self.database_url, row_factory=dict_row, connect_timeout=5, autocommit=True
+        )
+        conn.execute(
+            "SELECT set_config('proof.tenant_id', %s, false)",
+            (current_tenant_id(),),
+        )
+        conn.autocommit = False
+        return conn
 
     def health(self) -> dict[str, Any]:
-        with self.connect() as conn:
+        with psycopg.connect(
+            self.database_url,
+            row_factory=dict_row,
+            connect_timeout=5,
+        ) as conn:
             row = conn.execute(
                 """
                 SELECT current_database() AS database,
@@ -83,8 +106,8 @@ class ProofRepository:
             conn.execute(
                 """
                 INSERT INTO proof_ingestion_run (
-                  id, content_hash, original_name, parser_version, clause_profile
-                ) VALUES (%s, %s, %s, %s, %s)
+                  id, tenant_id, content_hash, original_name, parser_version, clause_profile
+                ) VALUES (%s, current_setting('proof.tenant_id'), %s, %s, %s, %s)
                 """,
                 (run_id, content_hash, original_name, parser_version, clause_profile),
             )
@@ -110,6 +133,7 @@ class ProofRepository:
                     warning_count = COALESCE(%s, warning_count),
                     clause_profile = COALESCE(%s, clause_profile)
                 WHERE id = %s AND status = 'running'
+                  AND tenant_id = current_setting('proof.tenant_id')
                 """,
                 (stage, block_count, clause_count, warning_count, clause_profile, run_id),
             )
@@ -158,6 +182,7 @@ class ProofRepository:
                     error_message = %s, error_details = %s,
                     finished_at = now()
                 WHERE id = %s AND status = 'running'
+                  AND tenant_id = current_setting('proof.tenant_id')
                 """,
                 (stage, error_code, error_message, Jsonb(error_details), run_id),
             )
@@ -173,6 +198,7 @@ class ProofRepository:
                        error_message, error_details, started_at, finished_at
                 FROM proof_ingestion_run
                 WHERE id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
                 """,
                 (run_id,),
             ).fetchone()
@@ -183,8 +209,14 @@ class ProofRepository:
             row = conn.execute(
                 """
                 SELECT
-                  (SELECT COUNT(*) FROM proof_document_block WHERE document_id = %s)::integer AS block_count,
-                  (SELECT COUNT(*) FROM proof_retrieval_unit WHERE document_id = %s)::integer AS clause_count
+                  (SELECT COUNT(*) FROM proof_document_block b
+                   JOIN proof_document d ON d.id = b.document_id
+                   WHERE b.document_id = %s
+                     AND d.tenant_id = current_setting('proof.tenant_id'))::integer AS block_count,
+                  (SELECT COUNT(*) FROM proof_retrieval_unit u
+                   JOIN proof_document d ON d.id = u.document_id
+                   WHERE u.document_id = %s
+                     AND d.tenant_id = current_setting('proof.tenant_id'))::integer AS clause_count
                 """,
                 (document_id, document_id),
             ).fetchone()
@@ -202,8 +234,9 @@ class ProofRepository:
                        d.structure_profile, d.structure_diagnostics,
                        d.parser_version, d.chunker_version
                 FROM proof_document d
-                JOIN proof_policy p ON p.id = d.policy_id
+                JOIN proof_policy p ON p.id = d.policy_id AND p.tenant_id = d.tenant_id
                 WHERE d.content_hash = ANY(%s)
+                  AND d.tenant_id = current_setting('proof.tenant_id')
                 """,
                 (content_hashes,),
             ).fetchall()
@@ -221,9 +254,11 @@ class ProofRepository:
                 SELECT document_id, clause_ordinal, clause_no_raw, unit_type,
                        text_hash, heading_path, source_block_ids,
                        page_start, page_end, paragraph_start, paragraph_end
-                FROM proof_retrieval_unit
-                WHERE document_id = ANY(%s)
-                ORDER BY document_id, clause_ordinal
+                FROM proof_retrieval_unit u
+                JOIN proof_document d ON d.id = u.document_id
+                WHERE u.document_id = ANY(%s)
+                  AND d.tenant_id = current_setting('proof.tenant_id')
+                ORDER BY u.document_id, u.clause_ordinal
                 """,
                 (document_ids,),
             ).fetchall()
@@ -255,10 +290,18 @@ class ProofRepository:
                 SELECT p.*, d.id AS document_id, d.content_hash, d.original_name, d.file_type,
                        d.storage_path, d.status AS document_status, d.parser_version,
                        d.chunker_version, d.parse_warnings, d.structure_profile,
-                       d.structure_diagnostics
+                       d.structure_diagnostics,
+                       l.name AS level_name, l.sort_rank AS level_sort_rank,
+                       c.name AS category_name, c.description AS category_description,
+                       c.level AS category_level, c.parent_code AS category_parent_code,
+                       parent.name AS category_parent_name
                 FROM proof_document d
-                JOIN proof_policy p ON p.id = d.policy_id
+                JOIN proof_policy p ON p.id = d.policy_id AND p.tenant_id = d.tenant_id
+                LEFT JOIN proof_policy_level l ON l.code = p.level_code
+                JOIN proof_category c ON c.code = p.category_code
+                LEFT JOIN proof_category parent ON parent.code = c.parent_code
                 WHERE d.content_hash = %s
+                  AND d.tenant_id = current_setting('proof.tenant_id')
                 """,
                 (content_hash,),
             ).fetchone()
@@ -266,6 +309,72 @@ class ProofRepository:
                 return None
             clauses = self._clauses_for_document(conn, row["document_id"], include_text=False)
             return self._ingestion_payload(row, clauses)
+
+    def list_similarity_candidates(
+        self,
+        *,
+        normalized_title: str,
+        category_code: str,
+        normalized_text_length: int,
+        title_threshold: float = 0.75,
+    ) -> list[dict[str, Any]]:
+        """Return tenant-owned effective texts for deterministic similarity scoring."""
+
+        with self.connect() as conn:
+            metadata = conn.execute(
+                """
+                SELECT p.id AS policy_id, p.title, p.normalized_title, p.version,
+                       p.version_seq, p.family_id, p.status, p.category_code,
+                       d.id AS document_id, d.normalized_text_length
+                FROM proof_policy p
+                JOIN proof_document d
+                  ON d.policy_id = p.id AND d.tenant_id = p.tenant_id
+                WHERE p.tenant_id = current_setting('proof.tenant_id')
+                  AND p.status = 'effective'
+                ORDER BY p.updated_at DESC, p.id
+                """
+            ).fetchall()
+            eligible_ids = [
+                str(row["policy_id"])
+                for row in metadata
+                if (
+                    str(row.get("normalized_title") or "") == normalized_title
+                    or Levenshtein.normalized_similarity(
+                        normalized_title,
+                        str(row.get("normalized_title") or ""),
+                    )
+                    >= title_threshold
+                    or (
+                        str(row.get("category_code") or "") == category_code
+                        and _lengths_are_candidate_compatible(
+                            normalized_text_length,
+                            int(row.get("normalized_text_length") or 0),
+                        )
+                    )
+                )
+            ]
+            if not eligible_ids:
+                return []
+            rows = conn.execute(
+                """
+                SELECT p.id AS policy_id, p.title, p.normalized_title, p.version,
+                       p.version_seq, p.family_id, p.status, p.category_code,
+                       d.id AS document_id, d.normalized_text_length,
+                       string_agg(u.text, E'\n' ORDER BY u.clause_ordinal) AS text,
+                       array_agg(u.text ORDER BY u.clause_ordinal) AS clauses
+                FROM proof_policy p
+                JOIN proof_document d
+                  ON d.policy_id = p.id AND d.tenant_id = p.tenant_id
+                JOIN proof_retrieval_unit u ON u.document_id = d.id
+                WHERE p.tenant_id = current_setting('proof.tenant_id')
+                  AND p.status = 'effective'
+                  AND p.id = ANY(%s)
+                GROUP BY p.id, d.id
+                ORDER BY p.updated_at DESC, p.id
+                """,
+                (eligible_ids,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def ingest(
         self,
@@ -275,9 +384,15 @@ class ProofRepository:
         title: str,
         normalized_title: str,
         version: str,
+        version_seq: int,
+        family_id: str,
+        similarity_state: str,
+        similarity_report: dict[str, Any],
         level_code: str | None,
         category_code: str,
         content_hash: str,
+        normalized_text_hash: str,
+        normalized_text_length: int,
         original_name: str,
         file_type: str,
         storage_path: str,
@@ -296,18 +411,35 @@ class ProofRepository:
             conn.execute(
                 """
                 INSERT INTO proof_policy (
-                  id, title, normalized_title, version, status, level_code, category_code
-                ) VALUES (%s, %s, %s, %s, 'draft', %s, %s)
+                  id, tenant_id, family_id, title, normalized_title, version, version_seq,
+                  status, similarity_state, similarity_report, level_code, category_code
+                ) VALUES (
+                  %s, current_setting('proof.tenant_id'), %s, %s, %s, %s, %s,
+                  'draft', %s, %s, %s, %s
+                )
                 """,
-                (policy_id, title, normalized_title, version, level_code, category_code),
+                (
+                    policy_id,
+                    family_id,
+                    title,
+                    normalized_title,
+                    version,
+                    version_seq,
+                    similarity_state,
+                    Jsonb(similarity_report),
+                    level_code,
+                    category_code,
+                ),
             )
             conn.execute(
                 """
                 INSERT INTO proof_document (
-                  id, policy_id, content_hash, original_name, file_type, storage_path,
+                  id, tenant_id, policy_id, content_hash, original_name, file_type, storage_path,
                   status, parser_version, chunker_version, parse_warnings,
-                  structure_profile, structure_diagnostics
-                ) VALUES (%s, %s, %s, %s, %s, %s, 'pending_embedding', %s, %s, %s, %s, %s)
+                  structure_profile, structure_diagnostics,
+                  normalized_text_hash, normalized_text_length
+                ) VALUES (%s, current_setting('proof.tenant_id'), %s, %s, %s, %s, %s,
+                          'pending_embedding', %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     document_id,
@@ -321,6 +453,8 @@ class ProofRepository:
                     Jsonb(warnings),
                     structure_profile,
                     Jsonb(structure_diagnostics),
+                    normalized_text_hash,
+                    normalized_text_length,
                 ),
             )
             self._insert_blocks(conn, document_id, blocks)
@@ -360,7 +494,10 @@ class ProofRepository:
         """Atomically replace derived blocks/units while keeping policy identity and source file."""
         with self.connect() as conn:
             document = conn.execute(
-                "SELECT id, policy_id FROM proof_document WHERE content_hash = %s FOR UPDATE",
+                """SELECT id, policy_id FROM proof_document
+                   WHERE content_hash = %s
+                     AND tenant_id = current_setting('proof.tenant_id')
+                   FOR UPDATE""",
                 (content_hash,),
             ).fetchone()
             if not document:
@@ -379,6 +516,7 @@ class ProofRepository:
                     status = 'pending_embedding', embedding_error_code = NULL,
                     updated_at = now()
                 WHERE id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
                 """,
                 (
                     parser_version,
@@ -484,6 +622,7 @@ class ProofRepository:
                 error_details = '{}'::jsonb, finished_at = now(),
                 clause_profile = COALESCE(%s, clause_profile)
             WHERE id = %s AND status = 'running'
+                  AND tenant_id = current_setting('proof.tenant_id')
             """,
             (
                 policy_id,
@@ -514,7 +653,7 @@ class ProofRepository:
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
-        where: list[str] = []
+        where: list[str] = ["p.tenant_id = current_setting('proof.tenant_id')", "d.tenant_id = p.tenant_id"]
         params: list[Any] = []
         for column, value in (
             ("p.level_code", level_code),
@@ -528,26 +667,33 @@ class ProofRepository:
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT p.id, p.title, p.normalized_title, p.version, p.status,
+                SELECT p.id, p.family_id, p.supersedes_policy_id,
+                       p.title, p.normalized_title, p.version, p.version_seq, p.status,
+                       p.similarity_state, p.similarity_report,
                        p.level_code, p.category_code,
                        p.created_at, p.updated_at,
-                       l.name AS level_name, c.name AS category_name,
+                       l.name AS level_name, l.sort_rank AS level_sort_rank,
+                       c.name AS category_name, c.description AS category_description,
+                       c.level AS category_level, c.parent_code AS category_parent_code,
+                       parent.name AS category_parent_name,
                        d.id AS document_id, d.status AS document_status,
                        d.structure_profile, d.structure_diagnostics,
                        COUNT(u.id)::integer AS clause_count
                 FROM proof_policy p
                 LEFT JOIN proof_policy_level l ON l.code = p.level_code
                 JOIN proof_category c ON c.code = p.category_code
+                LEFT JOIN proof_category parent ON parent.code = c.parent_code
                 JOIN proof_document d ON d.policy_id = p.id
                 LEFT JOIN proof_retrieval_unit u ON u.policy_id = p.id
                 {clause}
-                GROUP BY p.id, l.name, c.name, d.id, d.status
+                GROUP BY p.id, l.name, l.sort_rank, c.name, c.description,
+                         c.level, c.parent_code, parent.name, d.id, d.status
                 ORDER BY p.created_at DESC
                 LIMIT %s OFFSET %s
                 """,
                 params,
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [self._with_policy_metadata(dict(row)) for row in rows]
 
     def list_files(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
@@ -557,15 +703,138 @@ class ProofRepository:
                        d.status AS document_status, d.created_at, d.updated_at,
                        p.id AS policy_id, p.title AS policy_title,
                        p.version AS policy_version, p.status AS policy_status,
+                       CASE WHEN op.status IN ('ACCEPTED', 'RUNNING')
+                            THEN op.action END AS pending_action,
+                       op.action AS last_action,
+                       op.status AS operation_status,
+                       op.operation_id, op.framework_task_id, op.framework_run_id,
                        COUNT(u.id)::integer AS chunk_count
                 FROM proof_document d
-                JOIN proof_policy p ON p.id = d.policy_id
+                JOIN proof_policy p ON p.id = d.policy_id AND p.tenant_id = d.tenant_id
                 LEFT JOIN proof_retrieval_unit u ON u.document_id = d.id
-                GROUP BY d.id, p.id
+                LEFT JOIN LATERAL (
+                  SELECT operation_id, action, status,
+                         framework_task_id, framework_run_id
+                  FROM proof_policy_lifecycle_operation o
+                  WHERE o.tenant_id = d.tenant_id
+                    AND o.policy_id = p.id
+                  ORDER BY o.created_at DESC
+                  LIMIT 1
+                ) op ON TRUE
+                WHERE d.tenant_id = current_setting('proof.tenant_id')
+                GROUP BY d.id, p.id, op.operation_id, op.action, op.status,
+                         op.framework_task_id, op.framework_run_id
                 ORDER BY d.created_at DESC, d.id
                 """
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def record_policy_operation(
+        self,
+        *,
+        operation_id: str,
+        policy_id: str,
+        action: str,
+        status: str,
+        framework_task_id: str | None = None,
+        framework_run_id: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        with self.connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT policy_id, action
+                FROM proof_policy_lifecycle_operation
+                WHERE operation_id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
+                """,
+                (operation_id,),
+            ).fetchone()
+            if existing is not None and (
+                str(existing["policy_id"]) != policy_id
+                or str(existing["action"]) != action
+            ):
+                raise ProofError(
+                    "idempotency_conflict",
+                    "The lifecycle operation was already used with different parameters.",
+                    status_code=409,
+                )
+            conn.execute(
+                """
+                INSERT INTO proof_policy_lifecycle_operation (
+                  operation_id, tenant_id, policy_id, action, status,
+                  framework_task_id, framework_run_id, error_message
+                ) VALUES (
+                  %s, current_setting('proof.tenant_id'), %s, %s, %s, %s, %s, %s
+                )
+                ON CONFLICT (operation_id) DO UPDATE SET
+                  framework_task_id = COALESCE(
+                    EXCLUDED.framework_task_id,
+                    proof_policy_lifecycle_operation.framework_task_id
+                  ),
+                  framework_run_id = COALESCE(
+                    EXCLUDED.framework_run_id,
+                    proof_policy_lifecycle_operation.framework_run_id
+                  ),
+                  status = CASE
+                    WHEN proof_policy_lifecycle_operation.status IN ('RUNNING', 'SUCCEEDED')
+                      THEN proof_policy_lifecycle_operation.status
+                    ELSE EXCLUDED.status
+                  END,
+                  error_message = EXCLUDED.error_message,
+                  updated_at = now()
+                """,
+                (
+                    operation_id,
+                    policy_id,
+                    action,
+                    status,
+                    framework_task_id,
+                    framework_run_id,
+                    error_message,
+                ),
+            )
+            conn.commit()
+
+    def get_latest_policy_operation(self, policy_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT operation_id, action, status,
+                       framework_task_id, framework_run_id,
+                       error_message, created_at, updated_at, finished_at
+                FROM proof_policy_lifecycle_operation
+                WHERE tenant_id = current_setting('proof.tenant_id')
+                  AND policy_id = %s
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (policy_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def complete_policy_operation(
+        self,
+        operation_id: str,
+        *,
+        status: str,
+        error_message: str | None = None,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE proof_policy_lifecycle_operation
+                SET status = %s, error_message = %s, updated_at = now(),
+                    finished_at = CASE
+                      WHEN %s IN ('SUCCEEDED', 'FAILED') THEN now()
+                      ELSE finished_at
+                    END
+                WHERE operation_id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
+                """,
+                (status, error_message, status, operation_id),
+            )
+            conn.commit()
 
     def get_file(self, file_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -577,9 +846,10 @@ class ProofRepository:
                        p.version AS policy_version, p.status AS policy_status,
                        COUNT(u.id)::integer AS chunk_count
                 FROM proof_document d
-                JOIN proof_policy p ON p.id = d.policy_id
+                JOIN proof_policy p ON p.id = d.policy_id AND p.tenant_id = d.tenant_id
                 LEFT JOIN proof_retrieval_unit u ON u.document_id = d.id
                 WHERE d.id = %s
+                  AND d.tenant_id = current_setting('proof.tenant_id')
                 GROUP BY d.id, p.id
                 """,
                 (file_id,),
@@ -590,13 +860,15 @@ class ProofRepository:
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, clause_no_raw, clause_ordinal, unit_type, text AS content,
+                SELECT u.id, u.clause_no_raw, u.clause_ordinal, u.unit_type, u.text AS content,
                        heading_path, page_start, page_end, paragraph_start,
                        paragraph_end, char_start, char_end, text_hash,
                        embedding_status
-                FROM proof_retrieval_unit
-                WHERE document_id = %s
-                ORDER BY clause_ordinal
+                FROM proof_retrieval_unit u
+                JOIN proof_document d ON d.id = u.document_id
+                WHERE u.document_id = %s
+                  AND d.tenant_id = current_setting('proof.tenant_id')
+                ORDER BY u.clause_ordinal
                 LIMIT %s OFFSET %s
                 """,
                 (file_id, limit, offset),
@@ -607,10 +879,15 @@ class ProofRepository:
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT p.id, p.title, p.normalized_title, p.version, p.status,
+                SELECT p.id, p.family_id, p.supersedes_policy_id,
+                       p.title, p.normalized_title, p.version, p.version_seq, p.status,
+                       p.similarity_state, p.similarity_report,
                        p.level_code, p.category_code,
                        p.created_at, p.updated_at,
-                       l.name AS level_name, c.name AS category_name,
+                       l.name AS level_name, l.sort_rank AS level_sort_rank,
+                       c.name AS category_name, c.description AS category_description,
+                       c.level AS category_level, c.parent_code AS category_parent_code,
+                       parent.name AS category_parent_name,
                        d.id AS document_id, d.content_hash, d.original_name,
                        d.file_type, d.storage_path, d.status AS document_status,
                        d.parser_version, d.chunker_version, d.parse_warnings,
@@ -619,23 +896,29 @@ class ProofRepository:
                 FROM proof_policy p
                 LEFT JOIN proof_policy_level l ON l.code = p.level_code
                 JOIN proof_category c ON c.code = p.category_code
-                JOIN proof_document d ON d.policy_id = p.id
+                LEFT JOIN proof_category parent ON parent.code = c.parent_code
+                JOIN proof_document d ON d.policy_id = p.id AND d.tenant_id = p.tenant_id
                 LEFT JOIN proof_retrieval_unit u ON u.policy_id = p.id
                 WHERE p.id = %s
-                GROUP BY p.id, l.name, c.name, d.id
+                  AND p.tenant_id = current_setting('proof.tenant_id')
+                GROUP BY p.id, l.name, l.sort_rank, c.name, c.description,
+                         c.level, c.parent_code, parent.name, d.id
                 """,
                 (policy_id,),
             ).fetchone()
-        return dict(row) if row else None
+        return self._with_policy_metadata(dict(row)) if row else None
 
     def get_policy_by_document_id(self, document_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT p.id, p.status, d.id AS document_id
+                SELECT p.id, p.family_id, p.supersedes_policy_id,
+                       p.version, p.version_seq, p.status, p.similarity_state,
+                       d.id AS document_id
                 FROM proof_policy p
-                JOIN proof_document d ON d.policy_id = p.id
+                JOIN proof_document d ON d.policy_id = p.id AND d.tenant_id = p.tenant_id
                 WHERE d.id = %s
+                  AND d.tenant_id = current_setting('proof.tenant_id')
                 """,
                 (document_id,),
             ).fetchone()
@@ -656,10 +939,11 @@ class ProofRepository:
                        c.level AS category_level, d.original_name
                 FROM proof_retrieval_unit u
                 JOIN proof_policy p ON p.id = u.policy_id
-                JOIN proof_document d ON d.id = u.document_id
+                JOIN proof_document d ON d.id = u.document_id AND d.tenant_id = p.tenant_id
                 LEFT JOIN proof_policy_level l ON l.code = p.level_code
                 JOIN proof_category c ON c.code = p.category_code
                 WHERE u.id = %s
+                  AND p.tenant_id = current_setting('proof.tenant_id')
                 """,
                 (unit_id,),
             ).fetchone()
@@ -673,10 +957,12 @@ class ProofRepository:
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id
-                FROM proof_retrieval_unit
-                WHERE char_length(id) = %s
-                ORDER BY id
+                SELECT u.id
+                FROM proof_retrieval_unit u
+                JOIN proof_document d ON d.id = u.document_id
+                WHERE char_length(u.id) = %s
+                  AND d.tenant_id = current_setting('proof.tenant_id')
+                ORDER BY u.id
                 """,
                 (len(unit_id),),
             ).fetchall()
@@ -702,6 +988,7 @@ class ProofRepository:
                 SELECT id
                 FROM proof_policy
                 WHERE status = 'effective'
+                  AND tenant_id = current_setting('proof.tenant_id')
                   AND normalized_title = %s
                   AND id <> %s
                 ORDER BY id
@@ -747,6 +1034,7 @@ class ProofRepository:
                 """
                 SELECT id, title, normalized_title, category_code
                 FROM proof_policy
+                WHERE tenant_id = current_setting('proof.tenant_id')
                 ORDER BY id
                 """
             ).fetchall()
@@ -774,6 +1062,7 @@ class ProofRepository:
                       ELSE updated_at
                     END
                 WHERE id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
                   AND (
                     normalized_title IS DISTINCT FROM %s
                     OR (%s::text IS NOT NULL AND category_code IS DISTINCT FROM %s::text)
@@ -796,7 +1085,9 @@ class ProofRepository:
 
     def list_clauses(self, policy_id: str, *, include_text: bool = False) -> list[dict[str, Any]]:
         with self.connect() as conn:
-            document = conn.execute("SELECT id FROM proof_document WHERE policy_id = %s", (policy_id,)).fetchone()
+            document = conn.execute("""SELECT id FROM proof_document
+                   WHERE policy_id = %s
+                     AND tenant_id = current_setting('proof.tenant_id')""", (policy_id,)).fetchone()
             if not document:
                 return []
             return self._clauses_for_document(conn, document["id"], include_text=include_text)
@@ -805,12 +1096,14 @@ class ProofRepository:
         text_column = ", text" if include_text else ""
         rows = conn.execute(
             f"""
-            SELECT id, clause_no_raw, clause_ordinal, unit_type{text_column}, heading_path,
-                   source_block_ids, page_start, page_end, paragraph_start,
-                   paragraph_end, char_start, char_end, text_hash, embedding_status
-            FROM proof_retrieval_unit
-            WHERE document_id = %s
-            ORDER BY clause_ordinal
+            SELECT u.id, u.clause_no_raw, u.clause_ordinal, u.unit_type{text_column}, u.heading_path,
+                   u.source_block_ids, u.page_start, u.page_end, u.paragraph_start,
+                   u.paragraph_end, u.char_start, u.char_end, u.text_hash, u.embedding_status
+            FROM proof_retrieval_unit u
+            JOIN proof_document d ON d.id = u.document_id
+            WHERE u.document_id = %s
+              AND d.tenant_id = current_setting('proof.tenant_id')
+            ORDER BY u.clause_ordinal
             """,
             (document_id,),
         ).fetchall()
@@ -827,10 +1120,11 @@ class ProofRepository:
                        p.category_code, c.name AS category_name, d.original_name
                 FROM proof_retrieval_unit u
                 JOIN proof_policy p ON p.id = u.policy_id
-                JOIN proof_document d ON d.id = u.document_id
+                JOIN proof_document d ON d.id = u.document_id AND d.tenant_id = p.tenant_id
                 LEFT JOIN proof_policy_level l ON l.code = p.level_code
                 JOIN proof_category c ON c.code = p.category_code
                 WHERE u.id = ANY(%s) AND p.status = 'effective'
+                  AND p.tenant_id = current_setting('proof.tenant_id')
                 """,
                 (unit_ids,),
             ).fetchall()
@@ -843,10 +1137,12 @@ class ProofRepository:
                 dict(row)
                 for row in conn.execute(
                     """
-                    SELECT id, text, clause_no_raw, clause_ordinal, heading_path
-                    FROM proof_retrieval_unit
-                    WHERE document_id = %s
-                    ORDER BY clause_ordinal
+                    SELECT u.id, u.text, u.clause_no_raw, u.clause_ordinal, u.heading_path
+                    FROM proof_retrieval_unit u
+                    JOIN proof_document d ON d.id = u.document_id
+                    WHERE u.document_id = %s
+                      AND d.tenant_id = current_setting('proof.tenant_id')
+                    ORDER BY u.clause_ordinal
                     """,
                     (document_id,),
                 )
@@ -855,7 +1151,7 @@ class ProofRepository:
     def get_audit_run_for_document(self, document_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT * FROM proof_audit_run WHERE document_id = %s",
+                "SELECT * FROM proof_tenant_audit_run_v WHERE document_id = %s",
                 (document_id,),
             ).fetchone()
         return dict(row) if row else None
@@ -863,13 +1159,19 @@ class ProofRepository:
     def get_audit_run(self, audit_run_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT * FROM proof_audit_run WHERE id = %s",
+                "SELECT * FROM proof_tenant_audit_run_v WHERE id = %s",
                 (audit_run_id,),
             ).fetchone()
         return dict(row) if row else None
 
     def create_audit_run(self, *, audit_run_id: str, document_id: str) -> dict[str, Any]:
         with self.connect() as conn:
+            owned = conn.execute(
+                "SELECT proof_tenant_owns_document(%s) AS owned",
+                (document_id,),
+            ).fetchone()
+            if not owned or not owned["owned"]:
+                raise ProofError("document_not_found", "Document not found.", status_code=404)
             conn.execute(
                 """
                 INSERT INTO proof_audit_run (id, document_id, status)
@@ -891,7 +1193,7 @@ class ProofRepository:
             run = conn.execute(
                 """
                 SELECT status, summary_status, conflict_status, intra_conflict_status
-                FROM proof_audit_run WHERE id = %s FOR UPDATE
+                FROM proof_tenant_audit_run_v WHERE id = %s FOR UPDATE
                 """,
                 (audit_run_id,),
             ).fetchone()
@@ -906,7 +1208,7 @@ class ProofRepository:
 
             conn.execute(
                 """
-                UPDATE proof_audit_run
+                UPDATE proof_tenant_audit_run_v
                 SET status = CASE WHEN status = 'completed' THEN status ELSE 'pending' END,
                     error_message = CASE WHEN status = 'completed' THEN error_message ELSE NULL END,
                     summary_status = CASE
@@ -964,7 +1266,7 @@ class ProofRepository:
         with self.connect() as conn:
             conn.execute(
                 """
-                UPDATE proof_audit_run
+                UPDATE proof_tenant_audit_run_v
                 SET status = CASE WHEN status = 'pending' THEN 'running' ELSE status END,
                     framework_task_id = %s, framework_run_id = %s,
                     error_message = CASE WHEN status = 'pending' THEN NULL ELSE error_message END,
@@ -996,7 +1298,7 @@ class ProofRepository:
         with self.connect() as conn:
             conn.execute(
                 """
-                UPDATE proof_audit_run
+                UPDATE proof_tenant_audit_run_v
                 SET framework_task_id = %s, updated_at = now()
                 WHERE id = %s AND (
                   status = 'pending' OR summary_status = 'pending' OR conflict_status = 'pending'
@@ -1011,7 +1313,7 @@ class ProofRepository:
         with self.connect() as conn:
             conn.execute(
                 """
-                UPDATE proof_audit_run
+                UPDATE proof_tenant_audit_run_v
                 SET status = 'failed', error_message = %s, updated_at = now()
                 WHERE id = %s AND status <> 'completed'
                 """,
@@ -1029,7 +1331,7 @@ class ProofRepository:
         with self.connect() as conn:
             conn.execute(
                 """
-                UPDATE proof_audit_run
+                UPDATE proof_tenant_audit_run_v
                 SET summary_status = 'completed', summary_content = %s::jsonb,
                     summary_error_message = %s, updated_at = now()
                 WHERE id = %s
@@ -1042,7 +1344,7 @@ class ProofRepository:
         with self.connect() as conn:
             conn.execute(
                 """
-                UPDATE proof_audit_run
+                UPDATE proof_tenant_audit_run_v
                 SET summary_status = 'failed', summary_content = NULL,
                     summary_error_message = %s, updated_at = now()
                 WHERE id = %s AND summary_status <> 'completed'
@@ -1060,7 +1362,7 @@ class ProofRepository:
     ) -> None:
         with self.connect() as conn:
             run = conn.execute(
-                "SELECT id FROM proof_audit_run WHERE id = %s FOR UPDATE",
+                "SELECT id FROM proof_tenant_audit_run_v WHERE id = %s FOR UPDATE",
                 (audit_run_id,),
             ).fetchone()
             if not run:
@@ -1094,7 +1396,7 @@ class ProofRepository:
                     )
             conn.execute(
                 """
-                UPDATE proof_audit_run
+                UPDATE proof_tenant_audit_run_v
                 SET conflict_status = 'completed', conflict_error_message = %s,
                     updated_at = now()
                 WHERE id = %s
@@ -1107,7 +1409,7 @@ class ProofRepository:
         with self.connect() as conn:
             conn.execute(
                 """
-                UPDATE proof_audit_run
+                UPDATE proof_tenant_audit_run_v
                 SET conflict_status = 'failed', conflict_error_message = %s,
                     updated_at = now()
                 WHERE id = %s AND conflict_status <> 'completed'
@@ -1123,6 +1425,7 @@ class ProofRepository:
                 SELECT f.source_unit_id AS id, f.candidate_ids, f.conflict_type,
                        f.problem, f.suggestion
                 FROM proof_conflict_audit_finding f
+                JOIN proof_tenant_audit_run_v ar ON ar.id = f.audit_run_id
                 JOIN proof_retrieval_unit u ON u.id = f.source_unit_id
                 WHERE f.audit_run_id = %s
                 ORDER BY u.clause_ordinal, f.id
@@ -1141,7 +1444,7 @@ class ProofRepository:
     ) -> None:
         with self.connect() as conn:
             run = conn.execute(
-                "SELECT id FROM proof_audit_run WHERE id = %s FOR UPDATE",
+                "SELECT id FROM proof_tenant_audit_run_v WHERE id = %s FOR UPDATE",
                 (audit_run_id,),
             ).fetchone()
             if not run:
@@ -1203,7 +1506,7 @@ class ProofRepository:
                     )
             conn.execute(
                 """
-                UPDATE proof_audit_run
+                UPDATE proof_tenant_audit_run_v
                 SET intra_conflict_status = 'completed', intra_conflict_error_message = %s,
                     updated_at = now()
                 WHERE id = %s
@@ -1216,7 +1519,7 @@ class ProofRepository:
         with self.connect() as conn:
             conn.execute(
                 """
-                UPDATE proof_audit_run
+                UPDATE proof_tenant_audit_run_v
                 SET intra_conflict_status = 'failed', intra_conflict_error_message = %s,
                     updated_at = now()
                 WHERE id = %s AND intra_conflict_status <> 'completed'
@@ -1231,10 +1534,11 @@ class ProofRepository:
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT target_unit_id AS target_id, finding_index, code, message, details
-                FROM proof_intra_conflict_audit_warning
-                WHERE audit_run_id = %s
-                ORDER BY id
+                SELECT w.target_unit_id AS target_id, w.finding_index, w.code, w.message, w.details
+                FROM proof_intra_conflict_audit_warning w
+                JOIN proof_tenant_audit_run_v ar ON ar.id = w.audit_run_id
+                WHERE w.audit_run_id = %s
+                ORDER BY w.id
                 """,
                 (audit_run_id,),
             ).fetchall()
@@ -1247,6 +1551,7 @@ class ProofRepository:
                 SELECT f.source_unit_id AS id, f.candidate_ids, f.conflict_type,
                        f.problem, f.suggestion
                 FROM proof_intra_conflict_audit_finding f
+                JOIN proof_tenant_audit_run_v ar ON ar.id = f.audit_run_id
                 JOIN proof_retrieval_unit u ON u.id = f.source_unit_id
                 WHERE f.audit_run_id = %s
                 ORDER BY u.clause_ordinal, f.id
@@ -1264,7 +1569,7 @@ class ProofRepository:
     ) -> None:
         with self.connect() as conn:
             run = conn.execute(
-                "SELECT id FROM proof_audit_run WHERE id = %s FOR UPDATE",
+                "SELECT id FROM proof_tenant_audit_run_v WHERE id = %s FOR UPDATE",
                 (audit_run_id,),
             ).fetchone()
             if not run:
@@ -1291,7 +1596,7 @@ class ProofRepository:
                     )
             conn.execute(
                 """
-                UPDATE proof_audit_run
+                UPDATE proof_tenant_audit_run_v
                 SET status = 'completed', error_message = %s, updated_at = now()
                 WHERE id = %s
                 """,
@@ -1305,6 +1610,7 @@ class ProofRepository:
                 """
                 SELECT f.retrieval_unit_id AS id, f.category, f.problem, f.suggestion
                 FROM proof_audit_finding f
+                JOIN proof_tenant_audit_run_v ar ON ar.id = f.audit_run_id
                 JOIN proof_retrieval_unit u ON u.id = f.retrieval_unit_id
                 WHERE f.audit_run_id = %s
                 ORDER BY u.clause_ordinal
@@ -1314,30 +1620,476 @@ class ProofRepository:
         return [dict(row) for row in rows]
 
     def confirm_policy(self, policy_id: str) -> dict[str, Any] | None:
+        return self.activate_policy_version(policy_id)
+
+    def decide_policy_similarity(
+        self,
+        policy_id: str,
+        *,
+        decision: str,
+        candidate_policy_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any] | None:
+        candidate_id = str(candidate_policy_id or "").strip() or None
+        request_key = str(idempotency_key or "").strip() or None
+        with self.connect() as conn:
+            policy = conn.execute(
+                """
+                SELECT id, family_id, supersedes_policy_id, version_seq,
+                       similarity_state, similarity_report, status
+                FROM proof_policy
+                WHERE id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
+                FOR UPDATE
+                """,
+                (policy_id,),
+            ).fetchone()
+            if policy is None:
+                return None
+            if policy["status"] != "draft":
+                raise ProofError(
+                    "policy_not_draft",
+                    "Only a draft policy can accept a similarity decision.",
+                    status_code=409,
+                )
+            if policy["similarity_state"] != "decision_required":
+                expected_state = "new_version" if decision == "new_version" else "separate"
+                recorded = dict(policy["similarity_report"] or {}).get("decision") or {}
+                recorded_candidate = (
+                    str(
+                        recorded.get("candidate_policy_id")
+                        or policy.get("supersedes_policy_id")
+                        or ""
+                    ).strip()
+                    or None
+                )
+                recorded_key = str(recorded.get("idempotency_key") or "").strip() or None
+                if recorded_key and request_key == recorded_key and (
+                    recorded.get("decision") != decision
+                    or recorded_candidate != candidate_id
+                ):
+                    raise ProofError(
+                        "idempotency_conflict",
+                        "Idempotency-Key was already used with different decision parameters.",
+                        status_code=409,
+                    )
+                if policy["similarity_state"] == expected_state:
+                    if recorded_candidate != candidate_id:
+                        raise ProofError(
+                            "similarity_decision_conflict",
+                            "The similarity decision has already selected a different policy.",
+                            status_code=409,
+                        )
+                    conn.commit()
+                    return self.get_policy(policy_id)
+                raise ProofError(
+                    "similarity_decision_conflict",
+                    "The similarity decision has already been resolved differently.",
+                    status_code=409,
+                )
+
+            if decision == "separate":
+                report = dict(policy["similarity_report"] or {})
+                report["decision"] = {
+                    "decision": decision,
+                    "candidate_policy_id": None,
+                    "idempotency_key": request_key,
+                }
+                conn.execute(
+                    """
+                    UPDATE proof_policy
+                    SET family_id = id, supersedes_policy_id = NULL,
+                        version_seq = 0, version = 'v1.0.0',
+                        similarity_state = 'separate', similarity_report = %s,
+                        updated_at = now()
+                    WHERE id = %s
+                      AND tenant_id = current_setting('proof.tenant_id')
+                    """,
+                    (Jsonb(report), policy_id),
+                )
+            elif decision == "new_version":
+                report_candidates = {
+                    str(item.get("policy_id") or "")
+                    for item in (policy["similarity_report"] or {}).get("candidates", [])
+                }
+                if not candidate_id or candidate_id not in report_candidates:
+                    raise ProofError(
+                        "invalid_similarity_candidate",
+                        "The selected policy is not an available similarity candidate.",
+                        status_code=422,
+                    )
+                candidate = conn.execute(
+                    """
+                    SELECT id, family_id, version_seq, status
+                    FROM proof_policy
+                    WHERE id = %s
+                      AND tenant_id = current_setting('proof.tenant_id')
+                    FOR UPDATE
+                    """,
+                    (candidate_id,),
+                ).fetchone()
+                if candidate is None:
+                    raise ProofError(
+                        "policy_not_found",
+                        "Similarity candidate not found.",
+                        status_code=404,
+                    )
+                if candidate["status"] != "effective":
+                    raise ProofError(
+                        "similarity_candidate_not_effective",
+                        "Only an effective policy can be selected as the previous version.",
+                        status_code=409,
+                    )
+                next_version = conn.execute(
+                    """
+                    SELECT COALESCE(MAX(version_seq), -1) + 1 AS next_version
+                    FROM proof_policy
+                    WHERE family_id = %s
+                      AND tenant_id = current_setting('proof.tenant_id')
+                    """,
+                    (candidate["family_id"],),
+                ).fetchone()
+                version_seq = int(next_version["next_version"])
+                report = dict(policy["similarity_report"] or {})
+                report["decision"] = {
+                    "decision": decision,
+                    "candidate_policy_id": candidate_id,
+                    "idempotency_key": request_key,
+                }
+                conn.execute(
+                    """
+                    UPDATE proof_policy
+                    SET family_id = %s, supersedes_policy_id = %s,
+                        version_seq = %s, version = %s,
+                        similarity_state = 'new_version', similarity_report = %s,
+                        updated_at = now()
+                    WHERE id = %s
+                      AND tenant_id = current_setting('proof.tenant_id')
+                    """,
+                    (
+                        candidate["family_id"],
+                        candidate_id,
+                        version_seq,
+                        format_policy_version(version_seq),
+                        Jsonb(report),
+                        policy_id,
+                    ),
+                )
+            else:
+                raise ProofError(
+                    "invalid_similarity_decision",
+                    "Similarity decision must be new_version or separate.",
+                    status_code=422,
+                )
+            conn.commit()
+        return self.get_policy(policy_id)
+
+    def activate_policy_version(self, policy_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT status FROM proof_policy WHERE id = %s FOR UPDATE",
+                """SELECT status, id, family_id, supersedes_policy_id, version_seq,
+                          similarity_state
+                   FROM proof_policy
+                   WHERE id = %s
+                     AND tenant_id = current_setting('proof.tenant_id')
+                   FOR UPDATE""",
+                (policy_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            if row["status"] == "effective":
+                conn.commit()
+                return self.get_policy(policy_id)
+            if row["status"] != "draft":
+                raise ProofError(
+                    "policy_not_draft",
+                    "Only a draft policy can be confirmed.",
+                    status_code=409,
+                )
+            if row.get("similarity_state") == "decision_required":
+                raise ProofError(
+                    "similarity_decision_required",
+                    "A similarity decision is required before review can continue.",
+                    status_code=409,
+                )
+
+            supersedes = row.get("supersedes_policy_id")
+            if supersedes:
+                current = conn.execute(
+                    """
+                    SELECT id, version_seq
+                    FROM proof_policy
+                    WHERE tenant_id = current_setting('proof.tenant_id')
+                      AND family_id = %s AND status = 'effective'
+                    FOR UPDATE
+                    """,
+                    (row["family_id"],),
+                ).fetchone()
+                if (
+                    current is None
+                    or str(current["id"]) != str(supersedes)
+                    or int(row["version_seq"]) <= int(current["version_seq"])
+                ):
+                    raise ProofError(
+                        "version_base_changed",
+                        "The effective base version changed while this draft was under review.",
+                        status_code=409,
+                    )
+                conn.execute(
+                    """
+                    UPDATE proof_policy
+                    SET status = 'expired', updated_at = now()
+                    WHERE tenant_id = current_setting('proof.tenant_id')
+                      AND family_id = %s
+                      AND status = 'effective'
+                      AND version_seq < %s
+                    """,
+                    (row["family_id"], row["version_seq"]),
+                )
+                conn.execute(
+                    """
+                    DELETE FROM proof_retrieval_embedding e
+                    USING proof_retrieval_unit u, proof_policy p
+                    WHERE e.retrieval_unit_id = u.id
+                      AND u.policy_id = p.id
+                      AND p.tenant_id = current_setting('proof.tenant_id')
+                      AND p.family_id = %s
+                      AND p.version_seq < %s
+                    """,
+                    (row["family_id"], row["version_seq"]),
+                )
+                conn.execute(
+                    """
+                    UPDATE proof_retrieval_unit u
+                    SET embedding_status = 'retired', updated_at = now()
+                    FROM proof_policy p
+                    WHERE u.policy_id = p.id
+                      AND p.tenant_id = current_setting('proof.tenant_id')
+                      AND p.family_id = %s
+                      AND p.version_seq < %s
+                    """,
+                    (row["family_id"], row["version_seq"]),
+                )
+
+            conn.execute(
+                """
+                UPDATE proof_policy
+                SET status = 'effective', updated_at = now()
+                WHERE id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
+                """,
+                (policy_id,),
+            )
+            conn.execute(
+                """
+                DELETE FROM proof_draft_retrieval_embedding
+                WHERE audit_run_id IN (
+                  SELECT ar.id FROM proof_tenant_audit_run_v ar
+                  JOIN proof_document d ON d.id = ar.document_id
+                  JOIN proof_policy p ON p.id = d.policy_id AND p.tenant_id = d.tenant_id
+                  WHERE p.family_id = %s
+                    AND p.version_seq <= %s
+                )
+                """,
+                (row.get("family_id"), row.get("version_seq")),
+            )
+            conn.commit()
+        return self.get_policy(policy_id)
+
+    def expire_policy_version(self, policy_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, status
+                FROM proof_policy
+                WHERE id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
+                FOR UPDATE
+                """,
                 (policy_id,),
             ).fetchone()
             if row is None:
                 return None
             if row["status"] == "draft":
+                raise ProofError(
+                    "policy_not_published",
+                    "Draft policies cannot be expired.",
+                    status_code=409,
+                )
+            if row["status"] == "effective":
                 conn.execute(
-                    "UPDATE proof_policy SET status = 'effective', updated_at = now() WHERE id = %s",
+                    """
+                    UPDATE proof_policy
+                    SET status = 'expired', updated_at = now()
+                    WHERE id = %s
+                      AND tenant_id = current_setting('proof.tenant_id')
+                    """,
                     (policy_id,),
                 )
                 conn.execute(
                     """
-                    DELETE FROM proof_draft_retrieval_embedding
-                    WHERE audit_run_id IN (
-                      SELECT ar.id FROM proof_audit_run ar
-                      JOIN proof_document d ON d.id = ar.document_id WHERE d.policy_id = %s
-                    )
+                    DELETE FROM proof_retrieval_embedding e
+                    USING proof_retrieval_unit u
+                    WHERE e.retrieval_unit_id = u.id
+                      AND u.policy_id = %s
+                    """,
+                    (policy_id,),
+                )
+                conn.execute(
+                    """
+                    UPDATE proof_retrieval_unit
+                    SET embedding_status = 'retired', updated_at = now()
+                    WHERE policy_id = %s
                     """,
                     (policy_id,),
                 )
             conn.commit()
         return self.get_policy(policy_id)
+
+    def delete_policy_version(
+        self,
+        policy_id: str,
+        *,
+        operation_id: str,
+        original_storage_path: str,
+        trash_storage_path: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT operation_id, policy_id, status, trash_storage_path
+                FROM proof_policy_delete_tombstone
+                WHERE operation_id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
+                FOR UPDATE
+                """,
+                (operation_id,),
+            ).fetchone()
+            if existing is not None:
+                if str(existing["policy_id"]) != policy_id:
+                    raise ProofError(
+                        "idempotency_conflict",
+                        "The lifecycle operation was already used for another policy.",
+                        status_code=409,
+                    )
+                conn.commit()
+                return dict(existing)
+            policy = conn.execute(
+                """
+                SELECT p.id, p.status
+                FROM proof_policy p
+                WHERE p.id = %s
+                  AND p.tenant_id = current_setting('proof.tenant_id')
+                FOR UPDATE
+                """,
+                (policy_id,),
+            ).fetchone()
+            if policy is None:
+                return None
+            if policy["status"] == "draft":
+                raise ProofError(
+                    "policy_not_published",
+                    "Draft policies must use the draft discard operation.",
+                    status_code=409,
+                )
+            conn.execute(
+                """
+                INSERT INTO proof_policy_delete_tombstone (
+                  operation_id, tenant_id, policy_id,
+                  original_storage_path, trash_storage_path, status
+                ) VALUES (
+                  %s, current_setting('proof.tenant_id'), %s, %s, %s, 'prepared'
+                )
+                """,
+                (
+                    operation_id,
+                    policy_id,
+                    original_storage_path,
+                    trash_storage_path,
+                ),
+            )
+            conn.execute(
+                """
+                DELETE FROM proof_ingestion_run
+                WHERE tenant_id = current_setting('proof.tenant_id')
+                  AND (
+                    policy_id = %s
+                    OR document_id IN (
+                      SELECT id
+                      FROM proof_document
+                      WHERE policy_id = %s
+                        AND tenant_id = current_setting('proof.tenant_id')
+                    )
+                  )
+                """,
+                (policy_id, policy_id),
+            )
+            conn.execute(
+                """
+                DELETE FROM proof_policy
+                WHERE id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
+                """,
+                (policy_id,),
+            )
+            conn.execute(
+                """
+                UPDATE proof_policy_delete_tombstone
+                SET status = 'deleted', deleted_at = now(), error_message = NULL
+                WHERE operation_id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
+                """,
+                (operation_id,),
+            )
+            conn.commit()
+        return {
+            "operation_id": operation_id,
+            "policy_id": policy_id,
+            "status": "deleted",
+            "trash_storage_path": trash_storage_path,
+        }
+
+    def get_delete_tombstone(self, operation_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT operation_id, policy_id, original_storage_path,
+                       trash_storage_path, status, error_message,
+                       created_at, deleted_at
+                FROM proof_policy_delete_tombstone
+                WHERE operation_id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
+                """,
+                (operation_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def mark_delete_cleanup_failed(self, operation_id: str, message: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE proof_policy_delete_tombstone
+                SET status = 'cleanup_failed', error_message = %s
+                WHERE operation_id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
+                """,
+                (message[:2000], operation_id),
+            )
+            conn.commit()
+
+    def mark_delete_cleaned(self, operation_id: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE proof_policy_delete_tombstone
+                SET status = 'deleted', error_message = NULL,
+                    deleted_at = COALESCE(deleted_at, now())
+                WHERE operation_id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
+                """,
+                (operation_id,),
+            )
+            conn.commit()
 
     def delete_draft_policy(self, policy_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -1345,8 +2097,9 @@ class ProofRepository:
                 """
                 SELECT p.status, d.storage_path
                 FROM proof_policy p
-                JOIN proof_document d ON d.policy_id = p.id
+                JOIN proof_document d ON d.policy_id = p.id AND d.tenant_id = p.tenant_id
                 WHERE p.id = %s
+                  AND p.tenant_id = current_setting('proof.tenant_id')
                 FOR UPDATE OF p
                 """,
                 (policy_id,),
@@ -1359,7 +2112,9 @@ class ProofRepository:
                     "Only draft policies can be discarded.",
                     status_code=409,
                 )
-            conn.execute("DELETE FROM proof_policy WHERE id = %s", (policy_id,))
+            conn.execute("""DELETE FROM proof_policy
+                   WHERE id = %s
+                     AND tenant_id = current_setting('proof.tenant_id')""", (policy_id,))
             conn.commit()
         return dict(row)
 
@@ -1378,7 +2133,7 @@ class ProofRepository:
                 SELECT e.retrieval_unit_id
                 FROM proof_draft_retrieval_embedding e
                 JOIN proof_retrieval_unit u ON u.id = e.retrieval_unit_id
-                JOIN proof_audit_run ar ON ar.id = e.audit_run_id
+                JOIN proof_tenant_audit_run_v ar ON ar.id = e.audit_run_id
                 WHERE e.audit_run_id = %s AND ar.document_id = %s
                   AND u.document_id = %s AND e.profile_id = %s AND e.dimensions = %s
                 """,
@@ -1398,7 +2153,7 @@ class ProofRepository:
             raise ValueError("Draft embedding units and vectors must have the same length.")
         with self.connect() as conn:
             run = conn.execute(
-                "SELECT document_id FROM proof_audit_run WHERE id = %s FOR UPDATE",
+                "SELECT document_id FROM proof_tenant_audit_run_v WHERE id = %s FOR UPDATE",
                 (audit_run_id,),
             ).fetchone()
             if run is None:
@@ -1448,7 +2203,7 @@ class ProofRepository:
                 WITH source_embedding AS (
                   SELECT e.audit_run_id, e.embedding
                   FROM proof_draft_retrieval_embedding e
-                  JOIN proof_audit_run ar ON ar.id = e.audit_run_id
+                  JOIN proof_tenant_audit_run_v ar ON ar.id = e.audit_run_id
                   JOIN proof_retrieval_unit u ON u.id = e.retrieval_unit_id
                   WHERE e.retrieval_unit_id = %s AND e.profile_id = %s
                     AND e.dimensions = %s AND ar.document_id = u.document_id
@@ -1458,7 +2213,7 @@ class ProofRepository:
                 FROM source_embedding s
                 JOIN proof_draft_retrieval_embedding e ON e.audit_run_id = s.audit_run_id
                 JOIN proof_retrieval_unit u ON u.id = e.retrieval_unit_id
-                JOIN proof_audit_run ar ON ar.id = e.audit_run_id
+                JOIN proof_tenant_audit_run_v ar ON ar.id = e.audit_run_id
                 WHERE u.document_id = ar.document_id AND u.id <> %s
                   AND e.profile_id = %s AND e.dimensions = %s
                 ORDER BY e.embedding <=> s.embedding, u.clause_ordinal
@@ -1477,6 +2232,12 @@ class ProofRepository:
         too_long_unit_ids: list[str] | None = None,
     ) -> None:
         with self.connect() as conn:
+            owned = conn.execute(
+                "SELECT proof_tenant_owns_document(%s) AS owned",
+                (document_id,),
+            ).fetchone()
+            if not owned or not owned["owned"]:
+                raise ProofError("document_not_found", "Document not found.", status_code=404)
             for unit, vector in zip(units, vectors, strict=True):
                 conn.execute(
                     """
@@ -1494,7 +2255,7 @@ class ProofRepository:
                     (unit["id"], profile.id, profile.provider, profile.model, profile.dimensions, _vector_text(vector)),
                 )
                 conn.execute(
-                    "UPDATE proof_retrieval_unit SET embedding_status = 'indexed', updated_at = now() WHERE id = %s",
+                    "UPDATE proof_retrieval_unit SET embedding_status = 'indexed', updated_at = now() WHERE id = %s AND proof_tenant_owns_document(document_id)",
                     (unit["id"],),
                 )
             if too_long_unit_ids:
@@ -1503,6 +2264,7 @@ class ProofRepository:
                     UPDATE proof_retrieval_unit
                     SET embedding_status = 'embedding_too_long', updated_at = now()
                     WHERE document_id = %s AND id = ANY(%s)
+                      AND proof_tenant_owns_document(document_id)
                     """,
                     (document_id, too_long_unit_ids),
                 )
@@ -1511,6 +2273,7 @@ class ProofRepository:
                 UPDATE proof_document
                 SET status = 'indexed', embedding_error_code = %s, updated_at = now()
                 WHERE id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
                 """,
                 ("embedding_too_long" if too_long_unit_ids else None, document_id),
             )
@@ -1519,7 +2282,7 @@ class ProofRepository:
     def mark_embedding_failed(self, document_id: str, error_code: str) -> None:
         with self.connect() as conn:
             conn.execute(
-                "UPDATE proof_document SET status = 'embedding_failed', embedding_error_code = %s, updated_at = now() WHERE id = %s",
+                "UPDATE proof_document SET status = 'embedding_failed', embedding_error_code = %s, updated_at = now() WHERE id = %s AND tenant_id = current_setting('proof.tenant_id')",
                 (error_code, document_id),
             )
             conn.execute(
@@ -1527,6 +2290,7 @@ class ProofRepository:
                 UPDATE proof_retrieval_unit
                 SET embedding_status = 'failed', updated_at = now()
                 WHERE document_id = %s AND embedding_status <> 'embedding_too_long'
+                  AND proof_tenant_owns_document(document_id)
                 """,
                 (document_id,),
             )
@@ -1569,7 +2333,7 @@ class ProofRepository:
                 FROM proof_retrieval_embedding e
                 JOIN proof_retrieval_unit u ON u.id = e.retrieval_unit_id
                 JOIN proof_policy p ON p.id = u.policy_id
-                JOIN proof_document d ON d.id = u.document_id
+                JOIN proof_document d ON d.id = u.document_id AND d.tenant_id = p.tenant_id
                 LEFT JOIN proof_policy_level l ON l.code = p.level_code
                 JOIN proof_category c ON c.code = p.category_code
                 WHERE p.status = 'effective' AND {" AND ".join(where)}
@@ -1617,7 +2381,7 @@ class ProofRepository:
                 FROM proof_retrieval_unit u
                 CROSS JOIN q
                 JOIN proof_policy p ON p.id = u.policy_id
-                JOIN proof_document d ON d.id = u.document_id
+                JOIN proof_document d ON d.id = u.document_id AND d.tenant_id = p.tenant_id
                 LEFT JOIN proof_policy_level l ON l.code = p.level_code
                 JOIN proof_category c ON c.code = p.category_code
                 WHERE p.status = 'effective' AND {" AND ".join(where)}
@@ -1631,7 +2395,12 @@ class ProofRepository:
     def count_embeddings(self, profile_id: str) -> int:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT COUNT(*) AS count FROM proof_retrieval_embedding WHERE profile_id = %s",
+                """SELECT COUNT(*) AS count
+                   FROM proof_retrieval_embedding e
+                   JOIN proof_retrieval_unit u ON u.id = e.retrieval_unit_id
+                   JOIN proof_document d ON d.id = u.document_id
+                   WHERE e.profile_id = %s
+                     AND d.tenant_id = current_setting('proof.tenant_id')""",
                 (profile_id,),
             ).fetchone()
         return int(row["count"] if row else 0)
@@ -1689,9 +2458,14 @@ class ProofRepository:
             key: row.get(key)
             for key in (
                 "id",
+                "family_id",
+                "supersedes_policy_id",
                 "title",
                 "version",
+                "version_seq",
                 "status",
+                "similarity_state",
+                "similarity_report",
                 "level_code",
                 "category_code",
                 "normalized_title",
@@ -1712,4 +2486,72 @@ class ProofRepository:
             "structure_profile": row.get("structure_profile") or "article",
             "structure_diagnostics": row.get("structure_diagnostics") or {},
         }
-        return {"policy": policy, "document": document, "clauses": clauses}
+        return {
+            "policy": ProofRepository._with_policy_metadata(
+                {
+                    **policy,
+                    **{
+                        key: row.get(key)
+                        for key in (
+                            "level_name",
+                            "level_sort_rank",
+                            "category_name",
+                            "category_description",
+                            "category_level",
+                            "category_parent_code",
+                            "category_parent_name",
+                        )
+                    },
+                }
+            ),
+            "document": document,
+            "clauses": clauses,
+        }
+
+    @staticmethod
+    def _with_policy_metadata(policy: dict[str, Any]) -> dict[str, Any]:
+        result = dict(policy)
+        level_code = result.get("level_code")
+        result["level"] = (
+            {
+                "code": level_code,
+                "name": result.get("level_name"),
+                "sort_rank": result.get("level_sort_rank"),
+            }
+            if level_code
+            else None
+        )
+        category_code = result.get("category_code")
+        parent_code = result.get("category_parent_code")
+        parent = (
+            {"code": parent_code, "name": result.get("category_parent_name")}
+            if parent_code
+            else None
+        )
+        result["category"] = (
+            {
+                "code": category_code,
+                "name": result.get("category_name"),
+                "description": result.get("category_description") or "",
+                "level": result.get("category_level"),
+                "parent": parent,
+                "path_name": (
+                    f"{result.get('category_parent_name')} / {result.get('category_name')}"
+                    if parent_code
+                    else result.get("category_name")
+                ),
+            }
+            if category_code
+            else None
+        )
+        for key in (
+            "level_name",
+            "level_sort_rank",
+            "category_name",
+            "category_description",
+            "category_level",
+            "category_parent_code",
+            "category_parent_name",
+        ):
+            result.pop(key, None)
+        return result

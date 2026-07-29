@@ -18,6 +18,7 @@ class InternalRequestContext:
     user_id: str
     request_id: str
     idempotency_key: str | None = None
+    ai_mode: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,0 +1,5 @@
+id: api-rerank
+display_name: API Reranker
+llm: deepseek-v4-pro
+embedding: policy-embedding-v4
+reranker: api-qwen3-rerank

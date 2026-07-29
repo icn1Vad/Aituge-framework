@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from aituge_model_config import ModelRuntimeProvider
 
 
 CAPABILITY_ID = "smoke"
@@ -24,7 +25,12 @@ class SmokeEchoInput(BaseModel):
 
 async def register(registry, settings) -> None:
     base_url = settings.require("SMOKE_SERVICE_BASE_URL")
-    model_id = settings.get("SMOKE_MODEL_ID", "deepseek-v4-pro").strip()
+    model_runtime = ModelRuntimeProvider.from_environment(
+        directory=settings.get("MODEL_CONFIG_DIR"),
+        pack_id=settings.get("MODEL_PACK_ID"),
+    )
+    active_pack = model_runtime.active_pack
+    model_id = active_pack.llm.id
 
     registry.register_http_tool(
         tool_name="smoke_echo",
@@ -46,7 +52,7 @@ async def register(registry, settings) -> None:
         name="Smoke Echo Agent",
         description="Verifies a real model can invoke a tool from a second capability entry.",
         agent_type="single",
-        model_id=model_id or "deepseek-v4-pro",
+        model_id=model_id,
         system_prompt=(
             "You are the Aituge multi-capability smoke-test agent. You must call smoke_echo "
             "exactly once with the user's complete message unchanged. After the tool succeeds, "

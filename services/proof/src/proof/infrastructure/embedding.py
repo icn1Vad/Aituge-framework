@@ -9,6 +9,7 @@ import httpx
 
 from proof.config import Settings
 from proof.errors import ProofError
+from proof.model_runtime import EmbeddingRuntimeConfig, build_proof_model_runtime
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,18 +23,24 @@ class EmbeddingProfile:
 class OpenAICompatibleEmbeddingClient:
     batch_size = 10
 
-    def __init__(self, settings: Settings) -> None:
-        if not settings.embedding_configured:
+    def __init__(self, config: EmbeddingRuntimeConfig | Settings) -> None:
+        if isinstance(config, Settings):
+            config = build_proof_model_runtime(config).embedding
+        if config is None:
             raise ProofError(
                 "embedding_unconfigured",
                 "Embedding API is not configured.",
                 status_code=503,
             )
-        self.base_url = settings.embedding_base_url.rstrip("/")
-        self.api_key = settings.embedding_api_key
-        self.model = settings.embedding_model
-        self.dimensions = int(settings.embedding_dimensions or 0)
-        self.timeout = settings.embedding_timeout_seconds
+        self.registration_id = config.id
+        self.mode = config.mode
+        self.base_url = config.base_url.rstrip("/")
+        self.api_key = config.api_key
+        self.model = config.model
+        self.dimensions = config.dimensions
+        self.timeout = config.timeout_seconds
+        # Preserve the established profile algorithm so moving the same model
+        # into the registry does not invalidate existing pgvector rows.
         profile_source = f"openai_compatible|{self.base_url}|{self.model}|{self.dimensions}"
         self.profile = EmbeddingProfile(
             id=hashlib.sha256(profile_source.encode("utf-8")).hexdigest()[:24],
@@ -61,7 +68,11 @@ class OpenAICompatibleEmbeddingClient:
             try:
                 response = httpx.post(
                     endpoint,
-                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    headers=(
+                        {"Authorization": f"Bearer {self.api_key}"}
+                        if self.api_key
+                        else {}
+                    ),
                     json=payload,
                     timeout=self.timeout,
                 )

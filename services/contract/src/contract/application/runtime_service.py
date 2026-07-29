@@ -28,6 +28,7 @@ from contract.application.idempotency import build_request_fingerprint, sha256_b
 from contract.application.ports import InternalRequestContext, UploadedContract
 from contract.config import Settings
 from contract.errors import ContractError
+from contract.model_pack import resolve_model_pack_id
 from contract.persistence.models import ReviewCreate
 from contract.persistence.postgres.callback_repository import FrameworkCallbackRepository
 from contract.persistence.postgres.repository import ContractRepository
@@ -82,6 +83,9 @@ class RuntimeContractReviewService:
                 status_code=400,
                 user_action_required=True,
             )
+        request = request.model_copy(
+            update={"model_pack_id": resolve_model_pack_id(request.model_pack_id)}
+        )
         file_sha256 = sha256_bytes(upload.content)
         fingerprint, normalized = build_request_fingerprint(
             tenant_id=context.tenant_id,
@@ -114,6 +118,7 @@ class RuntimeContractReviewService:
                     user_id=context.user_id,
                     business_task_id=request.business_task_id,
                     contract_version_id=request.contract_version_id,
+                    model_pack_id=request.model_pack_id or "",
                     document_id=processed.document_id,
                     idempotency_key=idempotency_key,
                     request_id=context.request_id,
@@ -362,6 +367,7 @@ class RuntimeContractReviewService:
             user_id=reservation.user_id,
             business_task_id=reservation.business_task_id,
             contract_version_id=reservation.contract_version_id,
+            model_pack_id=reservation.model_pack_id,
             document_id=reservation.document_id,
             perspective=reservation.perspective,
             our_party_name=reservation.our_party_name,
@@ -433,6 +439,7 @@ class RuntimeContractReviewService:
             return CreateReviewData(
                 review_id=state["id"],
                 document_id=state["document_id"],
+                model_pack_id=state["model_pack_id"],
                 status=ReviewStatus.RUNNING,
                 current_stage=state["current_stage"] or ReviewStage.PARSING,
                 framework_attempt_no=attempt["attempt_no"],
@@ -443,6 +450,7 @@ class RuntimeContractReviewService:
         return CreateReviewData(
             review_id=state["id"],
             document_id=state["document_id"],
+            model_pack_id=state["model_pack_id"],
             status=ReviewStatus.CREATED,
             current_stage=None,
             framework_attempt_no=None,
@@ -467,6 +475,7 @@ class RuntimeContractReviewService:
             review_id=state["id"],
             business_task_id=state["business_task_id"],
             contract_version_id=state["contract_version_id"],
+            model_pack_id=state["model_pack_id"],
             status=state["status"],
             current_stage=state["current_stage"],
             document_id=state["document_id"],

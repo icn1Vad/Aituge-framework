@@ -1,0 +1,5 @@
+id: local-rerank
+display_name: Local Reranker
+llm: deepseek-v4-pro
+embedding: policy-embedding-v4
+reranker: local-qwen3-rerank

@@ -920,7 +920,6 @@ async def test_window_extractor_still_rejects_missing_predicate_for_non_value_cl
 
 
 def test_window_extractor_test_api_uses_configured_model(monkeypatch) -> None:
-    monkeypatch.setenv("CONTRACT_MODEL_ID", "contract-model")
     monkeypatch.setenv("CONTRACT_TEST_TENANT_ID", "tenant-001")
     engine = FakeEngine()
 
@@ -936,7 +935,7 @@ def test_window_extractor_test_api_uses_configured_model(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["result"]["window_id"] == "window-001"
     assert engine.calls[0]["tenant_id"] == "tenant-001"
-    assert engine.calls[0]["model_id"] == "contract-model"
+    assert engine.calls[0]["model_id"] == "deepseek-v4-pro"
     assert response.json()["party_context"]["our_party"] == "甲方测试单位"
     assert response.json()["party_context"]["counterparty"] == "乙方测试单位"
     sent_window = engine.calls[0]["window"]
@@ -947,7 +946,6 @@ def test_window_extractor_test_api_uses_configured_model(monkeypatch) -> None:
 
 
 def test_window_pipeline_test_api_returns_typed_merged_result(monkeypatch) -> None:
-    monkeypatch.setenv("CONTRACT_MODEL_ID", "contract-model")
     monkeypatch.setenv("CONTRACT_TEST_TENANT_ID", "tenant-001")
     engine = FakeEngine()
     text = "合同标题"
@@ -1001,7 +999,6 @@ def test_window_pipeline_test_api_returns_typed_merged_result(monkeypatch) -> No
 
 
 def test_window_extractor_test_api_rejects_identical_parties(monkeypatch) -> None:
-    monkeypatch.setenv("CONTRACT_MODEL_ID", "contract-model")
     context = _party_context()
     context["party_b_name"] = context["party_a_name"]
 

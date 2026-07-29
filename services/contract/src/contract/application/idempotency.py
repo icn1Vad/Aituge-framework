@@ -6,6 +6,7 @@ import unicodedata
 from typing import Any
 
 from contract.api.models import CreateReviewRequest
+from contract.model_pack import resolve_model_pack_id
 
 
 UNICODE_WHITE_SPACE = frozenset(
@@ -74,6 +75,7 @@ def build_request_fingerprint(
         "user_id": user_id,
         "business_task_id": request.business_task_id,
         "contract_version_id": request.contract_version_id,
+        "model_pack_id": resolve_model_pack_id(request.model_pack_id),
         "file_sha256": file_sha256,
         "perspective": request.perspective.value,
         "our_party_name": normalize_party_name(request.our_party_name),

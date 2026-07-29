@@ -8,6 +8,7 @@ from typing import Literal
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from aituge_model_config import ModelRuntimeProvider
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -135,17 +136,10 @@ def create_app(engine: WindowExtractionEngine | None = None) -> FastAPI:
     @app.post("/api/extract-window", response_model=ExtractionTestResponse)
     async def extract_window(payload: ExtractionTestRequest):
         tenant_id = payload.tenant_id or os.getenv("CONTRACT_TEST_TENANT_ID", "default")
-        model_id = payload.model_id or os.getenv("CONTRACT_MODEL_ID", "")
-        if not model_id:
-            return JSONResponse(
-                status_code=422,
-                content={
-                    "error": {
-                        "code": "MODEL_ID_REQUIRED",
-                        "message": "CONTRACT_MODEL_ID is not configured",
-                    }
-                },
-            )
+        model_id = (
+            payload.model_id
+            or ModelRuntimeProvider.from_environment().active_pack.llm.id
+        )
         started = time.perf_counter()
         party_context = payload.party_context.resolve() if payload.party_context else None
         try:
@@ -168,17 +162,10 @@ def create_app(engine: WindowExtractionEngine | None = None) -> FastAPI:
     @app.post("/api/extract-all", response_model=PipelineTestResponse)
     async def extract_all(payload: PipelineTestRequest):
         tenant_id = payload.tenant_id or os.getenv("CONTRACT_TEST_TENANT_ID", "default")
-        model_id = payload.model_id or os.getenv("CONTRACT_MODEL_ID", "")
-        if not model_id:
-            return JSONResponse(
-                status_code=422,
-                content={
-                    "error": {
-                        "code": "MODEL_ID_REQUIRED",
-                        "message": "CONTRACT_MODEL_ID is not configured",
-                    }
-                },
-            )
+        model_id = (
+            payload.model_id
+            or ModelRuntimeProvider.from_environment().active_pack.llm.id
+        )
         party_context = payload.party_context.resolve() if payload.party_context else None
         pipeline_request = payload.pipeline.model_copy(
             update={

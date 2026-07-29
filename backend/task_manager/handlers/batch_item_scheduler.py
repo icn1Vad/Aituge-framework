@@ -336,7 +336,11 @@ async def _run_scheduler_for_item(
         extra_tools=definition.default_tools,
         extra_datasets=definition.default_datasets,
     )
-    service = SchedulingService(options)
+    service = SchedulingService(
+        options,
+        tenant_id=task.tenant_id,
+        model_pack_id=task.model_pack_id,
+    )
     final_content = ""
     final_usage = None
     buffered_delta: list[str] = []

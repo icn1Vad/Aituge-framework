@@ -13,6 +13,7 @@ from typing import Annotated
 
 from fastapi import Body, Depends, FastAPI, Header, Query, Request
 from fastapi.responses import JSONResponse
+from aituge_model_config import ModelRuntimeProvider
 
 from services.contract.capabilities.revision_drafts import (
     RevisionDraftError,
@@ -152,8 +153,8 @@ def _default_service() -> RevisionDraftService | None:
     result_path = os.getenv("CONTRACT_REVISION_RESULT_FILE", "").strip()
     ir_path = os.getenv("CONTRACT_REVISION_IR_FILE", "").strip()
     generation_id = os.getenv("CONTRACT_REVISION_GENERATION_ID", "").strip()
-    model_id = os.getenv("CONTRACT_MODEL_ID", "").strip()
-    if not all((result_path, ir_path, generation_id, model_id)):
+    model_id = ModelRuntimeProvider.from_environment().active_pack.llm.id
+    if not all((result_path, ir_path, generation_id)):
         return None
     return RevisionDraftService(
         source_provider=JsonRevisionSourceProvider(

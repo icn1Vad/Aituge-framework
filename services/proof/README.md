@@ -90,9 +90,8 @@ Scheduler 和 SingleAgent，仅注入 `proof_search`、`proof_sql`、`code_inter
 PROOF_SEMANTIC_AUDIT_ENABLED=true
 PROOF_FRAMEWORK_BASE_URL=http://127.0.0.1:8894
 PROOF_FRAMEWORK_USER_ID=proof-service
-PROOF_FRAMEWORK_TENANT_ID=__default_tenant_id__
-PROOF_AUDIT_MODEL_ID=deepseek-v4-pro
-PROOF_CONFLICT_MODEL_ID=deepseek-v4-pro
+# 所有 /v1 请求必须由 Java/内部调用方传 X-Tenant-ID。
+# 审校 LLM 由当前 MODEL_PACK_ID 提供。
 PROOF_AUDIT_BATCH_MAX_CHARS=6000
 PROOF_AUDIT_BATCH_MAX_CHUNKS=8
 PROOF_AUDIT_MAX_CHUNK_CHARS=12000
@@ -105,7 +104,8 @@ PROOF_AUDIT_MAX_CONCURRENCY=4
 提示而不是自动阻断规则。页面内可取得同时包含语义歧义、可执行性缺口和跨制度冲突规则的
 `采购管理制度（试行）.txt` 联合审校实验制度。
 
-配置 `PROOF_DATASET_ROOT` 后，`http://127.0.0.1:18100/dataset` 提供数据集入库检查页，
+配置 `PROOF_DATASET_ROOT` 后，每个租户的数据集位于
+`PROOF_DATASET_ROOT/tenants/{tenant_hash}`。`http://127.0.0.1:18100/dataset` 提供数据集入库检查页，
 可按数据组、层级、建议分类、结构模板和入库状态横向查看每份制度，并展开完整 chunk、
 识别区域、结构覆盖率和异常提示。
 数据集扫描是只读的；批量入库需要显式运行：
@@ -121,6 +121,26 @@ uv run python -m proof.tools.import_dataset
 uv run python -m proof.tools.reprocess_structures
 ```
 
+## 模型能力包
+
+LLM、Embedding 和 Reranker 的公共定义位于仓库根目录
+`aituge_model_config/`。当前提供两个包：
+
+- `api-rerank`：DeepSeek API、DashScope Embedding、DashScope Reranker；
+- `local-rerank`：与 API 包共用 DeepSeek 和 Embedding，只把 Reranker
+  切换为 `qwen-reranker-service` 本地兼容接口。
+
+通过 `PROOF_MODEL_PACK_ID` 或全局 `MODEL_PACK_ID` 选择。两个包引用同一个
+Embedding 注册，因此切换 Reranker 不改变 `embedding_profile_id`，也不需要重建向量。
+本地 Reranker 只完成了注册和配置校验，需在服务器具备相应模型服务后再做连通测试。
+
+模型包只保存 `credential_ref`。正式部署默认从
+`aituge_model_config/secrets/` 读取同名密钥文件；如有需要，可用
+`MODEL_SECRET_DIR` 指向其他目录。启用模型包后，密钥、Embedding 和 Reranker
+的地址、模型名称及维度均以共享配置目录为准。旧的
+`PROOF_EMBEDDING_API_KEY`/`PROOF_RERANK_API_KEY` 及模型元数据只在未启用
+模型包的兼容模式下生效。
+
 全量结构验收会重新解析每个数据集文件，检查边界、source block 顺序与重叠、覆盖率，
 并把逐条 chunk hash 与 PostgreSQL 对比。任何结构或数据库不一致都会以非零状态退出：
 
@@ -131,10 +151,14 @@ uv run python -m proof.tools.validate_dataset_chunks \
 
 ## API
 
+除 `/health` 和静态说明页面外，所有 `/v1/**` 请求都必须携带 Java 从登录态确定的
+`X-Tenant-ID`。Proof 没有默认租户，也不接受 AI 工具参数中的租户 ID。
+
 - `POST /v1/policies`：multipart 上传并同步解析、切分、入库；
 - `GET /v1/policies`：按层级和分类过滤；
 - `GET /v1/policies/{policy_id}`：制度和文档状态；
 - `GET /v1/policies/{policy_id}/clauses`：按原文顺序查看条款；
+- `POST /v1/policies/{policy_id}/similarity-decision`：选择作为下一固定版本或独立制度；
 - `GET /v1/policies/{policy_id}/audit-status`：查询父审校、三个 Stage 状态及统一统计；
 - `GET /v1/policies/{policy_id}/policy-summary`：返回制度初步分析；
 - `GET /v1/policies/{policy_id}/semantic-findings`：返回结构、语义与可执行性结果；
@@ -158,6 +182,9 @@ uv run python -m proof.tools.validate_dataset_chunks \
 设计、实测和 Java 批量粒度见 `docs/conflict-agent-design.md`。
 
 同一文件以 SHA-256 去重，重复上传返回既有 policy/document，并带 `reused: true`。
+正文相似度只在当前租户的有效制度中计算。命中时草稿停在
+`decision_required`，不创建 Framework Run 和正式向量；选择新版本后由系统按
+`v1.0.N` 分配下一序号。新版本确认时先生成正式向量，成功后再原子失效旧版本并退役其向量。
 基础文件校验通过后，每次上传都生成独立的 `ingestion_run_id`；运行记录只保存
 阶段、版本、计数和安全化错误，不保存制度正文或完整异常堆栈。
 

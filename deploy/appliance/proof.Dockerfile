@@ -7,6 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+COPY aituge_model_config/ /aituge_model_config/
 COPY services/proof/pyproject.toml services/proof/README.md ./
 COPY services/proof/src/ ./src/
 COPY services/proof/examples/ ./examples/

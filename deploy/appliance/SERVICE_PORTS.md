@@ -65,30 +65,35 @@
 ```bash
 FRAMEWORK_URL=http://127.0.0.1:8894
 PROOF_URL=http://127.0.0.1:18100
+TENANT_ID=1
 
 curl --fail --silent --show-error "$FRAMEWORK_URL/openapi.json" >/dev/null
 curl --fail --silent --show-error "$PROOF_URL/health"
 curl --fail --silent --show-error "$FRAMEWORK_URL/registry/capabilities"
 curl --fail --silent --show-error "$FRAMEWORK_URL/single-agent/skill-packages"
-curl --fail --silent --show-error "$PROOF_URL/v1/files"
-curl --fail --silent --show-error "$PROOF_URL/v1/policies?limit=1"
+curl --fail --silent --show-error -H "X-Tenant-ID: $TENANT_ID" "$PROOF_URL/v1/files"
+curl --fail --silent --show-error -H "X-Tenant-ID: $TENANT_ID" "$PROOF_URL/v1/policies?limit=1"
 ```
 
 仅当 `PROOF_DATASET_ROOT` 已配置时才执行数据集目录审计；未配置时该接口按契约返回 `503 dataset_unconfigured`，不代表应用健康检查失败。
 
 ```bash
-curl --fail --silent --show-error "$PROOF_URL/v1/dataset/audit"
+curl --fail --silent --show-error \
+  -H "X-Tenant-ID: $TENANT_ID" \
+  "$PROOF_URL/v1/dataset/audit"
 ```
 
 中文模糊 SQL 回归：
 
 ```bash
 curl --fail --silent --show-error \
+  -H "X-Tenant-ID: $TENANT_ID" \
   -H 'Content-Type: application/json' \
   -d '{"question":"包含金额的条款数量","sql":"SELECT count(*) AS count FROM policy_clause_corpus WHERE clause_text LIKE '\''%金额%'\''"}' \
   "$PROOF_URL/v1/query/sql"
 
 curl --fail --silent --show-error \
+  -H "X-Tenant-ID: $TENANT_ID" \
   -H 'Content-Type: application/json' \
   -d '{"question":"包含审批的条款数量","sql":"SELECT count(*) AS count FROM policy_clause_corpus WHERE clause_text ILIKE '\''%审批%'\''"}' \
   "$PROOF_URL/v1/query/sql"
@@ -98,6 +103,7 @@ curl --fail --silent --show-error \
 
 ```bash
 curl --fail --silent --show-error \
+  -H "X-Tenant-ID: $TENANT_ID" \
   -F 'file=@services/proof/examples/采购管理制度（试行）.txt;type=text/plain' \
   -F 'title=候选版本上线验收' \
   -F 'version=smoke-test' \

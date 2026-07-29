@@ -3,12 +3,12 @@ from typing import Optional, List
 from sqlmodel import select, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from aituge_model_config import load_model_registry
 from db.models.llm import LlmModelCreate, LlmModelEntity
 from common.encrypt_utils import encrypt_key
 from common.chat.response_model import PagedResult
-from common.llm.models import model_provider_map, llm_url_to_model_provider_id_map
+from common.system_constants import DEFAULT_TENANT_ID
 from loguru import logger
-
 
 
 class LlmService:
@@ -38,8 +38,16 @@ class LlmService:
 
     async def get_multimodal_llm(self, tenant_id: str) -> Optional[LlmModelEntity]:
         """
-        Get the multimodal LLM entity.
+        Get the tenant override, falling back to the shared default model.
         """
+        model = await self._get_multimodal_llm_for_tenant(tenant_id)
+        if model is not None or tenant_id == DEFAULT_TENANT_ID:
+            return model
+        return await self._get_multimodal_llm_for_tenant(DEFAULT_TENANT_ID)
+
+    async def _get_multimodal_llm_for_tenant(
+        self, tenant_id: str
+    ) -> Optional[LlmModelEntity]:
         statement = (
             select(LlmModelEntity)
             .where(
@@ -57,7 +65,6 @@ class LlmService:
         result = (await self.session.exec(statement)).first()
         return result
 
-
     async def get_llm_by_model_id(self, model_id: str, tenant_id: str) -> Optional[LlmModelEntity]:
         """
         Get a single LLM entity by model_id.
@@ -68,8 +75,19 @@ class LlmService:
         Returns:
             LlmModelEntity if found, None otherwise
         """
+        model = await self._get_llm_by_model_id_for_tenant(model_id, tenant_id)
+        if model is not None or tenant_id == DEFAULT_TENANT_ID:
+            return model
+        return await self._get_llm_by_model_id_for_tenant(
+            model_id, DEFAULT_TENANT_ID
+        )
+
+    async def _get_llm_by_model_id_for_tenant(
+        self, model_id: str, tenant_id: str
+    ) -> Optional[LlmModelEntity]:
         statement = select(LlmModelEntity).where(
-            LlmModelEntity.model_id == model_id, LlmModelEntity.tenant_id == tenant_id
+            LlmModelEntity.model_id == model_id,
+            LlmModelEntity.tenant_id == tenant_id,
         )
         result = await self.session.exec(statement)
         return result.first()
@@ -148,9 +166,10 @@ class LlmService:
         statement = base_query.distinct()
         result = await self.session.exec(statement)
         providers = [p for p in result.all() if p]
-        # Add default if not present
-        if not providers or "openai_like" not in providers:
-            providers.append("openai_like")
+        providers.extend(
+            registration.provider
+            for registration in load_model_registry().llms.values()
+        )
         return sorted(set(providers))
 
     async def create_llm(self, llm_data: LlmModelCreate, tenant_id: str) -> LlmModelEntity:
@@ -167,20 +186,29 @@ class LlmService:
         Raises:
             ValueError: If model_id already exists (IntegrityError converted)
         """
-        # Encrypt API key
+        registration = load_model_registry().llms.get(llm_data.model_id)
+        if registration is None:
+            raise ValueError(
+                f"LLM creation failed: model_id '{llm_data.model_id}' is not registered."
+            )
         encrypted_api_key = encrypt_key(llm_data.api_key) if llm_data.api_key else None
-        if llm_data.model_name is None:
-            llm_data.model_name = llm_data.model # model will be deprecated, keep consistency with embedding rerank
-        if llm_data.provider_name is None:
-            llm_data.provider_name = llm_url_to_model_provider_id_map.get(llm_data.base_url, "openai_like")
-        if llm_data.provider_name not in model_provider_map:
-            raise ValueError(f"LLM creation failed: 'provider_name {llm_data.provider_name} not supported'.")
 
-        llm_data.source = llm_data.provider_name
-
-        # Create entity
         llm = LlmModelEntity.model_validate(
-            llm_data, update={"encrypted_api_key": encrypted_api_key, "tenant_id": tenant_id}
+            llm_data,
+            update={
+                "tenant_id": tenant_id,
+                "base_url": registration.base_url,
+                "model": registration.model,
+                "model_name": registration.model,
+                "context_window": registration.context_window,
+                "temperature": registration.temperature,
+                "provider_name": registration.provider,
+                "source": f"model_config:{registration.id}",
+                "vision_support": registration.vision_support,
+                "max_tokens": registration.max_tokens,
+                "enable_thinking": registration.enable_thinking,
+                "encrypted_api_key": encrypted_api_key,
+            },
         )
 
         self.session.add(llm)
@@ -227,30 +255,27 @@ class LlmService:
 
         logger.info(f"Updating LLM {llm_id} with data: {update_data}")
 
-        # Update fields
-        if update_data.model_id is not None:
-            llm.model_id = update_data.model_id
-        if update_data.base_url is not None:
-            llm.base_url = update_data.base_url
-        if update_data.context_window is not None:
-            llm.context_window = update_data.context_window
-        if update_data.model is not None:
-            llm.model = update_data.model
-            llm.model_name = update_data.model # model will be deprecated, keep consistency with embedding rerank
-        if update_data.model_name is not None:
-            llm.model_name = update_data.model_name
-        if update_data.temperature is not None:
-            llm.temperature = update_data.temperature
+        model_id = update_data.model_id or llm.model_id
+        registration = load_model_registry().llms.get(model_id)
+        if registration is None:
+            raise ValueError(
+                f"LLM update failed: model_id '{model_id}' is not registered."
+            )
+        llm.model_id = registration.id
+        llm.base_url = registration.base_url
+        llm.model = registration.model
+        llm.model_name = registration.model
+        llm.context_window = registration.context_window
+        llm.temperature = registration.temperature
+        llm.provider_name = registration.provider
+        llm.source = f"model_config:{registration.id}"
+        llm.vision_support = registration.vision_support
+        llm.enable_thinking = registration.enable_thinking
+        llm.max_tokens = registration.max_tokens
         if update_data.api_key is not None:
             llm.encrypted_api_key = encrypt_key(update_data.api_key)
         if update_data.enabled is not None:
             llm.enabled = update_data.enabled
-        if update_data.vision_support is not None:
-            llm.vision_support = update_data.vision_support
-        if update_data.enable_thinking is not None:
-            llm.enable_thinking = update_data.enable_thinking
-        if update_data.max_tokens is not None:
-            llm.max_tokens = update_data.max_tokens
 
         self.session.add(llm)
 
@@ -309,12 +334,6 @@ class LlmService:
             LlmModelEntity if found, None otherwise
         """
         logger.info(f"Getting LLM model {model_id} by provider {provider_name} and tenant {tenant_id}.")
-        statement = select(LlmModelEntity).where(
-            LlmModelEntity.model_id == model_id,
-            LlmModelEntity.tenant_id == tenant_id
-        )
-        # if provider_name:
-        #     statement = statement.where(LlmModelEntity.provider_name == provider_name)
-        # 为了兼容旧数据，不指定 provider_name 查询。直接通过model_id查询， 因为model_id有唯一性
-        result = await self.session.exec(statement)
-        return result.first()
+        # Preserve the legacy provider-agnostic lookup while allowing every
+        # tenant to reuse the shared infrastructure model configuration.
+        return await self.get_llm_by_model_id(model_id, tenant_id)

@@ -95,33 +95,14 @@ SYNTHESIZE_PROMPT = """
 """
 
 DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE = """
-### Task
-Generate a concise, 3-5 word title followed by an appropriate emoji to summarize the provided chat history.
+你负责根据用户发起会话时的第一个问题生成会话标题。
 
-### Guidelines
-1. **Language Adaptation**:
-   - Detect the primary language of the conversation. The title must be in that same language.
-   - If the conversation is multilingual or the primary language is ambiguous, default to **English**.
-2. **Content**:
-   - The title must accurately reflect the main topic.
-   - Accuracy and clarity are prioritized over creative flair.
-3. **Format**:
-   - Length: 1 emoji + 3 to 5 words .
-   - Do NOT use quotation marks inside the title string.
-   - Do NOT use special Markdown formatting.
-4. **Strict Output Control**:
-   - The response must consist **ONLY** of a single raw JSON object.
-   - **NO** Markdown code blocks (e.g., do not wrap in ```json).
-   - **NO** introductory text, explanations, or filler words.
-   - Any text outside the JSON object will cause a system failure.
+要求：
+1. 标题必须准确概括问题主题，并与问题使用相同语言。
+2. 标题最多 10 个 Unicode 字符。
+3. 不得包含 emoji、Markdown、换行、引号或解释。
+4. 严格只返回一个 JSON 对象，不得使用代码块或添加前后缀。
 
-### Output Format
-{{"title": "[emoji] + Title String"}}
-
-### Examples
-- {{"title": "📉 Stock Market Trends"}}
-- {{"title": "🎵 Evolution of Music Streaming"}}
-
-### Chat History
-{chat_history}
+返回格式：
+{{"title":"会话标题"}}
 """

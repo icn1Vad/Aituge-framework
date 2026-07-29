@@ -8,25 +8,37 @@ import httpx
 from proof.application.retrieval import RerankScore
 from proof.config import Settings
 from proof.errors import ProofError
+from proof.model_runtime import RerankerRuntimeConfig, build_proof_model_runtime
 
 
-class DashScopePolicyReranker:
-    """DashScope's OpenAI-compatible Qwen rerank endpoint."""
+class OpenAICompatiblePolicyReranker:
+    """Client for API or local OpenAI-compatible rerank endpoints."""
 
-    def __init__(self, settings: Settings) -> None:
-        if not settings.reranker_configured:
+    def __init__(
+        self,
+        config: RerankerRuntimeConfig | Settings,
+        *,
+        instruction: str | None = None,
+    ) -> None:
+        default_instruction = ""
+        if isinstance(config, Settings):
+            default_instruction = config.rerank_instruction
+            config = build_proof_model_runtime(config).reranker
+        if config is None:
             raise ProofError(
                 "reranker_unconfigured",
                 "Reranker API is not configured.",
                 status_code=503,
             )
-        self.endpoint = settings.rerank_base_url.rstrip("/")
+        self.registration_id = config.id
+        self.mode = config.mode
+        self.endpoint = config.base_url.rstrip("/")
         if not self.endpoint.endswith("/reranks"):
             self.endpoint += "/reranks"
-        self.api_key = settings.resolved_rerank_api_key
-        self.model = settings.rerank_model.strip()
-        self.timeout = settings.rerank_timeout_seconds
-        self.instruction = settings.rerank_instruction
+        self.api_key = config.api_key
+        self.model = config.model.strip()
+        self.timeout = config.timeout_seconds
+        self.instruction = (instruction or default_instruction).strip()
 
     def rerank(
         self,
@@ -73,7 +85,11 @@ class DashScopePolicyReranker:
             try:
                 response = httpx.post(
                     self.endpoint,
-                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    headers=(
+                        {"Authorization": f"Bearer {self.api_key}"}
+                        if self.api_key
+                        else {}
+                    ),
                     json=payload,
                     timeout=self.timeout,
                 )
@@ -122,3 +138,7 @@ def _rerank_document(candidate: dict[str, Any]) -> str:
         )
         if value
     )
+
+
+# Backward-compatible import for existing integrations and tests.
+DashScopePolicyReranker = OpenAICompatiblePolicyReranker

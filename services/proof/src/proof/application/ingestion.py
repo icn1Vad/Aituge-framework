@@ -7,15 +7,29 @@ import uuid
 from pathlib import Path
 from typing import Any, Protocol
 
-from proof.application.structure import STRUCTURE_ENGINE_VERSION, extract_policy_structure
 from proof.application.conflict_retrieval.title_normalizer import normalize_policy_title
+from proof.application.similarity import (
+    DEFAULT_VERSION,
+    SimilarityThresholds,
+    normalize_similarity_text,
+    normalized_text_hash,
+    similarity_report,
+)
+from proof.application.structure import (
+    STRUCTURE_ENGINE_VERSION,
+    extract_policy_structure,
+)
 from proof.config import Settings
 from proof.domain import DocumentBlock, ParsedDocument, StructureExtractionResult
 from proof.domain.policy_grouping import infer_policy_category
 from proof.errors import ProofError
-from proof.infrastructure.parsers import PARSER_VERSION, SUPPORTED_EXTENSIONS, parse_document_bytes
+from proof.infrastructure.parsers import (
+    PARSER_VERSION,
+    SUPPORTED_EXTENSIONS,
+    parse_document_bytes,
+)
 from proof.infrastructure.postgres.repository import ProofRepository
-
+from proof.tenant import tenant_storage_key
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +84,7 @@ class PolicyIngestionPipeline:
         content: bytes,
         filename: str,
         title: str = "",
-        version: str = "1.0",
+        version: str = DEFAULT_VERSION,
         level_code: str | None = None,
         category_code: str = "auto",
     ) -> dict[str, Any]:
@@ -140,7 +154,13 @@ class PolicyIngestionPipeline:
 
             policy_id = uuid.uuid4().hex
             document_id = uuid.uuid4().hex
-            relative_path = Path("files") / content_hash[:2] / f"{content_hash}{suffix}"
+            relative_path = (
+                Path("tenants")
+                / tenant_storage_key()
+                / "files"
+                / content_hash[:2]
+                / f"{content_hash}{suffix}"
+            )
             target = self.storage_root / relative_path
 
             stage = "store"
@@ -160,15 +180,51 @@ class PolicyIngestionPipeline:
                 if requested_category == "auto"
                 else requested_category
             )
+            document_text = "\n".join(unit.text for unit in units)
+            normalized_document = normalize_similarity_text(document_text)
+            candidate_loader = getattr(self.repository, "list_similarity_candidates", None)
+            candidates = (
+                candidate_loader(
+                    normalized_title=normalized_title,
+                    category_code=resolved_category,
+                    normalized_text_length=len(normalized_document),
+                    title_threshold=self.settings.similarity_title_threshold,
+                )
+                if candidate_loader is not None
+                else []
+            )
+            similarity = similarity_report(
+                title=policy_title,
+                normalized_title=normalized_title,
+                category_code=resolved_category,
+                text=document_text,
+                clauses=[unit.text for unit in units],
+                candidates=candidates,
+                thresholds=SimilarityThresholds(
+                    title=self.settings.similarity_title_threshold,
+                    edit=self.settings.similarity_edit_threshold,
+                    jaccard=self.settings.similarity_jaccard_threshold,
+                    containment=self.settings.similarity_containment_threshold,
+                    length_ratio=self.settings.similarity_length_ratio_threshold,
+                    clause_coverage=self.settings.similarity_clause_coverage_threshold,
+                ),
+                limit=self.settings.similarity_candidate_limit,
+            )
             payload = self.repository.ingest(
                 policy_id=policy_id,
                 document_id=document_id,
                 title=policy_title,
                 normalized_title=normalized_title,
-                version=(version or "1.0").strip(),
+                version=DEFAULT_VERSION,
+                version_seq=0,
+                family_id=policy_id,
+                similarity_state=similarity["status"],
+                similarity_report=similarity,
                 level_code=(level_code or "").strip() or None,
                 category_code=resolved_category,
                 content_hash=content_hash,
+                normalized_text_hash=normalized_text_hash(document_text),
+                normalized_text_length=len(normalized_document),
                 original_name=original_name,
                 file_type=parsed.file_type,
                 storage_path=str(relative_path),
@@ -185,7 +241,12 @@ class PolicyIngestionPipeline:
                 ingestion_run_id=run_id,
                 ingestion_warning_count=total_warning_count,
             )
-            return {**payload, "reused": False, "ingestion_run_id": run_id}
+            return {
+                **payload,
+                "similarity": similarity,
+                "reused": False,
+                "ingestion_run_id": run_id,
+            }
         except ProofError as exc:
             self._remove_created_file(target, created_file)
             self._record_failure(

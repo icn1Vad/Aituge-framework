@@ -28,7 +28,7 @@ Contract Python 持久化 Block
   -> SectionUnitBuilder
   -> SectionWindowBuilder
   -> Window Extractor（最多并发 10）
-  -> Framework LlmRuntime + 当前 CONTRACT_MODEL_ID
+  -> Framework LlmRuntime + 当前 MODEL_PACK_ID 中的 LLM
   -> Framework 完整 JSON 解析 + 严格 Pydantic Schema
   -> LangExtract 1.6.0 精确 Source Alignment
   -> ContractIrMapper 生成技术字段

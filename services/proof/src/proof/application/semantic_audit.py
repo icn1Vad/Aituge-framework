@@ -11,6 +11,8 @@ import httpx
 from proof.application.short_refs import short_ref
 from proof.config import Settings
 from proof.errors import ProofError
+from proof.model_pack import MODEL_PACK_ID_HEADER, current_model_pack_id
+from proof.tenant import current_tenant_id
 
 
 logger = logging.getLogger(__name__)
@@ -548,6 +550,7 @@ class PolicyAuditService:
         create_payload = {
             "task_type": "proof.audit.run",
             "title": "Proof policy review",
+            "model_pack_id": current_model_pack_id() or None,
             "input_payload": {
                 "audit_id": run["id"],
                 "document_id": run["document_id"],
@@ -829,10 +832,14 @@ class PolicyAuditService:
                 )
 
     def _headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "X-User-ID": self.settings.framework_user_id,
-            "X-Tenant-ID": self.settings.framework_tenant_id,
+            "X-Tenant-ID": current_tenant_id(),
         }
+        model_pack_id = current_model_pack_id()
+        if model_pack_id:
+            headers[MODEL_PACK_ID_HEADER] = model_pack_id
+        return headers
 
     def _mark_conflict_failed(self, audit_id: str, message: str) -> None:
         handler = getattr(self.repository, "mark_conflict_audit_failed", None)

@@ -2,7 +2,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from task_manager.api import _STREAM_DONE, _run_task_to_queue
+from task_manager.api import _STREAM_DONE, _run_task_to_queue, _should_enqueue_run
 from task_manager.handlers.scheduler_task import TOOL_ARGUMENT_MAX_CHARS, _translate_chunk_event
 from task_manager.schemas import TaskRunRequest
 from task_manager.service import MAX_EVENT_PAYLOAD_CHARS, _bounded_event_payload
@@ -135,3 +135,13 @@ def test_background_run_finishes_without_an_active_consumer():
         assert await queue.get() is _STREAM_DONE
 
     asyncio.run(run())
+
+
+def test_supervised_runtime_enqueues_scheduler_runs_for_the_worker(monkeypatch):
+    monkeypatch.setenv("TASK_EXECUTION_MODE", "worker")
+
+    assert _should_enqueue_run("scheduler") is True
+    assert _should_enqueue_run("pipeline") is True
+
+    monkeypatch.setenv("TASK_EXECUTION_MODE", "inline")
+    assert _should_enqueue_run("scheduler") is False

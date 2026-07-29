@@ -29,8 +29,9 @@ def test_task_memory_versions_are_scoped_by_user_and_injected_as_prompt(tmp_path
         captured_system_prompts: list[str] = []
 
         class FakeLlmRuntime:
-            def __init__(self, tenant_id):
+            def __init__(self, tenant_id, model_pack_id=None):
                 assert tenant_id == DEFAULT_TENANT_ID
+                assert model_pack_id is None
 
             async def complete(
                 self,
@@ -208,8 +209,9 @@ def test_task_type_refresh_is_explicit_and_conversation_aware(tmp_path, monkeypa
         captured = {}
 
         class FakeLlmRuntime:
-            def __init__(self, tenant_id):
+            def __init__(self, tenant_id, model_pack_id=None):
                 assert tenant_id == DEFAULT_TENANT_ID
+                assert model_pack_id == "api-rerank"
 
             async def complete(self, messages, model_id=None, **kwargs):
                 assert model_id is None

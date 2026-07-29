@@ -16,6 +16,7 @@ from contract.api.models import (
 from contract.application.idempotency import build_request_fingerprint, sha256_bytes
 from contract.application.ports import InternalRequestContext, UploadedContract
 from contract.errors import ContractError
+from contract.model_pack import resolve_model_pack_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +27,7 @@ class MockReviewRecord:
     user_id: str
     business_task_id: str
     contract_version_id: str
+    model_pack_id: str
     idempotency_key: str
     request_fingerprint: str
     file_sha256: str
@@ -60,6 +62,9 @@ class InMemoryContractReviewService:
                 status_code=400,
                 user_action_required=True,
             )
+        request = request.model_copy(
+            update={"model_pack_id": resolve_model_pack_id(request.model_pack_id)}
+        )
         file_sha256 = sha256_bytes(upload.content)
         fingerprint, _ = build_request_fingerprint(
             tenant_id=context.tenant_id,
@@ -95,6 +100,7 @@ class InMemoryContractReviewService:
                 user_id=context.user_id,
                 business_task_id=request.business_task_id,
                 contract_version_id=request.contract_version_id,
+                model_pack_id=request.model_pack_id or "",
                 idempotency_key=context.idempotency_key,
                 request_fingerprint=fingerprint,
                 file_sha256=file_sha256,
@@ -114,6 +120,7 @@ class InMemoryContractReviewService:
                 review_id=record.review_id,
                 business_task_id=record.business_task_id,
                 contract_version_id=record.contract_version_id,
+                model_pack_id=record.model_pack_id,
                 status=record.status,
                 current_stage=None,
                 document_id=record.document_id,
@@ -182,6 +189,7 @@ class InMemoryContractReviewService:
         return CreateReviewData(
             review_id=record.review_id,
             document_id=record.document_id,
+            model_pack_id=record.model_pack_id,
             status=ReviewStatus.CREATED,
             current_stage=None,
             framework_task_id=None,

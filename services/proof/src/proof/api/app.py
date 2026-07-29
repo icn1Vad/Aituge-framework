@@ -13,11 +13,23 @@ from proof.api.schemas import (
     PolicySqlRequest,
     RetrievalFetchRequest,
     RetrievalSearchRequest,
+    SimilarityDecisionRequest,
+    InternalPolicyActionRequest,
+    PolicyLifecycleActionRequest,
 )
 from proof.application.service import ProofService
 from proof.config import Settings, get_settings
 from proof.errors import ProofError
-
+from proof.model_pack import (
+    AI_MODE_HEADER,
+    MODEL_PACK_ID_HEADER,
+    current_model_pack_id,
+    model_pack_scope,
+    resolve_ai_mode_model_pack_id,
+    resolve_model_pack_id,
+)
+from proof.model_runtime import build_proof_model_runtime
+from proof.tenant import TENANT_ID_HEADER, normalize_tenant_id, tenant_scope
 
 DATASET_PAGE = Path(__file__).with_name("static") / "dataset.html"
 WORKBENCH_PAGE = Path(__file__).with_name("static") / "workbench.html"
@@ -30,10 +42,83 @@ POLICY_LEVEL_HIERARCHY = (
 POLICY_LEVEL_BY_CODE = {item["code"]: item for item in POLICY_LEVEL_HIERARCHY}
 
 
+def _policy_view(value: dict) -> dict:
+    """Expose one canonical metadata shape at the Java-facing API boundary."""
+
+    policy = dict(value)
+    level_code = policy.pop("level_code", None)
+    level_name = policy.pop("level_name", None)
+    category_code = policy.pop("category_code", None)
+    category_name = policy.pop("category_name", None)
+
+    level = policy.get("level")
+    if not isinstance(level, dict):
+        registered_level = POLICY_LEVEL_BY_CODE.get(str(level_code or ""), {})
+        policy["level"] = (
+            {
+                "code": level_code,
+                "name": level_name or registered_level.get("name"),
+                "sort_rank": registered_level.get("rank"),
+            }
+            if level_code or level_name
+            else None
+        )
+
+    category = policy.get("category")
+    if not isinstance(category, dict):
+        policy["category"] = (
+            {
+                "code": category_code,
+                "name": category_name,
+                "path_name": category_name,
+            }
+            if category_code or category_name
+            else None
+        )
+    return policy
+
+
+def _policy_ingestion_view(value: dict) -> dict:
+    payload = dict(value)
+    policy = payload.get("policy")
+    if isinstance(policy, dict):
+        payload["policy"] = _policy_view(policy)
+    return payload
+
+
 def create_app(settings: Settings | None = None, service: ProofService | None = None) -> FastAPI:
     app = FastAPI(title="Proof Service", version="0.1.0")
     app.state.settings = settings or get_settings()
     app.state.proof_service = service
+    app.state.proof_services = {}
+
+    @app.middleware("http")
+    async def bind_tenant_context(request: Request, call_next):
+        if not request.url.path.startswith("/v1"):
+            return await call_next(request)
+        raw_tenant_id = request.headers.get(TENANT_ID_HEADER)
+        try:
+            tenant_id = normalize_tenant_id(raw_tenant_id)
+            mode_pack_id = resolve_ai_mode_model_pack_id(
+                request.app.state.settings,
+                request.headers.get(AI_MODE_HEADER),
+            )
+            model_pack_id = resolve_model_pack_id(
+                request.app.state.settings,
+                mode_pack_id or request.headers.get(MODEL_PACK_ID_HEADER),
+            )
+        except ProofError as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={
+                    "success": False,
+                    "error": exc.code,
+                    "detail": str(exc),
+                    "details": exc.details,
+                },
+            )
+        with tenant_scope(tenant_id), model_pack_scope(model_pack_id):
+            return await call_next(request)
 
     @app.exception_handler(ProofError)
     async def handle_proof_error(request: Request, exc: ProofError):
@@ -74,7 +159,7 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
         request: Request,
         file: Annotated[UploadFile, File(...)],
         title: Annotated[str, Form()] = "",
-        version: Annotated[str, Form()] = "1.0",
+        version: Annotated[str, Form()] = "v1.0.0",
         level_code: Annotated[str, Form()] = "",
         category_code: Annotated[str, Form()] = "auto",
     ):
@@ -89,7 +174,7 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
             level_code=level_code,
             category_code=category_code,
         )
-        return {"success": True, "data": data}
+        return {"success": True, "data": _policy_ingestion_view(data)}
 
     @app.get("/v1/policies")
     async def list_policies(
@@ -106,11 +191,12 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
             limit=limit,
             offset=offset,
         )
-        return {"success": True, "data": data}
+        return {"success": True, "data": [_policy_view(item) for item in data]}
 
     @app.get("/v1/policies/{policy_id}")
     async def get_policy(policy_id: str, request: Request):
-        return {"success": True, "data": await asyncio.to_thread(_service(request).get_policy, policy_id)}
+        data = await asyncio.to_thread(_service(request).get_policy, policy_id)
+        return {"success": True, "data": _policy_view(data)}
 
     @app.get("/v1/policies/{policy_id}/clauses")
     async def list_clauses(policy_id: str, request: Request, include_text: bool = False):
@@ -152,6 +238,21 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
         data = await asyncio.to_thread(_service(request).get_audit_status, policy_id)
         return {"success": True, "data": data}
 
+    @app.post("/v1/policies/{policy_id}/similarity-decision")
+    async def decide_policy_similarity(
+        policy_id: str,
+        payload: SimilarityDecisionRequest,
+        request: Request,
+    ):
+        data = await asyncio.to_thread(
+            _service(request).decide_policy_similarity,
+            policy_id,
+            decision=payload.decision,
+            candidate_policy_id=payload.candidate_policy_id,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+        )
+        return {"success": True, "data": _policy_ingestion_view(data)}
+
     @app.get("/v1/policies/{policy_id}/policy-summary")
     async def get_policy_summary(policy_id: str, request: Request):
         data = await asyncio.to_thread(_service(request).get_policy_summary, policy_id)
@@ -174,7 +275,25 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
 
     @app.post("/v1/policies/{policy_id}/confirm")
     async def confirm_policy(policy_id: str, request: Request):
-        data = await asyncio.to_thread(_service(request).confirm_policy, policy_id)
+        data = await asyncio.to_thread(
+            _service(request).confirm_policy,
+            policy_id,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+        )
+        return {"success": True, "data": data}
+
+    @app.post("/v1/policies/{policy_id}/actions")
+    async def request_policy_action(
+        policy_id: str,
+        payload: PolicyLifecycleActionRequest,
+        request: Request,
+    ):
+        data = await asyncio.to_thread(
+            _service(request).request_policy_action,
+            policy_id,
+            action=payload.action,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+        )
         return {"success": True, "data": data}
 
     @app.delete("/v1/policies/{policy_id}")
@@ -185,6 +304,19 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
     @app.post("/v1/internal/semantic-audits/result", include_in_schema=False)
     async def semantic_audit_result(request: Request, payload: dict = Body(...)):
         data = await asyncio.to_thread(_service(request).accept_semantic_audit_result, payload)
+        return {"success": True, "data": data}
+
+    @app.post("/v1/internal/policy-actions/apply", include_in_schema=False)
+    async def apply_policy_action(
+        payload: InternalPolicyActionRequest,
+        request: Request,
+    ):
+        data = await asyncio.to_thread(
+            _service(request).apply_policy_action,
+            policy_id=payload.policy_id,
+            action=payload.action,
+            operation_id=payload.operation_id,
+        )
         return {"success": True, "data": data}
 
     @app.post("/v1/internal/conflict-audits/result", include_in_schema=False)
@@ -273,10 +405,22 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
 
 def _service(request: Request) -> ProofService:
     service = request.app.state.proof_service
-    if service is None:
-        service = ProofService(request.app.state.settings)
-        request.app.state.proof_service = service
-    return service
+    if service is not None:
+        return service
+    settings = request.app.state.settings
+    model_pack_id = current_model_pack_id() or resolve_model_pack_id(settings)
+    cache_key = model_pack_id or "__legacy__"
+    cached = request.app.state.proof_services.get(cache_key)
+    if cached is None:
+        cached = ProofService(
+            settings,
+            model_runtime=build_proof_model_runtime(
+                settings,
+                model_pack_id=model_pack_id or None,
+            ),
+        )
+        request.app.state.proof_services[cache_key] = cached
+    return cached
 
 
 def _intra_conflict_agent_view(data: dict) -> dict:

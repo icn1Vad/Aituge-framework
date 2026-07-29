@@ -29,11 +29,13 @@ class ToolManager:
         local_python_work_dir: Path,
         artifact_publisher: ArtifactPublisher | None = None,
         tenant_id: str = DEFAULT_TENANT_ID,
+        model_pack_id: str = "",
         tool_list: ToolList | None = None,
     ) -> None:
         self.local_python_work_dir = local_python_work_dir
         self.artifact_publisher = artifact_publisher
         self.tenant_id = tenant_id
+        self.model_pack_id = model_pack_id
         self.tool_list = tool_list or get_default_tool_list()
 
     async def create_bundle(
@@ -81,6 +83,8 @@ class ToolManager:
             ToolProviderConfig(
                 tool_name="code_interpreter",
                 provider="local_python",
+                tenant_id=self.tenant_id,
+                model_pack_id=self.model_pack_id,
                 config={
                     "timeout_seconds": 20,
                     "max_output_chars": 50_000,
@@ -129,7 +133,14 @@ class ToolManager:
                 continue
             seen.add(key)
             try:
-                bundles.append(self.tool_list.create_bundle(entity.to_provider_config()))
+                bundles.append(
+                    self.tool_list.create_bundle(
+                        entity.to_provider_config(
+                            tenant_id=self.tenant_id,
+                            model_pack_id=self.model_pack_id,
+                        )
+                    )
+                )
             except KeyError:
                 logger.warning(
                     "Configured tool provider {}/{} is not registered; skipping.",

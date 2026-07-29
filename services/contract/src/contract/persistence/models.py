@@ -35,6 +35,7 @@ class ReviewCreate:
     contract_type: str
     review_attitude: str
     schema_version: str
+    model_pack_id: str = "api-rerank"
 
 
 @dataclass(frozen=True, slots=True)

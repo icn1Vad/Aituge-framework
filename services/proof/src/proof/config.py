@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     storage_root: Path = Path(".proof-data")
     dataset_root: Path | None = None
     max_upload_bytes: int = 25 * 1024 * 1024
+    model_pack_id: str = ""
+    model_config_dir: Path | None = None
+    model_secret_dir: Path | None = None
 
     embedding_base_url: str = ""
     embedding_api_key: str = ""
@@ -29,6 +32,13 @@ class Settings(BaseSettings):
 
     retrieval_keyword_limit: int = Field(default=30, ge=1, le=100)
     retrieval_vector_limit: int = Field(default=30, ge=1, le=100)
+    similarity_title_threshold: float = Field(default=0.75, ge=0, le=1)
+    similarity_edit_threshold: float = Field(default=0.80, ge=0, le=1)
+    similarity_jaccard_threshold: float = Field(default=0.79, ge=0, le=1)
+    similarity_containment_threshold: float = Field(default=0.98, ge=0, le=1)
+    similarity_length_ratio_threshold: float = Field(default=0.80, ge=0, le=1)
+    similarity_clause_coverage_threshold: float = Field(default=0.80, ge=0, le=1)
+    similarity_candidate_limit: int = Field(default=3, ge=1, le=10)
     conflict_same_title_limit: int = Field(default=6, ge=1, le=100)
     conflict_leaf_category_limit: int = Field(default=6, ge=1, le=100)
     conflict_parent_category_limit: int = Field(default=4, ge=1, le=100)
@@ -49,8 +59,6 @@ class Settings(BaseSettings):
     semantic_audit_enabled: bool = False
     framework_base_url: str = ""
     framework_user_id: str = "proof-service"
-    framework_tenant_id: str = "__default_tenant_id__"
-    audit_model_id: str = "deepseek-v4-pro"
     audit_batch_max_chars: int = Field(default=6000, ge=1)
     audit_batch_max_chunks: int = Field(default=8, ge=1, le=8)
     audit_max_chunk_chars: int = Field(default=12_000, ge=1)

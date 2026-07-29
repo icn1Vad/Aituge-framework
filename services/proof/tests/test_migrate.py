@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 
-from proof.infrastructure.postgres.migrate import MIGRATIONS_DIR, _record_legacy_migration_aliases
+from proof.infrastructure.postgres.migrate import (
+    MIGRATIONS_DIR,
+    _record_legacy_migration_aliases,
+)
 
 
 class MigrationConnection:
@@ -89,3 +92,54 @@ def test_policy_level_name_migration_keeps_stable_codes() -> None:
     assert "WHEN 'lower' THEN '三级制度'" in sql
     assert "INSERT" not in sql
     assert "DELETE" not in sql
+
+
+def test_tenant_isolation_migration_uses_minimal_root_fields_and_scoped_views() -> None:
+    sql = (MIGRATIONS_DIR / "014_tenant_isolation.sql").read_text("utf-8")
+
+    for table in ("proof_policy", "proof_document", "proof_ingestion_run"):
+        statement = sql.split(f"ALTER TABLE {table}", maxsplit=1)[1].split(";", maxsplit=1)[0]
+        assert "ADD COLUMN tenant_id text" in statement
+        assert f"UPDATE {table} SET tenant_id = '1' WHERE tenant_id IS NULL" in sql
+        assert f"ALTER TABLE {table}" in sql
+    assert "DEFAULT '1'" not in sql
+
+    assert "proof_document_tenant_content_hash_key" in sql
+    assert "UNIQUE (tenant_id, content_hash)" in sql
+    assert "proof_tenant_owns_document" in sql
+    assert "proof_tenant_audit_run_v" in sql
+    assert sql.count("current_setting('proof.tenant_id', true)") >= 3
+    for child_table in (
+        "proof_document_block",
+        "proof_retrieval_unit",
+        "proof_audit_run",
+        "proof_audit_finding",
+    ):
+        assert f"ALTER TABLE {child_table}\n  ADD COLUMN tenant_id" not in sql
+
+
+def test_similarity_version_migration_uses_integer_versions_and_retires_embeddings() -> None:
+    sql = (MIGRATIONS_DIR / "015_policy_similarity_versioning.sql").read_text("utf-8")
+
+    for column in (
+        "family_id",
+        "version_seq",
+        "supersedes_policy_id",
+        "similarity_state",
+        "similarity_report",
+    ):
+        assert column in sql
+    assert "UNIQUE (tenant_id, family_id, version_seq)" in sql
+    assert "WHERE status = 'effective'" in sql
+    assert "'retired'" in sql
+
+
+def test_lifecycle_migration_carries_decimal_versions_and_keeps_delete_tombstones() -> None:
+    sql = (MIGRATIONS_DIR / "016_policy_lifecycle.sql").read_text("utf-8")
+
+    assert "version_seq / 100" in sql
+    assert "(version_seq % 100) / 10" in sql
+    assert "version_seq % 10" in sql
+    assert "CREATE TABLE proof_policy_delete_tombstone" in sql
+    assert "original_storage_path" in sql
+    assert "trash_storage_path" in sql

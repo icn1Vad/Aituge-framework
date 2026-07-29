@@ -117,6 +117,7 @@ class TaskMemoryService:
         task_key: str,
         materials: list[TaskMemoryMaterial],
         skill_package: str = DEFAULT_MEMORY_SKILL_PACKAGE,
+        model_pack_id: str | None = None,
     ) -> TaskMemoryEntity:
         normalized_key = _normalize_task_key(task_key)
         normalized_materials = _normalize_materials(materials)
@@ -139,7 +140,10 @@ class TaskMemoryService:
         skill_context = await SkillManager(tenant_id=tenant_id).create_context(
             skill_package
         )
-        content = await LlmRuntime(tenant_id=tenant_id).complete(
+        content = await LlmRuntime(
+            tenant_id=tenant_id,
+            model_pack_id=model_pack_id,
+        ).complete(
             messages=[{"role": "user", "content": message}],
             system_prompt=skill_context.task_prompt,
         )

@@ -176,7 +176,17 @@ async def deliver_task_result(
             if run_id:
                 await verify_current_execution_lease(run_id)
             async with httpx.AsyncClient(timeout=15) as client:
-                response = await client.post(url, json=payload)
+                headers = {"X-Tenant-ID": task.tenant_id}
+                model_pack_id = str(
+                    getattr(task, "model_pack_id", "") or ""
+                ).strip()
+                if model_pack_id:
+                    headers["X-Model-Pack-ID"] = model_pack_id
+                response = await client.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                )
                 response.raise_for_status()
             return
         except (httpx.HTTPError, ValueError) as exc:

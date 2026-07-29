@@ -3,13 +3,16 @@ FROM python:3.12-slim AS dependencies
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONPATH=/app/src
+    PYTHONPATH=/app/src \
+    MODEL_CONFIG_DIR=/aituge_model_config
 
 WORKDIR /app
 
+COPY aituge_model_config/ /aituge_model_config/
 COPY services/contract/pyproject.toml services/contract/README.md ./
 
-RUN python -c "import subprocess, sys, tomllib; data = tomllib.load(open('pyproject.toml', 'rb')); subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', 'hatchling>=1.27', *data['project']['dependencies']])"
+RUN pip install --no-cache-dir /aituge_model_config \
+    && python -c "import subprocess, sys, tomllib; data = tomllib.load(open('pyproject.toml', 'rb')); subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', 'hatchling>=1.27', *data['project']['dependencies']])"
 
 FROM dependencies AS runtime
 

@@ -228,6 +228,8 @@ class FrameworkGroundedAnswerService:
             "X-User-Id": context.user_id,
             "X-Roles": "service",
         }
+        if context.ai_mode:
+            headers["X-AI-Mode"] = context.ai_mode
         task_body = {
             "task_type": TASK_TYPE,
             "title": f"Contract grounded {mode.lower()} {payload['review_id']}",

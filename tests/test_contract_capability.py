@@ -55,7 +55,6 @@ def _registered():
                 {
                     "CONTRACT_SERVICE_BASE_URL": "http://ai-contract:18200",
                     "CONTRACT_RESULT_SINK_INTERNAL_TOKEN": "callback-secret",
-                    "CONTRACT_MODEL_ID": "contract-model",
                 }
             ),
         )

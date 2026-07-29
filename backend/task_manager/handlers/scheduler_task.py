@@ -61,6 +61,7 @@ class SchedulerTaskHandler:
             thread_id=task.thread_id,
             session_id=task.session_id,
             stream=True,
+            model=_selected_model_id(task),
             skill_package=definition.default_skill_package,
             extra_tools=definition.default_tools,
             extra_datasets=definition.default_datasets,
@@ -94,6 +95,7 @@ class SchedulerTaskHandler:
             step_index=10,
             payload={
                 "agent_id": profile.agent_id,
+                "model_id": request.model or profile.model_id,
                 "skill_package": request.skill_package,
                 "primary_skill": definition.default_primary_skill,
                 "candidate_skills": definition.default_candidate_skills,
@@ -105,7 +107,11 @@ class SchedulerTaskHandler:
             agent_id=profile.agent_id,
         )
 
-        service = SchedulingService(self.options)
+        service = SchedulingService(
+            self.options,
+            tenant_id=task.tenant_id,
+            model_pack_id=task.model_pack_id,
+        )
         try:
             async for event in service.stream_chat(
                 profile,
@@ -352,7 +358,9 @@ def _build_scheduler_input(task: TaskEntity, definition: TaskType) -> tuple[str,
         )
 
     execution_parameters = {
-        key: value for key, value in payload.items() if key != field_name
+        key: value
+        for key, value in payload.items()
+        if key not in {field_name, "model_id"}
     }
     context_lines = [
         "Internal Task execution context. Use it to execute the request, but do not quote "
@@ -367,6 +375,12 @@ def _build_scheduler_input(task: TaskEntity, definition: TaskType) -> tuple[str,
             ]
         )
     return raw_message.strip(), "\n".join(context_lines)
+
+
+def _selected_model_id(task: TaskEntity) -> str | None:
+    value = (task.input_payload_json or {}).get("model_id")
+    normalized = str(value or "").strip()
+    return normalized or None
 
 
 def _extract_delta(data: dict[str, Any]) -> str:

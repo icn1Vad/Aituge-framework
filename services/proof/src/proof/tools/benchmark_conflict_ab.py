@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 from pydantic import ValidationError
+from aituge_model_config import ModelRuntimeProvider
 
 from capabilities.register import ProofConflictItemOutput
 from proof.api.app import _conflict_agent_view
@@ -78,7 +79,7 @@ def run(output: Path, *, sample_ids: list[str], workers: int) -> dict[str, Any]:
         "benchmark": {
             "cases": len(rows),
             "sample_ids": sample_ids,
-            "model": settings.audit_model_id,
+            "model": ModelRuntimeProvider.from_environment().active_pack.llm.id,
             "candidate_limit": 10,
             "a": "single_joint_judge",
             "b": "single_joint_judge_then_conditional_verifier",
@@ -237,7 +238,10 @@ def _call_validated(
                 settings.embedding_base_url.rstrip("/") + "/chat/completions",
                 headers={"Authorization": f"Bearer {settings.embedding_api_key}"},
                 json={
-                    "model": settings.audit_model_id,
+                    "model": (
+                        ModelRuntimeProvider.from_environment()
+                        .active_pack.llm.id
+                    ),
                     "messages": messages,
                     "temperature": 0.1,
                     "max_tokens": 8000,

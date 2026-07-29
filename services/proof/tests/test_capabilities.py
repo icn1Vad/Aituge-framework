@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -33,9 +34,13 @@ class _Registry:
             "http_tool": [],
             "pipeline": [],
             "result_sink": [],
+            "stage_handler": [],
         }
 
     def register_task(self, **kwargs) -> None:
+        self.calls["task"].append(kwargs)
+
+    def register_resource_task(self, **kwargs) -> None:
         self.calls["task"].append(kwargs)
 
     def register_agent(self, **kwargs) -> None:
@@ -56,6 +61,9 @@ class _Registry:
     def register_result_sink(self, **kwargs) -> None:
         self.calls["result_sink"].append(kwargs)
 
+    def register_stage_handler(self, **kwargs) -> None:
+        self.calls["stage_handler"].append(kwargs)
+
 
 def test_proof_capability_declares_minimal_qa_runtime():
     registry = _Registry()
@@ -66,8 +74,6 @@ def test_proof_capability_declares_minimal_qa_runtime():
             _Settings(
                 {
                     "PROOF_SERVICE_BASE_URL": "http://proof:18100",
-                    "PROOF_QA_MODEL_ID": "deepseek-v4-pro",
-                    "PROOF_AUDIT_MODEL_ID": "deepseek-v4-pro",
                 }
             ),
         )
@@ -85,6 +91,8 @@ def test_proof_capability_declares_minimal_qa_runtime():
     skill_root = registry.calls["skill_root"][0]["path"]
 
     assert task["task_type"] == "proof.qa.chat"
+    assert task["resource_pool"] == "proof-library"
+    assert task["access_mode"] == "read"
     assert task["handler"] == "scheduler"
     assert task["default_agent_id"] == "proof-qa-agent"
     assert task["default_skill_package"] == "proof-policy-qa-package"
@@ -108,6 +116,8 @@ def test_proof_capability_declares_minimal_qa_runtime():
     audit_agent = agents["proof-audit-agent"]
     audit_package = packages["proof-policy-semantic-audit-package"]
     assert audit_task["task_type"] == "proof.audit.run"
+    assert audit_task["resource_pool"] == "proof-library"
+    assert audit_task["access_mode"] == "read"
     assert audit_task["handler"] == "pipeline"
     assert audit_task["input_model"] is proof_capability.ProofAuditInput
     assert audit_task["result_sink_url"] == (
@@ -140,7 +150,16 @@ def test_proof_capability_declares_minimal_qa_runtime():
         "policy_summary", "semantic_audit", "conflict_audit", "intra_conflict_audit"
     }
     assert not any(task["task_type"] == "proof.intra.conflict.audit" for task in registry.calls["task"])
-    conflict_task = registry.calls["task"][2]
+    mutation_task = next(
+        item for item in registry.calls["task"]
+        if item["task_type"] == "proof.policy.mutate"
+    )
+    assert mutation_task["resource_pool"] == "proof-library"
+    assert mutation_task["access_mode"] == "write"
+    conflict_task = next(
+        item for item in registry.calls["task"]
+        if item["task_type"] == "proof.conflict.audit"
+    )
     conflict_agent = agents["proof-conflict-agent"]
     conflict_package = packages["proof-policy-conflict-audit-package"]
     assert conflict_task["task_type"] == "proof.conflict.audit"
@@ -186,14 +205,20 @@ def test_proof_search_input_matches_retrieval_api_contract():
 
 
 def test_proof_qa_input_normalizes_question_and_validates_top_k():
-    payload = proof_capability.ProofQaInput(question="  关联交易如何审批？  ")
+    payload = proof_capability.ProofQaInput(
+        question="  关联交易如何审批？  ",
+        model_id="  deepseek-v4-pro  ",
+    )
 
     assert payload.question == "关联交易如何审批？"
     assert payload.top_k == 8
+    assert payload.model_id == "deepseek-v4-pro"
     with pytest.raises(ValidationError):
         proof_capability.ProofQaInput(question=" ")
     with pytest.raises(ValidationError):
         proof_capability.ProofQaInput(question="审批", top_k=21)
+    with pytest.raises(ValidationError):
+        proof_capability.ProofQaInput(question="审批", model_id=" ")
 
 
 def test_primary_skill_requires_search_and_chunk_citations():
@@ -212,6 +237,9 @@ def test_primary_skill_requires_search_and_chunk_citations():
     assert "ReadSkill" in content
     assert "proof-policy-sql" in content
     assert "citation.label" in content
+    assert "Treat executable code and retrieved data as different things" in content
+    assert "it does not implicitly ask to reproduce every source record" in content
+    assert "do not serialize a full policy inventory into Python" in content
 
 
 def test_sql_auxiliary_skill_has_complete_schema_and_business_mappings():
@@ -489,3 +517,47 @@ def test_conflict_contract_and_skill_define_short_ref_joint_judge():
     assert "candidate_refs" in content
     assert "不要输出当前 target ID 或任何 Chunk ID" in content
     assert '"findings"' in content
+
+
+def test_proof_result_sink_forwards_task_tenant(monkeypatch) -> None:
+    calls = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs == {"base_url": "http://proof:18100", "timeout": 15}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, path, *, json, headers):
+            calls.append((path, json, headers))
+            return Response()
+
+    monkeypatch.setattr(proof_capability.httpx, "AsyncClient", Client)
+    handler = proof_capability._proof_result_sink_handler("http://proof:18100")
+    delivery = SimpleNamespace(
+        task=SimpleNamespace(
+            id="task-2",
+            current_run_id="run-2",
+            task_type="proof.audit.run",
+            tenant_id="2",
+            input_payload_json={"audit_id": "audit-2"},
+        ),
+        stage_id=None,
+        status="completed",
+        output={"ok": True},
+        error_message=None,
+        error_code=None,
+        error_details=None,
+    )
+
+    asyncio.run(handler(delivery))
+
+    assert calls[0][2] == {"X-Tenant-ID": "2"}

@@ -470,9 +470,18 @@ class PipelineExecutor:
             payload={"model_id": profile.model_id, "skill_package": config.skill_package},
             source={"type": "agent", "id": profile.agent_id},
         )
-        content = await LlmRuntime(tenant_id=task.tenant_id).complete(
+        model_pack_id = str(getattr(task, "model_pack_id", "") or "").strip()
+        runtime = LlmRuntime(
+            tenant_id=task.tenant_id,
+            **({"model_pack_id": model_pack_id} if model_pack_id else {}),
+        )
+        content = await runtime.complete(
             messages=[{"role": "user", "content": _stage_message(task, stage, stage_input)}],
-            model_id=profile.model_id,
+            model_id=(
+                runtime.model_runtime_provider.active_pack.llm.id
+                if model_pack_id
+                else profile.model_id
+            ),
             system_prompt=system_prompt,
         )
         parsed = parse_json_output(content)
@@ -615,7 +624,11 @@ class PipelineExecutor:
             extra_datasets=list(config.datasets),
         )
         final_content = ""
-        service = SchedulingService(self.options, tenant_id=task.tenant_id)
+        service = SchedulingService(
+            self.options,
+            tenant_id=task.tenant_id,
+            model_pack_id=task.model_pack_id,
+        )
         artifact_publisher = TaskArtifactPublisher(
             root=self.options.local_python_artifact_dir,
             task_id=task.id,

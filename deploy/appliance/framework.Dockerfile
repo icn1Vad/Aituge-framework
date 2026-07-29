@@ -21,6 +21,7 @@ RUN poetry install --only main --no-root --no-interaction --no-ansi
 FROM dependencies AS runtime
 
 COPY backend/ ./backend/
+COPY aituge_model_config/ ./aituge_model_config/
 COPY frontend/ ./frontend/
 COPY scripts/ ./scripts/
 COPY services/contract/src/ ./services/contract/src/
@@ -31,4 +32,4 @@ RUN mkdir -p /app/localdata /app/runtime /app/backend/tool/local_runtime/artifac
 
 EXPOSE 8894
 
-CMD ["python", "-m", "uvicorn", "backend.local_code_chat_app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8894"]
+CMD ["python", "-m", "backend.framework_runtime"]

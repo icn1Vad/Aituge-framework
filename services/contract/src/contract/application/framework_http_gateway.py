@@ -54,6 +54,7 @@ class _TaskRecord(_FrameworkModel):
     task_type: str = Field(min_length=1)
     user_id: str = Field(min_length=1)
     tenant_id: str = Field(min_length=1)
+    model_pack_id: str = Field(min_length=1)
     metadata_json: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -100,6 +101,7 @@ class FrameworkHttpGateway(FrameworkGateway):
         task_payload = {
             "task_type": TASK_TYPE,
             "title": f"Contract review {request.business_task_id}",
+            "model_pack_id": request.model_pack_id,
             "input_payload": {
                 "schema_version": request.schema_version,
                 "review_id": request.review_id,
@@ -247,6 +249,10 @@ class FrameworkHttpGateway(FrameworkGateway):
             raise FrameworkProtocolError("Framework reused an incompatible Task type")
         if task.tenant_id != request.tenant_id or task.user_id != request.user_id:
             raise FrameworkProtocolError("Framework Task scope does not match the review scope")
+        if task.model_pack_id != request.model_pack_id:
+            raise FrameworkProtocolError(
+                "Framework Task model pack does not match the review"
+            )
         metadata = task.metadata_json
         if (
             metadata.get("contract_review_id") != request.review_id

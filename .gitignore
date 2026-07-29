@@ -8,6 +8,8 @@ crewAI/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+build/
+*.egg-info/
 
 # Local virtual environments
 .venv/
@@ -30,6 +32,9 @@ localdata/*.log
 .env
 *.env
 !*.env.example
+aituge_model_config/secrets/*
+!aituge_model_config/secrets/README.md
+services/contract/.contract-data/
 
 # Nested worktrees
 aituge-registry/

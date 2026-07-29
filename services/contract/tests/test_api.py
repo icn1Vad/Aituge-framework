@@ -438,6 +438,7 @@ def test_create_status_result_not_ready_and_cancel_flow() -> None:
     assert created_data["framework_attempt_no"] is None
     assert created_data["framework_task_id"] is None
     assert created_data["framework_run_id"] is None
+    assert created_data["model_pack_id"] == "api-rerank"
     assert created_data["reused"] is False
     review_id = created_data["review_id"]
 
@@ -445,6 +446,7 @@ def test_create_status_result_not_ready_and_cancel_flow() -> None:
     assert status_response.status_code == 200
     assert status_response.json()["data"]["status"] == "CREATED"
     assert status_response.json()["data"]["document_id"] == created_data["document_id"]
+    assert status_response.json()["data"]["model_pack_id"] == "api-rerank"
 
     result_response = client.get(f"/v1/contract-reviews/{review_id}/result", headers=_headers())
     assert result_response.status_code == 409
@@ -462,6 +464,83 @@ def test_create_status_result_not_ready_and_cancel_flow() -> None:
     cancelled_again = client.post(f"/v1/contract-reviews/{review_id}/cancel", headers=_headers())
     assert cancelled_again.status_code == 200
     assert cancelled_again.json()["data"]["already_terminal"] is True
+
+
+def test_review_accepts_explicit_model_pack_and_rejects_unknown_pack() -> None:
+    client = _client()
+
+    selected = _create_review(
+        client,
+        payload=_request_payload(
+            business_task_id="10002",
+            model_pack_id="local-rerank",
+        ),
+        headers=_headers(
+            **{
+                "X-Request-Id": "req-10002",
+                "Idempotency-Key": "idem-10002",
+            }
+        ),
+    )
+    assert selected.status_code == 201
+    assert selected.json()["data"]["model_pack_id"] == "local-rerank"
+
+    invalid = _create_review(
+        client,
+        payload=_request_payload(
+            business_task_id="10003",
+            model_pack_id="missing-pack",
+        ),
+        headers=_headers(
+            **{
+                "X-Request-Id": "req-10003",
+                "Idempotency-Key": "idem-10003",
+            }
+        ),
+    )
+    assert invalid.status_code == 400
+    assert invalid.json()["error"]["code"] == "INVALID_MODEL_PACK"
+
+
+def test_review_ai_mode_selects_package_and_overrides_payload_package() -> None:
+    client = _client()
+
+    selected = _create_review(
+        client,
+        payload=_request_payload(
+            business_task_id="10004",
+            model_pack_id="api-rerank",
+        ),
+        headers=_headers(
+            **{
+                "X-Request-Id": "req-10004",
+                "Idempotency-Key": "idem-10004",
+                "X-AI-Mode": "private",
+            }
+        ),
+    )
+
+    assert selected.status_code == 201
+    assert selected.json()["data"]["model_pack_id"] == "api-rerank-similarity"
+
+
+def test_review_rejects_unknown_ai_mode() -> None:
+    client = _client()
+
+    response = _create_review(
+        client,
+        payload=_request_payload(business_task_id="10005"),
+        headers=_headers(
+            **{
+                "X-Request-Id": "req-10005",
+                "Idempotency-Key": "idem-10005",
+                "X-AI-Mode": "secret",
+            }
+        ),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_AI_MODE"
 
 
 def test_same_request_is_reused_and_changed_request_conflicts() -> None:

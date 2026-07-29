@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
+from aituge_model_config import ModelRuntimeProvider, ResolvedLlmModel
 from common.encrypt_utils import decrypt_key
 from common.llm.constants import DEFAULT_LLM_MODEL_ID
 from common.llm.llm_model import PaiLlm
@@ -37,7 +38,13 @@ class LlmCompletionResult:
     repair_no: int
 
 
-def _llm_cache_key(config: LlmModelEntity) -> str:
+def _llm_cache_key(config: LlmModelEntity | ResolvedLlmModel) -> str:
+    if isinstance(config, ResolvedLlmModel):
+        return (
+            f"llm:{config.base_url}:{config.api_key}:"
+            f"{config.model}:{config.enable_thinking}:{config.vision_support}:"
+            f"{config.temperature}:{config.context_window}:{config.max_tokens}"
+        )
     return (
         f"llm:{config.base_url}:{config.encrypted_api_key}:"
         f"{config.model}:{config.enable_thinking}:{config.vision_support}:"
@@ -45,17 +52,28 @@ def _llm_cache_key(config: LlmModelEntity) -> str:
     )
 
 
-def create_llm(config: LlmModelEntity) -> PaiLlm:
+def create_llm(config: LlmModelEntity | ResolvedLlmModel) -> PaiLlm:
     cache_key = _llm_cache_key(config)
     cached = llm_cache.get(cache_key)
     if cached:
-        logger.info(f"Using cached LLM: model_id={config.model_id}")
+        model_id = config.id if isinstance(config, ResolvedLlmModel) else config.model_id
+        logger.info(f"Using cached LLM: model_id={model_id}")
         return cached
 
+    if isinstance(config, ResolvedLlmModel):
+        if config.mode == "api" and not config.api_key:
+            raise ValueError(
+                f"LLM model `{config.id}` has no configured credential."
+            )
+        api_key = config.api_key
+        model = config.model
+    else:
+        api_key = decrypt_key(config.encrypted_api_key)
+        model = config.model or config.model_name or config.model_id
     llm = PaiLlm(
         api_base=config.base_url,
-        api_key=decrypt_key(config.encrypted_api_key),
-        model=config.model or config.model_name or config.model_id,
+        api_key=api_key,
+        model=model,
         enable_thinking=config.enable_thinking,
         vision_support=config.vision_support,
         temperature=config.temperature,
@@ -72,21 +90,50 @@ class LlmRuntime:
     def __init__(
         self,
         tenant_id: str = DEFAULT_TENANT_ID,
-        llm_factory: Callable[[LlmModelEntity], Any] = create_llm,
+        llm_factory: Callable[[LlmModelEntity | ResolvedLlmModel], Any] = create_llm,
+        model_runtime_provider: ModelRuntimeProvider | None = None,
+        model_pack_id: str | None = None,
     ):
         self.tenant_id = tenant_id
         self.llm_factory = llm_factory
+        self.model_runtime_provider = (
+            model_runtime_provider
+            or ModelRuntimeProvider.from_environment(pack_id=model_pack_id or "")
+        )
 
     async def get_llm(self, model_id: Optional[str] = None) -> Any:
-        resolved_model_id = model_id or DEFAULT_LLM_MODEL_ID
+        resolved_model_id = model_id or self.model_runtime_provider.active_pack.llm.id
+        registration = self.model_runtime_provider.llm_registration(
+            resolved_model_id
+        )
+        credential = self.model_runtime_provider.resolve_optional_credential(
+            registration.credential_ref
+        )
+        if not credential:
+            credential = await self._legacy_database_credential(resolved_model_id)
+        resolved_config = self.model_runtime_provider.resolve_llm(
+            resolved_model_id,
+            credential_fallback=credential,
+            require_credential=False,
+        )
+        return self.llm_factory(resolved_config)
+
+    async def _legacy_database_credential(self, model_id: str) -> str:
+        """Migration fallback; model metadata never comes from this row."""
+
         async with create_db_session() as session:
-            llm_model = await LlmService(session).get_llm_by_model_id(
-                model_id=resolved_model_id,
+            row = await LlmService(session).get_llm_by_model_id(
+                model_id=model_id,
                 tenant_id=self.tenant_id,
             )
-            if not llm_model:
-                raise ValueError(f"LLM model `{resolved_model_id}` not found.")
-            return self.llm_factory(llm_model)
+        if row is None or not row.encrypted_api_key:
+            return ""
+        logger.warning(
+            "Model credential for '{}' uses legacy tuge_llm_model fallback; "
+            "move it to aituge_model_config/secrets.",
+            model_id,
+        )
+        return decrypt_key(row.encrypted_api_key)
 
     async def complete(
         self,

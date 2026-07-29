@@ -3,8 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-
-from proof.api.app import _conflict_agent_view, create_app
+from proof.api.app import _conflict_agent_view, _policy_view, create_app
 from proof.config import Settings
 from proof.errors import ProofError
 
@@ -138,8 +137,52 @@ class FakeService:
             "findings": [{"id": "unit-1", "conflict_type": "numeric_conflict"}],
         }
 
-    def confirm_policy(self, policy_id: str):
+    def confirm_policy(self, policy_id: str, *, idempotency_key: str | None = None):
         return {"id": policy_id, "status": "effective"}
+
+    def request_policy_action(
+        self,
+        policy_id: str,
+        *,
+        action: str,
+        idempotency_key: str | None,
+    ):
+        return {
+            "id": policy_id,
+            "status": "accepted",
+            "operation_id": idempotency_key,
+            "operation": action,
+            "operation_status": "ACCEPTED",
+            "framework_task_id": "task-1",
+            "framework_run_id": "run-1",
+        }
+
+    def apply_policy_action(self, *, policy_id: str, action: str, operation_id: str):
+        return {
+            "id": policy_id,
+            "status": "expired" if action == "expire" else "deleted",
+            "operation_id": operation_id,
+        }
+
+    def decide_policy_similarity(
+        self,
+        policy_id: str,
+        *,
+        decision: str,
+        candidate_policy_id: str | None = None,
+        idempotency_key: str | None = None,
+    ):
+        return {
+            "policy": {
+                **self._policy(),
+                "id": policy_id,
+                "family_id": candidate_policy_id if decision == "new_version" else policy_id,
+                "version": "v1.0.1" if decision == "new_version" else "v1.0.0",
+                "version_seq": 1 if decision == "new_version" else 0,
+            },
+            "similarity": {"status": decision, "decision": decision},
+            "audit_task": {"status": "running"},
+        }
 
     def discard_policy(self, policy_id: str):
         return {"id": policy_id, "status": "discarded"}
@@ -258,8 +301,28 @@ class FakeService:
         }
 
 
+def test_policy_view_builds_nested_metadata_from_repository_fields() -> None:
+    policy = _policy_view(
+        {
+            "id": "policy-flat",
+            "level_code": "peer",
+            "level_name": "二级制度",
+            "category_code": "procurement_supply",
+            "category_name": "采购、招投标与供应商",
+        }
+    )
+
+    assert policy["level"] == {"code": "peer", "name": "二级制度", "sort_rank": 200}
+    assert policy["category"] == {
+        "code": "procurement_supply",
+        "name": "采购、招投标与供应商",
+        "path_name": "采购、招投标与供应商",
+    }
+    assert not {"level_code", "level_name", "category_code", "category_name"} & policy.keys()
+
+
 def test_metadata_endpoints() -> None:
-    client = TestClient(create_app(Settings(), FakeService()))
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
     assert client.get("/health").status_code == 200
     assert [item["code"] for item in client.get("/v1/categories/levels").json()["data"]] == [
         "upper",
@@ -270,14 +333,14 @@ def test_metadata_endpoints() -> None:
 
 
 def test_legacy_category_endpoints_are_removed() -> None:
-    client = TestClient(create_app(Settings(), FakeService()))
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
     assert client.get("/v1/meta/policy-levels").status_code == 404
     assert client.get("/v1/categories").status_code == 404
     assert client.post("/v1/categories", json={"code": "risk", "name": "风险管理"}).status_code == 404
 
 
 def test_embedding_endpoints_are_explicitly_unavailable() -> None:
-    client = TestClient(create_app(Settings(), FakeService()))
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
     index_response = client.post("/v1/documents/document-1/index")
     assert index_response.status_code == 503
     assert index_response.json()["error"] == "embedding_unconfigured"
@@ -288,7 +351,7 @@ def test_embedding_endpoints_are_explicitly_unavailable() -> None:
 
 
 def test_get_ingestion_run_and_unknown_id() -> None:
-    client = TestClient(create_app(Settings(), FakeService()))
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
 
     response = client.get("/v1/ingestion-runs/run-1")
     assert response.status_code == 200
@@ -308,7 +371,7 @@ def test_get_ingestion_run_and_unknown_id() -> None:
 
 
 def test_policy_upload_exposes_run_id_on_success_and_failure() -> None:
-    client = TestClient(create_app(Settings(), FakeService()))
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
 
     created = client.post("/v1/policies", files={"file": ("policy.txt", b"valid", "text/plain")})
     assert created.status_code == 200
@@ -326,7 +389,7 @@ def test_policy_upload_exposes_run_id_on_success_and_failure() -> None:
 
 
 def test_policy_list_and_detail_use_compact_metadata_objects() -> None:
-    client = TestClient(create_app(Settings(), FakeService()))
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
 
     listed = client.get("/v1/policies").json()["data"][0]
     detail = client.get("/v1/policies/policy-1").json()["data"]
@@ -337,8 +400,27 @@ def test_policy_list_and_detail_use_compact_metadata_objects() -> None:
         assert not {"level_code", "level_name", "category_code", "category_name"} & policy.keys()
 
 
+def test_similarity_decision_requires_candidate_and_returns_system_version() -> None:
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
+
+    invalid = client.post(
+        "/v1/policies/policy-1/similarity-decision",
+        json={"decision": "new_version"},
+    )
+    assert invalid.status_code == 422
+
+    decided = client.post(
+        "/v1/policies/policy-1/similarity-decision",
+        json={"decision": "new_version", "candidate_policy_id": "policy-old"},
+    )
+    assert decided.status_code == 200
+    assert decided.json()["data"]["policy"]["version"] == "v1.0.1"
+    assert decided.json()["data"]["policy"]["version_seq"] == 1
+    assert decided.json()["data"]["similarity"]["status"] == "new_version"
+
+
 def test_split_audit_result_endpoints() -> None:
-    client = TestClient(create_app(Settings(), FakeService()))
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
     status = client.get("/v1/policies/policy-1/audit-status")
     assert status.status_code == 200
     assert status.json()["data"]["stages"]["policy_summary"]["status"] == "completed"
@@ -369,7 +451,7 @@ def test_split_audit_result_endpoints() -> None:
 
 
 def test_dataset_page_and_audit_endpoints() -> None:
-    client = TestClient(create_app(Settings(), FakeService()))
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
 
     page = client.get("/dataset")
     assert page.status_code == 200
@@ -389,7 +471,7 @@ def test_dataset_page_and_audit_endpoints() -> None:
 
 
 def test_file_list_pdf_content_and_limited_chunks() -> None:
-    client = TestClient(create_app(Settings(), FakeService()))
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
 
     listed = client.get("/v1/files")
     assert listed.status_code == 200
@@ -422,7 +504,7 @@ def test_file_list_pdf_content_and_limited_chunks() -> None:
 
 
 def test_workbench_and_experiment_policy_are_available() -> None:
-    client = TestClient(create_app(Settings(), FakeService()))
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
 
     home = client.get("/")
     assert home.status_code == 200
@@ -447,7 +529,7 @@ def test_workbench_and_experiment_policy_are_available() -> None:
 
 
 def test_sql_query_endpoint() -> None:
-    client = TestClient(create_app(Settings(), FakeService()))
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
     response = client.post(
         "/v1/query/sql",
         json={"question": "有多少份制度？", "sql": "SELECT count(*) AS policy_count FROM proof_sql_policy_v"},
@@ -457,7 +539,7 @@ def test_sql_query_endpoint() -> None:
 
 
 def test_internal_conflict_retrieval_endpoint() -> None:
-    client = TestClient(create_app(Settings(), FakeService()))
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
 
     response = client.post(
         "/v1/internal/conflict-retrieval",
@@ -473,7 +555,7 @@ def test_internal_conflict_retrieval_endpoint() -> None:
 
 
 def test_internal_intra_conflict_retrieval_accepts_only_unit_id() -> None:
-    client = TestClient(create_app(Settings(), FakeService()))
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
 
     response = client.post(
         "/v1/internal/intra-conflict-retrieval",
@@ -493,7 +575,7 @@ def test_internal_intra_conflict_retrieval_accepts_only_unit_id() -> None:
 
 
 def test_retrieval_fetch_returns_compact_chunks_in_requested_order() -> None:
-    client = TestClient(create_app(Settings(), FakeService()))
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
 
     response = client.post(
         "/v1/retrieval/fetch",
@@ -519,7 +601,7 @@ def test_retrieval_fetch_returns_compact_chunks_in_requested_order() -> None:
 
 
 def test_internal_conflict_retrieval_defaults_to_ten_results() -> None:
-    client = TestClient(create_app(Settings(), FakeService()))
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
 
     response = client.post(
         "/v1/internal/conflict-retrieval",
@@ -580,12 +662,51 @@ def test_conflict_agent_view_preserves_service_order_and_removes_noisy_fields() 
 
 
 def test_review_workflow_endpoints() -> None:
-    client = TestClient(create_app(Settings(), FakeService()))
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
 
-    confirmed = client.post("/v1/policies/policy-1/confirm")
+    confirmed = client.post(
+        "/v1/policies/policy-1/confirm",
+        headers={"Idempotency-Key": "confirm-key"},
+    )
     assert confirmed.json()["data"]["status"] == "effective"
     discarded = client.delete("/v1/policies/policy-1")
     assert discarded.json()["data"]["status"] == "discarded"
+
+
+def test_policy_lifecycle_routes_use_one_public_action_shape() -> None:
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
+
+    accepted = client.post(
+        "/v1/policies/policy-1/actions",
+        json={"action": "expire"},
+        headers={"Idempotency-Key": "expire-key"},
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["data"] == {
+        "id": "policy-1",
+        "status": "accepted",
+        "operation_id": "expire-key",
+        "operation": "expire",
+        "operation_status": "ACCEPTED",
+        "framework_task_id": "task-1",
+        "framework_run_id": "run-1",
+    }
+    invalid = client.post(
+        "/v1/policies/policy-1/actions",
+        json={"action": "activate"},
+        headers={"Idempotency-Key": "activate-key"},
+    )
+    assert invalid.status_code == 422
+
+    applied = client.post(
+        "/v1/internal/policy-actions/apply",
+        json={
+            "policy_id": "policy-1",
+            "action": "expire",
+            "operation_id": "expire-key",
+        },
+    )
+    assert applied.json()["data"]["status"] == "expired"
     callback = client.post(
         "/v1/internal/semantic-audits/result",
         json={"audit_id": "audit-1", "output": {"summary": {}, "items": []}},

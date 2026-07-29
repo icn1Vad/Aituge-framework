@@ -42,6 +42,7 @@ def _context(idempotency_key: str = "grounded-key-1") -> InternalRequestContext:
         user_id="user-1",
         request_id="request-1",
         idempotency_key=idempotency_key,
+        ai_mode="private",
     )
 
 
@@ -154,6 +155,7 @@ def test_framework_service_runs_report_task_and_reuses_succeeded_task() -> None:
     assert requests[0].headers["idempotency-key"].startswith(
         "contract-grounded:report:"
     )
+    assert requests[0].headers["x-ai-mode"] == "private"
 
 
 def test_framework_service_rejects_task_reused_for_different_input() -> None:

@@ -24,6 +24,7 @@ class FrameworkExecutionRequest:
     contract_type: str
     review_attitude: str
     schema_version: str
+    model_pack_id: str = "api-rerank"
 
     @property
     def task_idempotency_key(self) -> str:

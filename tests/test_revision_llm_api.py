@@ -53,6 +53,11 @@ def test_revision_completion_is_hidden_and_authenticated(monkeypatch) -> None:
         headers={"X-Internal-Token": "wrong", "X-Tenant-Id": "tenant-1"},
         json=payload,
     ).status_code == 401
+    assert client.post(
+        "/v1/internal/contract-revision-drafts:complete",
+        headers={"X-Internal-Token": "secret"},
+        json=payload,
+    ).status_code == 400
 
     response = client.post(
         "/v1/internal/contract-revision-drafts:complete",

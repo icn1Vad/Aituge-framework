@@ -7,7 +7,6 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from common.system_constants import DEFAULT_TENANT_ID
 from service.conversation.llm_runner import LlmRuntime
 
 
@@ -50,14 +49,15 @@ def create_revision_llm_router() -> APIRouter:
     async def complete_revision_drafts(
         payload: RevisionCompletionRequest,
         internal_token: Annotated[str, Header(alias="X-Internal-Token")],
-        tenant_id: Annotated[
-            str, Header(alias="X-Tenant-Id")
-        ] = DEFAULT_TENANT_ID,
+        tenant_id: Annotated[str | None, Header(alias="X-Tenant-Id")] = None,
         request_id: Annotated[str | None, Header(alias="X-Request-Id")] = None,
     ) -> RevisionCompletionResponse:
         expected = os.getenv("CONTRACT_INTERNAL_TOKEN", "")
         if not expected or not hmac.compare_digest(internal_token, expected):
             raise HTTPException(status_code=401, detail="Invalid internal credential")
+        tenant_id = str(tenant_id or "").strip()
+        if not tenant_id or tenant_id.lower() in {"null", "none", "undefined"}:
+            raise HTTPException(status_code=400, detail="X-Tenant-Id is required.")
 
         completion = await LlmRuntime(tenant_id).complete_with_usage(
             messages=[{"role": "user", "content": payload.user_prompt}],

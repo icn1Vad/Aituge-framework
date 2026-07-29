@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from typing import Any
 
 from proof.application.conflict_retrieval.models import (
@@ -234,7 +235,10 @@ class ConflictRetrievalService:
             max_workers=max(1, len(specs)),
             thread_name_prefix="proof-conflict-retrieval",
         ) as executor:
-            futures = {executor.submit(search, spec): name for name, spec in specs.items()}
+            futures = {
+                executor.submit(copy_context().run, search, spec): name
+                for name, spec in specs.items()
+            }
             for future in as_completed(futures):
                 name = futures[future]
                 try:

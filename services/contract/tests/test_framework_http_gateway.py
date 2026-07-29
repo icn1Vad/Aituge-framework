@@ -65,6 +65,7 @@ def test_create_execution_uses_scoped_headers_and_frozen_idempotency_keys() -> N
         if request.url.path == "/task-manager/tasks":
             payload = json.loads(request.content)
             assert payload["task_type"] == "contract.review.run"
+            assert payload["model_pack_id"] == "api-rerank"
             assert payload["input_payload"] == {
                 "schema_version": "1.0",
                 "review_id": "review-1",
@@ -85,6 +86,7 @@ def test_create_execution_uses_scoped_headers_and_frozen_idempotency_keys() -> N
                         "task_type": "contract.review.run",
                         "user_id": "user-1",
                         "tenant_id": "tenant-1",
+                        "model_pack_id": payload["model_pack_id"],
                         "metadata_json": payload["metadata"],
                     }
                 },
@@ -193,6 +195,7 @@ def test_task_scope_or_metadata_mismatch_is_rejected() -> None:
                         "task_type": "contract.review.run",
                         "user_id": "other-user",
                         "tenant_id": "tenant-1",
+                        "model_pack_id": "api-rerank",
                         "metadata_json": {
                             "contract_review_id": "review-1",
                             "contract_attempt_no": 2,

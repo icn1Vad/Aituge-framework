@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from aituge_model_config import ModelRuntimeProvider
 
 
 CAPABILITY_ID = "proof"
@@ -20,14 +21,33 @@ class ProofQaInput(BaseModel):
 
     question: str = Field(min_length=1, max_length=4000)
     top_k: int = Field(default=8, ge=1, le=20)
+    model_id: str | None = Field(default=None, min_length=1, max_length=64)
 
-    @field_validator("question")
+    @field_validator("question", "model_id")
     @classmethod
-    def non_blank_question(cls, value: str) -> str:
+    def normalize_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         normalized = value.strip()
         if not normalized:
-            raise ValueError("question must not be blank")
+            raise ValueError("value must not be blank")
         return normalized
+
+
+class ProofPolicyMutationInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation_id: str = Field(min_length=1, max_length=160)
+    policy_id: str = Field(min_length=1, max_length=160)
+    action: Literal["activate", "expire", "delete"]
+
+
+class ProofPolicyMutationOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    status: Literal["effective", "expired", "deleted"]
+    operation_id: str
 
 
 class ProofSearchInput(BaseModel):
@@ -386,9 +406,16 @@ def _proof_result_sink_handler(base_url: str):
         for attempt in range(3):
             try:
                 async with httpx.AsyncClient(base_url=base_url, timeout=15) as client:
+                    headers = {"X-Tenant-ID": delivery.task.tenant_id}
+                    model_pack_id = str(
+                        getattr(delivery.task, "model_pack_id", "") or ""
+                    ).strip()
+                    if model_pack_id:
+                        headers["X-Model-Pack-ID"] = model_pack_id
                     response = await client.post(
                         "/v1/internal/semantic-audits/result",
                         json=payload,
+                        headers=headers,
                     )
                     response.raise_for_status()
                 return
@@ -417,18 +444,64 @@ def _proof_result_sink_handler(base_url: str):
     return deliver
 
 
+def _proof_policy_action_handler(base_url: str):
+    async def apply(context: Any):
+        from task_manager.pipeline.errors import StageExecutionError
+        from task_manager.pipeline.stage_registry import StageServiceResult
+
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=60) as client:
+                response = await client.post(
+                    "/v1/internal/policy-actions/apply",
+                    json=context.stage_input,
+                    headers={"X-Tenant-ID": context.task.tenant_id},
+                )
+                response.raise_for_status()
+                body = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise StageExecutionError(
+                str(exc.response.text or exc)[:2000],
+                code=f"proof_policy_action_{exc.response.status_code}",
+                retryable=exc.response.status_code >= 500,
+            ) from exc
+        except (httpx.RequestError, ValueError) as exc:
+            raise StageExecutionError(
+                str(exc)[:2000],
+                code="proof_policy_action_unavailable",
+                retryable=True,
+            ) from exc
+        output = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(output, dict):
+            raise StageExecutionError(
+                "Proof policy action returned an invalid response.",
+                code="invalid_policy_action_output",
+            )
+        return StageServiceResult(output=output, summary="Applied Proof policy lifecycle action.")
+
+    return apply
+
+
 async def register(registry, settings) -> None:
     """Declare Proof capabilities through the framework-owned registry facade."""
 
     base_url = settings.require("PROOF_SERVICE_BASE_URL")
-    model_id = settings.get("PROOF_QA_MODEL_ID", "deepseek-v4-pro").strip()
-    audit_model_id = settings.get("PROOF_AUDIT_MODEL_ID", "deepseek-v4-pro").strip()
-    conflict_model_id = settings.get("PROOF_CONFLICT_MODEL_ID", audit_model_id).strip()
+    model_runtime = ModelRuntimeProvider.from_environment(
+        directory=settings.get("MODEL_CONFIG_DIR"),
+        pack_id=settings.get("MODEL_PACK_ID"),
+    )
+    active_pack = model_runtime.active_pack
+    model_id = active_pack.llm.id
+    audit_model_id = active_pack.llm.id
+    conflict_model_id = active_pack.llm.id
 
     registry.register_result_sink(
         task_type="proof.audit.run",
         handler=_proof_result_sink_handler(base_url),
         required=True,
+    )
+    registry.register_stage_handler(
+        name="proof_policy_action_apply",
+        handler=_proof_policy_action_handler(base_url),
     )
     registry.register_skill_root(CAPABILITY_DIR / "skills")
     registry.register_http_tool(
@@ -505,7 +578,7 @@ async def register(registry, settings) -> None:
         name="Proof Policy Q&A Agent",
         description="Answers policy questions with Proof retrieval and optional code-generated calculations and charts.",
         agent_type="single",
-        model_id=model_id or "deepseek-v4-pro",
+        model_id=model_id,
         system_prompt=(
             "You are the Proof policy question-answering agent. Follow the active primary skill. "
             "Search before making policy claims, combine structured facts into one SQL tool call, "
@@ -527,7 +600,7 @@ async def register(registry, settings) -> None:
         name="Proof Preliminary Policy Analysis Agent",
         description="Reads a complete policy once and returns a clear source-grounded preliminary analysis report.",
         agent_type="single",
-        model_id=audit_model_id or "deepseek-v4-pro",
+        model_id=audit_model_id,
         system_prompt=(
             "You are the Proof preliminary policy analysis agent. Read the complete supplied policy before writing. "
             "Produce a clear multi-section reader-facing analysis report while explaining only what the policy "
@@ -537,7 +610,9 @@ async def register(registry, settings) -> None:
         default_tools=[],
         default_datasets=[],
     )
-    registry.register_task(
+    registry.register_resource_task(
+        resource_pool="proof-library",
+        access_mode="read",
         task_type="proof.qa.chat",
         name="Proof Policy Q&A",
         description="Answer one policy question using indexed Proof clauses.",
@@ -564,7 +639,7 @@ async def register(registry, settings) -> None:
         name="Proof Policy Clarity and Executability Audit Agent",
         description="Audits policy chunks for clarity and executability with strict source-grounded JSON.",
         agent_type="single",
-        model_id=audit_model_id or "deepseek-v4-pro",
+        model_id=audit_model_id,
         system_prompt=(
             "You are the Proof policy clarity and executability audit agent. Follow the active primary skill. "
             "Inspect only the supplied target chunks, return strict JSON, return no finding for clear text, "
@@ -573,7 +648,9 @@ async def register(registry, settings) -> None:
         default_tools=[],
         default_datasets=[],
     )
-    registry.register_task(
+    registry.register_resource_task(
+        resource_pool="proof-library",
+        access_mode="read",
         task_type="proof.audit.run",
         name="Proof Policy Review Report",
         description="Summarize a policy and run semantic, cross-policy, and intra-policy audits in one pipeline.",
@@ -672,6 +749,52 @@ async def register(registry, settings) -> None:
             },
         ],
     )
+    registry.register_resource_task(
+        resource_pool="proof-library",
+        access_mode="write",
+        task_type="proof.policy.mutate",
+        name="Proof Policy Lifecycle Mutation",
+        description="Activate, expire, or permanently delete one Proof policy version.",
+        handler="pipeline",
+        pipeline_id="proof-policy-mutation-v1",
+        default_agent_id="proof-summary-agent",
+        default_tools=[],
+        default_datasets=[],
+        input_model=ProofPolicyMutationInput,
+        output_model=ProofPolicyMutationOutput,
+    )
+    registry.register_pipeline(
+        pipeline_id="proof-policy-mutation-v1",
+        version="1.0",
+        task_type="proof.policy.mutate",
+        description="Apply one serialized Proof policy lifecycle mutation.",
+        final_artifact_type="proof_policy_mutation_result",
+        max_parallelism=1,
+        stages=[
+            {
+                "stage_id": "apply_policy_action",
+                "name": "Apply policy lifecycle action",
+                "stage_type": "gateway",
+                "input_model": ProofPolicyMutationInput,
+                "output_model": ProofPolicyMutationOutput,
+                "input_adapter": "task_input",
+                "artifact_type": "proof_policy_mutation_result",
+                "service_handler": "proof_policy_action_apply",
+                "timeout_seconds": 60,
+                "retry_policy": {
+                    "max_attempts": 3,
+                    "backoff_seconds": 1,
+                    "retry_on": [
+                        "proof_policy_action_unavailable",
+                        "proof_policy_action_500",
+                        "proof_policy_action_502",
+                        "proof_policy_action_503",
+                        "proof_policy_action_504",
+                    ],
+                },
+            }
+        ],
+    )
     registry.register_skill_package(
         package_name="proof-policy-conflict-audit-package",
         display_name="Proof Policy Conflict Audit",
@@ -685,7 +808,7 @@ async def register(registry, settings) -> None:
         name="Proof Policy Conflict Audit Agent",
         description="Retrieves conflict evidence and jointly checks numeric, authority, process, and polarity rules.",
         agent_type="single",
-        model_id=conflict_model_id or "deepseek-v4-pro",
+        model_id=conflict_model_id,
         system_prompt=(
             "You are the Proof policy conflict audit agent. Follow the active primary skill. "
             "Call proof_conflict_search exactly once for the current target, compare only supplied "
@@ -709,7 +832,7 @@ async def register(registry, settings) -> None:
         name="Proof Intra-policy Chunk Conflict Audit Agent",
         description="Checks the current source Chunk against same-policy vector candidates.",
         agent_type="single",
-        model_id=conflict_model_id or "deepseek-v4-pro",
+        model_id=conflict_model_id,
         system_prompt=(
             "You are the Proof intra-policy Chunk conflict audit agent. Follow the active "
             "primary skill. Call proof_intra_conflict_search exactly once for the current "

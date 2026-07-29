@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from pathlib import Path
 from typing import Any
 
-from proof.application.dataset_audit import DatasetAuditor
+import httpx
+
 from proof.application.conflict_retrieval import (
     ConflictRetrievalLimits,
     ConflictRetrievalService,
 )
 from proof.application.conflict_retrieval.service import CONFLICT_RERANK_INSTRUCTION
+from proof.application.dataset_audit import DatasetAuditor
 from proof.application.ingestion import PolicyIngestionPipeline
 from proof.application.intra_conflict_retrieval import IntraConflictRetrievalService
 from proof.application.quality_report import build_policy_quality_report
@@ -27,8 +30,12 @@ from proof.errors import ProofError
 from proof.infrastructure.embedding import OpenAICompatibleEmbeddingClient
 from proof.infrastructure.postgres.repository import ProofRepository
 from proof.infrastructure.reranking import DashScopePolicyReranker
-from proof.infrastructure.retrieval import PgvectorPolicyRetriever, PostgresKeywordRetriever
-
+from proof.infrastructure.retrieval import (
+    PgvectorPolicyRetriever,
+    PostgresKeywordRetriever,
+)
+from proof.model_runtime import ProofModelRuntime, build_proof_model_runtime
+from proof.tenant import current_tenant_id, tenant_storage_key
 
 logger = logging.getLogger(__name__)
 POLICY_LEVEL_NAMES = {"upper": "一级制度", "peer": "二级制度", "lower": "三级制度"}
@@ -53,20 +60,31 @@ class ProofService:
         policy_audit_service: PolicyAuditService | None = None,
         conflict_retrieval_service: ConflictRetrievalService | None = None,
         intra_conflict_retrieval_service: IntraConflictRetrievalService | None = None,
+        model_runtime: ProofModelRuntime | None = None,
     ) -> None:
         self.settings = settings
+        self.model_runtime = model_runtime or build_proof_model_runtime(settings)
         self.repository = repository or ProofRepository(settings)
         self.storage_root = settings.resolved_storage_root()
         self.storage_root.mkdir(parents=True, exist_ok=True)
         self.ingestion_pipeline = ingestion_pipeline or PolicyIngestionPipeline(settings, self.repository)
-        dataset_root = settings.resolved_dataset_root()
-        self.dataset_auditor = dataset_auditor or (
-            DatasetAuditor(dataset_root, max_upload_bytes=settings.max_upload_bytes) if dataset_root else None
-        )
+        self.dataset_root = settings.resolved_dataset_root()
+        self.dataset_auditor = dataset_auditor
+        self._tenant_dataset_auditors: dict[str, DatasetAuditor] = {}
         self.retrieval_pipeline = retrieval_pipeline or HybridPolicyRetriever(
             keyword=PostgresKeywordRetriever(self.repository),
-            vector=PgvectorPolicyRetriever(settings, self.repository),
-            reranker=DashScopePolicyReranker(settings) if settings.reranker_configured else None,
+            vector=PgvectorPolicyRetriever(self.model_runtime.embedding, self.repository),
+            reranker=(
+                DashScopePolicyReranker(
+                    self.model_runtime.reranker,
+                    instruction=(
+                        self.model_runtime.reranker.instruction
+                        or settings.rerank_instruction
+                    ),
+                )
+                if self.model_runtime.reranker_configured
+                else None
+            ),
             keyword_limit=settings.retrieval_keyword_limit,
             vector_limit=settings.retrieval_vector_limit,
             rerank_candidate_limit=settings.rerank_candidate_limit,
@@ -75,6 +93,11 @@ class ProofService:
         self.intra_conflict_retrieval_service = intra_conflict_retrieval_service or IntraConflictRetrievalService(
             repository=self.repository,
             settings=self.settings,
+            embedding_client=(
+                OpenAICompatibleEmbeddingClient(self.model_runtime.embedding)
+                if self.model_runtime.embedding_configured
+                else None
+            ),
         )
         self.policy_audit_service = policy_audit_service or PolicyAuditService(
             settings,
@@ -91,15 +114,42 @@ class ProofService:
             "service": "proof",
             "database": database,
             "storage": {"ok": storage_ok, "root": str(self.storage_root)},
-            "embedding_configured": self.settings.embedding_configured,
+            "model_pack": {
+                "id": self.model_runtime.pack_id,
+                "llm": self.model_runtime.llm_model_id,
+                "embedding": (
+                    self.model_runtime.embedding.id
+                    if self.model_runtime.embedding is not None
+                    else None
+                ),
+                "reranker": (
+                    self.model_runtime.reranker.id
+                    if self.model_runtime.reranker is not None
+                    else None
+                ),
+            },
+            "embedding_configured": self.model_runtime.embedding_configured,
             "semantic_audit": {
                 "enabled": self.settings.semantic_audit_enabled,
                 "framework_configured": bool(self.settings.framework_base_url.strip()),
-                "model": self.settings.audit_model_id if self.settings.semantic_audit_enabled else None,
+                "model": (
+                    self.model_runtime.llm_model_id
+                    if self.settings.semantic_audit_enabled
+                    else None
+                ),
             },
             "reranker": {
-                "configured": self.settings.reranker_configured,
-                "model": self.settings.rerank_model if self.settings.reranker_configured else None,
+                "configured": self.model_runtime.reranker_configured,
+                "model": (
+                    self.model_runtime.reranker.model
+                    if self.model_runtime.reranker is not None
+                    else None
+                ),
+                "mode": (
+                    self.model_runtime.reranker.mode
+                    if self.model_runtime.reranker is not None
+                    else None
+                ),
             },
         }
 
@@ -109,7 +159,7 @@ class ProofService:
         content: bytes,
         filename: str,
         title: str = "",
-        version: str = "1.0",
+        version: str = "v1.0.0",
         level_code: str | None = None,
         category_code: str = "auto",
     ) -> dict[str, Any]:
@@ -123,12 +173,54 @@ class ProofService:
         )
         policy = result["policy"]
         document = result["document"]
+        similarity = result.get("similarity")
+        if not isinstance(similarity, dict):
+            similarity = dict(policy.get("similarity_report") or {})
+        similarity.setdefault("status", policy.get("similarity_state") or "clear")
+        result["similarity"] = similarity
+        if similarity["status"] == "decision_required":
+            result["audit_task"] = _not_started_audit_task()
+            return result
         if policy.get("status") == "draft" or result.get("reused"):
             audit_state = self.policy_audit_service.ensure_dispatched(document["id"])
         else:
             audit_state = self._semantic_state_for_policy(policy, document["id"])
         result["audit_task"] = _audit_task_view(audit_state)
         return result
+
+    def decide_policy_similarity(
+        self,
+        policy_id: str,
+        *,
+        decision: str,
+        candidate_policy_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_key = str(idempotency_key or "").strip() or None
+        if normalized_key is not None and len(normalized_key) > 128:
+            raise ProofError(
+                "invalid_idempotency_key",
+                "Idempotency-Key must not exceed 128 characters.",
+                status_code=422,
+            )
+        policy = self.repository.decide_policy_similarity(
+            policy_id,
+            decision=decision,
+            candidate_policy_id=candidate_policy_id,
+            idempotency_key=normalized_key,
+        )
+        if policy is None:
+            raise ProofError("policy_not_found", "Policy not found.", status_code=404)
+        audit_state = self.policy_audit_service.ensure_dispatched(policy["document_id"])
+        return {
+            "policy": policy,
+            "similarity": {
+                **dict(policy.get("similarity_report") or {}),
+                "status": policy.get("similarity_state") or decision,
+                "decision": decision,
+            },
+            "audit_task": _audit_task_view(audit_state),
+        }
 
     def get_ingestion_run(self, run_id: str) -> dict[str, Any]:
         run = self.repository.get_ingestion_run(run_id)
@@ -157,6 +249,41 @@ class ProofService:
 
     def list_files(self) -> dict[str, Any]:
         items = self.repository.list_files()
+        base_url = self.settings.framework_base_url.strip().rstrip("/")
+        if base_url:
+            for item in items:
+                run_id = str(item.get("framework_run_id") or "").strip()
+                if item.get("operation_status") not in {"ACCEPTED", "RUNNING", "SUCCEEDED"} or not run_id:
+                    continue
+                if item.get("operation_status") == "SUCCEEDED":
+                    item["operation_status"] = "RUNNING"
+                try:
+                    with httpx.Client(base_url=base_url, timeout=3) as client:
+                        response = client.get(
+                            f"/task-manager/runs/{run_id}",
+                            headers={
+                                "X-Tenant-ID": current_tenant_id(),
+                                "X-User-ID": self.settings.framework_user_id,
+                            },
+                        )
+                        response.raise_for_status()
+                        run = response.json().get("run") or {}
+                except (httpx.HTTPError, ValueError):
+                    continue
+                execution_state = str(run.get("execution_state") or "").upper()
+                if execution_state == "WAITING_RESOURCE":
+                    item["operation_status"] = "WAITING_READERS"
+                elif execution_state == "RUNNING":
+                    item["operation_status"] = "RUNNING"
+                elif execution_state == "SUCCEEDED":
+                    item["operation_status"] = "SUCCEEDED"
+                elif execution_state in {"FAILED", "CANCELED", "CANCELLED"}:
+                    item["operation_status"] = "FAILED"
+                elif item.get("operation_status") == "SUCCEEDED":
+                    item["operation_status"] = "RUNNING"
+                item["blocking_reader_count"] = int(
+                    run.get("blocking_reader_count") or 0
+                )
         return {"items": items, "total": len(items)}
 
     def get_file_content(self, file_id: str) -> dict[str, Any]:
@@ -216,13 +343,23 @@ class ProofService:
         return item
 
     def _dataset_auditor(self) -> DatasetAuditor:
-        if self.dataset_auditor is None:
+        if self.dataset_auditor is not None:
+            return self.dataset_auditor
+        if self.dataset_root is None:
             raise ProofError(
                 "dataset_unconfigured",
                 "PROOF_DATASET_ROOT is not configured.",
                 status_code=503,
             )
-        return self.dataset_auditor
+        tenant_id = current_tenant_id()
+        auditor = self._tenant_dataset_auditors.get(tenant_id)
+        if auditor is not None:
+            return auditor
+        root = self.dataset_root / "tenants" / tenant_storage_key(tenant_id)
+        root.mkdir(parents=True, exist_ok=True)
+        auditor = DatasetAuditor(root, max_upload_bytes=self.settings.max_upload_bytes)
+        self._tenant_dataset_auditors[tenant_id] = auditor
+        return auditor
 
     def list_policies(self, **filters: Any) -> list[dict[str, Any]]:
         return self.repository.list_policies(**filters)
@@ -239,6 +376,22 @@ class ProofService:
 
     def get_audit_status(self, policy_id: str) -> dict[str, Any]:
         policy = self.get_policy(policy_id)
+        operation = self.repository.get_latest_policy_operation(policy_id)
+        operation_view = self._policy_operation_view(operation)
+        if policy.get("similarity_state") == "decision_required":
+            return {
+                "id": None,
+                "policy_id": policy_id,
+                "framework_task_id": None,
+                "framework_run_id": None,
+                "status": "not_started",
+                "reason": "similarity_decision_required",
+                "can_confirm": False,
+                "stages": {},
+                "counts": {},
+                "policy_status": policy.get("status"),
+                "policy_operation": operation_view,
+            }
         document_id = policy["document_id"]
         semantic = self._semantic_state_for_policy(policy, document_id)
         summary = self._summary_state_for_policy(policy, document_id)
@@ -279,6 +432,8 @@ class ProofService:
                 and conflict.get("status") in {"completed", "disabled", "not_requested"}
                 and intra_conflict.get("status") in {"completed", "disabled", "not_requested"}
             ),
+            "policy_status": policy.get("status"),
+            "policy_operation": operation_view,
             "stages": stage_states,
             "counts": {
                 "clause_total": len(clauses),
@@ -299,6 +454,47 @@ class ProofService:
                 "intra_rule_reversal": intra_counts["rule_reversal"] if intra_ready else None,
             },
         }
+
+    def _policy_operation_view(
+        self,
+        operation: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not operation:
+            return None
+        view = dict(operation)
+        view["blocking_reader_count"] = 0
+        run_id = str(operation.get("framework_run_id") or "").strip()
+        base_url = self.settings.framework_base_url.strip().rstrip("/")
+        if operation.get("status") not in {"ACCEPTED", "RUNNING", "SUCCEEDED"} or not run_id or not base_url:
+            return view
+        if operation.get("status") == "SUCCEEDED":
+            view["status"] = "RUNNING"
+        try:
+            with httpx.Client(base_url=base_url, timeout=3) as client:
+                response = client.get(
+                    f"/task-manager/runs/{run_id}",
+                    headers={
+                        "X-Tenant-ID": current_tenant_id(),
+                        "X-User-ID": self.settings.framework_user_id,
+                    },
+                )
+                response.raise_for_status()
+                run = response.json().get("run") or {}
+        except (httpx.HTTPError, ValueError):
+            return view
+        state = str(run.get("execution_state") or "").upper()
+        if state == "WAITING_RESOURCE":
+            view["status"] = "WAITING_READERS"
+        elif state == "RUNNING":
+            view["status"] = "RUNNING"
+        elif state == "SUCCEEDED":
+            view["status"] = "SUCCEEDED"
+        elif state in {"FAILED", "CANCELED", "CANCELLED"}:
+            view["status"] = "FAILED"
+        elif operation.get("status") == "SUCCEEDED":
+            view["status"] = "RUNNING"
+        view["blocking_reader_count"] = int(run.get("blocking_reader_count") or 0)
+        return view
 
     def get_policy_summary(self, policy_id: str) -> dict[str, Any]:
         policy = self.get_policy(policy_id)
@@ -398,7 +594,12 @@ class ProofService:
             intra_conflict_output_validator=self._validate_intra_conflict_output,
         )
 
-    def confirm_policy(self, policy_id: str) -> dict[str, Any]:
+    def confirm_policy(
+        self,
+        policy_id: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
         policy = self.get_policy(policy_id)
         if policy.get("status") == "effective":
             return policy
@@ -433,16 +634,253 @@ class ProofService:
                     status_code=409,
                     details={"intra_conflict_audit": intra_conflict},
                 )
-        confirmed = self.repository.confirm_policy(policy_id)
-        if confirmed is None:
-            raise ProofError("policy_not_found", "Policy not found.", status_code=404)
-        if confirmed.get("status") != "effective":
+        if policy.get("supersedes_policy_id"):
+            model_runtime = getattr(self, "model_runtime", None)
+            if model_runtime is None or not model_runtime.embedding_configured:
+                raise ProofError(
+                    "embedding_not_configured",
+                    "An embedding model is required before a new policy version can become effective.",
+                    status_code=503,
+                )
+            self._index_document(policy["document_id"], require_effective=False)
+        return self.request_policy_action(
+            policy_id,
+            action="activate",
+            idempotency_key=idempotency_key,
+        )
+
+    def request_policy_action(
+        self,
+        policy_id: str,
+        *,
+        action: str,
+        idempotency_key: str | None,
+    ) -> dict[str, Any]:
+        normalized_action = str(action or "").strip().lower()
+        if normalized_action not in {"activate", "expire", "delete"}:
             raise ProofError(
-                "policy_not_draft",
-                "Only a draft policy can be confirmed.",
+                "invalid_policy_action",
+                "Policy action must be activate, expire, or delete.",
+                status_code=422,
+            )
+        policy = self.repository.get_policy(policy_id)
+        if policy is None:
+            raise ProofError("policy_not_found", "Policy not found.", status_code=404)
+        if normalized_action == "activate" and policy.get("status") != "draft":
+            if policy.get("status") == "effective":
+                return {
+                    "id": policy_id,
+                    "status": "effective",
+                    "operation_status": "SUCCEEDED",
+                }
+            raise ProofError("policy_not_draft", "Only a draft policy can be activated.", status_code=409)
+        if normalized_action in {"expire", "delete"} and policy.get("status") == "draft":
+            raise ProofError(
+                "policy_not_published",
+                "Draft policies must use the draft discard operation.",
                 status_code=409,
             )
-        return confirmed
+        normalized_key = str(idempotency_key or "").strip()
+        if not normalized_key:
+            raise ProofError(
+                "invalid_idempotency_key",
+                "Idempotency-Key is required for policy lifecycle operations.",
+                status_code=422,
+            )
+        if len(normalized_key) > 128:
+            raise ProofError(
+                "invalid_idempotency_key",
+                "Idempotency-Key must not exceed 128 characters.",
+                status_code=422,
+            )
+        operation_seed = (
+            f"{current_tenant_id()}:{policy_id}:{normalized_action}:"
+            f"{normalized_key}"
+        )
+        operation_id = hashlib.sha256(operation_seed.encode("utf-8")).hexdigest()
+        return self._dispatch_policy_action(
+            policy_id=policy_id,
+            action=normalized_action,
+            operation_id=operation_id,
+            idempotency_key=normalized_key,
+        )
+
+    def _dispatch_policy_action(
+        self,
+        *,
+        policy_id: str,
+        action: str,
+        operation_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        base_url = self.settings.framework_base_url.strip().rstrip("/")
+        if not base_url:
+            raise ProofError(
+                "framework_not_configured",
+                "Framework is required for policy lifecycle operations.",
+                status_code=503,
+            )
+        headers = {
+            "X-Tenant-ID": current_tenant_id(),
+            "X-User-ID": self.settings.framework_user_id,
+        }
+        create_payload = {
+            "task_type": "proof.policy.mutate",
+            "title": f"Proof policy {action}",
+            "model_pack_id": self.model_runtime.pack_id,
+            "input_payload": {
+                "operation_id": operation_id,
+                "policy_id": policy_id,
+                "action": action,
+            },
+            "stream": False,
+        }
+        try:
+            with httpx.Client(base_url=base_url, timeout=20) as client:
+                response = client.post(
+                    "/task-manager/tasks",
+                    json=create_payload,
+                    headers={
+                        **headers,
+                        "Idempotency-Key": f"proof-policy-action:{idempotency_key}",
+                    },
+                )
+                response.raise_for_status()
+                task_id = str(response.json()["task"]["id"])
+                response = client.post(
+                    f"/task-manager/tasks/{task_id}/runs",
+                    json={"stream": False},
+                    headers={
+                        **headers,
+                        "Idempotency-Key": f"proof-policy-action-run:{idempotency_key}",
+                    },
+                )
+                response.raise_for_status()
+                run_id = str(response.json()["run_id"])
+        except httpx.HTTPError as exc:
+            raise ProofError(
+                "framework_dispatch_failed",
+                "Unable to enqueue the policy lifecycle operation.",
+                status_code=503,
+                details={"reason": str(exc)[:1000]},
+            ) from exc
+        self.repository.record_policy_operation(
+            operation_id=operation_id,
+            policy_id=policy_id,
+            action=action,
+            status="ACCEPTED",
+            framework_task_id=task_id,
+            framework_run_id=run_id,
+        )
+        return {
+            "id": policy_id,
+            "status": "accepted",
+            "operation_id": operation_id,
+            "operation": action,
+            "operation_status": "ACCEPTED",
+            "framework_task_id": task_id,
+            "framework_run_id": run_id,
+        }
+
+    def apply_policy_action(
+        self,
+        *,
+        policy_id: str,
+        action: str,
+        operation_id: str,
+    ) -> dict[str, Any]:
+        self.repository.record_policy_operation(
+            operation_id=operation_id,
+            policy_id=policy_id,
+            action=action,
+            status="RUNNING",
+        )
+        try:
+            if action == "activate":
+                policy = self.repository.confirm_policy(policy_id)
+                if policy is None:
+                    raise ProofError("policy_not_found", "Policy not found.", status_code=404)
+                result = {
+                    "id": policy_id,
+                    "status": str(policy["status"]),
+                    "operation_id": operation_id,
+                }
+            elif action == "expire":
+                policy = self.repository.expire_policy_version(policy_id)
+                if policy is None:
+                    raise ProofError("policy_not_found", "Policy not found.", status_code=404)
+                result = {
+                    "id": policy_id,
+                    "status": str(policy["status"]),
+                    "operation_id": operation_id,
+                }
+            elif action == "delete":
+                result = self._delete_policy_version(policy_id, operation_id=operation_id)
+            else:
+                raise ProofError(
+                    "invalid_policy_action",
+                    "Unknown policy lifecycle action.",
+                    status_code=422,
+                )
+        except Exception as exc:
+            self.repository.complete_policy_operation(
+                operation_id,
+                status="FAILED",
+                error_message=str(exc)[:2000],
+            )
+            raise
+        self.repository.complete_policy_operation(operation_id, status="SUCCEEDED")
+        return result
+
+    def _delete_policy_version(self, policy_id: str, *, operation_id: str) -> dict[str, Any]:
+        tombstone = self.repository.get_delete_tombstone(operation_id)
+        policy = self.repository.get_policy(policy_id)
+        if tombstone is None and policy is None:
+            raise ProofError("policy_not_found", "Policy not found.", status_code=404)
+        original_relative = str(
+            (tombstone or {}).get("original_storage_path")
+            or (policy or {}).get("storage_path")
+            or ""
+        )
+        filename = Path(original_relative).name or f"{policy_id}.bin"
+        trash_relative = str(
+            (tombstone or {}).get("trash_storage_path")
+            or (
+                Path(".trash")
+                / tenant_storage_key()
+                / operation_id
+                / filename
+            )
+        )
+        original_path = (self.storage_root / original_relative).resolve()
+        trash_path = (self.storage_root / trash_relative).resolve()
+        if not original_path.is_relative_to(self.storage_root) or not trash_path.is_relative_to(
+            self.storage_root
+        ):
+            raise ProofError("invalid_storage_path", "Policy storage path is invalid.", status_code=500)
+        trash_path.parent.mkdir(parents=True, exist_ok=True)
+        if original_path.is_file() and not trash_path.exists():
+            original_path.replace(trash_path)
+        deleted = self.repository.delete_policy_version(
+            policy_id,
+            operation_id=operation_id,
+            original_storage_path=original_relative,
+            trash_storage_path=trash_relative,
+        )
+        if deleted is None:
+            raise ProofError("policy_not_found", "Policy not found.", status_code=404)
+        try:
+            if trash_path.is_file():
+                trash_path.unlink()
+            self.repository.mark_delete_cleaned(operation_id)
+        except OSError as exc:
+            self.repository.mark_delete_cleanup_failed(operation_id, str(exc))
+            raise ProofError(
+                "file_cleanup_failed",
+                "Policy data was removed but physical file cleanup must be retried.",
+                status_code=503,
+            ) from exc
+        return {"id": policy_id, "status": "deleted", "operation_id": operation_id}
 
     def discard_policy(self, policy_id: str) -> dict[str, Any]:
         deleted = self.repository.delete_draft_policy(policy_id)
@@ -483,16 +921,25 @@ class ProofService:
         return results
 
     def index_document(self, document_id: str) -> dict[str, Any]:
+        return self._index_document(document_id, require_effective=True)
+
+    def _index_document(
+        self,
+        document_id: str,
+        *,
+        require_effective: bool,
+    ) -> dict[str, Any]:
         policy = self.repository.get_policy_by_document_id(document_id)
         if policy is None:
             raise ProofError("document_not_found", "Document or clauses not found.", status_code=404)
-        if policy.get("status") != "effective":
+        allowed_statuses = {"effective"} if require_effective else {"draft", "effective"}
+        if policy.get("status") not in allowed_statuses:
             raise ProofError(
                 "policy_not_effective",
-                "A draft policy cannot be indexed.",
+                "The policy cannot be indexed in its current state.",
                 status_code=409,
             )
-        client = OpenAICompatibleEmbeddingClient(self.settings)
+        client = OpenAICompatibleEmbeddingClient(self.model_runtime.embedding)
         units = self.repository.get_document_units(document_id)
         if not units:
             raise ProofError("document_not_found", "Document or clauses not found.", status_code=404)
@@ -560,15 +1007,18 @@ class ProofService:
 
     def retrieve_conflict_candidates(self, unit_id: str, *, top_k: int = 10) -> dict[str, Any]:
         if self.conflict_retrieval_service is None:
-            conflict_settings = self.settings.model_copy(
-                update={"rerank_instruction": CONFLICT_RERANK_INSTRUCTION}
-            )
+            conflict_reranker_config = self.model_runtime.reranker
             self.conflict_retrieval_service = ConflictRetrievalService(
                 repository=self.repository,
-                embedding_client=OpenAICompatibleEmbeddingClient(self.settings),
+                embedding_client=OpenAICompatibleEmbeddingClient(
+                    self.model_runtime.embedding
+                ),
                 reranker=(
-                    DashScopePolicyReranker(conflict_settings)
-                    if conflict_settings.reranker_configured
+                    DashScopePolicyReranker(
+                        conflict_reranker_config,
+                        instruction=CONFLICT_RERANK_INSTRUCTION,
+                    )
+                    if conflict_reranker_config is not None
                     else None
                 ),
                 limits=ConflictRetrievalLimits(
@@ -1263,6 +1713,16 @@ def _audit_task_view(state: dict[str, Any]) -> dict[str, Any]:
             summary.get("status") or state.get("status") or "pending",
             conflict.get("status") or state.get("status") or "pending",
         ),
+    }
+
+
+def _not_started_audit_task() -> dict[str, Any]:
+    return {
+        "id": None,
+        "framework_task_id": None,
+        "framework_run_id": None,
+        "status": "not_started",
+        "reason": "similarity_decision_required",
     }
 
 

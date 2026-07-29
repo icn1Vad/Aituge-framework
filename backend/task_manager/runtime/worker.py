@@ -13,8 +13,11 @@ from loguru import logger
 from sqlalchemy import update
 from sqlmodel import select
 
+from capability_mount import mount_capabilities_from_env
 from db.db_context import create_db_session, init_db
+from scheduling.agent_registry import ensure_default_agent_profiles
 from scheduling.scheduler import SchedulingRuntimeOptions
+from skill import ensure_default_skill_packages
 from task_manager.models import TaskEntity, TaskRunEntity, utc_now
 from task_manager.runtime.fencing import ExecutionLease, bind_execution_lease
 from task_manager.runtime.quota import DEFAULT_TENANT_CONCURRENCY, claim_fair_run
@@ -271,7 +274,10 @@ class TaskWorker:
 
 
 def build_worker_options() -> SchedulingRuntimeOptions:
-    root = Path(os.environ.get("AITUGE_TMP_ROOT", "/app/aituge-tmp")).expanduser()
+    # Match the API's local-development default while production Compose
+    # explicitly supplies /app/aituge-tmp as a shared volume.
+    default_root = Path(__file__).resolve().parents[4] / "tmp"
+    root = Path(os.environ.get("AITUGE_TMP_ROOT", default_root)).expanduser().resolve()
     return SchedulingRuntimeOptions(
         local_python_artifact_dir=root / "chat-artifacts",
         local_python_work_dir=root / "code-runs",
@@ -279,10 +285,13 @@ def build_worker_options() -> SchedulingRuntimeOptions:
 
 
 async def main() -> None:
-    from capability_mount import mount_capabilities_from_env
-
     await init_db()
+    # Registries are process-local. A standalone Worker must load the same
+    # capabilities, Agent profiles, and Skill packages as the API process
+    # before it can execute a persisted Run.
     async with create_db_session() as session:
+        await ensure_default_skill_packages(session)
+        await ensure_default_agent_profiles(session)
         await mount_capabilities_from_env(session=session)
     worker = TaskWorker(
         build_worker_options(),

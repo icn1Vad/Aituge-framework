@@ -36,7 +36,13 @@ class _CapturingAgent:
         async def generate():
             names = ",".join(tool.metadata.name for tool in self.tools)
             has_skill = "# Mounted Policy QA" in self.system_prompt
-            yield TextChunk(delta=f"tools={names};skill={has_skill}")
+            search = next(
+                tool for tool in self.tools if tool.metadata.name == "mounted_search"
+            )
+            search_result = await search.acall(query="approval", top_k=2)
+            yield TextChunk(
+                delta=f"tools={names};skill={has_skill};search={search_result}"
+            )
 
         return generate()
 
@@ -120,11 +126,11 @@ async def register(registry, settings):
     return entry
 
 
-async def _seed_llm_config() -> None:
+async def _seed_llm_config(*, tenant_id: str = DEFAULT_TENANT_ID) -> None:
     async with create_db_session() as session:
         session.add(
             LlmModelEntity(
-                tenant_id=DEFAULT_TENANT_ID,
+                tenant_id=tenant_id,
                 base_url="http://example.test/v1",
                 model="deepseek-v4-pro",
                 model_name="deepseek-v4-pro",
@@ -186,14 +192,19 @@ def test_mounted_capability_registers_and_runs_through_task_scheduler(tmp_path, 
         assert "# Mounted Policy QA" in tenant_skill_context.task_prompt
 
         request_ids = []
+        tenant_ids = []
+        model_pack_ids = []
 
         async def fake_request(client, method, url, **kwargs):
+            if url != "/v1/search":
+                return await original_request(client, method, url, **kwargs)
             assert method == "POST"
-            assert url == "/v1/search"
             assert kwargs["json"] == {"query": "approval", "top_k": 2}
             request_id = kwargs["headers"]["X-Request-Id"]
             assert request_id.startswith("tool-") and len(request_id) == 37
             request_ids.append(request_id)
+            tenant_ids.append(kwargs["headers"]["X-Tenant-ID"])
+            model_pack_ids.append(kwargs["headers"].get("X-Model-Pack-ID"))
             request = httpx.Request(method, "http://mounted-service.test/v1/search")
             return httpx.Response(
                 200,
@@ -216,8 +227,12 @@ def test_mounted_capability_registers_and_runs_through_task_scheduler(tmp_path, 
         tenant_bundle = await ToolManager(
             local_python_work_dir=tmp_path / "tenant-code-runs",
             tenant_id="mounted-tenant",
+            model_pack_id="local-rerank",
         ).create_bundle(["mounted_search"])
         assert [tool.metadata.name for tool in tenant_bundle.tools] == ["mounted_search"]
+        await tenant_bundle.tools[0].acall(query="approval", top_k=2)
+        assert tenant_ids == [DEFAULT_TENANT_ID, DEFAULT_TENANT_ID, "mounted-tenant"]
+        assert model_pack_ids == [None, None, "local-rerank"]
 
         async def unavailable_request(client, method, url, **kwargs):
             request = httpx.Request(method, "http://mounted-service.test/v1/search")
@@ -226,7 +241,7 @@ def test_mounted_capability_registers_and_runs_through_task_scheduler(tmp_path, 
         monkeypatch.setattr(httpx.AsyncClient, "request", unavailable_request)
         with pytest.raises(RuntimeError, match="service is unavailable"):
             await bundle.tools[0].acall(query="approval", top_k=2)
-        monkeypatch.setattr(httpx.AsyncClient, "request", original_request)
+        monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
 
         monkeypatch.setattr(runner_mod, "ReactAgent", _CapturingAgent)
         monkeypatch.setattr(runner_mod, "create_llm", lambda config: object())
@@ -234,11 +249,20 @@ def test_mounted_capability_registers_and_runs_through_task_scheduler(tmp_path, 
         _CapturingAgent.last_system_prompt = ""
         app = create_app()
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        java_headers = {
+            "X-User-Id": "mounted-user",
+            "X-Tenant-Id": "mounted-tenant",
+        }
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers=java_headers,
+        ) as client:
             response = await client.post(
                 "/task-manager/run",
                 json={
                     "task_type": "mounted.policy.qa",
+                    "model_pack_id": "local-rerank",
                     "stream": False,
                     "input_payload": {"question": "What is the approval rule?", "top_k": 2},
                 },
@@ -247,6 +271,8 @@ def test_mounted_capability_registers_and_runs_through_task_scheduler(tmp_path, 
         assert response.status_code == 200, response.text
         task = response.json()["task"]
         assert task["status"] == "succeeded"
+        assert task["tenant_id"] == "mounted-tenant"
+        assert task["model_pack_id"] == "local-rerank"
         assert task["agent_id"] == "mounted-policy-qa-agent"
         content = task["result_payload_json"]["content"]
         assert "LimitedLocalPythonInterpreter" in content
@@ -254,12 +280,24 @@ def test_mounted_capability_registers_and_runs_through_task_scheduler(tmp_path, 
         assert "skill=True" in content
         assert _CapturingAgent.last_user_message == "What is the approval rule?"
         assert '"top_k": 2' in _CapturingAgent.last_system_prompt
+        assert tenant_ids[-1] == "mounted-tenant"
+        assert model_pack_ids[-1] == "local-rerank"
         assert "Execute task_type" not in _CapturingAgent.last_user_message
         assert "output_parse_failed" not in {
             event["event_type"] for event in response.json()["events"]
         }
+        scheduler_event = next(
+            event
+            for event in response.json()["events"]
+            if event["event_type"] == "scheduler_request_built"
+        )
+        assert scheduler_event["payload_json"]["model_id"] == "deepseek-v4-pro"
 
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers=java_headers,
+        ) as client:
             conversations = await client.get(
                 "/task-manager/conversations",
                 params={"task_type": "mounted.policy.qa"},

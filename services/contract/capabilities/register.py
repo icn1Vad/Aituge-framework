@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from aituge_model_config import ModelRuntimeProvider
 
 from task_manager.pipeline.errors import StageExecutionError
 from task_manager.pipeline.stage_registry import StageExecutionContext, StageServiceResult
@@ -978,10 +979,14 @@ def _result_sink_handler(base_url: str, token: str):
 def _stage_gateway_handler(
     base_url: str,
     token: str,
-    model_id: str = "deepseek-v4-pro",
+    model_id: str | None = None,
     consolidation_engine: FindingConsolidationEngine | None = None,
 ):
     engine = consolidation_engine or FindingConsolidationEngine()
+    resolved_model_id = (
+        model_id
+        or ModelRuntimeProvider.from_environment().active_pack.llm.id
+    )
 
     async def execute(context: StageExecutionContext) -> StageServiceResult:
         task_input = ContractTaskInput.model_validate(context.task.input_payload_json or {})
@@ -991,7 +996,7 @@ def _stage_gateway_handler(
             consolidation = await engine.consolidate(
                 artifacts,
                 tenant_id=str(getattr(context.task, "tenant_id", None) or "0"),
-                model_id=model_id,
+                model_id=resolved_model_id,
             )
             artifacts["contract_finding_consolidation"] = consolidation
             consolidation_metadata = {
@@ -1138,7 +1143,12 @@ def _grounded_answer_finalizer(base_url: str, token: str):
 async def register(registry, settings) -> None:
     base_url = settings.require("CONTRACT_SERVICE_BASE_URL").rstrip("/")
     callback_token = settings.require("CONTRACT_RESULT_SINK_INTERNAL_TOKEN")
-    model_id = settings.get("CONTRACT_MODEL_ID", "deepseek-v4-pro").strip()
+    model_runtime = ModelRuntimeProvider.from_environment(
+        directory=settings.get("MODEL_CONFIG_DIR"),
+        pack_id=settings.get("MODEL_PACK_ID"),
+    )
+    active_pack = model_runtime.active_pack
+    model_id = active_pack.llm.id
     internal_headers = {
         "X-Internal-Service": "aituge-framework",
         "X-Internal-Token": callback_token,
@@ -1193,7 +1203,7 @@ async def register(registry, settings) -> None:
         agent_id=AGENT_ID,
         name="Contract Review Neutral Agent V1",
         description="Reviews one contract from the selected party perspective with source evidence.",
-        model_id=model_id or "deepseek-v4-pro",
+        model_id=model_id,
         system_prompt=(
             "You are the neutral contract-review agent. Stay on the selected PARTY_A or PARTY_B "
             "perspective, use only current-contract tools and artifacts, and return exactly the "
@@ -1218,7 +1228,7 @@ async def register(registry, settings) -> None:
         agent_id=GROUNDED_ANSWER_AGENT_ID,
         name="Contract Grounded Answer Agent V1",
         description="Generates contract reports and answers grounded in validated review evidence.",
-        model_id=model_id or "deepseek-v4-pro",
+        model_id=model_id,
         system_prompt=(
             "You generate grounded contract content from the completed review result. "
             "Use only contract tools and the supplied task. Every clickable source reference "

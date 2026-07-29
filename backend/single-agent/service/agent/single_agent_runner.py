@@ -80,18 +80,23 @@ class SingleAgentRunner:
     def __init__(
         self,
         tenant_id: str = DEFAULT_TENANT_ID,
-        default_model_id: str = DEFAULT_LLM_MODEL_ID,
+        default_model_id: str | None = None,
+        model_pack_id: str | None = None,
         system_prompt: str = REACT_PROMPT,
     ):
         self.tenant_id = tenant_id
-        self.default_model_id = default_model_id
         self.system_prompt = system_prompt
+        llm_runtime = LlmRuntime(
+            tenant_id=tenant_id,
+            llm_factory=lambda config: create_llm(config),
+            model_pack_id=model_pack_id,
+        )
+        self.default_model_id = (
+            default_model_id or llm_runtime.model_runtime_provider.active_pack.llm.id
+        )
         self.conversation = ConversationManager(
             tenant_id=tenant_id,
-            llm_runner=LlmRuntime(
-                tenant_id=tenant_id,
-                llm_factory=lambda config: create_llm(config),
-            ),
+            llm_runner=llm_runtime,
         )
 
     async def chat(

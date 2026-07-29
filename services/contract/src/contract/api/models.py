@@ -111,6 +111,7 @@ class HealthData(StrictModel):
 class CreateReviewRequest(StrictModel):
     business_task_id: Identifier
     contract_version_id: Identifier
+    model_pack_id: Identifier | None = None
     perspective: Perspective
     our_party_name: Annotated[str, StringConstraints(max_length=500)] | None = None
     contract_type: Literal["AUTO"]
@@ -119,6 +120,7 @@ class CreateReviewRequest(StrictModel):
 
 
 class FrameworkMappingModel(StrictModel):
+    model_pack_id: Identifier = "api-rerank"
     current_stage: ReviewStage | None = None
     framework_task_id: Identifier | None = None
     framework_run_id: Identifier | None = None

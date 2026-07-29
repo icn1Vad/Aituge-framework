@@ -7,6 +7,7 @@ from dataclasses import asdict
 from typing import Any, AsyncIterator, Optional
 
 from loguru import logger
+from aituge_model_config import ModelRuntimeProvider
 from sqlalchemy import desc
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
@@ -30,7 +31,7 @@ from .idempotency import (
 from .memory import TaskMemoryRefreshContext, TaskMemoryRefreshResult, TaskMemoryService
 from .output_parser import parse_json_output
 from .payload_schemas import validate_input_payload, validate_output_payload
-from .registry import TaskType, get_task_definition
+from .registry import ResourceTaskType, TaskType, get_task_definition
 from .runtime import executor_lock, get_event_broker, start_background_run
 from .runtime.fencing import RunLeaseLost, current_execution_lease, verify_execution_lease
 from .runtime.quota import (
@@ -67,6 +68,9 @@ class TaskManagerService:
         *,
         service_name: str = "external",
     ) -> TaskEntity:
+        request = request.model_copy(
+            update={"model_pack_id": _resolve_model_pack_id(request.model_pack_id)}
+        )
         request_fingerprint = (
             build_task_request_fingerprint(service_name=service_name, request=request)
             if request.idempotency_key
@@ -121,6 +125,7 @@ class TaskManagerService:
             definition_snapshot_json=_definition_snapshot(definition),
             output_schema_json=request.output_schema,
             agent_id=request.agent_id or definition.default_agent_id,
+            model_pack_id=request.model_pack_id or "",
             thread_id=request.thread_id,
             session_id=request.session_id,
             user_id=request.user_id,
@@ -178,6 +183,7 @@ class TaskManagerService:
                 "task_type": task.task_type,
                 "agent_id": task.agent_id,
                 "handler_name": task.handler_name,
+                "model_pack_id": task.model_pack_id,
                 "item_count": len(task_items),
             },
         )
@@ -820,6 +826,7 @@ class TaskManagerService:
                 input_payload=revision_payload,
                 user_id=proposal_task.user_id,
                 tenant_id=proposal_task.tenant_id,
+                model_pack_id=proposal_task.model_pack_id,
                 stream=True,
                 metadata={
                     "revision_mode": True,
@@ -1213,6 +1220,7 @@ class TaskManagerService:
                         return task
                 raise ValueError(f"Task '{task_id}' is already running.")
             definition = get_task_definition(task.task_type)
+            task.model_pack_id = _resolve_model_pack_id(task.model_pack_id)
             run_fingerprint = request_fingerprint or (
                 build_run_request_fingerprint(
                     service_name=task.service,
@@ -1258,7 +1266,18 @@ class TaskManagerService:
                 request_fingerprint=run_fingerprint,
                 pipeline_id=pipeline_id,
                 pipeline_version=pipeline_version,
+                model_pack_id=task.model_pack_id,
                 status="running",
+                resource_pool=(
+                    definition.resource_pool
+                    if isinstance(definition, ResourceTaskType)
+                    else "default"
+                ),
+                resource_access_mode=(
+                    definition.access_mode
+                    if isinstance(definition, ResourceTaskType)
+                    else None
+                ),
                 started_at=task.started_at,
                 metadata_json={"request_metadata": dict(request.metadata_patch) if request else {}},
             )
@@ -1572,6 +1591,16 @@ def _build_script_revision_payload(
             "proposal_artifact_id": proposal_artifact_id,
         },
     }
+
+
+def _resolve_model_pack_id(value: str | None) -> str:
+    """Validate and freeze one Task's effective model pack."""
+
+    try:
+        provider = ModelRuntimeProvider.from_environment(pack_id=str(value or "").strip())
+    except ValueError as exc:
+        raise ValueError(f"Invalid model_pack_id: {exc}") from exc
+    return provider.active_pack.id
 
 
 def _extract_task_items(input_payload: dict[str, Any]) -> list[dict[str, Any]]:

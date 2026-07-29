@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from common.system_constants import DEFAULT_TENANT_ID
 
@@ -24,11 +24,18 @@ class TaskCreateRequest(BaseModel):
     tenant_id: str = DEFAULT_TENANT_ID
     stream: bool = True
     agent_id: Optional[str] = None
+    model_pack_id: Optional[str] = Field(default=None, max_length=120)
     thread_id: Optional[str] = None
     session_id: Optional[str] = None
     priority: int = 0
     expires_at: Optional[datetime] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("model_pack_id")
+    @classmethod
+    def normalize_model_pack_id(cls, value: str | None) -> str | None:
+        normalized = str(value or "").strip()
+        return normalized or None
 
     @model_validator(mode="before")
     @classmethod
@@ -83,6 +90,7 @@ class TaskRead(BaseModel):
     definition_snapshot_json: dict[str, Any]
     output_schema_json: dict[str, Any]
     agent_id: str
+    model_pack_id: str
     thread_id: Optional[str] = None
     session_id: Optional[str] = None
     user_id: str
@@ -177,6 +185,8 @@ class TaskDefinitionRead(BaseModel):
     pipeline_id: Optional[str] = None
     stream_chunk_chars: int = 400
     conversation_message_field: Optional[str] = None
+    resource_pool: Optional[str] = None
+    access_mode: Optional[str] = None
 
 
 class TaskRunRead(BaseModel):
@@ -187,6 +197,7 @@ class TaskRunRead(BaseModel):
     idempotency_key: Optional[str] = None
     pipeline_id: str
     pipeline_version: str
+    model_pack_id: str
     status: str
     outcome: Optional[str] = None
     current_stage_id: Optional[str] = None
@@ -195,6 +206,10 @@ class TaskRunRead(BaseModel):
     warning_count: int
     error_code: Optional[str] = None
     error_message: str
+    resource_pool: str = "default"
+    resource_access_mode: Optional[str] = None
+    execution_state: Optional[str] = None
+    blocking_reader_count: int = 0
     metadata_json: dict[str, Any]
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None

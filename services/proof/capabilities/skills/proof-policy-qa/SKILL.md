@@ -29,6 +29,16 @@ Decompose the request into any combination of:
 
 For a mixed request, combine the layers according to dependency. SQL may first identify a complete policy scope for focused retrieval; search may first reveal the relevant terminology for a structured comparison. Do not force a fixed tool order when the evidence dependency points another way.
 
+## Shape information before presentation
+
+Choose the output grain before retrieving data. A request for an “overall”, “system-wide”, or analytical report asks for coverage across the relevant dimensions; it does not implicitly ask to reproduce every source record. Use totals, distributions, comparisons, and a small number of representative examples. Retrieve or display a complete inventory only when the user explicitly requests the full list or a record-by-record appendix.
+
+Keep computation close to the evidence layer that owns the data. Ask SQL to filter, group, aggregate, and return only the fields the answer or deliverable actually needs; use code for transformations and presentation that SQL cannot express cleanly.
+
+Treat executable code and retrieved data as different things. Python code should express transformation or rendering logic, not act as a transport container for a complete structured result. In particular, do not serialize a full policy inventory into Python merely to render an analytical report, and do not repeatedly copy query results, policy text, or previously established facts into code arguments or later reasoning.
+
+Keep requested deliverables faithful to that chosen grain. If the current tool contract cannot carry a genuinely required full inventory safely, return the supported analytical report and disclose the omitted appendix instead of forcing the rows through source code. A retry must reduce or change the query, representation, or scope; do not repeat the same large call after failure.
+
 ## Retrieval principles
 
 - Start policy-content investigation with `proof_search` using `retrieval_mode: hybrid`. Use the Task's `top_k` when supplied; otherwise use 8, and forward relevant policy, level, and category filters.
@@ -62,7 +72,7 @@ For purely structured answers, name the queried semantic view and describe the m
 
 ## Code and chart workflow
 
-Use `code_interpreter` only when calculation, sorting, reshaping, or a requested visualization materially improves the answer. Retrieve every policy fact first. Never invent missing rows to complete a table or chart. Save requested figures according to the tool contract and briefly explain them in the answer.
+Use `code_interpreter` only when calculation, sorting, reshaping, rendering, or a requested visualization materially improves the answer. Retrieve every policy fact first, then pass the smallest sufficient input to the rendering logic. Every call must contain valid executable code; if a call cannot be expressed compactly, reshape or batch the data before calling the tool. Never invent missing rows to complete a table, chart, or report. Save requested deliverables according to the tool contract and briefly explain them in the answer.
 
 ## Failure and uncertainty
 

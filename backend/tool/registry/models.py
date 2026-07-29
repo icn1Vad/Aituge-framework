@@ -36,7 +36,12 @@ class ToolConfigEntity(ToolConfig, table=True):
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True, max_length=64)
 
-    def to_provider_config(self) -> ToolProviderConfig:
+    def to_provider_config(
+        self,
+        *,
+        tenant_id: str = "",
+        model_pack_id: str = "",
+    ) -> ToolProviderConfig:
         config = _load_json_object(self.config_json)
         secrets = (
             _load_json_object(decrypt_key(self.encrypted_secrets_json))
@@ -47,6 +52,8 @@ class ToolConfigEntity(ToolConfig, table=True):
             tool_name=self.tool_name,
             provider=self.provider,
             enabled=self.enabled,
+            tenant_id=tenant_id,
+            model_pack_id=model_pack_id,
             config=config,
             secrets=secrets,
         )

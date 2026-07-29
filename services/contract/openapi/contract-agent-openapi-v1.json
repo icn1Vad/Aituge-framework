@@ -905,6 +905,13 @@
             ],
             "title": "Framework Task Id"
           },
+          "model_pack_id": {
+            "default": "api-rerank",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Model Pack Id",
+            "type": "string"
+          },
           "reused": {
             "title": "Reused",
             "type": "boolean"
@@ -2609,6 +2616,13 @@
             ],
             "title": "Framework Task Id"
           },
+          "model_pack_id": {
+            "default": "api-rerank",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Model Pack Id",
+            "type": "string"
+          },
           "review_id": {
             "maxLength": 160,
             "minLength": 1,
@@ -3581,6 +3595,22 @@
               "title": "Idempotency-Key",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-AI-Mode",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Ai-Mode"
+            }
           }
         ],
         "requestBody": {
@@ -3790,6 +3820,22 @@
               "title": "X-Request-Id",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-AI-Mode",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Ai-Mode"
+            }
           }
         ],
         "responses": {
@@ -3983,6 +4029,22 @@
             "schema": {
               "title": "X-Request-Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-AI-Mode",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Ai-Mode"
             }
           }
         ],
@@ -4188,6 +4250,22 @@
               "minLength": 1,
               "title": "Idempotency-Key",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-AI-Mode",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Ai-Mode"
             }
           }
         ],
@@ -4619,6 +4697,22 @@
               "title": "Idempotency-Key",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-AI-Mode",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Ai-Mode"
+            }
           }
         ],
         "requestBody": {
@@ -4822,6 +4916,22 @@
             "schema": {
               "title": "X-Request-Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-AI-Mode",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Ai-Mode"
             }
           }
         ],

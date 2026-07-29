@@ -1,0 +1,51 @@
+version: 1
+default_pack_id: api-rerank
+
+llms:
+  deepseek-v4-pro:
+    mode: api
+    provider: deepseek
+    model: deepseek-v4-pro
+    base_url: https://api.deepseek.com
+    credential_ref: deepseek_api_key
+    context_window: 110000
+    max_tokens: 8000
+    temperature: 0.1
+    enable_thinking: false
+    vision_support: false
+
+embeddings:
+  policy-embedding-v4:
+    mode: api
+    provider: dashscope
+    model: text-embedding-v4
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    dimensions: 1024
+    credential_ref: dashscope_api_key
+    timeout_seconds: 30
+
+rerankers:
+  api-qwen3-rerank:
+    mode: api
+    provider: dashscope
+    model: qwen3-rerank
+    base_url: https://dashscope.aliyuncs.com/compatible-api/v1/reranks
+    credential_ref: dashscope_api_key
+    timeout_seconds: 30
+    instruction: Given a web search query, retrieve relevant passages that answer the query.
+
+  api-qwen3-rerank-similarity:
+    mode: api
+    provider: dashscope
+    model: qwen3-rerank
+    base_url: https://dashscope.aliyuncs.com/compatible-api/v1/reranks
+    credential_ref: dashscope_api_key
+    timeout_seconds: 30
+    instruction: Retrieve semantically similar text.
+
+  local-qwen3-rerank:
+    mode: local
+    provider: openai_compatible
+    model: qwen3-rerank
+    base_url: http://qwen-reranker-service:8000/v1/reranks
+    timeout_seconds: 30

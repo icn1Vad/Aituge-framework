@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 from pydantic import ValidationError
+from aituge_model_config import ModelRuntimeProvider
 
 from capabilities.register import ProofConflictItemOutput
 from proof.api.app import _conflict_agent_view
@@ -69,7 +70,7 @@ def run(unit_id: str, *, candidate_limit: int, output: Path) -> dict[str, Any]:
         settings.embedding_base_url.rstrip("/") + "/chat/completions",
         headers={"Authorization": f"Bearer {settings.embedding_api_key}"},
         json={
-            "model": settings.audit_model_id,
+            "model": ModelRuntimeProvider.from_environment().active_pack.llm.id,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},

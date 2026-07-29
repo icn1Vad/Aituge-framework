@@ -5,6 +5,7 @@ from proof.config import Settings
 from proof.errors import ProofError
 from proof.infrastructure.embedding import OpenAICompatibleEmbeddingClient
 from proof.infrastructure.postgres.repository import ProofRepository
+from proof.model_runtime import EmbeddingRuntimeConfig
 
 
 class PostgresKeywordRetriever:
@@ -35,8 +36,12 @@ class PostgresKeywordRetriever:
 class PgvectorPolicyRetriever:
     name = "vector"
 
-    def __init__(self, settings: Settings, repository: ProofRepository) -> None:
-        self.settings = settings
+    def __init__(
+        self,
+        embedding_config: EmbeddingRuntimeConfig | Settings | None,
+        repository: ProofRepository,
+    ) -> None:
+        self.embedding_config = embedding_config
         self.repository = repository
 
     def retrieve(
@@ -46,7 +51,7 @@ class PgvectorPolicyRetriever:
         limit: int,
         filters: RetrievalFilters,
     ) -> RetrievalBranchResult:
-        client = OpenAICompatibleEmbeddingClient(self.settings)
+        client = OpenAICompatibleEmbeddingClient(self.embedding_config)
         if self.repository.count_embeddings(client.profile.id) == 0:
             raise ProofError(
                 "index_not_ready",

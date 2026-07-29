@@ -1,4 +1,6 @@
-import os
+from aituge_model_config import ModelRuntimeProvider
 
 
-DEFAULT_LLM_MODEL_ID = os.environ.get("DEFAULT_LLM_MODEL_ID", "deepseek-v4-pro")
+DEFAULT_LLM_MODEL_ID = (
+    ModelRuntimeProvider.from_environment().active_pack.llm.id
+)

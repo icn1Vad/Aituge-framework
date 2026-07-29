@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -166,7 +167,13 @@ class HybridPolicyRetriever:
         results: dict[str, RetrievalBranchResult | Exception] = {}
         with ThreadPoolExecutor(max_workers=len(selected), thread_name_prefix="proof-retrieval") as executor:
             futures = {
-                executor.submit(retriever.retrieve, query, limit=limit, filters=filters): retriever.name
+                executor.submit(
+                    copy_context().run,
+                    retriever.retrieve,
+                    query,
+                    limit=limit,
+                    filters=filters,
+                ): retriever.name
                 for retriever, limit in selected
             }
             for future in as_completed(futures):
