@@ -489,8 +489,43 @@ class TaskManagerService:
         async with executor_lock(effective_run_id) as acquired:
             if not acquired:
                 return
-            async for _ in self._stream_prepared_task(task):
-                pass
+            try:
+                async for _ in self._stream_prepared_task(task):
+                    pass
+            except RunLeaseLost:
+                raise
+            except Exception as exc:
+                current = await self.get_task(task.id)
+                if (
+                    current is not None
+                    and current.status == "running"
+                    and current.current_run_id == effective_run_id
+                ):
+                    error = {
+                        "type": exc.__class__.__name__,
+                        "stage": "task_manager",
+                        "message": str(exc),
+                        "retryable": False,
+                    }
+                    await self.record_event(
+                        task_id=task.id,
+                        run_id=effective_run_id,
+                        event_type="task_failed",
+                        level="error",
+                        stage="task_manager",
+                        message=str(exc),
+                        payload=error,
+                        step_id="task_finish",
+                        step_index=99,
+                        error_code=exc.__class__.__name__,
+                    )
+                    await self._finish_task(
+                        task.id,
+                        status="failed",
+                        error=error,
+                        outcome="failure",
+                    )
+                raise
 
     async def request_cancel(self, run_id: str) -> TaskRunEntity:
         cancelled_immediately = False

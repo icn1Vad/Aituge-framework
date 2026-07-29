@@ -7,7 +7,7 @@ from sqlmodel import select
 
 from db.db_context import create_db_session, init_db, reset_engine_for_test
 from scheduling.scheduler import SchedulingRuntimeOptions
-from task_manager.models import TaskEntity, TaskRunEntity, utc_now
+from task_manager.models import TaskEntity, TaskQuotaEntity, TaskRunEntity, utc_now
 from task_manager.runtime.worker import TaskWorker
 from task_manager.schemas import TaskCreateRequest, TaskRunRequest
 from task_manager.service import TaskManagerService
@@ -135,4 +135,62 @@ async def test_worker_does_not_claim_external_main_agent_runs(tmp_path, monkeypa
         SchedulingRuntimeOptions(local_python_artifact_dir=tmp_path / "artifacts"),
         worker_id="worker-external-skip",
     )
+    assert await worker.claim_one() is None
+
+
+@pytest.mark.asyncio
+async def test_worker_fails_unregistered_task_and_releases_quota(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_TYPE", "sqlite")
+    monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'unsupported.db'}")
+    reset_engine_for_test()
+    await init_db()
+
+    async with create_db_session() as session:
+        task = TaskEntity(
+            id="unsupported-task",
+            task_type="contract.review.unregistered",
+            handler_name="pipeline",
+            status="running",
+            current_run_id="unsupported-run",
+            user_id="unsupported-user",
+            tenant_id="unsupported-tenant",
+            service="ai-contract",
+        )
+        run = TaskRunEntity(
+            id="unsupported-run",
+            task_id=task.id,
+            status="running",
+            started_at=utc_now(),
+        )
+        session.add(task)
+        session.add(run)
+        await session.commit()
+
+    worker = TaskWorker(
+        SchedulingRuntimeOptions(local_python_artifact_dir=tmp_path / "artifacts"),
+        worker_id="unsupported-worker",
+    )
+    assert await worker.run_once() is True
+
+    async with create_db_session() as session:
+        task = await session.get(TaskEntity, "unsupported-task")
+        run = await session.get(TaskRunEntity, "unsupported-run")
+        quota = (
+            await session.exec(
+                select(TaskQuotaEntity).where(
+                    TaskQuotaEntity.service == "ai-contract",
+                    TaskQuotaEntity.tenant_id == "unsupported-tenant",
+                    TaskQuotaEntity.resource_pool == "default",
+                )
+            )
+        ).one()
+        assert task is not None
+        assert run is not None
+        assert task.status == "failed"
+        assert task.error_payload_json["type"] == "ValueError"
+        assert run.status == "failed"
+        assert run.error_code == "ValueError"
+        assert run.quota_slot_released is True
+        assert quota.running_count == 0
+
     assert await worker.claim_one() is None
