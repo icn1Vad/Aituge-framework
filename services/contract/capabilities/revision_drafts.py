@@ -30,6 +30,9 @@ _DATE_RE = re.compile(
 _AMOUNT_RE = re.compile(
     r"(?:人民币\s*)?(?:(?:¥|￥)\s*\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s*(?:元|万元|亿元|%|％))"
 )
+_DURATION_RE = re.compile(
+    r"(?:\d+|[一二三四五六七八九十百千万两〇零]+)\s*(?:个)?(?:工作日|自然日|日|天|月|年|小时)"
+)
 _COMPANY_RE = re.compile(r"[\u4e00-\u9fffA-Za-z0-9（）()·]{4,80}(?:有限责任公司|有限公司|股份有限公司)")
 
 
@@ -62,6 +65,7 @@ class RevisionEvidenceSource(StrictModel):
     quoted_text: str | None = None
     quoted_text_hash: str | None = None
     checked_scope: str | None = None
+    verification_note: str | None = None
 
 
 class RevisionFindingSource(StrictModel):
@@ -103,7 +107,7 @@ class RevisionTarget(StrictModel):
 class RevisionDraft(StrictModel):
     revision_key: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     finding_id: str
-    operation: Literal["REPLACE", "DELETE", "UNSUPPORTED"]
+    operation: Literal["REPLACE", "DELETE", "SUPPLEMENT", "UNSUPPORTED"]
     original_text: str | None = None
     replacement_text: str | None = None
     change_reason: str
@@ -121,6 +125,11 @@ class RevisionDraft(StrictModel):
         elif self.operation == "DELETE":
             if not self.original_text or self.replacement_text is not None or self.target is None:
                 raise ValueError("DELETE requires target and null replacement_text")
+        elif self.operation == "SUPPLEMENT":
+            if self.original_text is not None or not self.replacement_text or self.target is not None:
+                raise ValueError(
+                    "SUPPLEMENT requires replacement_text and null original_text/target"
+                )
         elif not self.unsupported_reason:
             raise ValueError("UNSUPPORTED requires unsupported_reason")
         return self
@@ -179,7 +188,7 @@ class RevisionSourceSnapshotRepository(Protocol):
 class RevisionTextGenerator(Protocol):
     async def generate(
         self,
-        items: Sequence["ReplacementRequest"],
+        items: Sequence["RevisionGenerationRequest"],
         *,
         source: RevisionReviewSource,
     ) -> "ReplacementBatchResult": ...
@@ -198,6 +207,18 @@ class ReplacementRequest:
     original_text: str
     target: RevisionTarget
     adjacent_context: str
+
+
+@dataclass(frozen=True, slots=True)
+class SupplementRequest:
+    revision_key: str
+    finding: RevisionFindingSource
+    checked_scopes: tuple[str, ...]
+    verification_notes: tuple[str, ...]
+    adjacent_context: str
+
+
+RevisionGenerationRequest = ReplacementRequest | SupplementRequest
 
 
 @dataclass(frozen=True, slots=True)
@@ -448,7 +469,7 @@ class LlmRevisionTextGenerator:
 
     async def generate(
         self,
-        items: Sequence[ReplacementRequest],
+        items: Sequence[RevisionGenerationRequest],
         *,
         source: RevisionReviewSource,
     ) -> ReplacementBatchResult:
@@ -459,7 +480,7 @@ class LlmRevisionTextGenerator:
         else:
             runtime = self.runtime
         payload = {
-            "task": "GENERATE_CONTRACT_REPLACEMENT_TEXT_ONLY",
+            "task": "GENERATE_CONTRACT_REVISION_TEXT_ONLY",
             "parties": {
                 "our_party": source.our_party,
                 "counterparty": source.counterparty,
@@ -479,23 +500,13 @@ class LlmRevisionTextGenerator:
                 "不得重新判断风险，不得改变事实、主体、金额、日期或合同对象",
                 "不得返回finding_id、operation、Evidence位置或风险等级",
                 "不得使用XXX、TODO、待补充、待定等占位符",
-                "修改必须直接处理给定风险根因并保持可直接替换原条款",
+                "REPLACE请求必须直接处理给定风险根因并保持可直接替换原条款",
+                "SUPPLEMENT请求只生成供人工确认的补充条款，不得伪造原文或定位信息",
+                "SUPPLEMENT不得写入真实金额、日期或期限；确需商业参数时使用“某”",
+                "SUPPLEMENT不得引入未知公司或改变合同主体",
             ],
             "draft_requests": [
-                {
-                    "revision_key": item.revision_key,
-                    "risk_root": item.finding.issue,
-                    "formal_suggestion": item.finding.suggestion,
-                    "control_codes": item.finding.control_codes,
-                    "original_clause": item.original_text,
-                    "adjacent_context": item.adjacent_context,
-                    "facts_that_must_not_change": {
-                        "our_party": source.our_party,
-                        "counterparty": source.counterparty,
-                        "amounts": sorted(_extract_values(_AMOUNT_RE, item.original_text)),
-                        "dates": sorted(_extract_values(_DATE_RE, item.original_text)),
-                    },
-                }
+                _model_request_payload(item, source)
                 for item in items
             ],
         }
@@ -557,6 +568,51 @@ class LlmRevisionTextGenerator:
         )
 
 
+def _model_request_payload(
+    item: RevisionGenerationRequest,
+    source: RevisionReviewSource,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "revision_key": item.revision_key,
+        "risk_root": item.finding.issue,
+        "formal_suggestion": item.finding.suggestion,
+        "control_codes": item.finding.control_codes,
+        "facts_that_must_not_change": {
+            "our_party": source.our_party,
+            "counterparty": source.counterparty,
+        },
+    }
+    if isinstance(item, ReplacementRequest):
+        payload.update(
+            {
+                "request_type": "REPLACE",
+                "original_clause": item.original_text,
+                "adjacent_context": item.adjacent_context,
+                "facts_that_must_not_change": {
+                    **payload["facts_that_must_not_change"],
+                    "amounts": sorted(_extract_values(_AMOUNT_RE, item.original_text)),
+                    "dates": sorted(_extract_values(_DATE_RE, item.original_text)),
+                },
+            }
+        )
+        return payload
+    payload.update(
+        {
+            "request_type": "SUPPLEMENT",
+            "checked_scopes": list(item.checked_scopes),
+            "absence_verification": list(item.verification_notes),
+            "adjacent_context": item.adjacent_context,
+            "facts_that_must_not_change": {
+                **payload["facts_that_must_not_change"],
+                "amounts": [],
+                "dates": [],
+                "durations": [],
+            },
+        }
+    )
+    return payload
+
+
 @dataclass(slots=True)
 class RevisionDraftService:
     source_provider: RevisionSourceProvider
@@ -589,7 +645,7 @@ class RevisionDraftService:
         evidence_by_id = {item.evidence_id: item for item in source.evidences}
         drafts: list[RevisionDraft] = []
         failures: list[FailedRevisionFinding] = []
-        replacements: list[ReplacementRequest] = []
+        generation_requests: list[RevisionGenerationRequest] = []
         for finding in source.findings:
             revision_key = compute_revision_key(
                 source.review_id,
@@ -614,11 +670,11 @@ class RevisionDraftService:
             elif isinstance(planned, FailedRevisionFinding):
                 failures.append(planned)
             else:
-                replacements.append(planned)
+                generation_requests.append(planned)
 
         model_calls = 0
         for batch in _build_batches(
-            replacements,
+            generation_requests,
             max_items=self.max_batch_findings,
             target_tokens=self.target_prompt_tokens,
         ):
@@ -629,19 +685,31 @@ class RevisionDraftService:
                 for item in batch:
                     generated = generated_by_key[item.revision_key]
                     try:
-                        replacement = _validate_replacement(
-                            generated.replacement_text,
-                            item.original_text,
-                            source,
-                        )
+                        if isinstance(item, ReplacementRequest):
+                            replacement = _validate_replacement(
+                                generated.replacement_text,
+                                item.original_text,
+                                source,
+                            )
+                            operation: Literal["REPLACE", "SUPPLEMENT"] = "REPLACE"
+                            original_text: str | None = item.original_text
+                            target: RevisionTarget | None = item.target
+                        else:
+                            replacement = _validate_supplement(
+                                generated.replacement_text,
+                                source,
+                            )
+                            operation = "SUPPLEMENT"
+                            original_text = None
+                            target = None
                         drafts.append(
                             _draft(
                                 revision_key=item.revision_key,
                                 finding=item.finding,
-                                operation="REPLACE",
-                                original_text=item.original_text,
+                                operation=operation,
+                                original_text=original_text,
                                 replacement_text=replacement,
-                                target=item.target,
+                                target=target,
                                 draft_note=generated.draft_note,
                             )
                         )
@@ -730,6 +798,7 @@ def source_from_formal_payload(
             quoted_text=item.get("quoted_text"),
             quoted_text_hash=item.get("quoted_text_hash"),
             checked_scope=item.get("checked_scope"),
+            verification_note=item.get("verification_note"),
         )
         for item in payload["evidences"]
     ]
@@ -825,13 +894,9 @@ def _plan_draft(
     finding: RevisionFindingSource,
     evidences: Sequence[RevisionEvidenceSource],
     revision_key: str,
-) -> RevisionDraft | FailedRevisionFinding | ReplacementRequest:
+) -> RevisionDraft | FailedRevisionFinding | RevisionGenerationRequest:
     if any(item.evidence_type == "ABSENCE" for item in evidences):
-        return _unsupported(
-            revision_key,
-            finding,
-            "该风险包含缺失性证据，无法通过单段原文替换完成。",
-        )
+        return _plan_supplement(finding, evidences, revision_key)
     text_evidence = [
         item
         for item in evidences
@@ -871,6 +936,50 @@ def _plan_draft(
         finding=finding,
         original_text=evidence.quoted_text,
         target=target,
+        adjacent_context=adjacent_context,
+    )
+
+
+def _plan_supplement(
+    finding: RevisionFindingSource,
+    evidences: Sequence[RevisionEvidenceSource],
+    revision_key: str,
+) -> SupplementRequest | FailedRevisionFinding:
+    absence_evidences = [
+        item for item in evidences if item.evidence_type == "ABSENCE"
+    ]
+    checked_scopes = tuple(
+        dict.fromkeys(
+            item.checked_scope.strip()
+            for item in absence_evidences
+            if item.checked_scope and item.checked_scope.strip()
+        )
+    )
+    verification_notes = tuple(
+        dict.fromkeys(
+            item.verification_note.strip()
+            for item in absence_evidences
+            if item.verification_note and item.verification_note.strip()
+        )
+    )
+    if not checked_scopes or not verification_notes:
+        return FailedRevisionFinding(
+            finding_id=finding.finding_id,
+            error_code="SOURCE_TEXT_INVALID",
+            message="ABSENCE Evidence scope or verification metadata is incomplete",
+        )
+    adjacent_context = "\n".join(
+        item.quoted_text.strip()
+        for item in evidences
+        if item.evidence_type in {"TEXT_QUOTE", "CONTEXT"}
+        and item.quoted_text
+        and item.quoted_text.strip()
+    )
+    return SupplementRequest(
+        revision_key=revision_key,
+        finding=finding,
+        checked_scopes=checked_scopes,
+        verification_notes=verification_notes,
         adjacent_context=adjacent_context,
     )
 
@@ -971,22 +1080,47 @@ def _validate_replacement(
     return normalized
 
 
+def _validate_supplement(value: str, source: RevisionReviewSource) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise RevisionDraftError("REVISION_GENERATION_FAILED", "replacement_text is empty")
+    if _PLACEHOLDER_RE.search(normalized):
+        raise RevisionDraftError("REVISION_GENERATION_FAILED", "replacement_text contains a placeholder")
+    if len(normalized) > 1_200:
+        raise RevisionDraftError("REVISION_GENERATION_FAILED", "replacement_text expanded abnormally")
+    if _AMOUNT_RE.search(normalized):
+        raise RevisionDraftError(
+            "REVISION_GENERATION_FAILED", "supplement introduced a concrete amount"
+        )
+    if _DATE_RE.search(normalized):
+        raise RevisionDraftError(
+            "REVISION_GENERATION_FAILED", "supplement introduced a concrete date"
+        )
+    if _DURATION_RE.search(normalized):
+        raise RevisionDraftError(
+            "REVISION_GENERATION_FAILED", "supplement introduced a concrete duration"
+        )
+    known_names = {source.our_party, source.counterparty}
+    supplement_companies = set(_COMPANY_RE.findall(normalized))
+    if not supplement_companies.issubset(known_names):
+        raise RevisionDraftError(
+            "REVISION_GENERATION_FAILED",
+            "supplement introduced an unknown contract party",
+        )
+    return normalized
+
+
 def _build_batches(
-    values: Sequence[ReplacementRequest],
+    values: Sequence[RevisionGenerationRequest],
     *,
     max_items: int,
     target_tokens: int,
-) -> list[list[ReplacementRequest]]:
-    batches: list[list[ReplacementRequest]] = []
-    current: list[ReplacementRequest] = []
+) -> list[list[RevisionGenerationRequest]]:
+    batches: list[list[RevisionGenerationRequest]] = []
+    current: list[RevisionGenerationRequest] = []
     current_tokens = 800
     for item in values:
-        estimated = _estimate_tokens(
-            item.original_text
-            + item.finding.issue
-            + item.finding.suggestion
-            + item.adjacent_context
-        ) + 180
+        estimated = _estimate_tokens(_request_budget_text(item)) + 180
         if current and (len(current) >= max_items or current_tokens + estimated > target_tokens):
             batches.append(current)
             current = []
@@ -998,14 +1132,33 @@ def _build_batches(
     return batches
 
 
+def _request_budget_text(item: RevisionGenerationRequest) -> str:
+    if isinstance(item, ReplacementRequest):
+        return (
+            item.original_text
+            + item.finding.issue
+            + item.finding.suggestion
+            + item.adjacent_context
+        )
+    return "\n".join(
+        (
+            *item.checked_scopes,
+            *item.verification_notes,
+            item.finding.issue,
+            item.finding.suggestion,
+            item.adjacent_context,
+        )
+    )
+
+
 def _draft(
     *,
     revision_key: str,
     finding: RevisionFindingSource,
-    operation: Literal["REPLACE", "DELETE"],
-    original_text: str,
+    operation: Literal["REPLACE", "DELETE", "SUPPLEMENT"],
+    original_text: str | None,
     replacement_text: str | None,
-    target: RevisionTarget,
+    target: RevisionTarget | None,
     draft_note: str | None = None,
 ) -> RevisionDraft:
     return RevisionDraft(
@@ -1068,7 +1221,9 @@ async def _complete_revision_batch(
     user_prompt: str,
 ) -> Any:
     system_prompt = (
-        "你是合同条款修订器。风险已由上游正式确认；你只生成可直接替换原条款的中文文案。"
+        "你是合同条款修订器。风险已由上游正式确认；"
+        "REPLACE请求生成可直接替换原条款的中文文案，"
+        "SUPPLEMENT请求生成供人工确认的补充条款，不得伪造原文或位置。"
         "严格返回JSON对象，不使用工具，不输出解释性前后缀。"
     )
     messages = [{"role": "user", "content": user_prompt}]
