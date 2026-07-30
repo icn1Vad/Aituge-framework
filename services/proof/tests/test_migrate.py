@@ -143,3 +143,13 @@ def test_lifecycle_migration_carries_decimal_versions_and_keeps_delete_tombstone
     assert "CREATE TABLE proof_policy_delete_tombstone" in sql
     assert "original_storage_path" in sql
     assert "trash_storage_path" in sql
+
+
+def test_effective_policy_title_migration_keeps_only_highest_version() -> None:
+    sql = (MIGRATIONS_DIR / "017_effective_policy_title_uniqueness.sql").read_text("utf-8")
+
+    assert "PARTITION BY tenant_id, normalized_title" in sql
+    assert "ORDER BY version_seq DESC" in sql
+    assert "SET status = 'expired'" in sql
+    assert "proof_policy_one_effective_normalized_title" in sql
+    assert "WHERE status = 'effective'" in sql

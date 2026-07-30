@@ -5,25 +5,11 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-class SimilarityDecisionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    decision: Literal["new_version", "separate"]
-    candidate_policy_id: str | None = Field(default=None, max_length=160)
-
-    @model_validator(mode="after")
-    def require_candidate_for_new_version(self) -> SimilarityDecisionRequest:
-        candidate = str(self.candidate_policy_id or "").strip()
-        if self.decision == "new_version" and not candidate:
-            raise ValueError("candidate_policy_id is required for new_version")
-        self.candidate_policy_id = candidate or None
-        return self
-
-
 class PolicyLifecycleActionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    action: Literal["expire", "delete"]
+    action: Literal["activate", "expire", "discard", "delete"]
+    replace_existing: bool = False
 
 
 class InternalPolicyActionRequest(BaseModel):
@@ -32,6 +18,7 @@ class InternalPolicyActionRequest(BaseModel):
     operation_id: str = Field(min_length=1, max_length=160)
     policy_id: str = Field(min_length=1, max_length=160)
     action: Literal["activate", "expire", "delete"]
+    replace_existing: bool = False
 
 
 class RetrievalFetchRequest(BaseModel):

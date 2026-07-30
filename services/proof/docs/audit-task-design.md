@@ -6,9 +6,10 @@
 上传文件
   -> 解析并把 Policy/Document/Chunks 暂存为 draft
   -> proof.audit.run 异步生成概览，并行执行语义/可执行性与制度冲突审校
-  -> GET audit-status 轮询轻量状态，按 Stage 分别获取结果
+  -> GET review-status 轮询轻量状态，完成后一次读取 review-result
   -> 人工确认
-  -> Policy 变为 effective，开始参与知识库检索
+  -> POST actions(action=activate)
+  -> 生命周期任务完成向量校验后，Policy 变为 effective
 ```
 
 暂存是异步审校和页面刷新所需的技术状态，不代表正式入库。关键词、向量、Chunk fetch 和
@@ -57,19 +58,16 @@ proof.audit.run
 - `proof_conflict_audit_finding`：保存源/候选 Chunk ID、四类冲突、problem、suggestion；
 - 暂不保存文档快照、规则/Skill/模型版本、字符偏移、失败 Chunk 或历史轮次。
 
-父 Task 仍统一执行，但读取接口按 Stage 拆分。状态轮询统一返回各类统计，但不返回概览正文或
-Finding；某一 Stage 完成后，Java 或前端只请求该 Stage 的结果并透传其结构。未完成 Stage 的
-模型统计为 `null`，不能按零问题解释。
+父 Task 仍统一执行。轻量状态接口只返回阶段状态和统计；完整结果接口一次返回概览、
+语义/可执行性、外部冲突和内部冲突，Java 不再拼接多份结果。未完成 Stage 的模型统计为
+`null`，不能按零问题解释。
 
 ## 状态接口
 
-- `POST /v1/policies`：上传并暂存草稿，随后调度审校，返回轻量 `audit_task`；
-- `GET /v1/policies/{id}/audit-status`：返回父审校、三个 Stage 状态及统一统计；
-- `GET /v1/policies/{id}/policy-summary`：返回概览 Stage 结果；
-- `GET /v1/policies/{id}/semantic-findings`：返回语义/可执行性及结构检查结果；
-- `GET /v1/policies/{id}/conflict-findings`：返回冲突 Stage 结果；
-- `POST /v1/policies/{id}/confirm`：审校完成后确认入库；
-- `DELETE /v1/policies/{id}`：只允许丢弃草稿；
+- `POST /v1/policies`：携带幂等键上传并暂存草稿，随后调度审校；
+- `GET /v1/policies/{id}/review-status`：返回轻量父审校、阶段状态、统计及最新生命周期操作；
+- `GET /v1/policies/{id}/review-result`：一次返回完整审查结果和阶段错误；
+- `POST /v1/policies/{id}/actions`：携带幂等键执行确认、过期、丢弃或永久删除；
 - `POST /v1/internal/semantic-audits/result`：Framework 统一制度审校可信回调；接口名称保持不变，
   同一回调按 stage 接收制度概览、语义审校和制度冲突结果。
 

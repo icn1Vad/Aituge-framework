@@ -93,6 +93,109 @@ class ProofRepository:
             "migration_count": int(migrations["count"] if migrations else 0),
         }
 
+    def reserve_policy_create_request(
+        self,
+        *,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> dict[str, Any]:
+        with self.connect() as conn:
+            inserted = conn.execute(
+                """
+                INSERT INTO proof_policy_create_request (
+                  tenant_id, idempotency_key, request_fingerprint, status
+                ) VALUES (
+                  current_setting('proof.tenant_id'), %s, %s, 'RUNNING'
+                )
+                ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+                RETURNING idempotency_key
+                """,
+                (idempotency_key, request_fingerprint),
+            ).fetchone()
+            if inserted is not None:
+                conn.commit()
+                return {"state": "reserved", "status": "RUNNING"}
+            row = conn.execute(
+                """
+                SELECT idempotency_key, request_fingerprint, status,
+                       policy_id, document_id, error_code, error_message
+                FROM proof_policy_create_request
+                WHERE tenant_id = current_setting('proof.tenant_id')
+                  AND idempotency_key = %s
+                FOR UPDATE
+                """,
+                (idempotency_key,),
+            ).fetchone()
+            if row is None:
+                raise ProofError(
+                    "idempotency_reservation_failed",
+                    "The policy create request could not be reserved.",
+                    status_code=503,
+                )
+            if str(row["request_fingerprint"]) != request_fingerprint:
+                raise ProofError(
+                    "idempotency_conflict",
+                    "The Idempotency-Key was already used with different policy data.",
+                    status_code=409,
+                )
+            if row["status"] == "FAILED":
+                conn.execute(
+                    """
+                    UPDATE proof_policy_create_request
+                    SET status = 'RUNNING', error_code = NULL, error_message = NULL,
+                        updated_at = now(), finished_at = NULL
+                    WHERE tenant_id = current_setting('proof.tenant_id')
+                      AND idempotency_key = %s
+                    """,
+                    (idempotency_key,),
+                )
+                conn.commit()
+                return {"state": "reserved", "status": "RUNNING"}
+            conn.commit()
+        return {"state": "existing", **dict(row)}
+
+    def complete_policy_create_request(
+        self,
+        *,
+        idempotency_key: str,
+        policy_id: str,
+        document_id: str,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE proof_policy_create_request
+                SET status = 'SUCCEEDED', policy_id = %s, document_id = %s,
+                    error_code = NULL, error_message = NULL,
+                    updated_at = now(), finished_at = now()
+                WHERE tenant_id = current_setting('proof.tenant_id')
+                  AND idempotency_key = %s
+                """,
+                (policy_id, document_id, idempotency_key),
+            )
+            conn.commit()
+
+    def fail_policy_create_request(
+        self,
+        *,
+        idempotency_key: str,
+        error_code: str,
+        error_message: str,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE proof_policy_create_request
+                SET status = 'FAILED', error_code = %s, error_message = %s,
+                    updated_at = now(), finished_at = now()
+                WHERE tenant_id = current_setting('proof.tenant_id')
+                  AND idempotency_key = %s
+                  AND status = 'RUNNING'
+                """,
+                (error_code, error_message[:2000], idempotency_key),
+            )
+            conn.commit()
+
     def create_ingestion_run(
         self,
         *,
@@ -318,19 +421,24 @@ class ProofRepository:
         normalized_text_length: int,
         title_threshold: float = 0.75,
     ) -> list[dict[str, Any]]:
-        """Return tenant-owned effective texts for deterministic similarity scoring."""
+        """Return tenant-owned effective and pending draft texts for similarity scoring."""
 
         with self.connect() as conn:
             metadata = conn.execute(
                 """
                 SELECT p.id AS policy_id, p.title, p.normalized_title, p.version,
                        p.version_seq, p.family_id, p.status, p.category_code,
+                       (SELECT MAX(family.version_seq)
+                          FROM proof_policy family
+                         WHERE family.tenant_id = p.tenant_id
+                           AND family.family_id = p.family_id) AS family_max_version_seq,
                        d.id AS document_id, d.normalized_text_length
                 FROM proof_policy p
                 JOIN proof_document d
                   ON d.policy_id = p.id AND d.tenant_id = p.tenant_id
                 WHERE p.tenant_id = current_setting('proof.tenant_id')
-                  AND p.status = 'effective'
+                  AND p.status IN ('effective', 'draft')
+                  AND (p.status = 'effective' OR p.similarity_state IS DISTINCT FROM 'decision_required')
                 ORDER BY p.updated_at DESC, p.id
                 """
             ).fetchall()
@@ -359,7 +467,12 @@ class ProofRepository:
                 """
                 SELECT p.id AS policy_id, p.title, p.normalized_title, p.version,
                        p.version_seq, p.family_id, p.status, p.category_code,
-                       d.id AS document_id, d.normalized_text_length,
+                       (SELECT MAX(family.version_seq)
+                          FROM proof_policy family
+                         WHERE family.tenant_id = p.tenant_id
+                           AND family.family_id = p.family_id) AS family_max_version_seq,
+                       d.id AS document_id, d.original_name AS candidate_file_name,
+                       d.normalized_text_length,
                        string_agg(u.text, E'\n' ORDER BY u.clause_ordinal) AS text,
                        array_agg(u.text ORDER BY u.clause_ordinal) AS clauses
                 FROM proof_policy p
@@ -367,9 +480,10 @@ class ProofRepository:
                   ON d.policy_id = p.id AND d.tenant_id = p.tenant_id
                 JOIN proof_retrieval_unit u ON u.document_id = d.id
                 WHERE p.tenant_id = current_setting('proof.tenant_id')
-                  AND p.status = 'effective'
+                  AND p.status IN ('effective', 'draft')
+                  AND (p.status = 'effective' OR p.similarity_state IS DISTINCT FROM 'decision_required')
                   AND p.id = ANY(%s)
-                GROUP BY p.id, d.id
+                GROUP BY p.id, d.id, d.original_name
                 ORDER BY p.updated_at DESC, p.id
                 """,
                 (eligible_ids,),
@@ -406,77 +520,126 @@ class ProofRepository:
         ingestion_run_id: str | None = None,
         ingestion_warning_count: int | None = None,
     ) -> dict[str, Any]:
+        reused_existing = False
         with self.connect() as conn:
-            self._validate_metadata(conn, level_code, category_code)
             conn.execute(
                 """
-                INSERT INTO proof_policy (
-                  id, tenant_id, family_id, title, normalized_title, version, version_seq,
-                  status, similarity_state, similarity_report, level_code, category_code
-                ) VALUES (
-                  %s, current_setting('proof.tenant_id'), %s, %s, %s, %s, %s,
-                  'draft', %s, %s, %s, %s
+                SELECT pg_advisory_xact_lock(
+                  hashtextextended(
+                    current_setting('proof.tenant_id') || ':content:' || %s,
+                    0
+                  )
                 )
                 """,
-                (
-                    policy_id,
-                    family_id,
-                    title,
-                    normalized_title,
-                    version,
-                    version_seq,
-                    similarity_state,
-                    Jsonb(similarity_report),
-                    level_code,
-                    category_code,
-                ),
+                (content_hash,),
             )
-            conn.execute(
+            existing = conn.execute(
                 """
-                INSERT INTO proof_document (
-                  id, tenant_id, policy_id, content_hash, original_name, file_type, storage_path,
-                  status, parser_version, chunker_version, parse_warnings,
-                  structure_profile, structure_diagnostics,
-                  normalized_text_hash, normalized_text_length
-                ) VALUES (%s, current_setting('proof.tenant_id'), %s, %s, %s, %s, %s,
-                          'pending_embedding', %s, %s, %s, %s, %s, %s, %s)
+                SELECT p.id AS policy_id, d.id AS document_id,
+                       d.structure_profile,
+                       (SELECT COUNT(*) FROM proof_document_block b
+                        WHERE b.document_id = d.id) AS block_count,
+                       (SELECT COUNT(*) FROM proof_retrieval_unit u
+                        WHERE u.document_id = d.id) AS clause_count,
+                       jsonb_array_length(d.parse_warnings)
+                         + jsonb_array_length(
+                             COALESCE(d.structure_diagnostics -> 'warnings', '[]'::jsonb)
+                           ) AS warning_count
+                FROM proof_policy p
+                JOIN proof_document d
+                  ON d.policy_id = p.id AND d.tenant_id = p.tenant_id
+                WHERE p.tenant_id = current_setting('proof.tenant_id')
+                  AND d.content_hash = %s
                 """,
-                (
-                    document_id,
-                    policy_id,
-                    content_hash,
-                    original_name,
-                    file_type,
-                    storage_path,
-                    parser_version,
-                    chunker_version,
-                    Jsonb(warnings),
-                    structure_profile,
-                    Jsonb(structure_diagnostics),
-                    normalized_text_hash,
-                    normalized_text_length,
-                ),
-            )
-            self._insert_blocks(conn, document_id, blocks)
-            self._insert_units(conn, document_id, policy_id, units)
-            if ingestion_run_id:
-                self._complete_ingestion_run_on_connection(
-                    conn,
-                    run_id=ingestion_run_id,
-                    policy_id=policy_id,
-                    document_id=document_id,
-                    reused=False,
-                    block_count=len(blocks),
-                    clause_count=len(units),
-                    warning_count=(
-                        ingestion_warning_count if ingestion_warning_count is not None else len(warnings)
+                (content_hash,),
+            ).fetchone()
+            if existing is not None:
+                if ingestion_run_id:
+                    self._complete_ingestion_run_on_connection(
+                        conn,
+                        run_id=ingestion_run_id,
+                        policy_id=str(existing["policy_id"]),
+                        document_id=str(existing["document_id"]),
+                        reused=True,
+                        block_count=int(existing["block_count"]),
+                        clause_count=int(existing["clause_count"]),
+                        warning_count=int(existing["warning_count"]),
+                        clause_profile=str(existing["structure_profile"] or "unknown"),
+                    )
+                conn.commit()
+                reused_existing = True
+            else:
+                self._validate_metadata(conn, level_code, category_code)
+                conn.execute(
+                    """
+                    INSERT INTO proof_policy (
+                      id, tenant_id, family_id, title, normalized_title, version, version_seq,
+                      status, similarity_state, similarity_report, level_code, category_code
+                    ) VALUES (
+                      %s, current_setting('proof.tenant_id'), %s, %s, %s, %s, %s,
+                      'draft', %s, %s, %s, %s
+                    )
+                    """,
+                    (
+                        policy_id,
+                        family_id,
+                        title,
+                        normalized_title,
+                        version,
+                        version_seq,
+                        similarity_state,
+                        Jsonb(similarity_report),
+                        level_code,
+                        category_code,
                     ),
-                    clause_profile=structure_profile,
                 )
-            conn.commit()
+                conn.execute(
+                    """
+                    INSERT INTO proof_document (
+                      id, tenant_id, policy_id, content_hash, original_name, file_type, storage_path,
+                      status, parser_version, chunker_version, parse_warnings,
+                      structure_profile, structure_diagnostics,
+                      normalized_text_hash, normalized_text_length
+                    ) VALUES (%s, current_setting('proof.tenant_id'), %s, %s, %s, %s, %s,
+                              'pending_embedding', %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        document_id,
+                        policy_id,
+                        content_hash,
+                        original_name,
+                        file_type,
+                        storage_path,
+                        parser_version,
+                        chunker_version,
+                        Jsonb(warnings),
+                        structure_profile,
+                        Jsonb(structure_diagnostics),
+                        normalized_text_hash,
+                        normalized_text_length,
+                    ),
+                )
+                self._insert_blocks(conn, document_id, blocks)
+                self._insert_units(conn, document_id, policy_id, units)
+                if ingestion_run_id:
+                    self._complete_ingestion_run_on_connection(
+                        conn,
+                        run_id=ingestion_run_id,
+                        policy_id=policy_id,
+                        document_id=document_id,
+                        reused=False,
+                        block_count=len(blocks),
+                        clause_count=len(units),
+                        warning_count=(
+                            ingestion_warning_count if ingestion_warning_count is not None else len(warnings)
+                        ),
+                        clause_profile=structure_profile,
+                    )
+                conn.commit()
         payload = self.get_by_content_hash(content_hash)
         if payload is None:
             raise RuntimeError("Ingested document could not be read back.")
+        payload["_ingest_reused"] = reused_existing
         return payload
 
     def rebuild_document_structure(
@@ -736,6 +899,8 @@ class ProofRepository:
         policy_id: str,
         action: str,
         status: str,
+        idempotency_key: str | None = None,
+        request_fingerprint: str | None = None,
         framework_task_id: str | None = None,
         framework_run_id: str | None = None,
         error_message: str | None = None,
@@ -743,7 +908,7 @@ class ProofRepository:
         with self.connect() as conn:
             existing = conn.execute(
                 """
-                SELECT policy_id, action
+                SELECT policy_id, action, request_fingerprint
                 FROM proof_policy_lifecycle_operation
                 WHERE operation_id = %s
                   AND tenant_id = current_setting('proof.tenant_id')
@@ -753,6 +918,11 @@ class ProofRepository:
             if existing is not None and (
                 str(existing["policy_id"]) != policy_id
                 or str(existing["action"]) != action
+                or (
+                    request_fingerprint
+                    and existing.get("request_fingerprint")
+                    and str(existing["request_fingerprint"]) != request_fingerprint
+                )
             ):
                 raise ProofError(
                     "idempotency_conflict",
@@ -763,11 +933,20 @@ class ProofRepository:
                 """
                 INSERT INTO proof_policy_lifecycle_operation (
                   operation_id, tenant_id, policy_id, action, status,
+                  idempotency_key, request_fingerprint,
                   framework_task_id, framework_run_id, error_message
                 ) VALUES (
-                  %s, current_setting('proof.tenant_id'), %s, %s, %s, %s, %s, %s
+                  %s, current_setting('proof.tenant_id'), %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT (operation_id) DO UPDATE SET
+                  idempotency_key = COALESCE(
+                    proof_policy_lifecycle_operation.idempotency_key,
+                    EXCLUDED.idempotency_key
+                  ),
+                  request_fingerprint = COALESCE(
+                    proof_policy_lifecycle_operation.request_fingerprint,
+                    EXCLUDED.request_fingerprint
+                  ),
                   framework_task_id = COALESCE(
                     EXCLUDED.framework_task_id,
                     proof_policy_lifecycle_operation.framework_task_id
@@ -789,6 +968,8 @@ class ProofRepository:
                     policy_id,
                     action,
                     status,
+                    idempotency_key,
+                    request_fingerprint,
                     framework_task_id,
                     framework_run_id,
                     error_message,
@@ -796,11 +977,162 @@ class ProofRepository:
             )
             conn.commit()
 
+    def claim_policy_operation(
+        self,
+        *,
+        operation_id: str,
+        policy_id: str,
+        action: str,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Atomically reserve the single active lifecycle slot for one policy."""
+        with self.connect() as conn:
+            conn.execute(
+                """
+                SELECT pg_advisory_xact_lock(
+                  hashtextextended(
+                    current_setting('proof.tenant_id') || ':policy-request:' || %s,
+                    0
+                  )
+                )
+                """,
+                (idempotency_key,),
+            )
+            conn.execute(
+                """
+                SELECT pg_advisory_xact_lock(
+                  hashtextextended(
+                    current_setting('proof.tenant_id') || ':policy-operation:' || %s,
+                    0
+                  )
+                )
+                """,
+                (policy_id,),
+            )
+            existing = conn.execute(
+                """
+                SELECT operation_id, policy_id, action, status,
+                       idempotency_key, request_fingerprint,
+                       attempt_count,
+                       framework_task_id, framework_run_id,
+                       error_message, created_at, updated_at, finished_at
+                FROM proof_policy_lifecycle_operation
+                WHERE tenant_id = current_setting('proof.tenant_id')
+                  AND (operation_id = %s OR idempotency_key = %s)
+                ORDER BY CASE WHEN operation_id = %s THEN 0 ELSE 1 END
+                LIMIT 1
+                FOR UPDATE
+                """,
+                (operation_id, idempotency_key, operation_id),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    str(existing["policy_id"]) != policy_id
+                    or str(existing["action"]) != action
+                    or (
+                        existing.get("request_fingerprint")
+                        and str(existing["request_fingerprint"]) != request_fingerprint
+                    )
+                ):
+                    raise ProofError(
+                        "idempotency_conflict",
+                        "The lifecycle operation was already used with different parameters.",
+                        status_code=409,
+                    )
+                if str(existing["status"]) != "FAILED":
+                    conn.commit()
+                    return False, dict(existing)
+                conn.execute(
+                    """
+                    UPDATE proof_policy_lifecycle_operation
+                    SET status = 'ACCEPTED', error_message = NULL,
+                        idempotency_key = COALESCE(idempotency_key, %s),
+                        request_fingerprint = COALESCE(request_fingerprint, %s),
+                        attempt_count = attempt_count + 1,
+                        framework_task_id = NULL, framework_run_id = NULL,
+                        updated_at = now(), finished_at = NULL
+                    WHERE operation_id = %s
+                      AND tenant_id = current_setting('proof.tenant_id')
+                    """,
+                    (idempotency_key, request_fingerprint, existing["operation_id"]),
+                )
+                existing["status"] = "ACCEPTED"
+                existing["error_message"] = None
+                existing["finished_at"] = None
+                existing["attempt_count"] = int(existing.get("attempt_count") or 1) + 1
+                existing["framework_task_id"] = None
+                existing["framework_run_id"] = None
+                conn.commit()
+                return True, dict(existing)
+            active = conn.execute(
+                """
+                SELECT operation_id, policy_id, action, status,
+                       idempotency_key, request_fingerprint,
+                       attempt_count,
+                       framework_task_id, framework_run_id,
+                       error_message, created_at, updated_at, finished_at
+                FROM proof_policy_lifecycle_operation
+                WHERE tenant_id = current_setting('proof.tenant_id')
+                  AND policy_id = %s
+                  AND status IN ('ACCEPTED', 'RUNNING')
+                ORDER BY created_at DESC
+                LIMIT 1
+                FOR UPDATE
+                """,
+                (policy_id,),
+            ).fetchone()
+            if active is not None:
+                raise ProofError(
+                    "policy_operation_in_progress",
+                    "Another lifecycle operation is already running for this policy.",
+                    status_code=409,
+                    details={
+                        "operation_id": str(active["operation_id"]),
+                        "action": str(active["action"]),
+                        "status": str(active["status"]),
+                    },
+                )
+            conn.execute(
+                """
+                INSERT INTO proof_policy_lifecycle_operation (
+                  operation_id, tenant_id, policy_id, action, status,
+                  idempotency_key, request_fingerprint
+                ) VALUES (
+                  %s, current_setting('proof.tenant_id'), %s, %s, 'ACCEPTED', %s, %s
+                )
+                """,
+                (
+                    operation_id,
+                    policy_id,
+                    action,
+                    idempotency_key,
+                    request_fingerprint,
+                ),
+            )
+            claimed = conn.execute(
+                """
+                SELECT operation_id, policy_id, action, status,
+                       idempotency_key, request_fingerprint,
+                       attempt_count,
+                       framework_task_id, framework_run_id,
+                       error_message, created_at, updated_at, finished_at
+                FROM proof_policy_lifecycle_operation
+                WHERE tenant_id = current_setting('proof.tenant_id')
+                  AND operation_id = %s
+                """,
+                (operation_id,),
+            ).fetchone()
+            conn.commit()
+        return True, dict(claimed)
+
     def get_latest_policy_operation(self, policy_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
                 """
                 SELECT operation_id, action, status,
+                       idempotency_key, request_fingerprint,
+                       attempt_count,
                        framework_task_id, framework_run_id,
                        error_message, created_at, updated_at, finished_at
                 FROM proof_policy_lifecycle_operation
@@ -810,6 +1142,43 @@ class ProofRepository:
                 LIMIT 1
                 """,
                 (policy_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_policy_operation(self, operation_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT operation_id, policy_id, action, status,
+                       idempotency_key, request_fingerprint,
+                       attempt_count,
+                       framework_task_id, framework_run_id,
+                       error_message, created_at, updated_at, finished_at
+                FROM proof_policy_lifecycle_operation
+                WHERE tenant_id = current_setting('proof.tenant_id')
+                  AND operation_id = %s
+                """,
+                (operation_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_policy_operation_by_idempotency_key(
+        self,
+        idempotency_key: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT operation_id, policy_id, action, status,
+                       idempotency_key, request_fingerprint,
+                       attempt_count,
+                       framework_task_id, framework_run_id,
+                       error_message, created_at, updated_at, finished_at
+                FROM proof_policy_lifecycle_operation
+                WHERE tenant_id = current_setting('proof.tenant_id')
+                  AND idempotency_key = %s
+                """,
+                (idempotency_key,),
             ).fetchone()
         return dict(row) if row else None
 
@@ -1199,6 +1568,16 @@ class ProofRepository:
             ).fetchone()
             if run is None:
                 return False
+            if any(
+                status == "running"
+                for status in (
+                    run["status"],
+                    run["summary_status"],
+                    run["conflict_status"],
+                    run["intra_conflict_status"],
+                )
+            ):
+                return False
             semantic_incomplete = run["status"] != "completed"
             summary_incomplete = run["summary_status"] != "completed"
             conflict_incomplete = run["conflict_status"] != "completed"
@@ -1209,10 +1588,10 @@ class ProofRepository:
             conn.execute(
                 """
                 UPDATE proof_tenant_audit_run_v
-                SET status = CASE WHEN status = 'completed' THEN status ELSE 'pending' END,
+                SET status = CASE WHEN status = 'completed' THEN status ELSE 'running' END,
                     error_message = CASE WHEN status = 'completed' THEN error_message ELSE NULL END,
                     summary_status = CASE
-                      WHEN summary_status = 'completed' THEN summary_status ELSE 'pending'
+                      WHEN summary_status = 'completed' THEN summary_status ELSE 'running'
                     END,
                     summary_content = CASE
                       WHEN summary_status = 'completed' THEN summary_content ELSE NULL
@@ -1221,13 +1600,13 @@ class ProofRepository:
                       WHEN summary_status = 'completed' THEN summary_error_message ELSE NULL
                     END,
                     conflict_status = CASE
-                      WHEN conflict_status = 'completed' THEN conflict_status ELSE 'pending'
+                      WHEN conflict_status = 'completed' THEN conflict_status ELSE 'running'
                     END,
                     conflict_error_message = CASE
                       WHEN conflict_status = 'completed' THEN conflict_error_message ELSE NULL
                     END,
                     intra_conflict_status = CASE
-                      WHEN intra_conflict_status = 'completed' THEN intra_conflict_status ELSE 'pending'
+                      WHEN intra_conflict_status = 'completed' THEN intra_conflict_status ELSE 'running'
                     END,
                     intra_conflict_error_message = CASE
                       WHEN intra_conflict_status = 'completed' THEN intra_conflict_error_message ELSE NULL
@@ -1619,8 +1998,39 @@ class ProofRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def confirm_policy(self, policy_id: str) -> dict[str, Any] | None:
-        return self.activate_policy_version(policy_id)
+    def confirm_policy(
+        self,
+        policy_id: str,
+        *,
+        replace_existing: bool = False,
+    ) -> dict[str, Any] | None:
+        return self.activate_policy_version(
+            policy_id,
+            replace_existing=replace_existing,
+        )
+
+    def get_effective_family_policy(self, policy_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT current.id, current.title, current.version, current.version_seq
+                FROM proof_policy target
+                JOIN proof_policy current
+                  ON current.tenant_id = target.tenant_id
+                 AND (
+                   current.family_id = target.family_id
+                   OR current.normalized_title = target.normalized_title
+                 )
+                 AND current.status = 'effective'
+                WHERE target.id = %s
+                  AND target.tenant_id = current_setting('proof.tenant_id')
+                  AND current.id <> target.id
+                ORDER BY current.version_seq DESC, current.updated_at DESC
+                LIMIT 1
+                """,
+                (policy_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def decide_policy_similarity(
         self,
@@ -1635,7 +2045,8 @@ class ProofRepository:
         with self.connect() as conn:
             policy = conn.execute(
                 """
-                SELECT id, family_id, supersedes_policy_id, version_seq,
+                SELECT id, family_id, supersedes_policy_id, title, normalized_title,
+                       version, version_seq,
                        similarity_state, similarity_report, status
                 FROM proof_policy
                 WHERE id = %s
@@ -1689,6 +2100,35 @@ class ProofRepository:
                 )
 
             if decision == "separate":
+                conn.execute(
+                    """
+                    SELECT pg_advisory_xact_lock(
+                      hashtextextended(current_setting('proof.tenant_id') || ':title:' || %s, 0)
+                    )
+                    """,
+                    (str(policy["normalized_title"] or policy["title"]).strip(),),
+                )
+                existing_titles = {
+                    str(row["title"]).strip()
+                    for row in conn.execute(
+                        """
+                        SELECT title
+                        FROM proof_policy
+                        WHERE tenant_id = current_setting('proof.tenant_id')
+                          AND id <> %s
+                        """,
+                        (policy_id,),
+                    ).fetchall()
+                    if str(row.get("title") or "").strip()
+                }
+                independent_title = str(policy["title"]).strip()
+                independent_normalized_title = str(policy["normalized_title"]).strip()
+                if independent_title in existing_titles:
+                    suffix = 2
+                    while f"{independent_title}-{suffix}" in existing_titles:
+                        suffix += 1
+                    independent_title = f"{independent_title}-{suffix}"
+                    independent_normalized_title = f"{independent_normalized_title}{suffix}"
                 report = dict(policy["similarity_report"] or {})
                 report["decision"] = {
                     "decision": decision,
@@ -1699,13 +2139,18 @@ class ProofRepository:
                     """
                     UPDATE proof_policy
                     SET family_id = id, supersedes_policy_id = NULL,
-                        version_seq = 0, version = 'v1.0.0',
+                        title = %s, normalized_title = %s,
                         similarity_state = 'separate', similarity_report = %s,
                         updated_at = now()
                     WHERE id = %s
                       AND tenant_id = current_setting('proof.tenant_id')
                     """,
-                    (Jsonb(report), policy_id),
+                    (
+                        independent_title,
+                        independent_normalized_title,
+                        Jsonb(report),
+                        policy_id,
+                    ),
                 )
             elif decision == "new_version":
                 report_candidates = {
@@ -1720,7 +2165,8 @@ class ProofRepository:
                     )
                 candidate = conn.execute(
                     """
-                    SELECT id, family_id, version_seq, status
+                    SELECT id, family_id, title, normalized_title, version_seq, status,
+                           similarity_state
                     FROM proof_policy
                     WHERE id = %s
                       AND tenant_id = current_setting('proof.tenant_id')
@@ -1734,22 +2180,47 @@ class ProofRepository:
                         "Similarity candidate not found.",
                         status_code=404,
                     )
-                if candidate["status"] != "effective":
+                if candidate["status"] not in {"effective", "draft"}:
                     raise ProofError(
-                        "similarity_candidate_not_effective",
-                        "Only an effective policy can be selected as the previous version.",
+                        "similarity_candidate_not_available",
+                        "Only an effective or pending draft policy can be selected as the previous version.",
                         status_code=409,
                     )
-                next_version = conn.execute(
+                if (
+                    candidate["status"] == "draft"
+                    and candidate["similarity_state"] == "decision_required"
+                ):
+                    raise ProofError(
+                        "similarity_candidate_unresolved",
+                        "A draft waiting for its own similarity decision cannot be selected as the previous version.",
+                        status_code=409,
+                    )
+                conn.execute(
                     """
-                    SELECT COALESCE(MAX(version_seq), -1) + 1 AS next_version
+                    SELECT pg_advisory_xact_lock(
+                      hashtextextended(
+                        current_setting('proof.tenant_id') || ':family:' || %s,
+                        0
+                      )
+                    )
+                    """,
+                    (str(candidate["family_id"]),),
+                )
+                family_version = conn.execute(
+                    """
+                    SELECT COALESCE(MAX(version_seq), -1) AS max_version
                     FROM proof_policy
                     WHERE family_id = %s
                       AND tenant_id = current_setting('proof.tenant_id')
                     """,
                     (candidate["family_id"],),
                 ).fetchone()
-                version_seq = int(next_version["next_version"])
+                max_version_seq = int(family_version["max_version"])
+                # Version numbers are allocated while holding the family
+                # advisory lock. Client-proposed versions are display hints;
+                # they must never race or create gaps in the authoritative
+                # family sequence.
+                version_seq = max_version_seq + 1
                 report = dict(policy["similarity_report"] or {})
                 report["decision"] = {
                     "decision": decision,
@@ -1760,6 +2231,7 @@ class ProofRepository:
                     """
                     UPDATE proof_policy
                     SET family_id = %s, supersedes_policy_id = %s,
+                        title = %s, normalized_title = %s,
                         version_seq = %s, version = %s,
                         similarity_state = 'new_version', similarity_report = %s,
                         updated_at = now()
@@ -1769,6 +2241,8 @@ class ProofRepository:
                     (
                         candidate["family_id"],
                         candidate_id,
+                        candidate["title"],
+                        candidate["normalized_title"],
                         version_seq,
                         format_policy_version(version_seq),
                         Jsonb(report),
@@ -1784,11 +2258,112 @@ class ProofRepository:
             conn.commit()
         return self.get_policy(policy_id)
 
-    def activate_policy_version(self, policy_id: str) -> dict[str, Any] | None:
+    def resolve_independent_policy_identity(self, policy_id: str) -> dict[str, Any]:
+        """Allocate a tenant-unique display title for a non-versioned draft."""
+
         with self.connect() as conn:
+            policy = conn.execute(
+                """
+                SELECT id, title, normalized_title, status, similarity_report
+                FROM proof_policy
+                WHERE id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
+                FOR UPDATE
+                """,
+                (policy_id,),
+            ).fetchone()
+            if policy is None:
+                raise ProofError("policy_not_found", "Policy not found.", status_code=404)
+            if policy["status"] != "draft":
+                raise ProofError(
+                    "policy_not_draft",
+                    "Only a draft policy can allocate an independent identity.",
+                    status_code=409,
+                )
+            base_title = str(policy["title"]).strip()
+            normalized_title = str(policy["normalized_title"]).strip()
+            conn.execute(
+                """
+                SELECT pg_advisory_xact_lock(
+                  hashtextextended(current_setting('proof.tenant_id') || ':' || %s, 0)
+                )
+                """,
+                (normalized_title or base_title,),
+            )
+            existing_titles = {
+                str(row["title"]).strip()
+                for row in conn.execute(
+                    """
+                    SELECT title
+                    FROM proof_policy
+                    WHERE tenant_id = current_setting('proof.tenant_id')
+                      AND id <> %s
+                    """,
+                    (policy_id,),
+                ).fetchall()
+                if str(row.get("title") or "").strip()
+            }
+            resolved_title = base_title
+            resolved_normalized = normalized_title
+            if resolved_title in existing_titles:
+                suffix = 2
+                while f"{base_title}-{suffix}" in existing_titles:
+                    suffix += 1
+                resolved_title = f"{base_title}-{suffix}"
+                resolved_normalized = f"{normalized_title}{suffix}"
+            report = dict(policy["similarity_report"] or {})
+            report["decision"] = {"decision": "separate", "automatic": True}
+            conn.execute(
+                """
+                UPDATE proof_policy
+                SET family_id = id, supersedes_policy_id = NULL,
+                    title = %s, normalized_title = %s,
+                    similarity_state = 'separate', similarity_report = %s,
+                    updated_at = now()
+                WHERE id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
+                """,
+                (resolved_title, resolved_normalized, Jsonb(report), policy_id),
+            )
+            conn.commit()
+        resolved = self.get_policy(policy_id)
+        if resolved is None:
+            raise ProofError("policy_not_found", "Policy not found.", status_code=404)
+        return resolved
+
+    def activate_policy_version(
+        self,
+        policy_id: str,
+        *,
+        replace_existing: bool = False,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            identity = conn.execute(
+                """
+                SELECT id, family_id, normalized_title
+                FROM proof_policy
+                WHERE id = %s
+                  AND tenant_id = current_setting('proof.tenant_id')
+                """,
+                (policy_id,),
+            ).fetchone()
+            if identity is None:
+                return None
+            lock_identity = (
+                str(identity.get("normalized_title") or "").strip()
+                or str(identity["family_id"])
+            )
+            conn.execute(
+                """
+                SELECT pg_advisory_xact_lock(
+                  hashtextextended(current_setting('proof.tenant_id') || ':' || %s, 0)
+                )
+                """,
+                (lock_identity,),
+            )
             row = conn.execute(
-                """SELECT status, id, family_id, supersedes_policy_id, version_seq,
-                          similarity_state
+                """SELECT status, id, family_id, normalized_title, supersedes_policy_id,
+                          version_seq, similarity_state
                    FROM proof_policy
                    WHERE id = %s
                      AND tenant_id = current_setting('proof.tenant_id')
@@ -1800,10 +2375,10 @@ class ProofRepository:
             if row["status"] == "effective":
                 conn.commit()
                 return self.get_policy(policy_id)
-            if row["status"] != "draft":
+            if row["status"] not in {"draft", "expired"}:
                 raise ProofError(
-                    "policy_not_draft",
-                    "Only a draft policy can be confirmed.",
+                    "policy_not_activatable",
+                    "Only a draft or expired policy can be activated.",
                     status_code=409,
                 )
             if row.get("similarity_state") == "decision_required":
@@ -1813,38 +2388,45 @@ class ProofRepository:
                     status_code=409,
                 )
 
-            supersedes = row.get("supersedes_policy_id")
-            if supersedes:
-                current = conn.execute(
-                    """
-                    SELECT id, version_seq
-                    FROM proof_policy
-                    WHERE tenant_id = current_setting('proof.tenant_id')
-                      AND family_id = %s AND status = 'effective'
-                    FOR UPDATE
-                    """,
-                    (row["family_id"],),
-                ).fetchone()
-                if (
-                    current is None
-                    or str(current["id"]) != str(supersedes)
-                    or int(row["version_seq"]) <= int(current["version_seq"])
-                ):
+            current = conn.execute(
+                """
+                SELECT id, title, version, version_seq
+                FROM proof_policy
+                WHERE tenant_id = current_setting('proof.tenant_id')
+                  AND (family_id = %s OR normalized_title = %s)
+                  AND status = 'effective'
+                  AND id <> %s
+                ORDER BY version_seq DESC, updated_at DESC
+                LIMIT 1
+                FOR UPDATE
+                """,
+                (row["family_id"], row["normalized_title"], policy_id),
+            ).fetchone()
+            if current is not None:
+                target_is_higher = int(row["version_seq"]) > int(current["version_seq"])
+                if not target_is_higher and not replace_existing:
                     raise ProofError(
-                        "version_base_changed",
-                        "The effective base version changed while this draft was under review.",
+                        "higher_version_effective",
+                        "A higher policy version is already effective.",
                         status_code=409,
+                        details={
+                            "current_policy_id": str(current["id"]),
+                            "current_title": str(current.get("title") or ""),
+                            "current_version": str(current.get("version") or ""),
+                            "target_policy_id": policy_id,
+                            "target_version_seq": int(row["version_seq"]),
+                        },
                     )
                 conn.execute(
                     """
                     UPDATE proof_policy
                     SET status = 'expired', updated_at = now()
                     WHERE tenant_id = current_setting('proof.tenant_id')
-                      AND family_id = %s
                       AND status = 'effective'
-                      AND version_seq < %s
+                      AND id <> %s
+                      AND (family_id = %s OR normalized_title = %s)
                     """,
-                    (row["family_id"], row["version_seq"]),
+                    (policy_id, row["family_id"], row["normalized_title"]),
                 )
                 conn.execute(
                     """
@@ -1853,10 +2435,10 @@ class ProofRepository:
                     WHERE e.retrieval_unit_id = u.id
                       AND u.policy_id = p.id
                       AND p.tenant_id = current_setting('proof.tenant_id')
-                      AND p.family_id = %s
-                      AND p.version_seq < %s
+                      AND p.id <> %s
+                      AND (p.family_id = %s OR p.normalized_title = %s)
                     """,
-                    (row["family_id"], row["version_seq"]),
+                    (policy_id, row["family_id"], row["normalized_title"]),
                 )
                 conn.execute(
                     """
@@ -1865,10 +2447,10 @@ class ProofRepository:
                     FROM proof_policy p
                     WHERE u.policy_id = p.id
                       AND p.tenant_id = current_setting('proof.tenant_id')
-                      AND p.family_id = %s
-                      AND p.version_seq < %s
+                      AND p.id <> %s
+                      AND (p.family_id = %s OR p.normalized_title = %s)
                     """,
-                    (row["family_id"], row["version_seq"]),
+                    (policy_id, row["family_id"], row["normalized_title"]),
                 )
 
             conn.execute(

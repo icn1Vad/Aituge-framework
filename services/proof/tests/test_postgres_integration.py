@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import psycopg
 import pytest
@@ -13,6 +15,137 @@ from proof.infrastructure.embedding import EmbeddingProfile
 from proof.tenant import tenant_scope, tenant_storage_key
 
 DATABASE_URL = os.getenv("PROOF_TEST_DATABASE_URL", "")
+
+
+@pytest.mark.skipif(not DATABASE_URL, reason="PROOF_TEST_DATABASE_URL is not configured")
+def test_concurrent_identical_creates_leave_one_policy(tmp_path) -> None:
+    service = ProofService(
+        Settings(
+            database_url=DATABASE_URL,
+            storage_root=tmp_path,
+            semantic_audit_enabled=False,
+        )
+    )
+    marker = uuid.uuid4().hex
+    content = f"并发重复上传 {marker}\n第一条 同一内容只能创建一份制度。".encode()
+    content_hash = hashlib.sha256(content).hexdigest()
+    barrier = Barrier(2)
+
+    def create(suffix: str) -> tuple[str, str]:
+        with tenant_scope("1"):
+            barrier.wait()
+            try:
+                result = service.ingest_policy(
+                    content=content,
+                    filename=f"concurrent-{suffix}.txt",
+                    category_code="other",
+                    idempotency_key=f"concurrent-{marker}-{suffix}",
+                )
+                return ("created", result["policy"]["id"])
+            except ProofError as exc:
+                return ("error", exc.code)
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(create, ("a", "b")))
+        assert sorted(status for status, _ in results) == ["created", "error"]
+        assert [value for status, value in results if status == "error"] == [
+            "policy_exact_duplicate"
+        ]
+        with psycopg.connect(DATABASE_URL) as conn:
+            count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM proof_document
+                WHERE tenant_id = '1' AND content_hash = %s
+                """,
+                (content_hash,),
+            ).fetchone()[0]
+        assert count == 1
+    finally:
+        with psycopg.connect(DATABASE_URL) as conn:
+            conn.execute(
+                """
+                DELETE FROM proof_policy
+                WHERE tenant_id = '1'
+                  AND id IN (
+                    SELECT policy_id FROM proof_document
+                    WHERE tenant_id = '1' AND content_hash = %s
+                  )
+                """,
+                (content_hash,),
+            )
+            conn.execute(
+                "DELETE FROM proof_ingestion_run WHERE tenant_id = '1' AND content_hash = %s",
+                (content_hash,),
+            )
+            conn.execute(
+                """
+                DELETE FROM proof_policy_create_request
+                WHERE tenant_id = '1' AND idempotency_key LIKE %s
+                """,
+                (f"concurrent-{marker}-%",),
+            )
+            conn.commit()
+
+
+@pytest.mark.skipif(not DATABASE_URL, reason="PROOF_TEST_DATABASE_URL is not configured")
+def test_concurrent_audit_dispatch_claim_has_one_winner(tmp_path) -> None:
+    service = ProofService(
+        Settings(
+            database_url=DATABASE_URL,
+            storage_root=tmp_path,
+            semantic_audit_enabled=False,
+        )
+    )
+    marker = uuid.uuid4().hex
+    content = f"并发审查调度 {marker}\n第一条 同一审查只能调度一次。".encode()
+    content_hash = hashlib.sha256(content).hexdigest()
+    barrier = Barrier(2)
+    policy_id = ""
+
+    try:
+        with tenant_scope("1"):
+            created = service.ingest_policy(
+                content=content,
+                filename="audit-claim.txt",
+                category_code="other",
+                idempotency_key=f"audit-claim-{marker}",
+            )
+            policy_id = created["policy"]["id"]
+            audit = service.repository.create_audit_run(
+                audit_run_id=uuid.uuid4().hex,
+                document_id=created["document"]["id"],
+            )
+
+        def claim() -> bool:
+            with tenant_scope("1"):
+                barrier.wait()
+                return service.repository.prepare_audit_run_for_dispatch(audit["id"])
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            claims = list(executor.map(lambda _: claim(), range(2)))
+
+        assert sorted(claims) == [False, True]
+    finally:
+        with psycopg.connect(DATABASE_URL) as conn:
+            if policy_id:
+                conn.execute(
+                    "DELETE FROM proof_policy WHERE tenant_id = '1' AND id = %s",
+                    (policy_id,),
+                )
+            conn.execute(
+                "DELETE FROM proof_ingestion_run WHERE tenant_id = '1' AND content_hash = %s",
+                (content_hash,),
+            )
+            conn.execute(
+                """
+                DELETE FROM proof_policy_create_request
+                WHERE tenant_id = '1' AND idempotency_key = %s
+                """,
+                (f"audit-claim-{marker}",),
+            )
+            conn.commit()
 
 
 @pytest.mark.skipif(not DATABASE_URL, reason="PROOF_TEST_DATABASE_URL is not configured")
@@ -40,6 +173,7 @@ def test_ingest_read_fetch_duplicate_and_atomic_failure(tmp_path) -> None:
             filename="integration.txt",
             level_code="peer",
             category_code="other",
+            idempotency_key=f"create-{marker}",
         )
         policy_id = created["policy"]["id"]
         run_ids.append(created["ingestion_run_id"])
@@ -117,23 +251,21 @@ def test_ingest_read_fetch_duplicate_and_atomic_failure(tmp_path) -> None:
             excluded_policy_ids=[policy_id],
         ) == []
 
-        reused = service.ingest_policy(content=content, filename="renamed.txt")
-        run_ids.append(reused["ingestion_run_id"])
-        assert reused["reused"] is True
-        assert reused["policy"]["id"] == policy_id
-        assert reused["ingestion_run_id"] != created["ingestion_run_id"]
-        reused_run = service.get_ingestion_run(reused["ingestion_run_id"])
-        assert reused_run["status"] == "succeeded"
-        assert reused_run["stage"] == "complete"
-        assert reused_run["reused"] is True
-        assert reused_run["policy_id"] == policy_id
-        assert reused_run["document_id"] == document_id
-        assert reused_run["block_count"] == succeeded_run["block_count"]
-        assert reused_run["clause_count"] == succeeded_run["clause_count"]
+        with pytest.raises(ProofError) as duplicate:
+            service.ingest_policy(
+                content=content,
+                filename="renamed.txt",
+                idempotency_key=f"duplicate-{marker}",
+            )
+        assert duplicate.value.code == "policy_exact_duplicate"
 
         before = _row_counts()
         with pytest.raises(ProofError) as exc_info:
-            service.ingest_policy(content=f"title only {marker}\nno article".encode(), filename="invalid.txt")
+            service.ingest_policy(
+                content=f"title only {marker}\nno article".encode(),
+                filename="invalid.txt",
+                idempotency_key=f"invalid-structure-{marker}",
+            )
         assert exc_info.value.code == "no_clauses_found"
         split_run_id = exc_info.value.details["ingestion_run_id"]
         run_ids.append(split_run_id)
@@ -146,7 +278,11 @@ def test_ingest_read_fetch_duplicate_and_atomic_failure(tmp_path) -> None:
         assert _row_counts() == before
 
         with pytest.raises(ProofError) as exc_info:
-            service.ingest_policy(content=b"not a pdf", filename=f"invalid-{marker}.pdf")
+            service.ingest_policy(
+                content=b"not a pdf",
+                filename=f"invalid-{marker}.pdf",
+                idempotency_key=f"invalid-pdf-{marker}",
+            )
         assert exc_info.value.code == "document_parse_failed"
         parse_run_id = exc_info.value.details["ingestion_run_id"]
         run_ids.append(parse_run_id)
@@ -171,6 +307,7 @@ def test_ingest_read_fetch_duplicate_and_atomic_failure(tmp_path) -> None:
                 content=persist_content,
                 filename=f"persist-{marker}.txt",
                 category_code="missing-category",
+                idempotency_key=f"invalid-category-{marker}",
             )
         assert exc_info.value.code == "invalid_category"
         persist_run_id = exc_info.value.details["ingestion_run_id"]
@@ -184,7 +321,11 @@ def test_ingest_read_fetch_duplicate_and_atomic_failure(tmp_path) -> None:
 
         run_count = _run_count()
         with pytest.raises(ProofError) as exc_info:
-            service.ingest_policy(content=b"", filename="empty.txt")
+            service.ingest_policy(
+                content=b"",
+                filename="empty.txt",
+                idempotency_key=f"empty-{marker}",
+            )
         assert exc_info.value.code == "empty_document"
         assert "ingestion_run_id" not in exc_info.value.details
         assert _run_count() == run_count
@@ -220,6 +361,7 @@ def test_same_file_is_isolated_between_tenants_one_and_two(tmp_path) -> None:
                 content=content,
                 filename="same-policy.txt",
                 category_code="other",
+                idempotency_key=f"tenant-1-{marker}",
             )
             policies.append(main["policy"]["id"])
             runs.append(main["ingestion_run_id"])
@@ -243,6 +385,7 @@ def test_same_file_is_isolated_between_tenants_one_and_two(tmp_path) -> None:
                 content=content,
                 filename="same-policy.txt",
                 category_code="other",
+                idempotency_key=f"tenant-2-{marker}",
             )
             policies.append(demo["policy"]["id"])
             runs.append(demo["ingestion_run_id"])
@@ -341,6 +484,7 @@ def test_similarity_version_switch_retires_old_embeddings_and_detects_stale_base
             filename="policy-v1.txt",
             title=title,
             category_code="procurement_supply",
+            idempotency_key=f"upgrade-base-{marker}",
         )
         policy_ids.append(old["policy"]["id"])
         run_ids.append(old["ingestion_run_id"])
@@ -353,40 +497,41 @@ def test_similarity_version_switch_retires_old_embeddings_and_detects_stale_base
             profile,
         )
 
+        first_upgrade_content = old_text.replace("十万元", "十二万元").encode()
         first_upgrade = service.ingest_policy(
-            content=old_text.replace("十万元", "十二万元").encode(),
+            content=first_upgrade_content,
             filename="policy-v2.txt",
-            title=title,
+            title=f"{title}（修订）",
             category_code="procurement_supply",
+            similarity_decision="new_version",
+            candidate_policy_id=old["policy"]["id"],
+            idempotency_key=f"upgrade-one-{marker}",
         )
         policy_ids.append(first_upgrade["policy"]["id"])
         run_ids.append(first_upgrade["ingestion_run_id"])
-        assert first_upgrade["similarity"]["status"] == "decision_required"
-        assert first_upgrade["audit_task"]["status"] == "not_started"
-        assert (
-            service.repository.get_audit_run_for_document(first_upgrade["document"]["id"])
-            is None
-        )
-        decided_one = service.decide_policy_similarity(
-            first_upgrade["policy"]["id"],
-            decision="new_version",
+        assert first_upgrade["policy"]["version"] == "v1.0.1"
+        assert first_upgrade["policy"]["version_seq"] == 1
+        assert first_upgrade["policy"]["title"] == title
+        retried_one = service.ingest_policy(
+            content=first_upgrade_content,
+            filename="policy-v2.txt",
+            title=f"{title}（修订）",
+            category_code="procurement_supply",
+            similarity_decision="new_version",
             candidate_policy_id=old["policy"]["id"],
-            idempotency_key="upgrade-one",
-        )
-        assert decided_one["policy"]["version"] == "v1.0.1"
-        assert decided_one["policy"]["version_seq"] == 1
-        retried_one = service.decide_policy_similarity(
-            first_upgrade["policy"]["id"],
-            decision="new_version",
-            candidate_policy_id=old["policy"]["id"],
-            idempotency_key="upgrade-one",
+            idempotency_key=f"upgrade-one-{marker}",
         )
         assert retried_one["policy"]["version"] == "v1.0.1"
+        assert retried_one["policy"]["id"] == first_upgrade["policy"]["id"]
+        assert retried_one["idempotency_replay"] is True
         with pytest.raises(ProofError) as idempotency_conflict:
-            service.decide_policy_similarity(
-                first_upgrade["policy"]["id"],
-                decision="separate",
-                idempotency_key="upgrade-one",
+            service.ingest_policy(
+                content=first_upgrade_content,
+                filename="policy-v2.txt",
+                title=f"{title}（修订）",
+                category_code="procurement_supply",
+                similarity_decision="separate",
+                idempotency_key=f"upgrade-one-{marker}",
             )
         assert idempotency_conflict.value.code == "idempotency_conflict"
 
@@ -395,17 +540,18 @@ def test_similarity_version_switch_retires_old_embeddings_and_detects_stale_base
             filename="policy-v3.txt",
             title=title,
             category_code="procurement_supply",
+            similarity_decision="new_version",
+            candidate_policy_id=first_upgrade["policy"]["id"],
+            idempotency_key=f"upgrade-two-{marker}",
         )
         policy_ids.append(second_upgrade["policy"]["id"])
         run_ids.append(second_upgrade["ingestion_run_id"])
-        decided_two = service.decide_policy_similarity(
-            second_upgrade["policy"]["id"],
-            decision="new_version",
-            candidate_policy_id=old["policy"]["id"],
-            idempotency_key="upgrade-two",
+        assert second_upgrade["policy"]["version"] == "v1.0.2"
+        assert second_upgrade["policy"]["version_seq"] == 2
+        assert (
+            second_upgrade["policy"]["supersedes_policy_id"]
+            == first_upgrade["policy"]["id"]
         )
-        assert decided_two["policy"]["version"] == "v1.0.2"
-        assert decided_two["policy"]["version_seq"] == 2
 
         first_units = service.repository.get_document_units(first_upgrade["document"]["id"])
         service.repository.replace_embeddings(
@@ -437,10 +583,11 @@ def test_similarity_version_switch_retires_old_embeddings_and_detects_stale_base
             [[0.0, 0.0, 1.0] for _ in second_units],
             profile,
         )
-        with pytest.raises(ProofError) as stale:
-            service.repository.confirm_policy(second_upgrade["policy"]["id"])
-        assert stale.value.code == "version_base_changed"
-        assert service.get_policy(first_upgrade["policy"]["id"])["status"] == "effective"
+        activated_second = service.repository.confirm_policy(
+            second_upgrade["policy"]["id"]
+        )
+        assert activated_second["status"] == "effective"
+        assert service.get_policy(first_upgrade["policy"]["id"])["status"] == "expired"
     finally:
         with psycopg.connect(DATABASE_URL) as conn:
             if policy_ids:
@@ -471,6 +618,7 @@ def test_discard_draft_cascades_temporary_audit_data(tmp_path) -> None:
             ).encode(),
             filename="discard-cascade.txt",
             category_code="other",
+            idempotency_key=f"discard-create-{marker}",
         )
         policy_id = created["policy"]["id"]
         ingestion_run_id = created["ingestion_run_id"]
@@ -511,10 +659,19 @@ def test_discard_draft_cascades_temporary_audit_data(tmp_path) -> None:
         stored_file = tmp_path / created["document"]["storage_path"]
         assert stored_file.is_file()
 
-        assert service.discard_policy(policy_id) == {
-            "id": policy_id,
-            "status": "discarded",
-        }
+        discarded = service.execute_policy_action(
+            policy_id,
+            action="discard",
+            idempotency_key=f"discard-{marker}",
+        )
+        assert discarded["id"] == policy_id
+        assert discarded["status"] == "discarded"
+        assert discarded["operation_status"] == "SUCCEEDED"
+        assert service.execute_policy_action(
+            policy_id,
+            action="discard",
+            idempotency_key=f"discard-{marker}",
+        )["operation_status"] == "SUCCEEDED"
         assert _audit_data_counts(audit_run_id) == (0, 0, 0)
         assert service.repository.get_policy(policy_id) is None
         assert not stored_file.exists()
@@ -542,6 +699,8 @@ def test_expire_and_delete_lifecycle_operations_are_tenant_scoped_and_retryable(
     marker = uuid.uuid4().hex
     expire_policy_id = ""
     expire_run_id = ""
+    delete_policy_id = ""
+    delete_run_id = ""
     operation_ids = [f"expire-{marker}", f"delete-{marker}"]
     try:
         with tenant_scope("1"):
@@ -549,6 +708,7 @@ def test_expire_and_delete_lifecycle_operations_are_tenant_scoped_and_retryable(
                 content=f"过期验收 {marker}\n第一条 仍保留历史。".encode(),
                 filename="expire-policy.txt",
                 category_code="other",
+                idempotency_key=f"expire-create-{marker}",
             )
             expire_policy_id = expiring["policy"]["id"]
             expire_run_id = expiring["ingestion_run_id"]
@@ -586,14 +746,34 @@ def test_expire_and_delete_lifecycle_operations_are_tenant_scoped_and_retryable(
             ) == []
 
             deleting = service.ingest_policy(
-                content=f"删除验收 {marker}\n第一条 删除当前版本。".encode(),
+                content=(
+                    f"删除验收 {marker}\n"
+                    "第一条 永久删除检索证据仅用于删除后问答失效验收。"
+                ).encode(),
                 filename="delete-policy.txt",
                 category_code="other",
+                similarity_decision="separate",
+                idempotency_key=f"delete-create-{marker}",
             )
             delete_policy_id = deleting["policy"]["id"]
             delete_run_id = deleting["ingestion_run_id"]
             source_path = tmp_path / deleting["document"]["storage_path"]
             service.repository.confirm_policy(delete_policy_id)
+            delete_units = service.repository.get_document_units(deleting["document"]["id"])
+            service.repository.replace_embeddings(
+                deleting["document"]["id"],
+                delete_units,
+                [[0.0, 1.0, 0.0] for _ in delete_units],
+                profile,
+            )
+            assert service.fetch_units([delete_units[0]["id"]])
+            assert delete_policy_id in [
+                item["policy_id"]
+                for item in service.search(
+                    query="永久删除检索证据",
+                    retrieval_mode="keyword",
+                )["results"]
+            ]
 
             deleted = service.apply_policy_action(
                 policy_id=delete_policy_id,
@@ -605,6 +785,25 @@ def test_expire_and_delete_lifecycle_operations_are_tenant_scoped_and_retryable(
             assert service.repository.get_policy(delete_policy_id) is None
             assert service.repository.get_ingestion_run(delete_run_id) is None
             assert service.repository.get_delete_tombstone(operation_ids[1])["status"] == "deleted"
+            assert service.fetch_units([delete_units[0]["id"]]) == []
+            assert delete_policy_id not in {
+                item["policy_id"]
+                for item in service.search(
+                    query="永久删除检索证据",
+                    retrieval_mode="keyword",
+                )["results"]
+            }
+            assert service.repository.vector_search(
+                query_vector=[0.0, 1.0, 0.0],
+                profile=profile,
+                top_k=5,
+                policy_ids=[delete_policy_id],
+                level_codes=[],
+                category_codes=[],
+            ) == []
+            assert delete_policy_id not in {
+                item["id"] for item in service.list_policies()
+            }
 
             retried = service.apply_policy_action(
                 policy_id=delete_policy_id,
@@ -618,6 +817,10 @@ def test_expire_and_delete_lifecycle_operations_are_tenant_scoped_and_retryable(
                 conn.execute("DELETE FROM proof_policy WHERE id = %s", (expire_policy_id,))
             if expire_run_id:
                 conn.execute("DELETE FROM proof_ingestion_run WHERE id = %s", (expire_run_id,))
+            if delete_policy_id:
+                conn.execute("DELETE FROM proof_policy WHERE id = %s", (delete_policy_id,))
+            if delete_run_id:
+                conn.execute("DELETE FROM proof_ingestion_run WHERE id = %s", (delete_run_id,))
             conn.execute(
                 "DELETE FROM proof_policy_lifecycle_operation WHERE operation_id = ANY(%s)",
                 (operation_ids,),
@@ -625,6 +828,81 @@ def test_expire_and_delete_lifecycle_operations_are_tenant_scoped_and_retryable(
             conn.execute(
                 "DELETE FROM proof_policy_delete_tombstone WHERE operation_id = ANY(%s)",
                 (operation_ids,),
+            )
+            conn.commit()
+
+
+@pytest.mark.skipif(not DATABASE_URL, reason="PROOF_TEST_DATABASE_URL is not configured")
+def test_lifecycle_claim_is_concurrent_idempotent_and_failed_attempt_is_retryable(
+    tmp_path,
+) -> None:
+    service = ProofService(
+        Settings(
+            database_url=DATABASE_URL,
+            storage_root=tmp_path,
+            semantic_audit_enabled=False,
+        )
+    )
+    marker = uuid.uuid4().hex
+    operation_id = f"claim-{marker}"
+    policy_id = f"policy-{marker}"
+    idempotency_key = f"request-{marker}"
+    fingerprint = hashlib.sha256(b"expire:false").hexdigest()
+    barrier = Barrier(2)
+
+    def claim() -> tuple[bool, dict]:
+        with tenant_scope("1"):
+            barrier.wait()
+            return service.repository.claim_policy_operation(
+                operation_id=operation_id,
+                policy_id=policy_id,
+                action="expire",
+                idempotency_key=idempotency_key,
+                request_fingerprint=fingerprint,
+            )
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            claims = list(executor.map(lambda _: claim(), range(2)))
+
+        assert sorted(claimed for claimed, _ in claims) == [False, True]
+        assert {operation["operation_id"] for _, operation in claims} == {
+            operation_id
+        }
+        assert {operation["attempt_count"] for _, operation in claims} == {1}
+
+        with tenant_scope("1"):
+            service.repository.complete_policy_operation(
+                operation_id,
+                status="FAILED",
+                error_message="temporary failure",
+            )
+            retried, operation = service.repository.claim_policy_operation(
+                operation_id=operation_id,
+                policy_id=policy_id,
+                action="expire",
+                idempotency_key=idempotency_key,
+                request_fingerprint=fingerprint,
+            )
+
+            assert retried is True
+            assert operation["attempt_count"] == 2
+            assert operation["status"] == "ACCEPTED"
+
+            with pytest.raises(ProofError) as exc_info:
+                service.repository.claim_policy_operation(
+                    operation_id=f"different-{marker}",
+                    policy_id=policy_id,
+                    action="delete",
+                    idempotency_key=idempotency_key,
+                    request_fingerprint=hashlib.sha256(b"delete:false").hexdigest(),
+                )
+            assert exc_info.value.code == "idempotency_conflict"
+    finally:
+        with psycopg.connect(DATABASE_URL) as conn:
+            conn.execute(
+                "DELETE FROM proof_policy_lifecycle_operation WHERE operation_id = %s",
+                (operation_id,),
             )
             conn.commit()
 

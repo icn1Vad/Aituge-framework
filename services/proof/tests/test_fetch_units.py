@@ -91,7 +91,7 @@ def test_conflict_findings_mark_missing_candidates_unavailable_in_one_batch() ->
     service.repository = _ConflictRepository()
     service.policy_audit_service = _ConflictAudit()
 
-    result = service.get_conflict_findings("policy-source")
+    result = service._get_conflict_findings("policy-source")
 
     assert result["status"] == "completed"
     assert result["findings"] == [

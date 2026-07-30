@@ -10,9 +10,12 @@ from typing import Any, Protocol
 from proof.application.conflict_retrieval.title_normalizer import normalize_policy_title
 from proof.application.similarity import (
     DEFAULT_VERSION,
+    SIMILARITY_CLEAR,
+    SIMILARITY_DECISION_REQUIRED,
     SimilarityThresholds,
     normalize_similarity_text,
     normalized_text_hash,
+    similarity_metrics,
     similarity_report,
 )
 from proof.application.structure import (
@@ -30,8 +33,24 @@ from proof.infrastructure.parsers import (
 )
 from proof.infrastructure.postgres.repository import ProofRepository
 from proof.tenant import tenant_storage_key
+from proof.versioning import parse_policy_version
 
 logger = logging.getLogger(__name__)
+
+
+def _similarity_sort_key(item: dict[str, Any]) -> tuple[float, float]:
+    return (
+        float(item.get("similarity_score") or max(
+            float(item.get("edit_similarity") or 0),
+            float(item.get("jaccard") or 0),
+            min(
+                float(item.get("containment") or 0),
+                float(item.get("length_ratio") or 0),
+            ),
+            float(item.get("clause_coverage") or 0),
+        )),
+        float(item.get("title_similarity") or 0),
+    )
 
 
 class PolicySourceParser(Protocol):
@@ -78,6 +97,112 @@ class PolicyIngestionPipeline:
         self.storage_root = settings.resolved_storage_root()
         self.storage_root.mkdir(parents=True, exist_ok=True)
 
+    def preview_similarity(
+        self,
+        *,
+        content: bytes,
+        filename: str,
+        candidate_files: list[tuple[bytes, str]],
+        title: str = "",
+        category_code: str = "auto",
+    ) -> dict[str, Any]:
+        """Compare an upload with persisted policies and files in the same upload batch."""
+
+        content_hash = hashlib.sha256(content).hexdigest()
+        existing = self.repository.get_by_content_hash(content_hash)
+        if existing:
+            policy = dict(existing.get("policy") or {})
+            return {
+                "primary_file_name": Path(filename or "policy.txt").name,
+                "status": "exact_duplicate",
+                "exact_duplicate": {
+                    "source_type": "policy",
+                    "source_id": str(policy.get("id") or ""),
+                    "policy_id": str(policy.get("id") or ""),
+                    "title": str(policy.get("title") or ""),
+                    "current_version": str(policy.get("version") or DEFAULT_VERSION),
+                    "policy_status": str(policy.get("status") or ""),
+                },
+                "candidates": [],
+                "allowed_decisions": [],
+            }
+
+        primary = self._prepare_similarity_document(
+            content=content,
+            filename=filename,
+            title=title,
+            category_code=category_code,
+        )
+        thresholds = self._similarity_thresholds()
+        matches: list[dict[str, Any]] = []
+        for candidate_content, candidate_filename in candidate_files:
+            candidate = self._prepare_similarity_document(
+                content=candidate_content,
+                filename=candidate_filename,
+            )
+            metrics = similarity_metrics(
+                title=primary["title"],
+                normalized_title=primary["normalized_title"],
+                category_code=primary["category_code"],
+                text=primary["text"],
+                clauses=primary["clauses"],
+                candidate=candidate,
+                thresholds=thresholds,
+            )
+            if metrics is not None:
+                matches.append(
+                    {
+                        "source_type": "upload",
+                        "source_id": candidate["file_name"],
+                        "candidate_file_name": candidate["file_name"],
+                        "title": candidate["title"],
+                        "current_version": DEFAULT_VERSION,
+                        **metrics,
+                    }
+                )
+
+        candidate_loader = getattr(self.repository, "list_similarity_candidates", None)
+        repository_candidates = (
+            candidate_loader(
+                normalized_title=primary["normalized_title"],
+                category_code=primary["category_code"],
+                normalized_text_length=len(normalize_similarity_text(primary["text"])),
+                title_threshold=self.settings.similarity_title_threshold,
+            )
+            if callable(candidate_loader)
+            else []
+        )
+        persisted = similarity_report(
+            title=primary["title"],
+            normalized_title=primary["normalized_title"],
+            category_code=primary["category_code"],
+            text=primary["text"],
+            clauses=primary["clauses"],
+            candidates=repository_candidates,
+            thresholds=thresholds,
+            limit=self.settings.similarity_candidate_limit,
+        )
+        matches.extend(
+            {
+                "source_type": "policy",
+                "source_id": str(item.get("policy_id") or ""),
+                **item,
+            }
+            for item in persisted["candidates"]
+        )
+        matches.sort(key=_similarity_sort_key, reverse=True)
+        selected = matches[: max(1, self.settings.similarity_candidate_limit)]
+        return {
+            "primary_file_name": primary["file_name"],
+            "status": (
+                SIMILARITY_DECISION_REQUIRED if selected else SIMILARITY_CLEAR
+            ),
+            "candidates": selected,
+            "allowed_decisions": (
+                ["new_version", "separate"] if selected else []
+            ),
+        }
+
     def ingest_policy(
         self,
         *,
@@ -89,6 +214,14 @@ class PolicyIngestionPipeline:
         category_code: str = "auto",
     ) -> dict[str, Any]:
         original_name, suffix = self._validate_input(content, filename)
+        try:
+            policy_version, version_seq = parse_policy_version(version or DEFAULT_VERSION)
+        except ValueError as exc:
+            raise ProofError(
+                "invalid_policy_version",
+                "Policy version must use v<major>.<minor>.<patch>, for example v1.0.0.",
+                status_code=422,
+            ) from exc
         content_hash = hashlib.sha256(content).hexdigest()
         run_id = uuid.uuid4().hex
         try:
@@ -200,14 +333,7 @@ class PolicyIngestionPipeline:
                 text=document_text,
                 clauses=[unit.text for unit in units],
                 candidates=candidates,
-                thresholds=SimilarityThresholds(
-                    title=self.settings.similarity_title_threshold,
-                    edit=self.settings.similarity_edit_threshold,
-                    jaccard=self.settings.similarity_jaccard_threshold,
-                    containment=self.settings.similarity_containment_threshold,
-                    length_ratio=self.settings.similarity_length_ratio_threshold,
-                    clause_coverage=self.settings.similarity_clause_coverage_threshold,
-                ),
+                thresholds=self._similarity_thresholds(),
                 limit=self.settings.similarity_candidate_limit,
             )
             payload = self.repository.ingest(
@@ -215,8 +341,8 @@ class PolicyIngestionPipeline:
                 document_id=document_id,
                 title=policy_title,
                 normalized_title=normalized_title,
-                version=DEFAULT_VERSION,
-                version_seq=0,
+                version=policy_version,
+                version_seq=version_seq,
                 family_id=policy_id,
                 similarity_state=similarity["status"],
                 similarity_report=similarity,
@@ -241,6 +367,12 @@ class PolicyIngestionPipeline:
                 ingestion_run_id=run_id,
                 ingestion_warning_count=total_warning_count,
             )
+            if payload.pop("_ingest_reused", False):
+                return {
+                    **payload,
+                    "reused": True,
+                    "ingestion_run_id": run_id,
+                }
             return {
                 **payload,
                 "similarity": similarity,
@@ -273,6 +405,44 @@ class PolicyIngestionPipeline:
                 status_code=500,
                 details={"ingestion_run_id": run_id},
             ) from exc
+
+    def _prepare_similarity_document(
+        self,
+        *,
+        content: bytes,
+        filename: str,
+        title: str = "",
+        category_code: str = "auto",
+    ) -> dict[str, Any]:
+        display_name = Path(filename or "policy.txt").name[:200] or "policy.txt"
+        original_name, _ = self._validate_input(content, filename)
+        parsed = self.parser.parse(content, original_name)
+        extraction = self.extractor.extract(parsed.blocks)
+        policy_title = title.strip() or Path(original_name).stem.strip()
+        requested_category = category_code.strip() or "auto"
+        document_text = "\n".join(unit.text for unit in extraction.units)
+        return {
+            "file_name": display_name,
+            "title": policy_title,
+            "normalized_title": normalize_policy_title(policy_title),
+            "category_code": (
+                infer_policy_category(policy_title)
+                if requested_category == "auto"
+                else requested_category
+            ),
+            "text": document_text,
+            "clauses": [unit.text for unit in extraction.units],
+        }
+
+    def _similarity_thresholds(self) -> SimilarityThresholds:
+        return SimilarityThresholds(
+            title=self.settings.similarity_title_threshold,
+            edit=self.settings.similarity_edit_threshold,
+            jaccard=self.settings.similarity_jaccard_threshold,
+            containment=self.settings.similarity_containment_threshold,
+            length_ratio=self.settings.similarity_length_ratio_threshold,
+            clause_coverage=self.settings.similarity_clause_coverage_threshold,
+        )
 
     def _validate_input(self, content: bytes, filename: str) -> tuple[str, str]:
         if not content:

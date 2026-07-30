@@ -99,7 +99,9 @@ def test_contract_capability_registers_frozen_pipeline_and_internal_tools() -> N
     }
     assert grounded_task["handler"] == "pipeline"
     assert grounded_task["pipeline_id"] == "contract-grounded-answer-pipeline-v1"
+    assert grounded_task["stream_chunk_chars"] == 24
     assert grounded_agent["default_tools"] == ["contract_get_review_result"]
+    assert "assistant-identity questions" in grounded_agent["system_prompt"]
     assert grounded_stages["generate_grounded_answer"]["input_adapter"] == "task_input"
     assert grounded_stages["finalize_grounded_answer"]["service_handler"] == (
         "contract_grounded_answer_finalize_v1"

@@ -156,24 +156,19 @@ uv run python -m proof.tools.validate_dataset_chunks \
 除 `/health` 和静态说明页面外，所有 `/v1/**` 请求都必须携带 Java 从登录态确定的
 `X-Tenant-ID`。Proof 没有默认租户，也不接受 AI 工具参数中的租户 ID。
 
-- `POST /v1/policies`：multipart 上传并同步解析、切分、入库；
+- `GET /v1/policies/metadata`：返回制度层级、分类、文件限制、版本格式和生命周期动作；
+- `POST /v1/policies/similarity-preview`：供 Java 候选服务预检已有制度和同批文件；
+- `POST /v1/policies`：携带幂等键创建审查草稿，并在租户制度族内完成重复、名称和版本裁决；
 - `GET /v1/policies`：按层级和分类过滤；
 - `GET /v1/policies/{policy_id}`：制度和文档状态；
 - `GET /v1/policies/{policy_id}/clauses`：按原文顺序查看条款；
-- `POST /v1/policies/{policy_id}/similarity-decision`：选择作为下一固定版本或独立制度；
-- `GET /v1/policies/{policy_id}/audit-status`：查询父审校、三个 Stage 状态及统一统计；
-- `GET /v1/policies/{policy_id}/policy-summary`：返回制度初步分析；
-- `GET /v1/policies/{policy_id}/semantic-findings`：返回结构、语义与可执行性结果；
-- `GET /v1/policies/{policy_id}/conflict-findings`：返回制度冲突结果；
-  `unavailable_candidate_ids` 标识已删除或当前不可用的候选 Chunk；
-- `POST /v1/policies/{policy_id}/confirm`：审校完成后确认制度生效；
+- `GET /v1/policies/{policy_id}/review-status`：返回适合轮询的审查阶段、统计和最新生命周期操作；
+- `GET /v1/policies/{policy_id}/review-result`：一次返回概览、语义问题、外部/内部冲突和阶段错误；
+- `POST /v1/policies/{policy_id}/actions`：携带幂等键执行 `activate|expire|discard|delete`；
 - `GET /v1/ingestion-runs/{run_id}`：查看本次入库、复用或失败的运行记录；
 - `GET /v1/dataset/audit`：扫描固定数据集口径并返回分类、chunk 计数和异常；
 - `GET /v1/dataset/files/{file_id}`：返回单个数据集文件的完整条款 chunk；
 - `GET /v1/files`、`GET /v1/files/{file_id}/content`、`GET /v1/files/{file_id}/chunks`：查看库内文件及其内容；
-- `GET /v1/categories/levels`：查询三个固定制度层级；
-- `GET /v1/categories/policies`：查询制度分类；
-- `POST /v1/documents/{document_id}/index`：调用外部 embedding 并写入 pgvector；
 - `POST /v1/retrieval/search`：按完整条款做混合、向量或中文全文检索，支持制度、层级和分类过滤；
 - `POST /v1/retrieval/fetch`：不依赖 embedding，按 unit ID 返回完整条款和 citation。
 - `POST /v1/query/sql`：执行 Agent 生成的一条只读 `SELECT/WITH`，用于计数、列表、分组和精确过滤。

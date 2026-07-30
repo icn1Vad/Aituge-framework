@@ -7,7 +7,14 @@ from proof.application.similarity import (
 )
 
 
-def _candidate(text: str, *, policy_id: str = "old", version_seq: int = 0) -> dict:
+def _candidate(
+    text: str,
+    *,
+    policy_id: str = "old",
+    version_seq: int = 0,
+    family_max_version_seq: int | None = None,
+    status: str = "effective",
+) -> dict:
     clauses = [item for item in text.split("\n") if item]
     return {
         "policy_id": policy_id,
@@ -15,7 +22,8 @@ def _candidate(text: str, *, policy_id: str = "old", version_seq: int = 0) -> di
         "normalized_title": "采购管理",
         "version": f"v1.0.{version_seq}",
         "version_seq": version_seq,
-        "status": "effective",
+        "family_max_version_seq": family_max_version_seq,
+        "status": status,
         "category_code": "procurement_supply",
         "text": text,
         "clauses": clauses,
@@ -51,7 +59,33 @@ def test_small_change_requires_decision_and_proposes_next_patch() -> None:
     assert report["status"] == "decision_required"
     assert report["candidates"][0]["current_version"] == "v1.0.9"
     assert report["candidates"][0]["proposed_version"] == "v1.1.0"
+    assert report["candidates"][0]["policy_status"] == "effective"
     assert report["candidates"][0]["estimated_change_percent"] <= 20
+
+
+def test_draft_candidate_proposes_after_current_family_maximum() -> None:
+    old = "第一条采购申请应当审批。\n第二条供应商应当完成准入审查。"
+    new = old.replace("审批", "复核")
+
+    report = similarity_report(
+        title="采购管理办法",
+        normalized_title="采购管理",
+        category_code="procurement_supply",
+        text=new,
+        clauses=new.split("\n"),
+        candidates=[
+            _candidate(
+                old,
+                version_seq=1,
+                family_max_version_seq=3,
+                status="draft",
+            )
+        ],
+        thresholds=SimilarityThresholds(),
+    )
+
+    assert report["candidates"][0]["policy_status"] == "draft"
+    assert report["candidates"][0]["proposed_version"] == "v1.0.4"
 
 
 def test_clearly_different_text_does_not_require_decision() -> None:

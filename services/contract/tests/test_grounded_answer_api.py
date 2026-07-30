@@ -288,6 +288,27 @@ def test_framework_service_streams_markdown_and_returns_validated_answer() -> No
             f"data: {json.dumps(value, ensure_ascii=False)}\n\n"
         )
 
+    def tool_envelope(
+        sequence: int,
+        event_type: str,
+        payload: dict[str, object],
+    ) -> str:
+        value = {
+            "schema_version": "1.0",
+            "event_id": f"event-{sequence}",
+            "task_id": "task-stream",
+            "run_id": "run-stream",
+            "sequence": sequence,
+            "event_type": event_type,
+            "stage_id": "generate_grounded_answer",
+            "tool_call_id": "tool-call-1",
+            "payload": payload,
+        }
+        return (
+            f"event: {event_type}\n"
+            f"data: {json.dumps(value, ensure_ascii=False)}\n\n"
+        )
+
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal task_read_count
         requests.append(request)
@@ -316,16 +337,29 @@ def test_framework_service_streams_markdown_and_returns_validated_answer() -> No
         if request.url.path == "/task-manager/tasks/task-stream/stream":
             terminal = {
                 "schema_version": "1.0",
-                "event_id": "event-3",
+                "event_id": "event-5",
                 "task_id": "task-stream",
                 "run_id": "run-stream",
-                "sequence": 3,
+                "sequence": 5,
                 "event_type": "task_succeeded",
                 "payload": {},
             }
             body = (
-                envelope(1, draft_json[:split_at])
-                + envelope(2, draft_json[split_at:])
+                tool_envelope(
+                    1,
+                    "tool_started",
+                    {
+                        "tool": "contract_get_review_result",
+                        "arguments": {"review_id": "review-1"},
+                    },
+                )
+                + tool_envelope(
+                    2,
+                    "tool_completed",
+                    {"has_result": True},
+                )
+                + envelope(3, draft_json[:split_at])
+                + envelope(4, draft_json[split_at:])
                 + "event: task_succeeded\n"
                 + f"data: {json.dumps(terminal)}\n\n"
             )
@@ -385,7 +419,34 @@ def test_framework_service_streams_markdown_and_returns_validated_answer() -> No
         ]
 
     events = asyncio.run(collect())
-    assert [event[0] for event in events] == ["meta", "delta", "delta", "done"]
+    assert [event[0] for event in events] == [
+        "meta",
+        "tool",
+        "tool",
+        "delta",
+        "delta",
+        "done",
+    ]
+    assert events[1][1] == {
+        "event_type": "tool_started",
+        "run_id": "run-stream",
+        "sequence": 1,
+        "stage_id": "generate_grounded_answer",
+        "tool_call_id": "tool-call-1",
+        "name": "contract_get_review_result",
+        "status": "started",
+        "arguments": '{"review_id":"review-1"}',
+        "result_chars": None,
+        "message": "正在读取合同审查结果",
+        "error_message": None,
+        "payload": {
+            "tool": "contract_get_review_result",
+            "arguments": {"review_id": "review-1"},
+        },
+    }
+    assert events[2][1]["name"] == "contract_get_review_result"
+    assert events[2][1]["status"] == "completed"
+    assert events[2][1]["message"] == "已读取合同审查结果"
     assert "".join(
         str(data["delta"]) for event_type, data in events if event_type == "delta"
     ) == "合同结论见 [付款条款](#docref-ref-1)。"

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Body, FastAPI, File, Form, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Body, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from proof.api.schemas import (
@@ -13,7 +15,6 @@ from proof.api.schemas import (
     PolicySqlRequest,
     RetrievalFetchRequest,
     RetrievalSearchRequest,
-    SimilarityDecisionRequest,
     InternalPolicyActionRequest,
     PolicyLifecycleActionRequest,
 )
@@ -29,7 +30,7 @@ from proof.model_pack import (
     resolve_model_pack_id,
 )
 from proof.model_runtime import build_proof_model_runtime
-from proof.tenant import TENANT_ID_HEADER, normalize_tenant_id, tenant_scope
+from proof.tenant import TENANT_ID_HEADER, current_tenant_id, normalize_tenant_id, tenant_scope
 
 DATASET_PAGE = Path(__file__).with_name("static") / "dataset.html"
 WORKBENCH_PAGE = Path(__file__).with_name("static") / "workbench.html"
@@ -40,6 +41,26 @@ POLICY_LEVEL_HIERARCHY = (
     {"code": "lower", "name": "三级制度", "rank": 100},
 )
 POLICY_LEVEL_BY_CODE = {item["code"]: item for item in POLICY_LEVEL_HIERARCHY}
+logger = logging.getLogger(__name__)
+
+
+def _dispatch_policy_audit(
+    service: ProofService,
+    tenant_id: str,
+    *,
+    policy_id: str | None = None,
+    document_id: str | None = None,
+) -> None:
+    try:
+        with tenant_scope(tenant_id):
+            service.dispatch_policy_audit(policy_id=policy_id, document_id=document_id)
+    except Exception:
+        logger.exception(
+            "Unable to dispatch deferred policy audit: tenant_id=%s policy_id=%s document_id=%s",
+            tenant_id,
+            policy_id,
+            document_id,
+        )
 
 
 def _policy_view(value: dict) -> dict:
@@ -96,6 +117,11 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
     async def bind_tenant_context(request: Request, call_next):
         if not request.url.path.startswith("/v1"):
             return await call_next(request)
+        if request.method == "DELETE" and re.fullmatch(r"/v1/policies/[^/]+", request.url.path):
+            return JSONResponse(
+                status_code=404,
+                content={"success": False, "error": "not_found", "detail": "Not Found"},
+            )
         raw_tenant_id = request.headers.get(TENANT_ID_HEADER)
         try:
             tenant_id = normalize_tenant_id(raw_tenant_id)
@@ -157,24 +183,76 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
     @app.post("/v1/policies")
     async def create_policy(
         request: Request,
+        background_tasks: BackgroundTasks,
         file: Annotated[UploadFile, File(...)],
         title: Annotated[str, Form()] = "",
         version: Annotated[str, Form()] = "v1.0.0",
         level_code: Annotated[str, Form()] = "",
         category_code: Annotated[str, Form()] = "auto",
+        similarity_decision: Annotated[str, Form()] = "",
+        candidate_policy_id: Annotated[str, Form()] = "",
     ):
         settings = request.app.state.settings
         content = await file.read(settings.max_upload_bytes + 1)
+        service = _service(request)
         data = await asyncio.to_thread(
-            _service(request).ingest_policy,
+            service.ingest_policy,
             content=content,
             filename=file.filename or "policy.txt",
             title=title,
             version=version,
             level_code=level_code,
             category_code=category_code,
+            similarity_decision=similarity_decision,
+            candidate_policy_id=candidate_policy_id,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            dispatch_audit=False,
         )
+        document_id = str((data.get("document") or {}).get("id") or "").strip()
+        if (
+            settings.semantic_audit_enabled
+            and document_id
+            and callable(getattr(service, "dispatch_policy_audit", None))
+        ):
+            background_tasks.add_task(
+                _dispatch_policy_audit,
+                service,
+                current_tenant_id(),
+                document_id=document_id,
+            )
         return {"success": True, "data": _policy_ingestion_view(data)}
+
+    @app.post("/v1/policies/similarity-preview")
+    async def preview_policy_similarity(
+        request: Request,
+        file: Annotated[UploadFile, File(...)],
+        candidate_files: Annotated[list[UploadFile] | None, File()] = None,
+        title: Annotated[str, Form()] = "",
+        category_code: Annotated[str, Form()] = "auto",
+    ):
+        settings = request.app.state.settings
+        content = await file.read(settings.max_upload_bytes + 1)
+        candidates = [
+            (
+                await candidate.read(settings.max_upload_bytes + 1),
+                candidate.filename or "policy.txt",
+            )
+            for candidate in (candidate_files or [])
+        ]
+        data = await asyncio.to_thread(
+            _service(request).preview_policy_similarity,
+            content=content,
+            filename=file.filename or "policy.txt",
+            candidate_files=candidates,
+            title=title,
+            category_code=category_code,
+        )
+        return {"success": True, "data": data}
+
+    @app.get("/v1/policies/metadata")
+    async def get_policy_metadata(request: Request):
+        data = await asyncio.to_thread(_service(request).policy_metadata)
+        return {"success": True, "data": data}
 
     @app.get("/v1/policies")
     async def list_policies(
@@ -233,53 +311,27 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
         )
         return {"success": True, "data": data}
 
-    @app.get("/v1/policies/{policy_id}/audit-status")
-    async def get_audit_status(policy_id: str, request: Request):
-        data = await asyncio.to_thread(_service(request).get_audit_status, policy_id)
+    @app.get("/v1/policies/{policy_id}/review-status")
+    async def get_review_status(policy_id: str, request: Request, background_tasks: BackgroundTasks):
+        service = _service(request)
+        data = await asyncio.to_thread(service.get_review_status, policy_id)
+        if (
+            request.app.state.settings.semantic_audit_enabled
+            and str(data.get("policy_status") or "").lower() == "draft"
+            and str(data.get("status") or "").lower() in {"pending", "not_started"}
+            and callable(getattr(service, "dispatch_policy_audit", None))
+        ):
+            background_tasks.add_task(
+                _dispatch_policy_audit,
+                service,
+                current_tenant_id(),
+                policy_id=policy_id,
+            )
         return {"success": True, "data": data}
 
-    @app.post("/v1/policies/{policy_id}/similarity-decision")
-    async def decide_policy_similarity(
-        policy_id: str,
-        payload: SimilarityDecisionRequest,
-        request: Request,
-    ):
-        data = await asyncio.to_thread(
-            _service(request).decide_policy_similarity,
-            policy_id,
-            decision=payload.decision,
-            candidate_policy_id=payload.candidate_policy_id,
-            idempotency_key=request.headers.get("Idempotency-Key"),
-        )
-        return {"success": True, "data": _policy_ingestion_view(data)}
-
-    @app.get("/v1/policies/{policy_id}/policy-summary")
-    async def get_policy_summary(policy_id: str, request: Request):
-        data = await asyncio.to_thread(_service(request).get_policy_summary, policy_id)
-        return {"success": True, "data": data}
-
-    @app.get("/v1/policies/{policy_id}/semantic-findings")
-    async def get_semantic_findings(policy_id: str, request: Request):
-        data = await asyncio.to_thread(_service(request).get_semantic_findings, policy_id)
-        return {"success": True, "data": data}
-
-    @app.get("/v1/policies/{policy_id}/conflict-findings")
-    async def get_conflict_findings(policy_id: str, request: Request):
-        data = await asyncio.to_thread(_service(request).get_conflict_findings, policy_id)
-        return {"success": True, "data": data}
-
-    @app.get("/v1/policies/{policy_id}/intra-conflict-findings")
-    async def get_intra_conflict_findings(policy_id: str, request: Request):
-        data = await asyncio.to_thread(_service(request).get_intra_conflict_findings, policy_id)
-        return {"success": True, "data": data}
-
-    @app.post("/v1/policies/{policy_id}/confirm")
-    async def confirm_policy(policy_id: str, request: Request):
-        data = await asyncio.to_thread(
-            _service(request).confirm_policy,
-            policy_id,
-            idempotency_key=request.headers.get("Idempotency-Key"),
-        )
+    @app.get("/v1/policies/{policy_id}/review-result")
+    async def get_review_result(policy_id: str, request: Request):
+        data = await asyncio.to_thread(_service(request).get_review_result, policy_id)
         return {"success": True, "data": data}
 
     @app.post("/v1/policies/{policy_id}/actions")
@@ -289,16 +341,12 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
         request: Request,
     ):
         data = await asyncio.to_thread(
-            _service(request).request_policy_action,
+            _service(request).execute_policy_action,
             policy_id,
             action=payload.action,
             idempotency_key=request.headers.get("Idempotency-Key"),
+            replace_existing=payload.replace_existing,
         )
-        return {"success": True, "data": data}
-
-    @app.delete("/v1/policies/{policy_id}")
-    async def discard_policy(policy_id: str, request: Request):
-        data = await asyncio.to_thread(_service(request).discard_policy, policy_id)
         return {"success": True, "data": data}
 
     @app.post("/v1/internal/semantic-audits/result", include_in_schema=False)
@@ -316,6 +364,7 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
             policy_id=payload.policy_id,
             action=payload.action,
             operation_id=payload.operation_id,
+            replace_existing=payload.replace_existing,
         )
         return {"success": True, "data": data}
 
@@ -338,21 +387,6 @@ def create_app(settings: Settings | None = None, service: ProofService | None = 
     async def get_dataset_file(file_id: str, request: Request):
         data = await asyncio.to_thread(_service(request).get_dataset_file, file_id)
         return {"success": True, "data": data}
-
-    @app.get("/v1/categories/levels")
-    async def list_levels(request: Request):
-        return {"success": True, "data": await asyncio.to_thread(_service(request).list_levels)}
-
-    @app.get("/v1/categories/policies")
-    async def list_categories(request: Request):
-        return {"success": True, "data": await asyncio.to_thread(_service(request).list_categories)}
-
-    @app.post("/v1/documents/{document_id}/index")
-    async def index_document(document_id: str, request: Request):
-        return {
-            "success": True,
-            "data": await asyncio.to_thread(_service(request).index_document, document_id),
-        }
 
     @app.post("/v1/retrieval/search")
     async def search(payload: RetrievalSearchRequest, request: Request):

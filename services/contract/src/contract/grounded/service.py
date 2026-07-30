@@ -22,6 +22,17 @@ from contract.grounded.models import (
 TASK_TYPE = "contract.grounded.answer"
 
 
+def _tool_message(tool_name: str, status: str) -> str:
+    action = {
+        "contract_get_review_result": "合同审查结果",
+    }.get(tool_name, "合同分析")
+    if status == "started":
+        return f"正在读取{action}"
+    if status == "failed":
+        return f"{action}读取失败"
+    return f"已读取{action}"
+
+
 class _FrameworkModel(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -383,6 +394,7 @@ class FrameworkGroundedAnswerService:
             return
 
         decoder = ContentMarkdownStreamDecoder()
+        tool_names: dict[str, str] = {}
         if task.status in {"created", "pending"}:
             stream_path = f"/task-manager/tasks/{task.id}/stream"
             stream_method = "POST"
@@ -415,6 +427,31 @@ class FrameworkGroundedAnswerService:
             run_id = envelope.get("run_id")
             event_type = str(envelope.get("event_type") or framework_event)
             if event_type.startswith("tool_"):
+                tool_call_id = str(envelope.get("tool_call_id") or "")
+                raw_tool_name = str(
+                    event_payload.get("tool_name")
+                    or event_payload.get("tool")
+                    or tool_names.get(tool_call_id)
+                    or ""
+                )
+                if tool_call_id and raw_tool_name:
+                    tool_names[tool_call_id] = raw_tool_name
+                status = {
+                    "tool_started": "started",
+                    "tool_failed": "failed",
+                }.get(event_type, "completed")
+                arguments_value = event_payload.get("arguments")
+                if isinstance(arguments_value, str):
+                    arguments = arguments_value[:4_000]
+                elif arguments_value is None:
+                    arguments = None
+                else:
+                    arguments = json.dumps(
+                        arguments_value,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )[:4_000]
+                error_message = str(event_payload.get("error") or "").strip() or None
                 yield (
                     "tool",
                     {
@@ -422,7 +459,13 @@ class FrameworkGroundedAnswerService:
                         "run_id": run_id,
                         "sequence": sequence,
                         "stage_id": envelope.get("stage_id"),
-                        "tool_call_id": envelope.get("tool_call_id"),
+                        "tool_call_id": tool_call_id or None,
+                        "name": raw_tool_name or None,
+                        "status": status,
+                        "arguments": arguments,
+                        "result_chars": event_payload.get("result_chars"),
+                        "message": _tool_message(raw_tool_name, status),
+                        "error_message": error_message,
                         "payload": event_payload,
                     },
                 )

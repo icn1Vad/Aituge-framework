@@ -42,6 +42,7 @@ class ProofPolicyMutationInput(BaseModel):
     operation_id: str = Field(min_length=1, max_length=160)
     policy_id: str = Field(min_length=1, max_length=160)
     action: Literal["activate", "expire", "delete"]
+    replace_existing: bool = False
 
 
 class ProofPolicyMutationOutput(BaseModel):

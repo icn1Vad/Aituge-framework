@@ -12,11 +12,15 @@ class FakeService:
     def health(self):
         return {"ok": True, "embedding_configured": False}
 
-    def list_levels(self):
-        return [{"code": "upper"}, {"code": "peer"}, {"code": "lower"}]
-
-    def list_categories(self):
-        return [{"code": "governance"}, {"code": "finance"}, {"code": "general"}]
+    def policy_metadata(self):
+        return {
+            "levels": [{"code": "upper"}, {"code": "peer"}, {"code": "lower"}],
+            "categories": [{"code": "governance"}, {"code": "finance"}, {"code": "general"}],
+            "supported_extensions": ["docx", "md", "pdf", "txt"],
+            "max_upload_bytes": 25 * 1024 * 1024,
+            "version_pattern": r"^v[1-9]\d*\.[0-9]\.[0-9]$",
+            "lifecycle_actions": ["activate", "expire", "discard", "delete"],
+        }
 
     def ingest_policy(self, **values):
         if values["content"] == b"invalid":
@@ -32,6 +36,34 @@ class FakeService:
             "clauses": [],
             "reused": False,
             "ingestion_run_id": "run-created",
+        }
+
+    def preview_policy_similarity(self, **values):
+        assert values == {
+            "content": b"primary",
+            "filename": "primary.txt",
+            "candidate_files": [
+                (b"candidate-one", "candidate-one.txt"),
+                (b"candidate-two", "candidate-two.txt"),
+            ],
+            "title": "",
+            "category_code": "auto",
+        }
+        return {
+            "primary_file_name": "primary.txt",
+            "status": "decision_required",
+            "candidates": [
+                {
+                    "candidate_file_name": "candidate-one.txt",
+                    "title_similarity": 0.9,
+                    "edit_similarity": 0.89,
+                    "jaccard": 0.84,
+                    "containment": 0.97,
+                    "length_ratio": 0.89,
+                    "clause_coverage": 0.9,
+                    "estimated_change_percent": 11,
+                }
+            ],
         }
 
     @staticmethod
@@ -75,7 +107,7 @@ class FakeService:
             "warning_count": 0,
         }
 
-    def get_audit_status(self, policy_id: str):
+    def get_review_status(self, policy_id: str):
         if policy_id != "policy-1":
             raise ProofError("policy_not_found", "Policy not found.", status_code=404)
         return {
@@ -110,11 +142,11 @@ class FakeService:
         }
 
     def get_policy_summary(self, policy_id: str):
-        self.get_audit_status(policy_id)
+        self.get_review_status(policy_id)
         return {"status": "completed", "error_message": None, "content": {"plain_summary": "概览"}}
 
     def get_semantic_findings(self, policy_id: str):
-        self.get_audit_status(policy_id)
+        self.get_review_status(policy_id)
         return {
             "status": "completed",
             "error_message": None,
@@ -122,7 +154,7 @@ class FakeService:
         }
 
     def get_conflict_findings(self, policy_id: str):
-        self.get_audit_status(policy_id)
+        self.get_review_status(policy_id)
         return {
             "status": "completed",
             "error_message": None,
@@ -130,23 +162,39 @@ class FakeService:
         }
 
     def get_intra_conflict_findings(self, policy_id: str):
-        self.get_audit_status(policy_id)
+        self.get_review_status(policy_id)
         return {
             "status": "completed",
             "error_message": None,
             "findings": [{"id": "unit-1", "conflict_type": "numeric_conflict"}],
         }
 
-    def confirm_policy(self, policy_id: str, *, idempotency_key: str | None = None):
-        return {"id": policy_id, "status": "effective"}
+    def get_review_result(self, policy_id: str):
+        return {
+            "policy": self._policy(),
+            "review": self.get_review_status(policy_id),
+            "summary": self.get_policy_summary(policy_id),
+            "findings": {
+                "semantic": self.get_semantic_findings(policy_id),
+                "conflict": self.get_conflict_findings(policy_id),
+                "intra_conflict": self.get_intra_conflict_findings(policy_id),
+            },
+        }
 
-    def request_policy_action(
+    def execute_policy_action(
         self,
         policy_id: str,
         *,
         action: str,
         idempotency_key: str | None,
+        replace_existing: bool = False,
     ):
+        if not idempotency_key:
+            raise ProofError(
+                "invalid_idempotency_key",
+                "Idempotency-Key is required.",
+                status_code=422,
+            )
         return {
             "id": policy_id,
             "status": "accepted",
@@ -157,35 +205,19 @@ class FakeService:
             "framework_run_id": "run-1",
         }
 
-    def apply_policy_action(self, *, policy_id: str, action: str, operation_id: str):
+    def apply_policy_action(
+        self,
+        *,
+        policy_id: str,
+        action: str,
+        operation_id: str,
+        replace_existing: bool = False,
+    ):
         return {
             "id": policy_id,
             "status": "expired" if action == "expire" else "deleted",
             "operation_id": operation_id,
         }
-
-    def decide_policy_similarity(
-        self,
-        policy_id: str,
-        *,
-        decision: str,
-        candidate_policy_id: str | None = None,
-        idempotency_key: str | None = None,
-    ):
-        return {
-            "policy": {
-                **self._policy(),
-                "id": policy_id,
-                "family_id": candidate_policy_id if decision == "new_version" else policy_id,
-                "version": "v1.0.1" if decision == "new_version" else "v1.0.0",
-                "version_seq": 1 if decision == "new_version" else 0,
-            },
-            "similarity": {"status": decision, "decision": decision},
-            "audit_task": {"status": "running"},
-        }
-
-    def discard_policy(self, policy_id: str):
-        return {"id": policy_id, "status": "discarded"}
 
     def accept_semantic_audit_result(self, payload):
         return {"audit_id": payload["audit_id"], "status": "completed", "finding_count": 0}
@@ -254,9 +286,6 @@ class FakeService:
             "has_more": offset + count < 12,
         }
 
-    def index_document(self, document_id: str):
-        raise ProofError("embedding_unconfigured", "Embedding API is not configured.", status_code=503)
-
     def fetch_units(self, unit_ids: list[str]):
         return [
             {
@@ -324,12 +353,14 @@ def test_policy_view_builds_nested_metadata_from_repository_fields() -> None:
 def test_metadata_endpoints() -> None:
     client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
     assert client.get("/health").status_code == 200
-    assert [item["code"] for item in client.get("/v1/categories/levels").json()["data"]] == [
+    metadata = client.get("/v1/policies/metadata")
+    assert [item["code"] for item in metadata.json()["data"]["levels"]] == [
         "upper",
         "peer",
         "lower",
     ]
-    assert len(client.get("/v1/categories/policies").json()["data"]) == 3
+    assert len(metadata.json()["data"]["categories"]) == 3
+    assert metadata.json()["data"]["max_upload_bytes"] == 25 * 1024 * 1024
 
 
 def test_legacy_category_endpoints_are_removed() -> None:
@@ -342,8 +373,7 @@ def test_legacy_category_endpoints_are_removed() -> None:
 def test_embedding_endpoints_are_explicitly_unavailable() -> None:
     client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
     index_response = client.post("/v1/documents/document-1/index")
-    assert index_response.status_code == 503
-    assert index_response.json()["error"] == "embedding_unconfigured"
+    assert index_response.status_code == 404
 
     search_response = client.post("/v1/retrieval/search", json={"query": "审批权限"})
     assert search_response.status_code == 503
@@ -373,7 +403,11 @@ def test_get_ingestion_run_and_unknown_id() -> None:
 def test_policy_upload_exposes_run_id_on_success_and_failure() -> None:
     client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
 
-    created = client.post("/v1/policies", files={"file": ("policy.txt", b"valid", "text/plain")})
+    created = client.post(
+        "/v1/policies",
+        files={"file": ("policy.txt", b"valid", "text/plain")},
+        headers={"Idempotency-Key": "create-valid"},
+    )
     assert created.status_code == 200
     assert created.json()["data"]["ingestion_run_id"] == "run-created"
     assert created.json()["data"]["policy"]["level"]["name"] == "三级制度"
@@ -383,9 +417,46 @@ def test_policy_upload_exposes_run_id_on_success_and_failure() -> None:
     assert "category_code" not in created.json()["data"]["policy"]
     assert "category_name" not in created.json()["data"]["policy"]
 
-    failed = client.post("/v1/policies", files={"file": ("policy.txt", b"invalid", "text/plain")})
+    failed = client.post(
+        "/v1/policies",
+        files={"file": ("policy.txt", b"invalid", "text/plain")},
+        headers={"Idempotency-Key": "create-invalid"},
+    )
     assert failed.status_code == 422
     assert failed.json()["details"]["ingestion_run_id"] == "run-failed"
+
+
+def test_policy_similarity_preview_accepts_multiple_unpersisted_files() -> None:
+    client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
+
+    response = client.post(
+        "/v1/policies/similarity-preview",
+        files=[
+            ("file", ("primary.txt", b"primary", "text/plain")),
+            (
+                "candidate_files",
+                ("candidate-one.txt", b"candidate-one", "text/plain"),
+            ),
+            (
+                "candidate_files",
+                ("candidate-two.txt", b"candidate-two", "text/plain"),
+            ),
+        ],
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["primary_file_name"] == "primary.txt"
+    assert response.json()["data"]["status"] == "decision_required"
+    assert response.json()["data"]["candidates"][0] == {
+        "candidate_file_name": "candidate-one.txt",
+        "title_similarity": 0.9,
+        "edit_similarity": 0.89,
+        "jaccard": 0.84,
+        "containment": 0.97,
+        "length_ratio": 0.89,
+        "clause_coverage": 0.9,
+        "estimated_change_percent": 11,
+    }
 
 
 def test_policy_list_and_detail_use_compact_metadata_objects() -> None:
@@ -400,53 +471,48 @@ def test_policy_list_and_detail_use_compact_metadata_objects() -> None:
         assert not {"level_code", "level_name", "category_code", "category_name"} & policy.keys()
 
 
-def test_similarity_decision_requires_candidate_and_returns_system_version() -> None:
+def test_removed_similarity_decision_route_returns_404() -> None:
     client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
-
-    invalid = client.post(
-        "/v1/policies/policy-1/similarity-decision",
-        json={"decision": "new_version"},
-    )
-    assert invalid.status_code == 422
-
-    decided = client.post(
+    removed = client.post(
         "/v1/policies/policy-1/similarity-decision",
         json={"decision": "new_version", "candidate_policy_id": "policy-old"},
     )
-    assert decided.status_code == 200
-    assert decided.json()["data"]["policy"]["version"] == "v1.0.1"
-    assert decided.json()["data"]["policy"]["version_seq"] == 1
-    assert decided.json()["data"]["similarity"]["status"] == "new_version"
+    assert removed.status_code == 404
 
 
-def test_split_audit_result_endpoints() -> None:
+def test_unified_review_status_and_result_endpoints() -> None:
     client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
-    status = client.get("/v1/policies/policy-1/audit-status")
+    status = client.get("/v1/policies/policy-1/review-status")
     assert status.status_code == 200
     assert status.json()["data"]["stages"]["policy_summary"]["status"] == "completed"
     assert status.json()["data"]["counts"]["semantic_ambiguity"] == 1
     assert status.json()["data"]["counts"]["numeric_conflict"] == 1
 
-    summary = client.get("/v1/policies/policy-1/policy-summary")
-    assert summary.json()["data"]["content"]["plain_summary"] == "概览"
+    result = client.get("/v1/policies/policy-1/review-result")
+    assert result.json()["data"]["summary"]["content"]["plain_summary"] == "概览"
     assert status.json()["data"]["stages"]["intra_conflict_audit"]["status"] == "completed"
     assert set(status.json()["data"]["stages"]["intra_conflict_audit"]) == {
         "status", "error_message"
     }
     assert status.json()["data"]["counts"]["intra_numeric_conflict"] == 1
 
-    semantic = client.get("/v1/policies/policy-1/semantic-findings")
-    assert "finding_counts" not in semantic.json()["data"]
-
-    conflict = client.get("/v1/policies/policy-1/conflict-findings")
-    assert "conflict_counts" not in conflict.json()["data"]
-    assert client.get("/v1/policies/missing/audit-status").status_code == 404
+    assert "finding_counts" not in result.json()["data"]["findings"]["semantic"]
+    assert "conflict_counts" not in result.json()["data"]["findings"]["conflict"]
+    assert client.get("/v1/policies/missing/review-status").status_code == 404
 
     assert client.get("/v1/policies/policy-1/quality-report").status_code == 404
     assert client.post("/v1/policies/policy-1/semantic-audit").status_code == 404
-    intra = client.get("/v1/policies/policy-1/intra-conflict-findings")
-    assert intra.json()["data"]["findings"][0]["id"] == "unit-1"
-    assert set(intra.json()["data"]) == {"status", "error_message", "findings"}
+    intra = result.json()["data"]["findings"]["intra_conflict"]
+    assert intra["findings"][0]["id"] == "unit-1"
+    assert set(intra) == {"status", "error_message", "findings"}
+    for path in (
+        "audit-status",
+        "policy-summary",
+        "semantic-findings",
+        "conflict-findings",
+        "intra-conflict-findings",
+    ):
+        assert client.get(f"/v1/policies/policy-1/{path}").status_code == 404
 
 
 
@@ -661,16 +727,15 @@ def test_conflict_agent_view_preserves_service_order_and_removes_noisy_fields() 
     assert payload["candidate_counts"]["judge_returned"] == 1
 
 
-def test_review_workflow_endpoints() -> None:
+def test_removed_review_workflow_endpoints_return_404() -> None:
     client = TestClient(create_app(Settings(), FakeService()), headers={"X-Tenant-ID": "1"})
-
-    confirmed = client.post(
+    assert client.post(
         "/v1/policies/policy-1/confirm",
         headers={"Idempotency-Key": "confirm-key"},
-    )
-    assert confirmed.json()["data"]["status"] == "effective"
-    discarded = client.delete("/v1/policies/policy-1")
-    assert discarded.json()["data"]["status"] == "discarded"
+    ).status_code == 404
+    assert client.delete("/v1/policies/policy-1").status_code == 404
+    assert client.get("/v1/categories/levels").status_code == 404
+    assert client.get("/v1/categories/policies").status_code == 404
 
 
 def test_policy_lifecycle_routes_use_one_public_action_shape() -> None:
@@ -694,7 +759,6 @@ def test_policy_lifecycle_routes_use_one_public_action_shape() -> None:
     invalid = client.post(
         "/v1/policies/policy-1/actions",
         json={"action": "activate"},
-        headers={"Idempotency-Key": "activate-key"},
     )
     assert invalid.status_code == 422
 

@@ -1247,6 +1247,9 @@ async def register(registry, settings) -> None:
         model_id=model_id,
         system_prompt=(
             "You generate grounded contract content from the completed review result. "
+            "For CHAT greetings, assistant-identity questions, or usage questions that do not "
+            "ask for any contract-specific fact, do not call tools; answer briefly and generically "
+            "with an empty citations list. "
             "Use only contract tools and the supplied task. Every clickable source reference "
             "must use Markdown form [label](#docref-EVIDENCE_ID), and every such link "
             "must have a matching citations entry. Only TEXT_QUOTE or CONTEXT evidence "
@@ -1331,6 +1334,7 @@ async def register(registry, settings) -> None:
         default_tools=[
             "contract_get_review_result",
         ],
+        stream_chunk_chars=24,
         input_model=GroundedAnswerTaskInput,
         output_model=GroundedAnswerResult,
     )

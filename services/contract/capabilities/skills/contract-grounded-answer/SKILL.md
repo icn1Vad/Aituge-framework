@@ -11,9 +11,15 @@ generation, not a new legal review.
 
 ## Required workflow
 
-1. Call `contract_get_review_result` with the task's `review_id` and `document_id`.
-2. Use the returned contract profile, summary, findings and evidences as the authoritative source.
-3. Do not introduce a risk, party, amount, date, clause or conclusion that is absent from that result.
+For `REPORT`, and for any `CHAT` question that asks about the current contract, call
+`contract_get_review_result` with the task's `review_id` and `document_id`. Use the returned contract
+profile, summary, findings and evidences as the authoritative source.
+
+For a pure greeting, assistant-identity question, or usage question that asks for no contract-specific
+fact, do not call a tool. Answer briefly and generically, and return an empty `citations` list.
+
+Never introduce a risk, party, amount, date, clause or conclusion that is absent from the completed
+review result.
 
 ## Mode behavior
 

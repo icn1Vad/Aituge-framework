@@ -69,12 +69,14 @@ class FakeAuditRepository:
         if all(status == "completed" for status in statuses):
             return False
         if self.run["status"] != "completed":
-            self.run.update(status="pending", error_message=None)
+            self.run.update(status="running", error_message=None)
             self.saved_findings = None
         if self.run["summary_status"] != "completed":
-            self.run["summary_status"] = "pending"
+            self.run["summary_status"] = "running"
         if self.run["conflict_status"] != "completed":
-            self.run["conflict_status"] = "pending"
+            self.run["conflict_status"] = "running"
+        if self.run.get("intra_conflict_status") != "completed":
+            self.run["intra_conflict_status"] = "running"
         self.run.update(framework_task_id=None, framework_run_id=None)
         return True
 
@@ -443,12 +445,27 @@ def test_completed_semantic_result_is_preserved_while_missing_stages_are_redispa
 
     assert len(dispatched) == 1
     assert dispatched[0]["status"] == "completed"
-    assert dispatched[0]["summary_status"] == "pending"
-    assert dispatched[0]["conflict_status"] == "pending"
+    assert dispatched[0]["summary_status"] == "running"
+    assert dispatched[0]["conflict_status"] == "running"
     assert repository.saved_findings == [{"id": "unit-1", "category": "semantic_ambiguity"}]
     assert state["status"] == "completed"
-    assert state["policy_summary"]["status"] == "pending"
-    assert state["conflict_audit"]["status"] == "pending"
+    assert state["policy_summary"]["status"] == "running"
+    assert state["conflict_audit"]["status"] == "running"
+
+
+def test_audit_is_claimed_before_slow_dispatch(monkeypatch) -> None:
+    repository = FakeAuditRepository()
+    repository.run = None
+    service = PolicyAuditService(Settings(semantic_audit_enabled=True), repository)
+    dispatched = []
+    monkeypatch.setattr(service, "_dispatch", lambda run: dispatched.append(dict(run)))
+
+    first = service.ensure_dispatched("document-1")
+    second = service.ensure_dispatched("document-1")
+
+    assert len(dispatched) == 1
+    assert first["status"] == "running"
+    assert second["status"] == "running"
 
 
 def test_final_callback_completes_when_all_model_stages_are_degraded() -> None:

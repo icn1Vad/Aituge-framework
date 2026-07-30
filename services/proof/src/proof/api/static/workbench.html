@@ -226,7 +226,9 @@
     }
 
     async function loadMetadata() {
-      const [levels, categories] = await Promise.all([api("/v1/categories/levels"), api("/v1/categories/policies")]);
+      const metadata = await api("/v1/policies/metadata");
+      const levels = metadata.levels || [];
+      const categories = metadata.categories || [];
       levels.forEach((item) => $("level").insertAdjacentHTML("beforeend", `<option value="${escapeHtml(item.code)}">${escapeHtml(item.name)}</option>`));
       state.categories = categories;
       state.categoryByCode = Object.fromEntries(categories.map((item) => [item.code, item]));
@@ -331,13 +333,14 @@
       renderRepository();
       $("detailPanel").innerHTML = '<div class="loading">正在读取制度、Chunks 和审校状态…</div>';
       try {
-        const [policy, clauses, auditStatus] = await Promise.all([
+        const [policy, clauses, reviewResult] = await Promise.all([
           api(`/v1/policies/${policyId}`),
           api(`/v1/policies/${policyId}/clauses?include_text=true`),
-          api(`/v1/policies/${policyId}/audit-status`),
+          api(`/v1/policies/${policyId}/review-result`),
         ]);
+        const auditStatus = reviewResult.review;
         state.detail = { policy, clauses };
-        await loadCompletedAuditResults(policyId, auditStatus);
+        applyReviewResult(reviewResult);
         const report = composeAuditReport(auditStatus, clauses.length);
         renderDetail(policy, clauses, report);
         scheduleAuditPoll(policyId, auditStatus);
@@ -346,19 +349,11 @@
       }
     }
 
-    async function loadCompletedAuditResults(policyId, auditStatus) {
-      const requests = [];
-      const stages = auditStatus.stages || {};
-      const queue = (key, stage, url) => {
-        if (!["completed", "failed"].includes(stage?.status)) return;
-        if (state.auditResults[key]?.status === stage.status) return;
-        requests.push(api(url).then((value) => { state.auditResults[key] = value; }));
-      };
-      queue("summary", stages.policy_summary, `/v1/policies/${policyId}/policy-summary`);
-      queue("semantic", stages.semantic_audit, `/v1/policies/${policyId}/semantic-findings`);
-      queue("conflict", stages.conflict_audit, `/v1/policies/${policyId}/conflict-findings`);
-      queue("intraConflict", stages.intra_conflict_audit, `/v1/policies/${policyId}/intra-conflict-findings`);
-      await Promise.all(requests);
+    function applyReviewResult(reviewResult) {
+      state.auditResults.summary = reviewResult.summary || null;
+      state.auditResults.semantic = reviewResult.findings?.semantic || null;
+      state.auditResults.conflict = reviewResult.findings?.conflict || null;
+      state.auditResults.intraConflict = reviewResult.findings?.intra_conflict || null;
     }
 
     function composeAuditReport(auditStatus, clauseCount) {
@@ -406,9 +401,10 @@
       if (state.selectedId !== policyId || !["pending", "running"].includes(auditStatus.status)) return;
       state.auditTimer = setTimeout(async () => {
         try {
-          const nextStatus = await api(`/v1/policies/${policyId}/audit-status`);
+          const nextResult = await api(`/v1/policies/${policyId}/review-result`);
+          const nextStatus = nextResult.review;
           if (state.selectedId !== policyId || !state.detail) return;
-          await loadCompletedAuditResults(policyId, nextStatus);
+          applyReviewResult(nextResult);
           renderDetail(state.detail.policy, state.detail.clauses, composeAuditReport(nextStatus, state.detail.clauses.length));
           scheduleAuditPoll(policyId, nextStatus);
         } catch (error) {
@@ -556,12 +552,20 @@
       $("confirmPolicyButton")?.addEventListener("click", async () => {
         const findingCount = report.findings.length + (report.conflict_findings || []).length + (report.intra_conflict_findings || []).length;
         if (findingCount && !confirm(`仍有 ${findingCount} 条检查问题，确认继续入库吗？`)) return;
-        await api(`/v1/policies/${policy.id}/confirm`, { method: "POST" });
+        await api(`/v1/policies/${policy.id}/actions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+          body: JSON.stringify({ action: "activate", replace_existing: false }),
+        });
         await loadRepository(policy.id);
       });
       $("discardPolicyButton")?.addEventListener("click", async () => {
         if (!confirm("确认丢弃这份草稿及其审校结果吗？")) return;
-        await api(`/v1/policies/${policy.id}`, { method: "DELETE" });
+        await api(`/v1/policies/${policy.id}/actions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+          body: JSON.stringify({ action: "discard", replace_existing: false }),
+        });
         state.selectedId = null;
         $("detailPanel").innerHTML = '<div class="empty">草稿已丢弃。</div>';
         await loadRepository();

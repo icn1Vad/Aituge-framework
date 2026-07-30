@@ -140,12 +140,94 @@ class _ConfirmConnection:
 
     def execute(self, query, params):
         self.queries.append(query)
+        if query.lstrip().startswith("SELECT id, family_id"):
+            return _Rows([{
+                "id": "policy-1",
+                "family_id": "family-1",
+                "normalized_title": "policy",
+            }])
         if query.lstrip().startswith("SELECT status"):
-            return _Rows([{"status": "draft"}])
+            return _Rows([{
+                "status": "draft",
+                "id": "policy-1",
+                "family_id": "family-1",
+                "normalized_title": "policy",
+                "supersedes_policy_id": None,
+                "version_seq": 0,
+                "similarity_state": "clear",
+            }])
         return _Rows([])
 
     def commit(self):
         self.committed = True
+
+
+class _ReplacementConnection(_ConfirmConnection):
+    def __init__(self) -> None:
+        super().__init__()
+        self.parameters = []
+
+    def execute(self, query, params):
+        self.queries.append(query)
+        self.parameters.append(params)
+        if query.lstrip().startswith("SELECT id, family_id"):
+            return _Rows([{
+                "id": "policy-old",
+                "family_id": "family-1",
+                "normalized_title": "policy",
+            }])
+        if query.lstrip().startswith("SELECT status"):
+            return _Rows([{
+                "status": "expired",
+                "id": "policy-old",
+                "family_id": "family-1",
+                "normalized_title": "policy",
+                "supersedes_policy_id": None,
+                "version_seq": 0,
+                "similarity_state": "clear",
+            }])
+        if query.lstrip().startswith("SELECT id, title"):
+            return _Rows([{
+                "id": "policy-new",
+                "title": "Policy",
+                "version": "v1.0.2",
+                "version_seq": 2,
+            }])
+        return _Rows([])
+
+
+class _HigherVersionConnection(_ConfirmConnection):
+    def __init__(self) -> None:
+        super().__init__()
+        self.parameters = []
+
+    def execute(self, query, params):
+        self.queries.append(query)
+        self.parameters.append(params)
+        if query.lstrip().startswith("SELECT id, family_id"):
+            return _Rows([{
+                "id": "policy-high",
+                "family_id": "family-1",
+                "normalized_title": "policy",
+            }])
+        if query.lstrip().startswith("SELECT status"):
+            return _Rows([{
+                "status": "draft",
+                "id": "policy-high",
+                "family_id": "family-1",
+                "normalized_title": "policy",
+                "supersedes_policy_id": "policy-middle",
+                "version_seq": 2,
+                "similarity_state": "new_version",
+            }])
+        if query.lstrip().startswith("SELECT id, title"):
+            return _Rows([{
+                "id": "policy-low",
+                "title": "Policy",
+                "version": "v1.0.0",
+                "version_seq": 0,
+            }])
+        return _Rows([])
 
 
 def test_confirm_deletes_temporary_embeddings_without_formal_index_reuse():
@@ -158,3 +240,32 @@ def test_confirm_deletes_temporary_embeddings_without_formal_index_reuse():
     statements = "\n".join(connection.queries)
     assert "DELETE FROM proof_draft_retrieval_embedding" in statements
     assert "proof_retrieval_embedding" not in statements
+
+
+def test_replacing_higher_version_expires_and_retires_only_other_versions():
+    connection = _ReplacementConnection()
+    repository = object.__new__(ProofRepository)
+    repository.connect = lambda: connection
+    repository.get_policy = lambda policy_id: {"id": policy_id, "status": "effective"}
+
+    activated = repository.confirm_policy("policy-old", replace_existing=True)
+
+    assert activated["status"] == "effective"
+    statements = "\n".join(connection.queries)
+    assert "AND id <> %s" in statements
+    assert statements.count("AND p.id <> %s") == 2
+    assert ("policy-old", "family-1", "policy") in connection.parameters
+    assert connection.committed is True
+
+
+def test_higher_version_automatically_replaces_indirect_lower_effective_version():
+    connection = _HigherVersionConnection()
+    repository = object.__new__(ProofRepository)
+    repository.connect = lambda: connection
+    repository.get_policy = lambda policy_id: {"id": policy_id, "status": "effective"}
+
+    activated = repository.confirm_policy("policy-high")
+
+    assert activated["status"] == "effective"
+    assert ("policy-high", "family-1", "policy") in connection.parameters
+    assert connection.committed is True

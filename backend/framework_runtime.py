@@ -27,6 +27,8 @@ WORKER_COMMAND = (
     "-m",
     "task_manager.runtime.worker",
 )
+DEFAULT_WORKER_COUNT = 10
+MAX_WORKER_COUNT = 32
 
 
 def _configure_python_path() -> None:
@@ -52,12 +54,25 @@ def _configure_python_path() -> None:
     os.environ.setdefault("TASK_EXECUTION_MODE", "worker")
 
 
+def runtime_commands() -> tuple[tuple[str, ...], ...]:
+    """Run enough durable Workers that long batch tasks cannot block chat."""
+
+    raw_count = os.environ.get("TASK_WORKER_COUNT", str(DEFAULT_WORKER_COUNT))
+    try:
+        worker_count = int(raw_count)
+    except ValueError:
+        worker_count = DEFAULT_WORKER_COUNT
+    worker_count = max(1, min(worker_count, MAX_WORKER_COUNT))
+    return (API_COMMAND, *(WORKER_COMMAND for _ in range(worker_count)))
+
+
 def run_processes(
-    commands: Sequence[Sequence[str]] = (API_COMMAND, WORKER_COMMAND),
+    commands: Sequence[Sequence[str]] | None = None,
 ) -> int:
     """Supervise API and Worker; either process exiting restarts the container."""
 
     _configure_python_path()
+    commands = commands or runtime_commands()
     processes = [subprocess.Popen(list(command)) for command in commands]
     stopping = False
 

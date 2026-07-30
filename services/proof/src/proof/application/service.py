@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 from pathlib import Path
@@ -46,6 +47,8 @@ INTRA_CONFLICT_TYPES = {
     "process_conflict",
     "rule_reversal",
 }
+POLICY_VERSION_PATTERN = r"^v[1-9]\d*\.[0-9]\.[0-9]$"
+POLICY_LIFECYCLE_ACTIONS = ("activate", "expire", "discard", "delete")
 
 
 class ProofService:
@@ -153,6 +156,16 @@ class ProofService:
             },
         }
 
+    def policy_metadata(self) -> dict[str, Any]:
+        return {
+            "levels": self.repository.list_levels(),
+            "categories": self.repository.list_categories(),
+            "supported_extensions": sorted(self.ingestion_pipeline.parser.supported_extensions),
+            "max_upload_bytes": self.settings.max_upload_bytes,
+            "version_pattern": POLICY_VERSION_PATTERN,
+            "lifecycle_actions": list(POLICY_LIFECYCLE_ACTIONS),
+        }
+
     def ingest_policy(
         self,
         *,
@@ -162,65 +175,273 @@ class ProofService:
         version: str = "v1.0.0",
         level_code: str | None = None,
         category_code: str = "auto",
+        similarity_decision: str | None = None,
+        candidate_policy_id: str | None = None,
+        idempotency_key: str | None = None,
+        dispatch_audit: bool = True,
     ) -> dict[str, Any]:
-        result = self.ingestion_pipeline.ingest_policy(
-            content=content,
-            filename=filename,
-            title=title,
-            version=version,
-            level_code=level_code,
-            category_code=category_code,
+        normalized_key = str(idempotency_key or "").strip()
+        if not normalized_key or len(normalized_key) > 128:
+            raise ProofError(
+                "invalid_idempotency_key",
+                "Idempotency-Key is required and must not exceed 128 characters.",
+                status_code=422,
+            )
+        decision = str(similarity_decision or "").strip().lower() or None
+        if decision not in {None, "new_version", "separate"}:
+            raise ProofError(
+                "invalid_similarity_decision",
+                "Similarity decision must be new_version or separate.",
+                status_code=422,
+            )
+        candidate_id = str(candidate_policy_id or "").strip() or None
+        if decision == "new_version" and not candidate_id:
+            raise ProofError(
+                "invalid_similarity_candidate",
+                "candidate_policy_id is required for new_version.",
+                status_code=422,
+            )
+        content_hash = hashlib.sha256(content).hexdigest()
+        request_fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "content_hash": content_hash,
+                    "filename": Path(filename or "policy.txt").name,
+                    "title": str(title or "").strip(),
+                    "version": str(version or "v1.0.0").strip(),
+                    "level_code": str(level_code or "").strip(),
+                    "category_code": str(category_code or "auto").strip(),
+                    "similarity_decision": decision,
+                    "candidate_policy_id": candidate_id,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        reservation = self.repository.reserve_policy_create_request(
+            idempotency_key=normalized_key,
+            request_fingerprint=request_fingerprint,
         )
-        policy = result["policy"]
-        document = result["document"]
+        if reservation.get("state") == "existing":
+            if reservation.get("status") == "RUNNING":
+                raise ProofError(
+                    "policy_create_in_progress",
+                    "The policy create request is still running.",
+                    status_code=409,
+                    details={"retryable": True},
+                )
+            policy_id = str(reservation.get("policy_id") or "")
+            existing = self.repository.get_by_content_hash(content_hash)
+            if (
+                reservation.get("status") == "SUCCEEDED"
+                and existing
+                and str((existing.get("policy") or {}).get("id") or "") == policy_id
+            ):
+                return self._finalize_ingestion_result(
+                    existing,
+                    decision=decision,
+                    candidate_policy_id=candidate_id,
+                    idempotency_key=normalized_key,
+                    replayed=True,
+                    dispatch_audit=dispatch_audit,
+                )
+            raise ProofError(
+                "policy_create_result_missing",
+                "The idempotent policy result is no longer available.",
+                status_code=409,
+            )
+        created_policy_id: str | None = None
+        try:
+            try:
+                preview = self.preview_policy_similarity(
+                    content=content,
+                    filename=filename,
+                    candidate_files=[],
+                    title=title,
+                    category_code=category_code,
+                )
+            except ProofError as preview_error:
+                if preview_error.code in {
+                    "empty_document",
+                    "file_too_large",
+                    "unsupported_file_type",
+                    "document_parse_failed",
+                    "no_clauses_found",
+                }:
+                    # The create endpoint must retain the ingestion run and its
+                    # failing stage. The lightweight similarity preview is
+                    # intentionally read-only and therefore has no run record.
+                    self.ingestion_pipeline.ingest_policy(
+                        content=content,
+                        filename=filename,
+                        title=title,
+                        version=version,
+                        level_code=level_code,
+                        category_code=category_code,
+                    )
+                raise
+            if preview.get("status") == "exact_duplicate":
+                duplicate = dict(preview.get("exact_duplicate") or {})
+                raise ProofError(
+                    "policy_exact_duplicate",
+                    "An identical policy already exists.",
+                    status_code=409,
+                    details=duplicate,
+                )
+            if preview.get("status") == "decision_required" and decision is None:
+                raise ProofError(
+                    "similarity_decision_required",
+                    "A similarity decision is required before creating the policy.",
+                    status_code=409,
+                    details={"candidates": preview.get("candidates") or []},
+                )
+            result = self.ingestion_pipeline.ingest_policy(
+                content=content,
+                filename=filename,
+                title=title,
+                version=version,
+                level_code=level_code,
+                category_code=category_code,
+            )
+            if result.get("reused"):
+                policy = dict(result.get("policy") or {})
+                raise ProofError(
+                    "policy_exact_duplicate",
+                    "An identical policy already exists.",
+                    status_code=409,
+                    details={
+                        "policy_id": policy.get("id"),
+                        "title": policy.get("title"),
+                        "current_version": policy.get("version"),
+                        "policy_status": policy.get("status"),
+                    },
+                )
+            created_policy_id = str((result.get("policy") or {}).get("id") or "") or None
+            result = self._finalize_ingestion_result(
+                result,
+                decision=decision,
+                candidate_policy_id=candidate_id,
+                idempotency_key=normalized_key,
+                replayed=False,
+                dispatch_audit=dispatch_audit,
+            )
+            policy = result["policy"]
+            document = result["document"]
+            self.repository.complete_policy_create_request(
+                idempotency_key=normalized_key,
+                policy_id=str(policy["id"]),
+                document_id=str(document["id"]),
+            )
+            created_policy_id = None
+            return result
+        except Exception as exc:
+            if created_policy_id:
+                try:
+                    self._discard_policy(created_policy_id)
+                except Exception:
+                    logger.exception(
+                        "Failed to compensate an incomplete policy create: policy_id=%s",
+                        created_policy_id,
+                    )
+            self.repository.fail_policy_create_request(
+                idempotency_key=normalized_key,
+                error_code=getattr(exc, "code", "policy_create_failed"),
+                error_message=str(exc),
+            )
+            raise
+
+    def _finalize_ingestion_result(
+        self,
+        result: dict[str, Any],
+        *,
+        decision: str | None,
+        candidate_policy_id: str | None,
+        idempotency_key: str,
+        replayed: bool,
+        dispatch_audit: bool,
+    ) -> dict[str, Any]:
+        result = dict(result)
+        policy = dict(result["policy"])
+        document = dict(result["document"])
         similarity = result.get("similarity")
         if not isinstance(similarity, dict):
             similarity = dict(policy.get("similarity_report") or {})
         similarity.setdefault("status", policy.get("similarity_state") or "clear")
-        result["similarity"] = similarity
         if similarity["status"] == "decision_required":
-            result["audit_task"] = _not_started_audit_task()
-            return result
-        if policy.get("status") == "draft" or result.get("reused"):
-            audit_state = self.policy_audit_service.ensure_dispatched(document["id"])
-        else:
-            audit_state = self._semantic_state_for_policy(policy, document["id"])
-        result["audit_task"] = _audit_task_view(audit_state)
-        return result
-
-    def decide_policy_similarity(
-        self,
-        policy_id: str,
-        *,
-        decision: str,
-        candidate_policy_id: str | None = None,
-        idempotency_key: str | None = None,
-    ) -> dict[str, Any]:
-        normalized_key = str(idempotency_key or "").strip() or None
-        if normalized_key is not None and len(normalized_key) > 128:
-            raise ProofError(
-                "invalid_idempotency_key",
-                "Idempotency-Key must not exceed 128 characters.",
-                status_code=422,
+            if decision is None:
+                raise ProofError(
+                    "similarity_decision_required",
+                    "A similarity decision is required before creating the policy.",
+                    status_code=409,
+                    details={"candidates": similarity.get("candidates") or []},
+                )
+            policy = self.repository.decide_policy_similarity(
+                policy["id"],
+                decision=decision,
+                candidate_policy_id=candidate_policy_id,
+                idempotency_key=idempotency_key,
             )
-        policy = self.repository.decide_policy_similarity(
-            policy_id,
-            decision=decision,
-            candidate_policy_id=candidate_policy_id,
-            idempotency_key=normalized_key,
-        )
-        if policy is None:
-            raise ProofError("policy_not_found", "Policy not found.", status_code=404)
-        audit_state = self.policy_audit_service.ensure_dispatched(policy["document_id"])
-        return {
-            "policy": policy,
-            "similarity": {
+            if policy is None:
+                raise ProofError("policy_not_found", "Policy not found.", status_code=404)
+            similarity = {
                 **dict(policy.get("similarity_report") or {}),
                 "status": policy.get("similarity_state") or decision,
                 "decision": decision,
-            },
-            "audit_task": _audit_task_view(audit_state),
-        }
+            }
+        elif not replayed:
+            allocator = getattr(self.repository, "resolve_independent_policy_identity", None)
+            if callable(allocator):
+                preview_status = str(similarity.get("status") or "clear")
+                policy = allocator(policy["id"])
+                similarity = {
+                    **similarity,
+                    "status": preview_status,
+                    "decision": "separate",
+                }
+        result["policy"] = policy
+        result["document"] = document
+        result["similarity"] = similarity
+        result["idempotency_replay"] = replayed
+        audit_state = (
+            self.policy_audit_service.ensure_dispatched(document["id"])
+            if dispatch_audit
+            else self.policy_audit_service.get_state(document["id"], reconcile=False)
+        )
+        result["audit_task"] = _audit_task_view(audit_state)
+        return result
+
+    def dispatch_policy_audit(
+        self,
+        *,
+        policy_id: str | None = None,
+        document_id: str | None = None,
+    ) -> dict[str, Any]:
+        resolved_document_id = str(document_id or "").strip()
+        if not resolved_document_id:
+            resolved_policy_id = str(policy_id or "").strip()
+            if not resolved_policy_id:
+                raise ValueError("policy_id or document_id is required")
+            policy = self.get_policy(resolved_policy_id)
+            resolved_document_id = str(policy["document_id"])
+        return self.policy_audit_service.ensure_dispatched(resolved_document_id)
+
+    def preview_policy_similarity(
+        self,
+        *,
+        content: bytes,
+        filename: str,
+        candidate_files: list[tuple[bytes, str]],
+        title: str = "",
+        category_code: str = "auto",
+    ) -> dict[str, Any]:
+        return self.ingestion_pipeline.preview_similarity(
+            content=content,
+            filename=filename,
+            candidate_files=candidate_files,
+            title=title,
+            category_code=category_code,
+        )
 
     def get_ingestion_run(self, run_id: str) -> dict[str, Any]:
         run = self.repository.get_ingestion_run(run_id)
@@ -253,10 +474,8 @@ class ProofService:
         if base_url:
             for item in items:
                 run_id = str(item.get("framework_run_id") or "").strip()
-                if item.get("operation_status") not in {"ACCEPTED", "RUNNING", "SUCCEEDED"} or not run_id:
+                if item.get("operation_status") not in {"ACCEPTED", "RUNNING"} or not run_id:
                     continue
-                if item.get("operation_status") == "SUCCEEDED":
-                    item["operation_status"] = "RUNNING"
                 try:
                     with httpx.Client(base_url=base_url, timeout=3) as client:
                         response = client.get(
@@ -279,8 +498,6 @@ class ProofService:
                     item["operation_status"] = "SUCCEEDED"
                 elif execution_state in {"FAILED", "CANCELED", "CANCELLED"}:
                     item["operation_status"] = "FAILED"
-                elif item.get("operation_status") == "SUCCEEDED":
-                    item["operation_status"] = "RUNNING"
                 item["blocking_reader_count"] = int(
                     run.get("blocking_reader_count") or 0
                 )
@@ -374,7 +591,7 @@ class ProofService:
         self.get_policy(policy_id)
         return self.repository.list_clauses(policy_id, include_text=include_text)
 
-    def get_audit_status(self, policy_id: str) -> dict[str, Any]:
+    def get_review_status(self, policy_id: str) -> dict[str, Any]:
         policy = self.get_policy(policy_id)
         operation = self.repository.get_latest_policy_operation(policy_id)
         operation_view = self._policy_operation_view(operation)
@@ -455,6 +672,34 @@ class ProofService:
             },
         }
 
+    def get_review_result(self, policy_id: str) -> dict[str, Any]:
+        policy = self.get_policy(policy_id)
+        status = self.get_review_status(policy_id)
+        summary = self._get_policy_summary(policy_id)
+        semantic = self._get_semantic_findings(policy_id)
+        conflict = self._get_conflict_findings(policy_id)
+        intra_conflict = self._get_intra_conflict_findings(policy_id)
+        return {
+            "policy": {
+                "id": policy.get("id"),
+                "document_id": policy.get("document_id"),
+                "family_id": policy.get("family_id"),
+                "title": policy.get("title"),
+                "version": policy.get("version"),
+                "version_seq": policy.get("version_seq"),
+                "status": policy.get("status"),
+                "level_code": policy.get("level_code"),
+                "category_code": policy.get("category_code"),
+            },
+            "review": status,
+            "summary": summary,
+            "findings": {
+                "semantic": semantic,
+                "conflict": conflict,
+                "intra_conflict": intra_conflict,
+            },
+        }
+
     def _policy_operation_view(
         self,
         operation: dict[str, Any] | None,
@@ -465,10 +710,8 @@ class ProofService:
         view["blocking_reader_count"] = 0
         run_id = str(operation.get("framework_run_id") or "").strip()
         base_url = self.settings.framework_base_url.strip().rstrip("/")
-        if operation.get("status") not in {"ACCEPTED", "RUNNING", "SUCCEEDED"} or not run_id or not base_url:
+        if operation.get("status") not in {"ACCEPTED", "RUNNING"} or not run_id or not base_url:
             return view
-        if operation.get("status") == "SUCCEEDED":
-            view["status"] = "RUNNING"
         try:
             with httpx.Client(base_url=base_url, timeout=3) as client:
                 response = client.get(
@@ -487,20 +730,27 @@ class ProofService:
             view["status"] = "WAITING_READERS"
         elif state == "RUNNING":
             view["status"] = "RUNNING"
-        elif state == "SUCCEEDED":
-            view["status"] = "SUCCEEDED"
-        elif state in {"FAILED", "CANCELED", "CANCELLED"}:
+        elif state in {"SUCCEEDED", "FAILED", "CANCELED", "CANCELLED"}:
+            error_message = str(run.get("error_message") or "").strip()
+            if state == "SUCCEEDED" and not error_message:
+                error_message = "Framework completed without committing the policy operation."
+            elif not error_message:
+                error_message = f"Framework policy operation ended with {state}."
+            self.repository.complete_policy_operation(
+                str(operation["operation_id"]),
+                status="FAILED",
+                error_message=error_message[:2000],
+            )
             view["status"] = "FAILED"
-        elif operation.get("status") == "SUCCEEDED":
-            view["status"] = "RUNNING"
+            view["error_message"] = error_message
         view["blocking_reader_count"] = int(run.get("blocking_reader_count") or 0)
         return view
 
-    def get_policy_summary(self, policy_id: str) -> dict[str, Any]:
+    def _get_policy_summary(self, policy_id: str) -> dict[str, Any]:
         policy = self.get_policy(policy_id)
         return self._summary_state_for_policy(policy, policy["document_id"])
 
-    def get_semantic_findings(self, policy_id: str) -> dict[str, Any]:
+    def _get_semantic_findings(self, policy_id: str) -> dict[str, Any]:
         policy = self.get_policy(policy_id)
         document_id = policy["document_id"]
         audit = self._semantic_state_for_policy(policy, document_id)
@@ -515,7 +765,7 @@ class ProofService:
             "findings": report["findings"],
         }
 
-    def get_conflict_findings(self, policy_id: str) -> dict[str, Any]:
+    def _get_conflict_findings(self, policy_id: str) -> dict[str, Any]:
         policy = self.get_policy(policy_id)
         document_id = policy["document_id"]
         audit = self._conflict_state_for_policy(policy, document_id)
@@ -525,7 +775,7 @@ class ProofService:
             "findings": self._with_conflict_candidate_availability(findings),
         }
 
-    def get_intra_conflict_findings(self, policy_id: str) -> dict[str, Any]:
+    def _get_intra_conflict_findings(self, policy_id: str) -> dict[str, Any]:
         policy = self.get_policy(policy_id)
         document_id = policy["document_id"]
         audit = self._intra_conflict_state_for_policy(policy, document_id)
@@ -594,22 +844,22 @@ class ProofService:
             intra_conflict_output_validator=self._validate_intra_conflict_output,
         )
 
-    def confirm_policy(
+    def _validate_policy_activation(
         self,
         policy_id: str,
         *,
-        idempotency_key: str | None = None,
+        replace_existing: bool,
     ) -> dict[str, Any]:
         policy = self.get_policy(policy_id)
         if policy.get("status") == "effective":
             return policy
-        if policy.get("status") != "draft":
+        if policy.get("status") not in {"draft", "expired"}:
             raise ProofError(
-                "policy_not_draft",
-                "Only a draft policy can be confirmed.",
+                "policy_not_activatable",
+                "Only a draft or expired policy can be activated.",
                 status_code=409,
             )
-        if self.settings.semantic_audit_enabled:
+        if policy.get("status") == "draft" and self.settings.semantic_audit_enabled:
             audit = self.policy_audit_service.get_state(policy["document_id"])
             if audit["status"] != "completed":
                 raise ProofError(
@@ -634,51 +884,41 @@ class ProofService:
                     status_code=409,
                     details={"intra_conflict_audit": intra_conflict},
                 )
-        if policy.get("supersedes_policy_id"):
-            model_runtime = getattr(self, "model_runtime", None)
-            if model_runtime is None or not model_runtime.embedding_configured:
-                raise ProofError(
-                    "embedding_not_configured",
-                    "An embedding model is required before a new policy version can become effective.",
-                    status_code=503,
-                )
-            self._index_document(policy["document_id"], require_effective=False)
-        return self.request_policy_action(
-            policy_id,
-            action="activate",
-            idempotency_key=idempotency_key,
-        )
+        effective_lookup = getattr(self.repository, "get_effective_family_policy", None)
+        effective_policy = effective_lookup(policy_id) if callable(effective_lookup) else None
+        if (
+            effective_policy
+            and int(effective_policy.get("version_seq") or 0) > int(policy.get("version_seq") or 0)
+            and not replace_existing
+        ):
+            raise ProofError(
+                "higher_version_effective",
+                "A higher policy version is already effective.",
+                status_code=409,
+                details={
+                    "current_policy_id": str(effective_policy.get("id") or ""),
+                    "current_title": str(effective_policy.get("title") or ""),
+                    "current_version": str(effective_policy.get("version") or ""),
+                    "target_policy_id": policy_id,
+                    "target_version": str(policy.get("version") or ""),
+                },
+            )
+        return policy
 
-    def request_policy_action(
+    def execute_policy_action(
         self,
         policy_id: str,
         *,
         action: str,
         idempotency_key: str | None,
+        replace_existing: bool = False,
     ) -> dict[str, Any]:
         normalized_action = str(action or "").strip().lower()
-        if normalized_action not in {"activate", "expire", "delete"}:
+        if normalized_action not in POLICY_LIFECYCLE_ACTIONS:
             raise ProofError(
                 "invalid_policy_action",
-                "Policy action must be activate, expire, or delete.",
+                "Policy action must be activate, expire, discard, or delete.",
                 status_code=422,
-            )
-        policy = self.repository.get_policy(policy_id)
-        if policy is None:
-            raise ProofError("policy_not_found", "Policy not found.", status_code=404)
-        if normalized_action == "activate" and policy.get("status") != "draft":
-            if policy.get("status") == "effective":
-                return {
-                    "id": policy_id,
-                    "status": "effective",
-                    "operation_status": "SUCCEEDED",
-                }
-            raise ProofError("policy_not_draft", "Only a draft policy can be activated.", status_code=409)
-        if normalized_action in {"expire", "delete"} and policy.get("status") == "draft":
-            raise ProofError(
-                "policy_not_published",
-                "Draft policies must use the draft discard operation.",
-                status_code=409,
             )
         normalized_key = str(idempotency_key or "").strip()
         if not normalized_key:
@@ -695,15 +935,203 @@ class ProofService:
             )
         operation_seed = (
             f"{current_tenant_id()}:{policy_id}:{normalized_action}:"
-            f"{normalized_key}"
+            f"{normalized_key}:{bool(replace_existing)}"
         )
         operation_id = hashlib.sha256(operation_seed.encode("utf-8")).hexdigest()
-        return self._dispatch_policy_action(
+        request_fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "policy_id": policy_id,
+                    "action": normalized_action,
+                    "replace_existing": bool(replace_existing),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        find_by_key = getattr(
+            self.repository,
+            "get_policy_operation_by_idempotency_key",
+            None,
+        )
+        existing_operation = (
+            find_by_key(normalized_key)
+            if callable(find_by_key)
+            else self.repository.get_policy_operation(operation_id)
+        )
+        if existing_operation is None:
+            existing_operation = self.repository.get_policy_operation(operation_id)
+        if existing_operation is not None:
+            if (
+                str(existing_operation.get("policy_id") or "") != policy_id
+                or str(existing_operation.get("action") or "") != normalized_action
+                or (
+                    existing_operation.get("request_fingerprint")
+                    and str(existing_operation["request_fingerprint"])
+                    != request_fingerprint
+                )
+            ):
+                raise ProofError(
+                    "idempotency_conflict",
+                    "The lifecycle operation was already used with different parameters.",
+                    status_code=409,
+                )
+            operation_id = str(existing_operation.get("operation_id") or operation_id)
+            if str(existing_operation.get("status") or "") != "FAILED":
+                return self._policy_operation_response(
+                    policy_id,
+                    normalized_action,
+                    {"operation_id": operation_id, **existing_operation},
+                )
+        policy = self.repository.get_policy(policy_id)
+        if policy is None:
+            tombstone = (
+                self.repository.get_delete_tombstone(operation_id)
+                if normalized_action == "delete"
+                else None
+            )
+            if tombstone is None:
+                raise ProofError("policy_not_found", "Policy not found.", status_code=404)
+        if normalized_action == "activate" and policy is not None:
+            self._validate_policy_activation(
+                policy_id,
+                replace_existing=bool(replace_existing),
+            )
+        if (
+            normalized_action == "activate"
+            and policy is not None
+            and policy.get("status") not in {"draft", "expired"}
+        ):
+            if policy.get("status") == "effective":
+                return {
+                    "id": policy_id,
+                    "policy_id": policy_id,
+                    "status": "effective",
+                    "policy_status": "effective",
+                    "operation": "activate",
+                    "operation_status": "SUCCEEDED",
+                }
+            raise ProofError(
+                "policy_not_activatable",
+                "Only a draft or expired policy can be activated.",
+                status_code=409,
+            )
+        if (
+            normalized_action in {"expire", "delete"}
+            and policy is not None
+            and policy.get("status") == "draft"
+        ):
+            raise ProofError(
+                "policy_not_published",
+                "Draft policies must use the draft discard operation.",
+                status_code=409,
+            )
+        if (
+            normalized_action == "discard"
+            and policy is not None
+            and policy.get("status") != "draft"
+        ):
+            raise ProofError(
+                "policy_not_draft",
+                "Only draft policies can be discarded.",
+                status_code=409,
+            )
+        claimed, claimed_operation = self.repository.claim_policy_operation(
+            operation_id=operation_id,
             policy_id=policy_id,
             action=normalized_action,
-            operation_id=operation_id,
             idempotency_key=normalized_key,
+            request_fingerprint=request_fingerprint,
         )
+        if not claimed:
+            return self._policy_operation_response(
+                policy_id,
+                normalized_action,
+                claimed_operation,
+            )
+        operation_id = str(claimed_operation.get("operation_id") or operation_id)
+        attempt_count = int(claimed_operation.get("attempt_count") or 1)
+        if normalized_action == "discard":
+            self.repository.record_policy_operation(
+                operation_id=operation_id,
+                policy_id=policy_id,
+                action=normalized_action,
+                status="RUNNING",
+            )
+            try:
+                self._discard_policy(policy_id)
+            except Exception as exc:
+                self.repository.complete_policy_operation(
+                    operation_id,
+                    status="FAILED",
+                    error_message=str(exc)[:2000],
+                )
+                raise
+            self.repository.complete_policy_operation(operation_id, status="SUCCEEDED")
+            return {
+                "id": policy_id,
+                "policy_id": policy_id,
+                "status": "discarded",
+                "policy_status": "discarded",
+                "operation_id": operation_id,
+                "operation": normalized_action,
+                "operation_status": "SUCCEEDED",
+                "framework_task_id": None,
+                "framework_run_id": None,
+                "blocking_reader_count": 0,
+            }
+        try:
+            return self._dispatch_policy_action(
+                policy_id=policy_id,
+                action=normalized_action,
+                operation_id=operation_id,
+                idempotency_key=normalized_key,
+                attempt_count=attempt_count,
+                replace_existing=bool(replace_existing),
+            )
+        except Exception as exc:
+            self.repository.complete_policy_operation(
+                operation_id,
+                status="FAILED",
+                error_message=str(exc)[:2000],
+            )
+            raise
+
+    def _policy_operation_response(
+        self,
+        policy_id: str,
+        action: str,
+        operation: dict[str, Any],
+    ) -> dict[str, Any]:
+        current = self.repository.get_policy(policy_id)
+        policy_status = (
+            str(current.get("status"))
+            if current is not None
+            else "discarded" if action == "discard" else "deleted"
+        )
+        operation_view = self._policy_operation_view(operation) or operation
+        operation_status = str(operation_view.get("status") or "").upper()
+        response_status = (
+            "accepted"
+            if operation_status in {"ACCEPTED", "RUNNING", "WAITING_READERS"}
+            else policy_status
+        )
+        return {
+            "id": policy_id,
+            "policy_id": policy_id,
+            "status": response_status,
+            "policy_status": policy_status,
+            "operation_id": str(operation_view.get("operation_id") or ""),
+            "operation": action,
+            "operation_status": operation_status,
+            "framework_task_id": operation_view.get("framework_task_id"),
+            "framework_run_id": operation_view.get("framework_run_id"),
+            "blocking_reader_count": int(
+                operation_view.get("blocking_reader_count") or 0
+            ),
+            "error_message": operation_view.get("error_message"),
+        }
 
     def _dispatch_policy_action(
         self,
@@ -712,6 +1140,8 @@ class ProofService:
         action: str,
         operation_id: str,
         idempotency_key: str,
+        attempt_count: int = 1,
+        replace_existing: bool = False,
     ) -> dict[str, Any]:
         base_url = self.settings.framework_base_url.strip().rstrip("/")
         if not base_url:
@@ -732,6 +1162,7 @@ class ProofService:
                 "operation_id": operation_id,
                 "policy_id": policy_id,
                 "action": action,
+                "replace_existing": replace_existing,
             },
             "stream": False,
         }
@@ -752,7 +1183,9 @@ class ProofService:
                     json={"stream": False},
                     headers={
                         **headers,
-                        "Idempotency-Key": f"proof-policy-action-run:{idempotency_key}",
+                        "Idempotency-Key": (
+                            f"proof-policy-action-run:{idempotency_key}:{attempt_count}"
+                        ),
                     },
                 )
                 response.raise_for_status()
@@ -774,7 +1207,11 @@ class ProofService:
         )
         return {
             "id": policy_id,
+            "policy_id": policy_id,
             "status": "accepted",
+            "policy_status": str(
+                (self.repository.get_policy(policy_id) or {}).get("status") or ""
+            ),
             "operation_id": operation_id,
             "operation": action,
             "operation_status": "ACCEPTED",
@@ -788,6 +1225,7 @@ class ProofService:
         policy_id: str,
         action: str,
         operation_id: str,
+        replace_existing: bool = False,
     ) -> dict[str, Any]:
         self.repository.record_policy_operation(
             operation_id=operation_id,
@@ -797,7 +1235,33 @@ class ProofService:
         )
         try:
             if action == "activate":
-                policy = self.repository.confirm_policy(policy_id)
+                model_runtime = getattr(self, "model_runtime", None)
+                if model_runtime is None or not model_runtime.embedding_configured:
+                    raise ProofError(
+                        "embedding_not_configured",
+                        "An embedding model is required before a policy can become effective.",
+                        status_code=503,
+                    )
+                current_policy = self.repository.get_policy(policy_id)
+                if current_policy is None:
+                    raise ProofError("policy_not_found", "Policy not found.", status_code=404)
+                index_result = self._index_document(
+                    current_policy["document_id"],
+                    require_effective=False,
+                )
+                if (
+                    index_result.get("status") != "indexed"
+                    or int(index_result.get("indexed_unit_count") or 0) <= 0
+                ):
+                    raise ProofError(
+                        "embedding_incomplete",
+                        "Policy indexing did not produce any searchable vectors.",
+                        status_code=502,
+                    )
+                policy = self.repository.activate_policy_version(
+                    policy_id,
+                    replace_existing=replace_existing,
+                )
                 if policy is None:
                     raise ProofError("policy_not_found", "Policy not found.", status_code=404)
                 result = {
@@ -858,9 +1322,6 @@ class ProofService:
             self.storage_root
         ):
             raise ProofError("invalid_storage_path", "Policy storage path is invalid.", status_code=500)
-        trash_path.parent.mkdir(parents=True, exist_ok=True)
-        if original_path.is_file() and not trash_path.exists():
-            original_path.replace(trash_path)
         deleted = self.repository.delete_policy_version(
             policy_id,
             operation_id=operation_id,
@@ -870,6 +1331,9 @@ class ProofService:
         if deleted is None:
             raise ProofError("policy_not_found", "Policy not found.", status_code=404)
         try:
+            trash_path.parent.mkdir(parents=True, exist_ok=True)
+            if original_path.is_file() and not trash_path.exists():
+                original_path.replace(trash_path)
             if trash_path.is_file():
                 trash_path.unlink()
             self.repository.mark_delete_cleaned(operation_id)
@@ -882,7 +1346,7 @@ class ProofService:
             ) from exc
         return {"id": policy_id, "status": "deleted", "operation_id": operation_id}
 
-    def discard_policy(self, policy_id: str) -> dict[str, Any]:
+    def _discard_policy(self, policy_id: str) -> dict[str, Any]:
         deleted = self.repository.delete_draft_policy(policy_id)
         if deleted is None:
             raise ProofError("policy_not_found", "Policy not found.", status_code=404)
@@ -901,12 +1365,6 @@ class ProofService:
             except OSError:
                 logger.warning(warning, resource_id)
 
-    def list_levels(self) -> list[dict[str, Any]]:
-        return self.repository.list_levels()
-
-    def list_categories(self) -> list[dict[str, Any]]:
-        return self.repository.list_categories()
-
     def fetch_units(self, unit_ids: list[str]) -> list[dict[str, Any]]:
         results = []
         for unit in self.repository.fetch_units(unit_ids):
@@ -920,9 +1378,6 @@ class ProofService:
             )
         return results
 
-    def index_document(self, document_id: str) -> dict[str, Any]:
-        return self._index_document(document_id, require_effective=True)
-
     def _index_document(
         self,
         document_id: str,
@@ -932,7 +1387,11 @@ class ProofService:
         policy = self.repository.get_policy_by_document_id(document_id)
         if policy is None:
             raise ProofError("document_not_found", "Document or clauses not found.", status_code=404)
-        allowed_statuses = {"effective"} if require_effective else {"draft", "effective"}
+        allowed_statuses = (
+            {"effective"}
+            if require_effective
+            else {"draft", "effective", "expired"}
+        )
         if policy.get("status") not in allowed_statuses:
             raise ProofError(
                 "policy_not_effective",

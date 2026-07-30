@@ -3,6 +3,21 @@ from __future__ import annotations
 from backend import framework_runtime
 
 
+def test_framework_runtime_starts_ten_workers_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("TASK_WORKER_COUNT", raising=False)
+
+    commands = framework_runtime.runtime_commands()
+
+    assert commands[0] == framework_runtime.API_COMMAND
+    assert commands[1:] == (framework_runtime.WORKER_COMMAND,) * 10
+
+
+def test_framework_runtime_clamps_configured_worker_count(monkeypatch) -> None:
+    monkeypatch.setenv("TASK_WORKER_COUNT", "99")
+
+    assert len(framework_runtime.runtime_commands()) == 33
+
+
 def test_framework_runtime_supervises_api_and_worker(monkeypatch) -> None:
     monkeypatch.delenv("TASK_EXECUTION_MODE", raising=False)
     processes = []

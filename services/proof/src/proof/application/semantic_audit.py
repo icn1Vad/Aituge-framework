@@ -80,15 +80,14 @@ class PolicyAuditService:
                 audit_run_id=uuid.uuid4().hex,
                 document_id=document_id,
             )
-        elif self._has_running_stage(run):
+        if self._has_running_stage(run):
             return self._state(run)
-        elif self._all_stages_completed(run):
+        if self._all_stages_completed(run):
             return self._state(run)
-        else:
-            prepared = self.repository.prepare_audit_run_for_dispatch(run["id"])
-            if not prepared:
-                return self.get_state(document_id)
-            run = self.repository.get_audit_run(run["id"])
+        prepared = self.repository.prepare_audit_run_for_dispatch(run["id"])
+        if not prepared:
+            return self.get_state(document_id)
+        run = self.repository.get_audit_run(run["id"])
 
         try:
             self._dispatch(run)

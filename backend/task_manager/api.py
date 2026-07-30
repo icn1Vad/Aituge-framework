@@ -44,6 +44,9 @@ SSE_HEADERS = {
     "X-Accel-Buffering": "no",
 }
 
+RUN_EVENT_POLL_INTERVAL_SECONDS = 0.25
+RUN_EVENT_HEARTBEAT_INTERVAL_SECONDS = 10.0
+
 
 _STREAM_DONE = object()
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
@@ -709,9 +712,14 @@ async def _stream_run_sse(service: TaskManagerService, run, after_sequence: int 
             return
 
         pending = asyncio.create_task(anext(live))
+        loop = asyncio.get_running_loop()
+        next_heartbeat_at = loop.time() + RUN_EVENT_HEARTBEAT_INTERVAL_SECONDS
         try:
             while True:
-                done, _ = await asyncio.wait({pending}, timeout=10)
+                done, _ = await asyncio.wait(
+                    {pending},
+                    timeout=RUN_EVENT_POLL_INTERVAL_SECONDS,
+                )
                 if not done:
                     missed = await service.list_run_events(
                         run_id,
@@ -725,20 +733,23 @@ async def _stream_run_sse(service: TaskManagerService, run, after_sequence: int 
                     latest = await service.get_run(run_id)
                     if latest is None or latest.status in {"succeeded", "failed", "cancelled", "waiting_human"}:
                         return
-                    yield _sse(
-                        {
-                            "schema_version": "1.0",
-                            "event_id": None,
-                            "task_id": run.task_id,
-                            "run_id": run_id,
-                            "sequence": last_sequence,
-                            "event_type": "heartbeat",
-                            "stream_semantics": "heartbeat",
-                            "stage_id": latest.current_stage_id,
-                            "payload": {"run_status": latest.status},
-                        },
-                        include_id=False,
-                    )
+                    now = loop.time()
+                    if now >= next_heartbeat_at:
+                        yield _sse(
+                            {
+                                "schema_version": "1.0",
+                                "event_id": None,
+                                "task_id": run.task_id,
+                                "run_id": run_id,
+                                "sequence": last_sequence,
+                                "event_type": "heartbeat",
+                                "stream_semantics": "heartbeat",
+                                "stage_id": latest.current_stage_id,
+                                "payload": {"run_status": latest.status},
+                            },
+                            include_id=False,
+                        )
+                        next_heartbeat_at = now + RUN_EVENT_HEARTBEAT_INTERVAL_SECONDS
                     continue
                 envelope = pending.result()
                 pending = asyncio.create_task(anext(live))
