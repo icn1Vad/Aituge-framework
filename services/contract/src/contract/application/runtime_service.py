@@ -13,6 +13,7 @@ from contract.api.models import (
     ErrorData,
     ReviewResultData,
     ReviewStage,
+    PartyResolutionData,
     ReviewStatus,
     ReviewStatusData,
 )
@@ -28,6 +29,7 @@ from contract.application.idempotency import build_request_fingerprint, sha256_b
 from contract.application.ports import InternalRequestContext, UploadedContract
 from contract.config import Settings
 from contract.errors import ContractError
+from contract.callback.models import PartyResolutionStageResult
 from contract.model_pack import resolve_model_pack_id
 from contract.persistence.models import ReviewCreate
 from contract.persistence.postgres.callback_repository import FrameworkCallbackRepository
@@ -153,7 +155,7 @@ class RuntimeContractReviewService:
             tenant_id=context.tenant_id,
             user_id=context.user_id,
         )
-        return self._status_data(state)
+        return self._status_data(state, self._party_resolution(state))
 
     def get_result(self, review_id: str, *, context: InternalRequestContext) -> ReviewResultData:
         status = self.get_status(review_id, context=context)
@@ -459,8 +461,39 @@ class RuntimeContractReviewService:
             reused=reused,
         )
 
+    def _party_resolution(self, state: dict) -> PartyResolutionData | None:
+        attempt = state["active_attempt"]
+        if attempt is None:
+            return None
+        value = self.completion_repository.get_validated_stage_result(
+            state["id"],
+            attempt["attempt_no"],
+            "resolve_parties",
+        )
+        if value is None:
+            return None
+        try:
+            result = PartyResolutionStageResult.model_validate(value)
+        except ValidationError:
+            logger.error(
+                "Validated party resolution result has an invalid shape for review %s attempt %s",
+                state["id"],
+                attempt["attempt_no"],
+            )
+            return None
+        return PartyResolutionData(
+            party_a=result.party_a,
+            party_b=result.party_b,
+            perspective=result.perspective,
+            our_party=result.our_party,
+            counterparty=result.counterparty,
+        )
+
     @staticmethod
-    def _status_data(state: dict) -> ReviewStatusData:
+    def _status_data(
+        state: dict,
+        party_resolution: PartyResolutionData | None,
+    ) -> ReviewStatusData:
         attempt = state["active_attempt"]
         error = None
         if state["status"] == "FAILED":
@@ -484,6 +517,7 @@ class RuntimeContractReviewService:
             framework_run_id=attempt["framework_run_id"] if attempt else None,
             error=error,
             updated_at=state["updated_at"],
+            party_resolution=party_resolution,
         )
 
     @staticmethod

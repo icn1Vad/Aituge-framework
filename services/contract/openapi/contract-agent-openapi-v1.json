@@ -2342,6 +2342,41 @@
         "title": "PartyProfile",
         "type": "object"
       },
+      "PartyResolutionData": {
+        "additionalProperties": false,
+        "properties": {
+          "counterparty": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Counterparty",
+            "type": "string"
+          },
+          "our_party": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Our Party",
+            "type": "string"
+          },
+          "party_a": {
+            "$ref": "#/components/schemas/PartyProfile"
+          },
+          "party_b": {
+            "$ref": "#/components/schemas/PartyProfile"
+          },
+          "perspective": {
+            "$ref": "#/components/schemas/Perspective"
+          }
+        },
+        "required": [
+          "party_a",
+          "party_b",
+          "perspective",
+          "our_party",
+          "counterparty"
+        ],
+        "title": "PartyResolutionData",
+        "type": "object"
+      },
       "PartyResolutionStageResult": {
         "additionalProperties": false,
         "properties": {
@@ -2623,6 +2658,16 @@
             "title": "Model Pack Id",
             "type": "string"
           },
+          "party_resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PartyResolutionData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "review_id": {
             "maxLength": 160,
             "minLength": 1,
@@ -2774,6 +2819,12 @@
             "title": "Framework Task Id",
             "type": "string"
           },
+          "lease_version": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Lease Version",
+            "type": "integer"
+          },
           "result": {
             "title": "Result",
             "type": "null"
@@ -2869,6 +2920,12 @@
             "minLength": 1,
             "title": "Framework Task Id",
             "type": "string"
+          },
+          "lease_version": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Lease Version",
+            "type": "integer"
           },
           "result": {
             "title": "Result",
@@ -3058,6 +3115,12 @@
             "minLength": 1,
             "title": "Framework Task Id",
             "type": "string"
+          },
+          "lease_version": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Lease Version",
+            "type": "integer"
           },
           "result": {
             "discriminator": {
@@ -4481,6 +4544,22 @@
               "minLength": 1,
               "title": "Idempotency-Key",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-AI-Mode",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Ai-Mode"
             }
           }
         ],

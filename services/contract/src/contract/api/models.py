@@ -152,6 +152,26 @@ class CreateReviewData(FrameworkMappingModel):
         return self
 
 
+class PartyProfile(StrictModel):
+    name: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+
+
+class PartyResolutionData(StrictModel):
+    party_a: PartyProfile
+    party_b: PartyProfile
+    perspective: Perspective
+    our_party: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    counterparty: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+
+    @model_validator(mode="after")
+    def validate_perspective(self) -> "PartyResolutionData":
+        expected_our_party = self.party_a.name if self.perspective == Perspective.PARTY_A else self.party_b.name
+        expected_counterparty = self.party_b.name if self.perspective == Perspective.PARTY_A else self.party_a.name
+        if self.our_party != expected_our_party or self.counterparty != expected_counterparty:
+            raise ValueError("our_party and counterparty must match the selected perspective")
+        return self
+
+
 class ReviewStatusData(FrameworkMappingModel):
     review_id: Identifier
     business_task_id: Identifier
@@ -160,6 +180,7 @@ class ReviewStatusData(FrameworkMappingModel):
     document_id: Identifier
     error: ErrorData | None = None
     schema_version: Literal["1.0"] = "1.0"
+    party_resolution: PartyResolutionData | None = None
     updated_at: AwareDatetime
 
     @model_validator(mode="after")
@@ -180,10 +201,6 @@ class CancelReviewData(StrictModel):
     review_id: Identifier
     status: Literal[ReviewStatus.CANCELLED]
     already_terminal: bool
-
-
-class PartyProfile(StrictModel):
-    name: Annotated[str, StringConstraints(min_length=1, max_length=500)]
 
 
 class ContractProfile(StrictModel):

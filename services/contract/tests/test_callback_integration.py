@@ -158,6 +158,14 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
             _stage_callback(created, 2, "resolve_parties", party_result),
         )
 
+        status_after_party_resolution = runtime.get_status(created.review_id, context=context)
+        assert status_after_party_resolution.party_resolution is not None
+        assert status_after_party_resolution.party_resolution.party_a.name == "Acme Company"
+        assert status_after_party_resolution.party_resolution.party_b.name == "Beta Company"
+        assert status_after_party_resolution.party_resolution.our_party == "Beta Company"
+        assert status_after_party_resolution.party_resolution.counterparty == "Acme Company"
+        assert status_after_party_resolution.framework_attempt_no == 1
+
         contract_ir = internal.get_ir(
             ContractIrToolRequest(
                 review_id=created.review_id,
