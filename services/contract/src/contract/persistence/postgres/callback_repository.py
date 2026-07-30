@@ -184,13 +184,27 @@ class FrameworkCallbackRepository:
                 """,
                 (review_id, tenant_id, user_id),
             ).fetchone()
+            blocks = []
+            if row is not None and row["generation_id"] is not None:
+                blocks = conn.execute(
+                    """
+                    SELECT block_id, block_no, block_type, char_start, char_end,
+                           text, heading_path
+                    FROM contract_document_block
+                    WHERE generation_id = %s AND tenant_id = %s
+                    ORDER BY block_no
+                    """,
+                    (row["generation_id"], tenant_id),
+                ).fetchall()
         if row is None:
             raise ContractError(
                 "REVIEW_NOT_FOUND",
                 "Contract review does not exist or is not accessible",
                 status_code=404,
             )
-        return dict(row)
+        value = dict(row)
+        value["document_blocks"] = [dict(block) for block in blocks]
+        return value
 
     def finish_if_ready(
         self,

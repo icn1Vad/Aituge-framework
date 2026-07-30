@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
@@ -12,12 +13,14 @@ from services.contract.capabilities.revision_drafts import (
     ReplacementBatchResult,
     RevisionDraftResponse,
     RevisionDraftService,
+    RevisionDocumentBlock,
     RevisionEvidenceSource,
     RevisionFindingSource,
     RevisionGenerationRequest,
     RevisionIrSource,
     RevisionReviewSource,
     SupplementRequest,
+    _find_contract_ir_list,
     source_from_formal_payload,
 )
 
@@ -25,6 +28,7 @@ from services.contract.capabilities.revision_drafts import (
 @dataclass
 class _Generator:
     replacement_text: str
+    anchor_block_id: str | None = None
     calls: list[tuple[RevisionGenerationRequest, ...]] = field(default_factory=list)
 
     async def generate(
@@ -39,6 +43,10 @@ class _Generator:
                 GeneratedReplacement(
                     revision_key=item.revision_key,
                     replacement_text=self.replacement_text,
+                    anchor_block_id=(
+                        self.anchor_block_id
+                        if isinstance(item, SupplementRequest) else None
+                    ),
                 )
                 for item in items
             )
@@ -74,6 +82,35 @@ def _absence_source(*, verification_note: str | None = "已检查第六条，未
             )
         ],
         contract_ir=[],
+        document_blocks=[
+            RevisionDocumentBlock(
+                block_id="block-remedy-heading",
+                block_no=1,
+                block_type="paragraph",
+                char_start=0,
+                char_end=len("section-remedy"),
+                text="section-remedy",
+                heading_path=["section-remedy"],
+            ),
+            RevisionDocumentBlock(
+                block_id="block-remedy-end",
+                block_no=2,
+                block_type="paragraph",
+                char_start=0,
+                char_end=len("Party B bears liability for breach."),
+                text="Party B bears liability for breach.",
+                heading_path=["section-remedy"],
+            ),
+            RevisionDocumentBlock(
+                block_id="block-dispute-end",
+                block_no=3,
+                block_type="paragraph",
+                char_start=0,
+                char_end=len("section-dispute"),
+                text="section-dispute",
+                heading_path=["section-dispute"],
+            ),
+        ],
     )
 
 
@@ -125,11 +162,12 @@ def _replace_source() -> RevisionReviewSource:
 def _generate(
     source: RevisionReviewSource,
     text: str,
+    anchor_block_id: str | None = None,
 ) -> tuple[RevisionDraftResponse, _Generator]:
     provider = InMemoryRevisionSourceProvider(
         {(source.review_id, source.generation_id, source.result_hash): source}
     )
-    generator = _Generator(text)
+    generator = _Generator(text, anchor_block_id=anchor_block_id)
     service = RevisionDraftService(
         source_provider=provider,
         generator=generator,
@@ -150,6 +188,7 @@ def test_absence_generates_a_manual_supplement_with_a_certain_placeholder() -> N
     response, generator = _generate(
         source,
         "乙方未按约履行义务的，应在某个工作日内采取补救措施，并承担相应责任。",
+        anchor_block_id="block-remedy-end",
     )
 
     assert response.status == "COMPLETED"
@@ -163,6 +202,100 @@ def test_absence_generates_a_manual_supplement_with_a_certain_placeholder() -> N
     assert "某个工作日" in draft.replacement_text
     assert len(generator.calls) == 1
     assert isinstance(generator.calls[0][0], SupplementRequest)
+    assert draft.insertion_target is not None
+    assert draft.insertion_target.block_id == "block-remedy-end"
+    assert draft.insertion_target.block_no == 2
+    assert draft.insertion_target.display_position == "\u5efa\u8bae\u63d2\u5165\u5230\u201csection-remedy\u201d\u672b\u5c3e"
+
+
+def test_absence_keeps_text_when_model_returns_an_unknown_anchor() -> None:
+    source = _absence_source()
+    response, _ = _generate(
+        source,
+        "Party B must take remedial action after breach.",
+        anchor_block_id="invented-block",
+    )
+
+    assert response.status == "COMPLETED"
+    assert response.drafts[0].replacement_text is not None
+    assert response.drafts[0].insertion_target is None
+
+
+def test_absence_without_document_blocks_still_generates_text() -> None:
+    source = _absence_source().model_copy(update={"document_blocks": []})
+    response, generator = _generate(
+        source,
+        "Party B must take remedial action after breach.",
+    )
+
+    assert response.status == "COMPLETED"
+    assert response.drafts[0].insertion_target is None
+    request = generator.calls[0][0]
+    assert isinstance(request, SupplementRequest)
+    assert request.insertion_candidates == ()
+
+
+
+def test_absence_infers_section_end_and_selects_confident_anchor() -> None:
+    source = _absence_source()
+    finding = source.findings[0].model_copy(
+        update={
+            "title": "\u7f3a\u5c11\u7b2c\u4e09\u65b9\u77e5\u8bc6\u4ea7\u6743\u4fdd\u8bc1",
+            "issue": "\u5408\u540c\u672a\u7ea6\u5b9a\u7b2c\u4e09\u65b9\u77e5\u8bc6\u4ea7\u6743\u4fdd\u8bc1\u3002",
+            "suggestion": "\u8865\u5145\u77e5\u8bc6\u4ea7\u6743\u4fdd\u8bc1\u548c\u4fb5\u6743\u6551\u6d4e\u3002",
+        }
+    )
+    evidence = source.evidences[0].model_copy(
+        update={"checked_scope": "\u5168\u6587\u77e5\u8bc6\u4ea7\u6743\u6761\u6b3e"}
+    )
+    blocks = [
+        RevisionDocumentBlock(
+            block_id="block-ip-heading",
+            block_no=1,
+            block_type="paragraph",
+            char_start=0,
+            char_end=len("\u516d\u3001\u77e5\u8bc6\u4ea7\u6743"),
+            text="\u516d\u3001\u77e5\u8bc6\u4ea7\u6743",
+        ),
+        RevisionDocumentBlock(
+            block_id="block-ip-clause",
+            block_no=2,
+            block_type="paragraph",
+            char_start=0,
+            char_end=len("\u4e59\u65b9\u4ea4\u4ed8\u6210\u679c\u5f52\u7532\u65b9\u6240\u6709\u3002"),
+            text="\u4e59\u65b9\u4ea4\u4ed8\u6210\u679c\u5f52\u7532\u65b9\u6240\u6709\u3002",
+        ),
+        RevisionDocumentBlock(
+            block_id="block-ip-end",
+            block_no=3,
+            block_type="paragraph",
+            char_start=0,
+            char_end=len("\u7532\u65b9\u6709\u6743\u4fee\u6539\u548c\u518d\u8bb8\u53ef\u4ea4\u4ed8\u6210\u679c\u3002"),
+            text="\u7532\u65b9\u6709\u6743\u4fee\u6539\u548c\u518d\u8bb8\u53ef\u4ea4\u4ed8\u6210\u679c\u3002",
+        ),
+        RevisionDocumentBlock(
+            block_id="block-next-heading",
+            block_no=4,
+            block_type="paragraph",
+            char_start=0,
+            char_end=len("\u4e03\u3001\u8fdd\u7ea6\u8d23\u4efb"),
+            text="\u4e03\u3001\u8fdd\u7ea6\u8d23\u4efb",
+        ),
+    ]
+    focused = source.model_copy(
+        update={"findings": [finding], "evidences": [evidence], "document_blocks": blocks}
+    )
+
+    response, _ = _generate(
+        focused,
+        blocks[2].text + "Party B warrants that all deliverables are non-infringing.",
+    )
+
+    target = response.drafts[0].insertion_target
+    assert target is not None
+    assert target.block_id == "block-ip-end"
+    assert target.heading_path == ["\u516d\u3001\u77e5\u8bc6\u4ea7\u6743"]
+    assert response.drafts[0].replacement_text == "Party B warrants that all deliverables are non-infringing."
 
 
 def test_absence_supplement_rejects_concrete_duration_and_amount() -> None:
@@ -192,6 +325,24 @@ def test_text_quote_continues_to_generate_a_replace_draft() -> None:
     assert response.status == "COMPLETED"
     assert response.drafts[0].operation == "REPLACE"
     assert response.drafts[0].target is not None
+    assert response.drafts[0].insertion_target is None
+    draft = response.drafts[0]
+    legacy_payload = {
+        "revision_key": draft.revision_key,
+        "operation": draft.operation,
+        "original_text": draft.original_text,
+        "replacement_text": draft.replacement_text,
+        "target": draft.target.model_dump(mode="json"),
+    }
+    expected_hash = "sha256:" + hashlib.sha256(
+        json.dumps(
+            legacy_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    assert draft.revision_hash == expected_hash
 
 
 def test_formal_payload_retains_absence_verification_note() -> None:
@@ -226,6 +377,51 @@ def test_formal_payload_retains_absence_verification_note() -> None:
         },
         generation_id="generation-payload-1",
         contract_ir=[],
+        document_blocks=[
+            {
+                "block_id": "block-payload-1",
+                "block_no": 1,
+                "block_type": "paragraph",
+                "char_start": 0,
+                "char_end": len("section-seven"),
+                "text": "section-seven",
+                "heading_path": ["section-seven"],
+            }
+        ],
     )
 
     assert source.evidences[0].verification_note == "已检查第七条，未见相关安排。"
+    assert source.document_blocks[0].block_id == "block-payload-1"
+    assert source.document_blocks[0].block_no == 1
+    assert source.document_blocks[0].heading_path == ["section-seven"]
+
+
+def test_contract_ir_locator_skips_party_records_without_ir_identity() -> None:
+    party_anchor = {
+        "anchor_id": "anchor-party",
+        "block_id": "block-party",
+        "char_start": 0,
+        "char_end": 7,
+    }
+    clause_anchor = {
+        "anchor_id": "anchor-clause",
+        "block_id": "block-clause",
+        "char_start": 0,
+        "char_end": 12,
+    }
+    selected = _find_contract_ir_list(
+        {
+            "parties": [
+                {"role": "PARTY_A", "name": "Party A", "source_anchors": [party_anchor]}
+            ],
+            "clauses": [
+                {
+                    "clause_id": "clause-1",
+                    "text": "Clause text.",
+                    "source_anchors": [clause_anchor],
+                }
+            ],
+        }
+    )
+
+    assert selected[0]["clause_id"] == "clause-1"

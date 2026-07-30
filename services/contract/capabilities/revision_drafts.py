@@ -23,6 +23,7 @@ SCHEMA_VERSION = "1.0"
 PROMPT_TARGET_TOKENS = 6_000
 PROMPT_HARD_LIMIT_TOKENS = 7_000
 MAX_BATCH_FINDINGS = 6
+MAX_INSERTION_CANDIDATES = 24
 _PLACEHOLDER_RE = re.compile(r"(?:TODO|TBD|XXX|待补充|待定|请填写)", re.IGNORECASE)
 _DATE_RE = re.compile(
     r"(?:\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}[-/.]\d{1,2}[-/.]\d{1,2})"
@@ -34,6 +35,9 @@ _DURATION_RE = re.compile(
     r"(?:\d+|[一二三四五六七八九十百千万两〇零]+)\s*(?:个)?(?:工作日|自然日|日|天|月|年|小时)"
 )
 _COMPANY_RE = re.compile(r"[\u4e00-\u9fffA-Za-z0-9（）()·]{4,80}(?:有限责任公司|有限公司|股份有限公司)")
+_SECTION_HEADING_RE = re.compile(
+    r"^\s*(?:\u7b2c[\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e0-9]+\s*[\u7ae0\u8282\u6761]|[\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e]+\u3001)"
+)
 
 
 class StrictModel(BaseModel):
@@ -51,6 +55,22 @@ class RevisionIrSource(StrictModel):
 
     @model_validator(mode="after")
     def validate_range(self) -> "RevisionIrSource":
+        if self.char_end <= self.char_start:
+            raise ValueError("char_end must be greater than char_start")
+        return self
+
+
+class RevisionDocumentBlock(StrictModel):
+    block_id: str = Field(min_length=1, max_length=200)
+    block_no: int = Field(gt=0)
+    block_type: str = Field(min_length=1, max_length=160)
+    char_start: int = Field(ge=0)
+    char_end: int = Field(gt=0)
+    text: str = Field(min_length=1)
+    heading_path: list[str] = Field(default_factory=list, max_length=30)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "RevisionDocumentBlock":
         if self.char_end <= self.char_start:
             raise ValueError("char_end must be greater than char_start")
         return self
@@ -93,6 +113,7 @@ class RevisionReviewSource(StrictModel):
     findings: list[RevisionFindingSource]
     evidences: list[RevisionEvidenceSource]
     contract_ir: list[RevisionIrSource]
+    document_blocks: list[RevisionDocumentBlock] = Field(default_factory=list)
 
 
 class RevisionTarget(StrictModel):
@@ -104,6 +125,16 @@ class RevisionTarget(StrictModel):
     quoted_text_hash: str
 
 
+class RevisionInsertionTarget(StrictModel):
+    type: Literal["AFTER_BLOCK"] = "AFTER_BLOCK"
+    block_id: str
+    block_no: int = Field(gt=0)
+    heading_path: list[str] = Field(default_factory=list)
+    anchor_excerpt: str = Field(min_length=1, max_length=500)
+    anchor_text_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    display_position: str = Field(min_length=1, max_length=500)
+
+
 class RevisionDraft(StrictModel):
     revision_key: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     finding_id: str
@@ -112,6 +143,7 @@ class RevisionDraft(StrictModel):
     replacement_text: str | None = None
     change_reason: str
     target: RevisionTarget | None = None
+    insertion_target: RevisionInsertionTarget | None = None
     unsupported_reason: str | None = None
     revision_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     validation_status: Literal["VALID"]
@@ -120,10 +152,20 @@ class RevisionDraft(StrictModel):
     @model_validator(mode="after")
     def validate_operation_shape(self) -> "RevisionDraft":
         if self.operation == "REPLACE":
-            if not self.original_text or not self.replacement_text or self.target is None:
+            if (
+                not self.original_text
+                or not self.replacement_text
+                or self.target is None
+                or self.insertion_target is not None
+            ):
                 raise ValueError("REPLACE requires original_text, replacement_text and target")
         elif self.operation == "DELETE":
-            if not self.original_text or self.replacement_text is not None or self.target is None:
+            if (
+                not self.original_text
+                or self.replacement_text is not None
+                or self.target is None
+                or self.insertion_target is not None
+            ):
                 raise ValueError("DELETE requires target and null replacement_text")
         elif self.operation == "SUPPLEMENT":
             if self.original_text is not None or not self.replacement_text or self.target is not None:
@@ -210,12 +252,23 @@ class ReplacementRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class RevisionInsertionCandidate:
+    block_id: str
+    block_no: int
+    heading_path: tuple[str, ...]
+    anchor_excerpt: str
+    anchor_text_hash: str
+    match_score: float
+
+
+@dataclass(frozen=True, slots=True)
 class SupplementRequest:
     revision_key: str
     finding: RevisionFindingSource
     checked_scopes: tuple[str, ...]
     verification_notes: tuple[str, ...]
     adjacent_context: str
+    insertion_candidates: tuple[RevisionInsertionCandidate, ...]
 
 
 RevisionGenerationRequest = ReplacementRequest | SupplementRequest
@@ -226,6 +279,7 @@ class GeneratedReplacement:
     revision_key: str
     replacement_text: str
     draft_note: str | None = None
+    anchor_block_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -388,6 +442,7 @@ class PostgresRevisionSourceProvider:
                 payload,
                 generation_id=generation_id,
                 contract_ir=ir_values,
+                document_blocks=snapshot.get("document_blocks", []),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise RevisionDraftError(
@@ -492,6 +547,7 @@ class LlmRevisionTextGenerator:
                         "revision_key": "sha256:...",
                         "replacement_text": "string",
                         "draft_note": "optional string",
+                        "anchor_block_id": "optional block_id selected from insertion_candidates",
                     }
                 ]
             },
@@ -504,6 +560,9 @@ class LlmRevisionTextGenerator:
                 "SUPPLEMENT请求只生成供人工确认的补充条款，不得伪造原文或定位信息",
                 "SUPPLEMENT不得写入真实金额、日期或期限；确需商业参数时使用“某”",
                 "SUPPLEMENT不得引入未知公司或改变合同主体",
+                "SUPPLEMENT may choose anchor_block_id only from insertion_candidates; omit it when uncertain",
+                "REPLACE must not return anchor_block_id",
+                "SUPPLEMENT replacement_text must contain only new text and must not repeat anchor_excerpt",
             ],
             "draft_requests": [
                 _model_request_payload(item, source)
@@ -531,7 +590,7 @@ class LlmRevisionTextGenerator:
             parsed = []
             for value in values:
                 if not isinstance(value, dict) or not set(value).issubset(
-                    {"revision_key", "replacement_text", "draft_note"}
+                    {"revision_key", "replacement_text", "draft_note", "anchor_block_id"}
                 ):
                     raise TypeError("draft item contains an unknown field")
                 if not {"revision_key", "replacement_text"}.issubset(value):
@@ -543,6 +602,11 @@ class LlmRevisionTextGenerator:
                         draft_note=(
                             str(value["draft_note"]).strip()
                             if value.get("draft_note") is not None
+                            else None
+                        ),
+                        anchor_block_id=(
+                            str(value["anchor_block_id"]).strip()
+                            if value.get("anchor_block_id") is not None
                             else None
                         ),
                     )
@@ -602,6 +666,15 @@ def _model_request_payload(
             "checked_scopes": list(item.checked_scopes),
             "absence_verification": list(item.verification_notes),
             "adjacent_context": item.adjacent_context,
+            "insertion_candidates": [
+                {
+                    "block_id": candidate.block_id,
+                    "block_no": candidate.block_no,
+                    "heading_path": list(candidate.heading_path),
+                    "anchor_excerpt": candidate.anchor_excerpt,
+                }
+                for candidate in item.insertion_candidates
+            ],
             "facts_that_must_not_change": {
                 **payload["facts_that_must_not_change"],
                 "amounts": [],
@@ -694,9 +767,17 @@ class RevisionDraftService:
                             operation: Literal["REPLACE", "SUPPLEMENT"] = "REPLACE"
                             original_text: str | None = item.original_text
                             target: RevisionTarget | None = item.target
+                            insertion_target: RevisionInsertionTarget | None = None
                         else:
+                            insertion_target = _resolve_insertion_target(
+                                item,
+                                generated.anchor_block_id,
+                            )
                             replacement = _validate_supplement(
-                                generated.replacement_text,
+                                _strip_leading_anchor_echo(
+                                    generated.replacement_text,
+                                    insertion_target,
+                                ),
                                 source,
                             )
                             operation = "SUPPLEMENT"
@@ -710,6 +791,7 @@ class RevisionDraftService:
                                 original_text=original_text,
                                 replacement_text=replacement,
                                 target=target,
+                                insertion_target=insertion_target,
                                 draft_note=generated.draft_note,
                             )
                         )
@@ -766,18 +848,18 @@ def compute_revision_hash(
     original_text: str | None,
     replacement_text: str | None,
     target: RevisionTarget | None,
+    insertion_target: RevisionInsertionTarget | None = None,
 ) -> str:
-    return _sha256(
-        _canonical_json(
-            {
-                "revision_key": revision_key,
-                "operation": operation,
-                "original_text": original_text,
-                "replacement_text": replacement_text,
-                "target": target.model_dump(mode="json") if target is not None else None,
-            }
-        )
-    )
+    payload: dict[str, Any] = {
+        "revision_key": revision_key,
+        "operation": operation,
+        "original_text": original_text,
+        "replacement_text": replacement_text,
+        "target": target.model_dump(mode="json") if target is not None else None,
+    }
+    if insertion_target is not None:
+        payload["insertion_target"] = insertion_target.model_dump(mode="json")
+    return _sha256(_canonical_json(payload))
 
 
 def source_from_formal_payload(
@@ -785,6 +867,7 @@ def source_from_formal_payload(
     *,
     generation_id: str,
     contract_ir: Sequence[dict[str, Any]],
+    document_blocks: Sequence[dict[str, Any]] = (),
 ) -> RevisionReviewSource:
     """Adapt the frozen formal result without changing its DTO or hash."""
 
@@ -818,6 +901,19 @@ def source_from_formal_payload(
         for item in contract_ir
         for adapted in _adapt_ir_values(item)
     ]
+    blocks = [
+        RevisionDocumentBlock(
+            block_id=item["block_id"],
+            block_no=item["block_no"],
+            block_type=item["block_type"],
+            char_start=item["char_start"],
+            char_end=item["char_end"],
+            text=item["text"],
+            heading_path=list(item.get("heading_path") or []),
+        )
+        for item in document_blocks
+        if item.get("text") and item.get("block_type") not in {"header", "footer"}
+    ]
     profile = payload["contract_profile"]
     return RevisionReviewSource(
         review_id=payload["review_id"],
@@ -830,6 +926,7 @@ def source_from_formal_payload(
         findings=findings,
         evidences=evidences,
         contract_ir=ir_values,
+        document_blocks=blocks,
     )
 
 
@@ -838,8 +935,8 @@ def _find_contract_ir_list(value: Any) -> list[dict[str, Any]]:
         if any(
             "ir_id" in item
             or "item_id" in item
-            or "anchor" in item
-            or "source_anchors" in item
+            or "clause_id" in item
+            or "id" in item
             for item in value
         ):
             return value
@@ -877,7 +974,12 @@ def _adapt_ir_values(item: dict[str, Any]) -> list[RevisionIrSource]:
     for anchor in anchors:
         values.append(
             RevisionIrSource(
-                ir_id=item.get("ir_id") or item.get("item_id") or item.get("id"),
+                ir_id=(
+                    item.get("ir_id")
+                    or item.get("item_id")
+                    or item.get("clause_id")
+                    or item.get("id")
+                ),
                 anchor_id=item.get("anchor_id") or anchor.get("anchor_id"),
                 block_id=item.get("block_id") or anchor.get("block_id"),
                 char_start=item.get("char_start", anchor.get("char_start", 0)),
@@ -896,7 +998,7 @@ def _plan_draft(
     revision_key: str,
 ) -> RevisionDraft | FailedRevisionFinding | RevisionGenerationRequest:
     if any(item.evidence_type == "ABSENCE" for item in evidences):
-        return _plan_supplement(finding, evidences, revision_key)
+        return _plan_supplement(source, finding, evidences, revision_key)
     text_evidence = [
         item
         for item in evidences
@@ -940,7 +1042,191 @@ def _plan_draft(
     )
 
 
+def _normalized_match_text(value: str) -> str:
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", value).lower()
+
+
+def _character_bigrams(value: str) -> set[str]:
+    normalized = _normalized_match_text(value)
+    if len(normalized) < 2:
+        return {normalized} if normalized else set()
+    return {normalized[index : index + 2] for index in range(len(normalized) - 1)}
+
+
+def _insertion_candidate_score(block: RevisionDocumentBlock, query: str) -> float:
+    heading = " ".join(block.heading_path)
+    normalized_heading = _normalized_match_text(heading)
+    normalized_query = _normalized_match_text(query)
+    score = 0.0
+    if normalized_heading and (
+        normalized_heading in normalized_query or normalized_query in normalized_heading
+    ):
+        score += 100.0
+    query_bigrams = _character_bigrams(query)
+    if query_bigrams:
+        heading_overlap = query_bigrams & _character_bigrams(heading)
+        text_overlap = query_bigrams & _character_bigrams(block.text[:500])
+        score += 20.0 * len(heading_overlap) / len(query_bigrams)
+        score += 5.0 * len(text_overlap) / len(query_bigrams)
+    return score
+
+
+def _candidate_from_block(
+    block: RevisionDocumentBlock,
+    *,
+    match_score: float,
+) -> RevisionInsertionCandidate:
+    excerpt = re.sub(r"\s+", " ", block.text).strip()[:500]
+    return RevisionInsertionCandidate(
+        block_id=block.block_id,
+        block_no=block.block_no,
+        heading_path=tuple(block.heading_path),
+        anchor_excerpt=excerpt,
+        anchor_text_hash=_sha256(block.text),
+        match_score=match_score,
+    )
+
+
+def _section_end_blocks(
+    blocks: Sequence[RevisionDocumentBlock],
+) -> list[RevisionDocumentBlock]:
+    structured: list[RevisionDocumentBlock] = []
+    for index, block in enumerate(blocks):
+        path = tuple(block.heading_path)
+        next_path = tuple(blocks[index + 1].heading_path) if index + 1 < len(blocks) else ()
+        if path and path != next_path:
+            structured.append(block)
+    if structured:
+        return structured
+
+    heading_indexes = [
+        index
+        for index, block in enumerate(blocks)
+        if _SECTION_HEADING_RE.match(block.text)
+    ]
+    inferred: list[RevisionDocumentBlock] = []
+    for position, heading_index in enumerate(heading_indexes):
+        next_heading_index = (
+            heading_indexes[position + 1]
+            if position + 1 < len(heading_indexes)
+            else len(blocks)
+        )
+        section_end = blocks[next_heading_index - 1]
+        heading = re.sub(r"\s+", " ", blocks[heading_index].text).strip()[:200]
+        inferred.append(section_end.model_copy(update={"heading_path": [heading]}))
+    return inferred
+
+
+def _build_insertion_candidates(
+    source: RevisionReviewSource,
+    finding: RevisionFindingSource,
+    evidences: Sequence[RevisionEvidenceSource],
+    checked_scopes: Sequence[str],
+) -> tuple[RevisionInsertionCandidate, ...]:
+    blocks = sorted(source.document_blocks, key=lambda item: item.block_no)
+    if not blocks:
+        return ()
+
+    section_ends = _section_end_blocks(blocks)
+
+    by_id = {item.block_id: item for item in blocks}
+    adjacent: list[RevisionDocumentBlock] = []
+    for evidence in evidences:
+        if not evidence.block_id or evidence.block_id not in by_id:
+            continue
+        evidence_block = by_id[evidence.block_id]
+        same_section_end = next(
+            (
+                item
+                for item in section_ends
+                if item.block_no >= evidence_block.block_no
+                and (
+                    not evidence_block.heading_path
+                    or item.heading_path == evidence_block.heading_path
+                )
+            ),
+            evidence_block,
+        )
+        adjacent.append(same_section_end)
+
+    candidates = section_ends or blocks
+    query = "\n".join(
+        (
+            finding.title,
+            finding.issue,
+            finding.suggestion,
+            *checked_scopes,
+        )
+    )
+    ranked = sorted(
+        (
+            (item, _insertion_candidate_score(item, query))
+            for item in candidates
+        ),
+        key=lambda item: (-item[1], item[0].block_no),
+    )
+    ordered = [*((item, 1_000.0) for item in adjacent), *ranked]
+    selected: list[RevisionInsertionCandidate] = []
+    seen: set[str] = set()
+    for block, score in ordered:
+        if block.block_id in seen:
+            continue
+        seen.add(block.block_id)
+        selected.append(_candidate_from_block(block, match_score=score))
+        if len(selected) >= MAX_INSERTION_CANDIDATES:
+            break
+    return tuple(selected)
+
+
+def _resolve_insertion_target(
+    request: SupplementRequest,
+    anchor_block_id: str | None,
+) -> RevisionInsertionTarget | None:
+    candidate = next(
+        (item for item in request.insertion_candidates if item.block_id == anchor_block_id),
+        None,
+    )
+    if candidate is None:
+        if not request.insertion_candidates:
+            return None
+        first = request.insertion_candidates[0]
+        second_score = (
+            request.insertion_candidates[1].match_score
+            if len(request.insertion_candidates) > 1
+            else 0.0
+        )
+        if first.match_score < 2.0 or first.match_score < second_score + 0.5:
+            return None
+        candidate = first
+    section = " / ".join(candidate.heading_path)
+    display_position = (
+        f"\u5efa\u8bae\u63d2\u5165\u5230\u201c{section}\u201d\u672b\u5c3e"
+        if section
+        else f"\u5efa\u8bae\u63d2\u5165\u5230\u7b2c{candidate.block_no}\u6bb5\u4e4b\u540e"
+    )
+    return RevisionInsertionTarget(
+        block_id=candidate.block_id,
+        block_no=candidate.block_no,
+        heading_path=list(candidate.heading_path),
+        anchor_excerpt=candidate.anchor_excerpt,
+        anchor_text_hash=candidate.anchor_text_hash,
+        display_position=display_position,
+    )
+
+
+def _strip_leading_anchor_echo(
+    value: str,
+    target: RevisionInsertionTarget | None,
+) -> str:
+    normalized = value.strip()
+    if target is None or not normalized.startswith(target.anchor_excerpt):
+        return normalized
+    remainder = normalized[len(target.anchor_excerpt) :].lstrip()
+    return remainder or normalized
+
+
 def _plan_supplement(
+    source: RevisionReviewSource,
     finding: RevisionFindingSource,
     evidences: Sequence[RevisionEvidenceSource],
     revision_key: str,
@@ -981,6 +1267,12 @@ def _plan_supplement(
         checked_scopes=checked_scopes,
         verification_notes=verification_notes,
         adjacent_context=adjacent_context,
+        insertion_candidates=_build_insertion_candidates(
+            source,
+            finding,
+            evidences,
+            checked_scopes,
+        )
     )
 
 
@@ -1159,6 +1451,7 @@ def _draft(
     original_text: str | None,
     replacement_text: str | None,
     target: RevisionTarget | None,
+    insertion_target: RevisionInsertionTarget | None = None,
     draft_note: str | None = None,
 ) -> RevisionDraft:
     return RevisionDraft(
@@ -1169,12 +1462,14 @@ def _draft(
         replacement_text=replacement_text,
         change_reason=finding.suggestion,
         target=target,
+        insertion_target=insertion_target,
         revision_hash=compute_revision_hash(
             revision_key,
             operation,
             original_text,
             replacement_text,
             target,
+            insertion_target,
         ),
         validation_status="VALID",
         draft_note=draft_note,
