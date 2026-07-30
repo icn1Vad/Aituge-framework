@@ -7,6 +7,9 @@ from contract.api.models import (
     CancelReviewData,
     CreateReviewData,
     CreateReviewRequest,
+    PartyResolutionCreateData,
+    PartyResolutionCreateRequest,
+    PartyResolutionStatusData,
     ReviewResultData,
     ReviewStatusData,
 )
@@ -30,6 +33,21 @@ class UploadedContract:
 
 class ContractReviewService(Protocol):
     def health(self) -> dict[str, str]: ...
+
+    def create_party_resolution(
+        self,
+        *,
+        upload: UploadedContract,
+        request: PartyResolutionCreateRequest,
+        context: InternalRequestContext,
+    ) -> PartyResolutionCreateData: ...
+
+    def get_party_resolution(
+        self,
+        resolution_id: str,
+        *,
+        context: InternalRequestContext,
+    ) -> PartyResolutionStatusData: ...
 
     def create_review(
         self,

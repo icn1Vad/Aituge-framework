@@ -119,12 +119,13 @@ class ContractRepository:
                   id, tenant_id, user_id, business_task_id, contract_version_id,
                   model_pack_id, document_id, idempotency_key, request_id, request_fingerprint,
                   file_sha256, perspective, our_party_name, contract_type,
-                  review_attitude, status, schema_version
+                  review_attitude, execution_mode, confirmed_party_a_name,
+                  confirmed_party_b_name, status, schema_version
                 ) VALUES (
                   %s, %s, %s, %s, %s, %s,
                   %s, %s, %s, %s,
                   %s, %s, %s, %s,
-                  %s, 'CREATED', %s
+                  %s, %s, %s, %s, 'CREATED', %s
                 )
                 ON CONFLICT DO NOTHING
                 RETURNING *
@@ -145,6 +146,9 @@ class ContractRepository:
                     value.our_party_name,
                     value.contract_type,
                     value.review_attitude,
+                    value.execution_mode,
+                    value.confirmed_party_a_name,
+                    value.confirmed_party_b_name,
                     value.schema_version,
                 ),
             ).fetchone()

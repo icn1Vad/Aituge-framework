@@ -36,6 +36,9 @@ class ReviewCreate:
     review_attitude: str
     schema_version: str
     model_pack_id: str = "api-rerank"
+    execution_mode: str = "FULL_REVIEW"
+    confirmed_party_a_name: str | None = None
+    confirmed_party_b_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from contract.api.models import CreateReviewRequest
+from contract.api.models import CreateReviewRequest, PartyResolutionCreateRequest
 from contract.application.idempotency import (
+    build_party_resolution_fingerprint,
     build_request_fingerprint,
     canonical_json,
     normalize_party_name,
@@ -37,7 +38,9 @@ def test_request_fingerprint_matches_golden_vector() -> None:
     )
 
     assert canonical_json(payload) == (
-        '{"business_task_id":"10001","contract_type":"AUTO",'
+        '{"business_task_id":"10001",'
+        '"confirmed_party_a_name":null,"confirmed_party_b_name":null,'
+        '"contract_type":"AUTO",'
         '"contract_version_id":"20001",'
         '"file_sha256":"sha256:0000000000000000000000000000000000000000000000000000000000000000",'
         '"model_pack_id":"api-rerank",'
@@ -45,7 +48,23 @@ def test_request_fingerprint_matches_golden_vector() -> None:
         '"review_attitude":"NEUTRAL","schema_version":"1.0",'
         '"tenant_id":"1","user_id":"1"}'
     )
-    assert fingerprint == "sha256:c114fef1e1076bb272d1f163af92d8553bd4ab7b488b607b401d2eed2ceb4906"
+    assert fingerprint == "sha256:45975e05fbdfc0d2a18d9e1bd154b62fae199525d0aafbb4c75044e9d5ba8a8e"
+
+
+def test_party_resolution_fingerprint_has_no_perspective() -> None:
+    request = PartyResolutionCreateRequest(
+        contract_version_id="20001",
+        schema_version="1.0",
+    )
+
+    fingerprint = build_party_resolution_fingerprint(
+        tenant_id="1",
+        user_id="1",
+        request=request,
+        file_sha256="sha256:" + "0" * 64,
+    )
+
+    assert fingerprint == "sha256:d352fa95893a6d19ceeeb9668858d71acacab9eed54afee705fd5072fe8a0a89"
 
 
 def test_file_hash_uses_raw_bytes() -> None:

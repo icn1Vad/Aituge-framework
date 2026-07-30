@@ -3,13 +3,20 @@ from __future__ import annotations
 import os
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import psycopg
 import pytest
 from pydantic import TypeAdapter
 
-from contract.api.models import CreateReviewRequest, Finding, Perspective, ReviewStatus
+from contract.api.models import (
+    CreateReviewRequest,
+    Finding,
+    PartyResolutionCreateRequest,
+    Perspective,
+    ReviewStatus,
+)
 from contract.application.document_processing import ContractDocumentProcessor
 from contract.application.ports import InternalRequestContext, UploadedContract
 from contract.application.runtime_service import RuntimeContractReviewService
@@ -45,6 +52,103 @@ from test_runtime_reliability_integration import FakeFrameworkGateway
 
 DATABASE_URL = os.getenv("CONTRACT_TEST_DATABASE_URL", "")
 CALLBACK_ADAPTER = TypeAdapter(FrameworkCallback)
+
+
+@pytest.mark.skipif(not DATABASE_URL, reason="CONTRACT_TEST_DATABASE_URL is not configured")
+def test_party_resolution_preflight_finishes_after_parse_and_party_callbacks(tmp_path: Path) -> None:
+    runtime, gateway, context, upload, _request, tenant_id = _runtime(tmp_path)
+    try:
+        preflight_request = PartyResolutionCreateRequest(
+            contract_version_id=f"version-{uuid.uuid4().hex}",
+            schema_version="1.0",
+        )
+        created = runtime.create_party_resolution(
+            upload=upload,
+            request=preflight_request,
+            context=context,
+        )
+        assert created.status == ReviewStatus.CREATED
+        assert runtime.dispatch_pending_attempts() == 1
+
+        running = runtime.get_party_resolution(created.resolution_id, context=context)
+        assert running.status == ReviewStatus.RUNNING
+        assert running.framework_attempt_no == 1
+        assert running.framework_task_id is not None
+        assert running.framework_run_id is not None
+        assert gateway.requests[-1].task_idempotency_key == (
+            f"contract-party-resolution:{created.resolution_id}:attempt:1"
+        )
+
+        repository = ContractRepository(runtime.settings)
+        callback_repository = FrameworkCallbackRepository(runtime.settings)
+        internal = ContractInternalService(
+            repository,
+            callback_repository,
+            document_processor=runtime.document_processor,
+        )
+        callbacks = FrameworkCallbackService(callback_repository, internal)
+        state = runtime.state_repository.get_state(
+            created.resolution_id,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+        )
+        task_input = FrameworkTaskInput(
+            schema_version="1.0",
+            review_id=created.resolution_id,
+            attempt_no=1,
+            business_task_id=state["business_task_id"],
+            contract_version_id=preflight_request.contract_version_id,
+            document_id=created.document_id,
+            perspective="PARTY_A",
+            our_party_name=None,
+            execution_mode="PARTY_RESOLUTION",
+            contract_type="AUTO",
+            review_attitude="NEUTRAL",
+        )
+        execution = SimpleNamespace(
+            review_id=created.resolution_id,
+            framework_task_id=running.framework_task_id,
+            framework_run_id=running.framework_run_id,
+        )
+        parse_result = internal.execute_stage(
+            _stage_request(execution, task_input, "parse_contract", {})
+        )
+        callbacks.accept(
+            created.resolution_id,
+            _stage_callback(execution, 1, "parse_contract", parse_result),
+        )
+        party_result = PartyResolutionStageResult(
+            result_type="PARTY_RESOLUTION_STAGE_V1",
+            contract_type="SERVICE",
+            party_a={"name": "Acme Company"},
+            party_b={"name": "Beta Company"},
+            perspective="PARTY_A",
+            our_party="Acme Company",
+            counterparty="Beta Company",
+        )
+        callbacks.accept(
+            created.resolution_id,
+            _stage_callback(execution, 2, "resolve_parties", party_result),
+        )
+        callbacks.accept(
+            created.resolution_id,
+            _terminal_callback(execution, 3, "RUN_SUCCEEDED"),
+        )
+
+        completed = runtime.get_party_resolution(created.resolution_id, context=context)
+        assert completed.status == ReviewStatus.SUCCEEDED
+        assert completed.party_a_name == "Acme Company"
+        assert completed.party_b_name == "Beta Company"
+        assert runtime.state_repository.get_result_json(
+            created.resolution_id,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+        ) is None
+        with pytest.raises(ContractError) as wrong_resource:
+            runtime.get_status(created.resolution_id, context=context)
+        assert wrong_resource.value.code == "REVIEW_NOT_FOUND"
+    finally:
+        _cleanup(tenant_id)
 
 
 @pytest.mark.skipif(not DATABASE_URL, reason="CONTRACT_TEST_DATABASE_URL is not configured")

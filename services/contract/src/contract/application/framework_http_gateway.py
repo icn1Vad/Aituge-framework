@@ -19,6 +19,7 @@ from contract.config import Settings
 
 
 TASK_TYPE = "contract.review.run"
+PARTY_RESOLUTION_TASK_TYPE = "contract.party-resolution.run"
 KNOWN_RUN_STATUSES = frozenset(
     {
         "pending",
@@ -98,9 +99,15 @@ class FrameworkHttpGateway(FrameworkGateway):
 
     def create_execution(self, request: FrameworkExecutionRequest) -> FrameworkRunSnapshot:
         headers = self._headers(request.tenant_id, request.user_id)
+        task_type = self._task_type(request)
+        title = (
+            f"Contract party resolution {request.contract_version_id}"
+            if request.execution_mode == "PARTY_RESOLUTION"
+            else f"Contract review {request.business_task_id}"
+        )
         task_payload = {
-            "task_type": TASK_TYPE,
-            "title": f"Contract review {request.business_task_id}",
+            "task_type": task_type,
+            "title": title,
             "model_pack_id": request.model_pack_id,
             "input_payload": {
                 "schema_version": request.schema_version,
@@ -111,6 +118,9 @@ class FrameworkHttpGateway(FrameworkGateway):
                 "document_id": request.document_id,
                 "perspective": request.perspective,
                 "our_party_name": request.our_party_name,
+                "execution_mode": request.execution_mode,
+                "confirmed_party_a_name": request.confirmed_party_a_name,
+                "confirmed_party_b_name": request.confirmed_party_b_name,
                 "contract_type": request.contract_type,
                 "review_attitude": request.review_attitude,
             },
@@ -244,8 +254,16 @@ class FrameworkHttpGateway(FrameworkGateway):
             raise FrameworkProtocolError(f"Invalid Framework {label}") from exc
 
     @staticmethod
-    def _validate_task(task: _TaskRecord, request: FrameworkExecutionRequest) -> None:
-        if task.task_type != TASK_TYPE:
+    def _task_type(request: FrameworkExecutionRequest) -> str:
+        if request.execution_mode == "FULL_REVIEW":
+            return TASK_TYPE
+        if request.execution_mode == "PARTY_RESOLUTION":
+            return PARTY_RESOLUTION_TASK_TYPE
+        raise FrameworkProtocolError("Contract execution mode is invalid")
+
+    @classmethod
+    def _validate_task(cls, task: _TaskRecord, request: FrameworkExecutionRequest) -> None:
+        if task.task_type != cls._task_type(request):
             raise FrameworkProtocolError("Framework reused an incompatible Task type")
         if task.tenant_id != request.tenant_id or task.user_id != request.user_id:
             raise FrameworkProtocolError("Framework Task scope does not match the review scope")

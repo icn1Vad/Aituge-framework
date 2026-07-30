@@ -128,6 +128,34 @@ def _create_review(
     )
 
 
+def _party_resolution_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "contract_version_id": "20001",
+        "schema_version": "1.0",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _create_party_resolution(
+    client: TestClient,
+    *,
+    payload: dict[str, object] | None = None,
+    headers: dict[str, str] | None = None,
+    content: bytes = PDF_BYTES,
+    filename: str = "contract.pdf",
+    content_type: str = "application/pdf",
+):
+    return client.post(
+        "/v1/contract-party-resolutions",
+        headers=headers or _headers(),
+        files={
+            "file": (filename, content, content_type),
+            "request": (None, json.dumps(payload or _party_resolution_payload(), ensure_ascii=False), "application/json"),
+        },
+    )
+
+
 def test_health_does_not_require_internal_auth() -> None:
     response = _client().get("/health", headers={"X-Request-Id": "req-health"})
 
@@ -464,6 +492,37 @@ def test_create_status_result_not_ready_and_cancel_flow() -> None:
     cancelled_again = client.post(f"/v1/contract-reviews/{review_id}/cancel", headers=_headers())
     assert cancelled_again.status_code == 200
     assert cancelled_again.json()["data"]["already_terminal"] is True
+
+
+def test_party_resolution_is_independent_from_formal_review_and_returns_parties_after_completion() -> None:
+    client = _client()
+
+    created = _create_party_resolution(client)
+
+    assert created.status_code == 201
+    created_data = created.json()["data"]
+    assert created_data["status"] == "CREATED"
+    assert created_data["reused"] is False
+    assert "perspective" not in created_data
+    resolution_id = created_data["resolution_id"]
+
+    status_response = client.get(
+        f"/v1/contract-party-resolutions/{resolution_id}",
+        headers=_headers(),
+    )
+    assert status_response.status_code == 200
+    status_data = status_response.json()["data"]
+    assert status_data["status"] == "SUCCEEDED"
+    assert status_data["contract_version_id"] == "20001"
+    assert status_data["party_a_name"] == "甲方单位"
+    assert status_data["party_b_name"] == "乙方单位"
+    assert "our_party" not in status_data
+    assert "counterparty" not in status_data
+
+    repeated = _create_party_resolution(client)
+    assert repeated.status_code == 201
+    assert repeated.json()["data"]["resolution_id"] == resolution_id
+    assert repeated.json()["data"]["reused"] is True
 
 
 def test_review_accepts_explicit_model_pack_and_rejects_unknown_pack() -> None:

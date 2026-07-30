@@ -24,6 +24,9 @@ from contract.api.models import (
     ErrorData,
     ErrorResponse,
     HealthData,
+    PartyResolutionCreateData,
+    PartyResolutionCreateRequest,
+    PartyResolutionStatusData,
     ReviewResultData,
     ReviewStatus,
     ReviewStatusData,
@@ -250,6 +253,74 @@ def create_app(
             _service(http_request).create_review,
             upload=upload,
             request=payload,
+            context=context,
+        )
+        return SuccessResponse(data=data, request_id=context.request_id)
+
+    @app.post(
+        "/v1/contract-party-resolutions",
+        status_code=status.HTTP_201_CREATED,
+        response_model=SuccessResponse[PartyResolutionCreateData],
+        responses=ERROR_RESPONSES,
+    )
+    async def create_party_resolution(
+        http_request: Request,
+        file: Annotated[UploadFile, File(...)],
+        request_payload: Annotated[str, Form(alias="request")],
+        context: Annotated[InternalRequestContext, Depends(_create_internal_context)],
+    ) -> SuccessResponse[PartyResolutionCreateData]:
+        settings = http_request.app.state.settings
+        try:
+            payload = PartyResolutionCreateRequest.model_validate_json(request_payload)
+        except (ValidationError, ValueError, json.JSONDecodeError) as exc:
+            raise ContractError(
+                "REQUEST_SCHEMA_INVALID",
+                "request Part is not valid schema_version=1.0 JSON",
+                status_code=422,
+                user_action_required=True,
+                details={"reason": _safe_validation_reason(exc)},
+            ) from exc
+        ai_mode = str(context.ai_mode or "").strip()
+        if ai_mode:
+            try:
+                payload = payload.model_copy(
+                    update={"model_pack_id": get_model_pack_for_ai_mode(ai_mode).id}
+                )
+            except ValueError as exc:
+                raise ContractError(
+                    "INVALID_AI_MODE",
+                    "X-AI-Mode must map to a registered model pack",
+                    status_code=400,
+                    user_action_required=True,
+                ) from exc
+        content = await file.read(settings.max_file_size + 1)
+        upload = _validate_upload(
+            filename=file.filename or "",
+            content_type=file.content_type or "",
+            content=content,
+            max_file_size=settings.max_file_size,
+        )
+        data = await asyncio.to_thread(
+            _service(http_request).create_party_resolution,
+            upload=upload,
+            request=payload,
+            context=context,
+        )
+        return SuccessResponse(data=data, request_id=context.request_id)
+
+    @app.get(
+        "/v1/contract-party-resolutions/{resolution_id}",
+        response_model=SuccessResponse[PartyResolutionStatusData],
+        responses=ERROR_RESPONSES,
+    )
+    async def get_party_resolution(
+        resolution_id: str,
+        http_request: Request,
+        context: Annotated[InternalRequestContext, Depends(_internal_context)],
+    ) -> SuccessResponse[PartyResolutionStatusData]:
+        data = await asyncio.to_thread(
+            _service(http_request).get_party_resolution,
+            resolution_id,
             context=context,
         )
         return SuccessResponse(data=data, request_id=context.request_id)
@@ -621,19 +692,18 @@ def create_app(
         if app.openapi_schema is not None:
             return app.openapi_schema
         schema = get_openapi(title=app.title, version=app.version, routes=app.routes)
-        multipart = schema["paths"]["/v1/contract-reviews"]["post"]["requestBody"]["content"][
-            "multipart/form-data"
-        ]
-        multipart["encoding"] = {"request": {"contentType": "application/json"}}
-        body_schema_name = multipart["schema"]["$ref"].rsplit("/", 1)[-1]
-        body_schema = schema["components"]["schemas"][body_schema_name]
-        properties = body_schema["properties"]
-        if "request_payload" in properties:
-            properties["request"] = properties.pop("request_payload")
-        body_schema["required"] = [
-            "request" if field == "request_payload" else field
-            for field in body_schema.get("required", [])
-        ]
+        for path in ("/v1/contract-reviews", "/v1/contract-party-resolutions"):
+            multipart = schema["paths"][path]["post"]["requestBody"]["content"]["multipart/form-data"]
+            multipart["encoding"] = {"request": {"contentType": "application/json"}}
+            body_schema_name = multipart["schema"]["$ref"].rsplit("/", 1)[-1]
+            body_schema = schema["components"]["schemas"][body_schema_name]
+            properties = body_schema["properties"]
+            if "request_payload" in properties:
+                properties["request"] = properties.pop("request_payload")
+            body_schema["required"] = [
+                "request" if field == "request_payload" else field
+                for field in body_schema.get("required", [])
+            ]
         app.openapi_schema = schema
         return schema
 

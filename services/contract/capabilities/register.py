@@ -50,6 +50,8 @@ CAPABILITY_ID = "contract-review"
 CAPABILITY_DIR = Path(__file__).resolve().parent
 TASK_TYPE = "contract.review.run"
 PIPELINE_ID = "contract-review-pipeline-v1"
+PARTY_RESOLUTION_TASK_TYPE = "contract.party-resolution.run"
+PARTY_RESOLUTION_PIPELINE_ID = "contract-party-resolution-pipeline-v1"
 AGENT_ID = "contract-review-neutral-v1"
 GROUNDED_ANSWER_TASK_TYPE = "contract.grounded.answer"
 GROUNDED_ANSWER_PIPELINE_ID = "contract-grounded-answer-pipeline-v1"
@@ -86,8 +88,22 @@ class ContractTaskInput(StrictModel):
     document_id: str = Field(min_length=1, max_length=160)
     perspective: Literal["PARTY_A", "PARTY_B"]
     our_party_name: str | None = Field(default=None, max_length=500)
+    execution_mode: Literal["FULL_REVIEW", "PARTY_RESOLUTION"] = "FULL_REVIEW"
+    confirmed_party_a_name: str | None = Field(default=None, min_length=1, max_length=500)
+    confirmed_party_b_name: str | None = Field(default=None, min_length=1, max_length=500)
     contract_type: Literal["AUTO"]
     review_attitude: Literal["NEUTRAL"]
+
+    @model_validator(mode="after")
+    def validate_confirmed_parties(self) -> "ContractTaskInput":
+        if (self.confirmed_party_a_name is None) != (self.confirmed_party_b_name is None):
+            raise ValueError("confirmed contract parties must be supplied together")
+        if (
+            self.confirmed_party_a_name is not None
+            and self.confirmed_party_a_name == self.confirmed_party_b_name
+        ):
+            raise ValueError("confirmed contract parties must be distinct")
+        return self
 
 
 class PipelineContextInput(StrictModel):
@@ -1262,6 +1278,11 @@ async def register(registry, settings) -> None:
         handler=_result_sink_handler(base_url, callback_token),
         required=True,
     )
+    registry.register_result_sink(
+        task_type=PARTY_RESOLUTION_TASK_TYPE,
+        handler=_result_sink_handler(base_url, callback_token),
+        required=True,
+    )
     registry.register_task(
         task_type=TASK_TYPE,
         name="Contract Review",
@@ -1279,6 +1300,24 @@ async def register(registry, settings) -> None:
         ],
         input_model=ContractTaskInput,
         output_model=FinalizeReviewStageResult,
+    )
+    registry.register_task(
+        task_type=PARTY_RESOLUTION_TASK_TYPE,
+        name="Contract Party Resolution",
+        description="Parse a contract and resolve its two signing parties before review starts.",
+        handler="pipeline",
+        pipeline_id=PARTY_RESOLUTION_PIPELINE_ID,
+        default_agent_id=AGENT_ID,
+        default_skill_package="contract-party-resolution-package",
+        default_primary_skill="contract-party-resolution",
+        default_tools=[
+            "contract_get_document",
+            "contract_get_blocks",
+            "contract_get_clause_context",
+            "contract_get_ir",
+        ],
+        input_model=ContractTaskInput,
+        output_model=PartyResolutionStageResult,
     )
     registry.register_task(
         task_type=GROUNDED_ANSWER_TASK_TYPE,
@@ -1302,7 +1341,7 @@ async def register(registry, settings) -> None:
         "contract_get_clause_context",
         "contract_get_ir",
     ]
-    stages: list[dict[str, Any]] = [
+    party_resolution_stages: list[dict[str, Any]] = [
         {
             "stage_id": "parse_contract",
             "name": "Validate persisted contract parse",
@@ -1335,6 +1374,7 @@ async def register(registry, settings) -> None:
             },
         },
     ]
+    stages: list[dict[str, Any]] = [*party_resolution_stages]
     stages.append(
         {
             "stage_id": "extract_contract_ir",
@@ -1385,6 +1425,17 @@ async def register(registry, settings) -> None:
         resumable=False,
         max_parallelism=7,
         stages=stages,
+    )
+    registry.register_pipeline(
+        pipeline_id=PARTY_RESOLUTION_PIPELINE_ID,
+        version="1.0",
+        task_type=PARTY_RESOLUTION_TASK_TYPE,
+        description="Parse a contract and resolve PARTY_A and PARTY_B without starting risk review.",
+        final_artifact_type="contract_party_resolution",
+        timeout_seconds=300,
+        resumable=False,
+        max_parallelism=1,
+        stages=party_resolution_stages,
     )
     registry.register_pipeline(
         pipeline_id=GROUNDED_ANSWER_PIPELINE_ID,

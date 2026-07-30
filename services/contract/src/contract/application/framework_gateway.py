@@ -25,10 +25,14 @@ class FrameworkExecutionRequest:
     review_attitude: str
     schema_version: str
     model_pack_id: str = "api-rerank"
+    execution_mode: str = "FULL_REVIEW"
+    confirmed_party_a_name: str | None = None
+    confirmed_party_b_name: str | None = None
 
     @property
     def task_idempotency_key(self) -> str:
-        return f"contract-review:{self.review_id}:attempt:{self.attempt_no}"
+        prefix = "contract-party-resolution" if self.execution_mode == "PARTY_RESOLUTION" else "contract-review"
+        return f"{prefix}:{self.review_id}:attempt:{self.attempt_no}"
 
     @property
     def run_idempotency_key(self) -> str:
@@ -49,6 +53,9 @@ class FrameworkExecutionRequest:
             contract_type=self.contract_type,
             review_attitude=self.review_attitude,
             schema_version=self.schema_version,
+            execution_mode=self.execution_mode,
+            confirmed_party_a_name=self.confirmed_party_a_name,
+            confirmed_party_b_name=self.confirmed_party_b_name,
         )
 
 @dataclass(frozen=True, slots=True)
