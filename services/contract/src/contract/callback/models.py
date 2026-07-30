@@ -297,8 +297,22 @@ class FrameworkTaskInput(StrictModel):
     document_id: str = Field(min_length=1, max_length=160)
     perspective: Literal["PARTY_A", "PARTY_B"]
     our_party_name: str | None = Field(default=None, max_length=500)
+    execution_mode: Literal["FULL_REVIEW", "PARTY_RESOLUTION"] = "FULL_REVIEW"
+    confirmed_party_a_name: str | None = Field(default=None, min_length=1, max_length=500)
+    confirmed_party_b_name: str | None = Field(default=None, min_length=1, max_length=500)
     contract_type: Literal["AUTO"]
     review_attitude: Literal["NEUTRAL"]
+
+    @model_validator(mode="after")
+    def validate_confirmed_parties(self) -> "FrameworkTaskInput":
+        if (self.confirmed_party_a_name is None) != (self.confirmed_party_b_name is None):
+            raise ValueError("confirmed contract parties must be supplied together")
+        if (
+            self.confirmed_party_a_name is not None
+            and self.confirmed_party_a_name == self.confirmed_party_b_name
+        ):
+            raise ValueError("confirmed contract parties must be distinct")
+        return self
 
 
 class StageExecuteRequest(StrictModel):

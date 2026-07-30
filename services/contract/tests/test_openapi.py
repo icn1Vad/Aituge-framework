@@ -34,36 +34,37 @@ def test_every_json_response_has_an_explicit_schema() -> None:
 
 def test_multipart_request_part_is_declared_as_json() -> None:
     schema = create_app(Settings(internal_auth_enabled=False)).openapi()
-    multipart = schema["paths"]["/v1/contract-reviews"]["post"]["requestBody"]["content"][
-        "multipart/form-data"
-    ]
+    for path in ("/v1/contract-reviews", "/v1/contract-party-resolutions"):
+        multipart = schema["paths"][path]["post"]["requestBody"]["content"]["multipart/form-data"]
 
-    assert multipart["encoding"]["request"]["contentType"] == "application/json"
-    body_schema_name = multipart["schema"]["$ref"].rsplit("/", 1)[-1]
-    body_schema = schema["components"]["schemas"][body_schema_name]
-    assert set(body_schema["required"]) == {"file", "request"}
-    assert "request" in body_schema["properties"]
-    assert "request_payload" not in body_schema["properties"]
+        assert multipart["encoding"]["request"]["contentType"] == "application/json"
+        body_schema_name = multipart["schema"]["$ref"].rsplit("/", 1)[-1]
+        body_schema = schema["components"]["schemas"][body_schema_name]
+        assert set(body_schema["required"]) == {"file", "request"}
+        assert "request" in body_schema["properties"]
+        assert "request_payload" not in body_schema["properties"]
 
 
 def test_idempotency_key_is_required_only_for_create() -> None:
     schema = create_app(Settings(internal_auth_enabled=False)).openapi()
     paths = schema["paths"]
-    create_parameters = paths["/v1/contract-reviews"]["post"]["parameters"]
-    idempotency = next(
-        parameter
-        for parameter in create_parameters
-        if parameter["name"] == "Idempotency-Key" and parameter["in"] == "header"
-    )
+    for path in ("/v1/contract-reviews", "/v1/contract-party-resolutions"):
+        create_parameters = paths[path]["post"]["parameters"]
+        idempotency = next(
+            parameter
+            for parameter in create_parameters
+            if parameter["name"] == "Idempotency-Key" and parameter["in"] == "header"
+        )
 
-    assert idempotency["required"] is True
-    assert idempotency["schema"]["minLength"] == 1
-    assert idempotency["schema"]["maxLength"] == 200
+        assert idempotency["required"] is True
+        assert idempotency["schema"]["minLength"] == 1
+        assert idempotency["schema"]["maxLength"] == 200
 
     for path, method in (
         ("/v1/contract-reviews/{review_id}", "get"),
         ("/v1/contract-reviews/{review_id}/result", "get"),
         ("/v1/contract-reviews/{review_id}/cancel", "post"),
+        ("/v1/contract-party-resolutions/{resolution_id}", "get"),
     ):
         assert all(
             parameter["name"] != "Idempotency-Key"

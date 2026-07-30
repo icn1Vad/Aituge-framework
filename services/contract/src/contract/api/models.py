@@ -114,8 +114,41 @@ class CreateReviewRequest(StrictModel):
     model_pack_id: Identifier | None = None
     perspective: Perspective
     our_party_name: Annotated[str, StringConstraints(max_length=500)] | None = None
+    confirmed_party_a_name: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)
+    ] | None = None
+    confirmed_party_b_name: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)
+    ] | None = None
     contract_type: Literal["AUTO"]
     review_attitude: Literal["NEUTRAL"]
+    schema_version: Literal["1.0"]
+
+    @model_validator(mode="after")
+    def validate_confirmed_parties(self) -> "CreateReviewRequest":
+        if (self.confirmed_party_a_name is None) != (self.confirmed_party_b_name is None):
+            raise ValueError("confirmed_party_a_name and confirmed_party_b_name must be supplied together")
+        if (
+            self.confirmed_party_a_name is not None
+            and self.confirmed_party_a_name == self.confirmed_party_b_name
+        ):
+            raise ValueError("confirmed contract parties must be distinct")
+        if self.confirmed_party_a_name is not None and self.our_party_name is not None:
+            expected_our_party = (
+                self.confirmed_party_a_name
+                if self.perspective == Perspective.PARTY_A
+                else self.confirmed_party_b_name
+            )
+            if self.our_party_name.strip() != expected_our_party:
+                raise ValueError("our_party_name must match the confirmed party for the selected perspective")
+        return self
+
+
+class PartyResolutionCreateRequest(StrictModel):
+    """Pre-review party identification request; it intentionally has no perspective."""
+
+    contract_version_id: Identifier
+    model_pack_id: Identifier | None = None
     schema_version: Literal["1.0"]
 
 
@@ -149,6 +182,24 @@ class CreateReviewData(FrameworkMappingModel):
             raise ValueError("CREATED reviews cannot have a Framework mapping")
         if self.status == ReviewStatus.RUNNING and any(value is None for value in values):
             raise ValueError("RUNNING reviews require a complete Framework mapping")
+        return self
+
+
+class PartyResolutionCreateData(FrameworkMappingModel):
+    resolution_id: Identifier
+    contract_version_id: Identifier
+    document_id: Identifier
+    status: Literal[ReviewStatus.CREATED, ReviewStatus.RUNNING]
+    reused: bool
+    schema_version: Literal["1.0"] = "1.0"
+
+    @model_validator(mode="after")
+    def validate_mapping(self) -> "PartyResolutionCreateData":
+        values = self.mapping_values()
+        if self.status == ReviewStatus.CREATED and any(value is not None for value in values):
+            raise ValueError("CREATED party resolutions cannot have a Framework mapping")
+        if self.status == ReviewStatus.RUNNING and any(value is None for value in values):
+            raise ValueError("RUNNING party resolutions require a complete Framework mapping")
         return self
 
 
@@ -194,6 +245,37 @@ class ReviewStatusData(FrameworkMappingModel):
             raise ValueError("FAILED reviews require error details")
         if self.status != ReviewStatus.FAILED and self.error is not None:
             raise ValueError("Only FAILED reviews can expose an error")
+        return self
+
+
+class PartyResolutionStatusData(FrameworkMappingModel):
+    resolution_id: Identifier
+    contract_version_id: Identifier
+    status: ReviewStatus
+    document_id: Identifier
+    error: ErrorData | None = None
+    party_a_name: Annotated[str, StringConstraints(min_length=1, max_length=500)] | None = None
+    party_b_name: Annotated[str, StringConstraints(min_length=1, max_length=500)] | None = None
+    schema_version: Literal["1.0"] = "1.0"
+    updated_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def validate_status_shape(self) -> "PartyResolutionStatusData":
+        values = self.mapping_values()
+        if self.status == ReviewStatus.CREATED and any(value is not None for value in values):
+            raise ValueError("CREATED party resolutions cannot have a Framework mapping")
+        if self.status == ReviewStatus.RUNNING and any(value is None for value in values):
+            raise ValueError("RUNNING party resolutions require a complete Framework mapping")
+        if self.status == ReviewStatus.FAILED and self.error is None:
+            raise ValueError("FAILED party resolutions require error details")
+        if self.status != ReviewStatus.FAILED and self.error is not None:
+            raise ValueError("Only FAILED party resolutions can expose an error")
+        if (self.party_a_name is None) != (self.party_b_name is None):
+            raise ValueError("party_a_name and party_b_name must be returned together")
+        if self.party_a_name is not None and self.party_a_name == self.party_b_name:
+            raise ValueError("resolved contract parties must be distinct")
+        if self.status == ReviewStatus.SUCCEEDED and self.party_a_name is None:
+            raise ValueError("SUCCEEDED party resolutions require both contract parties")
         return self
 
 

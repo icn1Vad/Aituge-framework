@@ -47,6 +47,9 @@ class AttemptReservation:
     contract_type: str
     review_attitude: str
     schema_version: str
+    execution_mode: str
+    confirmed_party_a_name: str | None
+    confirmed_party_b_name: str | None
     request_fingerprint: str = ""
     previous_task_id: str | None = None
     previous_run_id: str | None = None
@@ -89,6 +92,7 @@ class ReviewStateRepository:
         business_task_id: str,
         idempotency_key: str,
         request_fingerprint: str,
+        execution_mode: str = "FULL_REVIEW",
     ) -> dict[str, Any] | None:
         with self.connect() as conn:
             rows = conn.execute(
@@ -96,12 +100,13 @@ class ReviewStateRepository:
                 SELECT *
                 FROM contract_review_run
                 WHERE tenant_id = %s
+                  AND execution_mode = %s
                   AND (
                     business_task_id = %s
                     OR (user_id = %s AND idempotency_key = %s)
                   )
                 """,
-                (tenant_id, business_task_id, user_id, idempotency_key),
+                (tenant_id, execution_mode, business_task_id, user_id, idempotency_key),
             ).fetchall()
         review_ids = {row["id"] for row in rows}
         if not rows:
@@ -261,6 +266,9 @@ class ReviewStateRepository:
                   review.document_id,
                   review.perspective,
                   review.our_party_name,
+                  review.execution_mode,
+                  review.confirmed_party_a_name,
+                  review.confirmed_party_b_name,
                   review.contract_type,
                   review.review_attitude,
                   review.schema_version,
@@ -326,6 +334,9 @@ class ReviewStateRepository:
                             "document_id": row["document_id"],
                             "perspective": row["perspective"],
                             "our_party_name": row["our_party_name"],
+                            "execution_mode": row["execution_mode"],
+                            "confirmed_party_a_name": row["confirmed_party_a_name"],
+                            "confirmed_party_b_name": row["confirmed_party_b_name"],
                             "contract_type": row["contract_type"],
                             "review_attitude": row["review_attitude"],
                             "schema_version": row["schema_version"],
@@ -1208,6 +1219,9 @@ class ReviewStateRepository:
             document_id=review["document_id"],
             perspective=review["perspective"],
             our_party_name=review["our_party_name"],
+            execution_mode=review["execution_mode"],
+            confirmed_party_a_name=review["confirmed_party_a_name"],
+            confirmed_party_b_name=review["confirmed_party_b_name"],
             contract_type=review["contract_type"],
             review_attitude=review["review_attitude"],
             schema_version=review["schema_version"],
@@ -1231,6 +1245,9 @@ class ReviewStateRepository:
             document_id=review["document_id"],
             perspective=review["perspective"],
             our_party_name=review["our_party_name"],
+            execution_mode=review["execution_mode"],
+            confirmed_party_a_name=review["confirmed_party_a_name"],
+            confirmed_party_b_name=review["confirmed_party_b_name"],
             contract_type=review["contract_type"],
             review_attitude=review["review_attitude"],
             schema_version=review["schema_version"],

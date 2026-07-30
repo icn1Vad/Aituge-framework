@@ -75,6 +75,9 @@ def test_create_execution_uses_scoped_headers_and_frozen_idempotency_keys() -> N
                 "document_id": "document-1",
                 "perspective": "PARTY_B",
                 "our_party_name": "乙方单位",
+                "execution_mode": "FULL_REVIEW",
+                "confirmed_party_a_name": None,
+                "confirmed_party_b_name": None,
                 "contract_type": "AUTO",
                 "review_attitude": "NEUTRAL",
             }
@@ -125,6 +128,72 @@ def test_create_execution_uses_scoped_headers_and_frozen_idempotency_keys() -> N
         assert call.headers["x-tenant-id"] == "tenant-1"
         assert call.headers["x-user-id"] == "user-1"
         assert call.headers["x-roles"] == "service"
+
+
+def test_party_resolution_uses_its_own_framework_task_type_and_idempotency_namespace() -> None:
+    request = FrameworkExecutionRequest(
+        review_id="resolution-1",
+        attempt_no=1,
+        tenant_id="tenant-1",
+        user_id="user-1",
+        business_task_id="party-resolution-1",
+        contract_version_id="version-1",
+        document_id="document-1",
+        perspective="PARTY_A",
+        our_party_name=None,
+        contract_type="AUTO",
+        review_attitude="NEUTRAL",
+        schema_version="1.0",
+        execution_mode="PARTY_RESOLUTION",
+    )
+
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        if http_request.url.path == "/task-manager/tasks":
+            payload = json.loads(http_request.content)
+            assert payload["task_type"] == "contract.party-resolution.run"
+            assert payload["input_payload"]["execution_mode"] == "PARTY_RESOLUTION"
+            assert payload["input_payload"]["confirmed_party_a_name"] is None
+            assert payload["input_payload"]["confirmed_party_b_name"] is None
+            return httpx.Response(
+                200,
+                json={
+                    "task": {
+                        "id": "party-task-1",
+                        "task_type": "contract.party-resolution.run",
+                        "user_id": "user-1",
+                        "tenant_id": "tenant-1",
+                        "model_pack_id": payload["model_pack_id"],
+                        "metadata_json": payload["metadata"],
+                    }
+                },
+            )
+        if http_request.url.path == "/task-manager/tasks/party-task-1/runs":
+            return httpx.Response(200, json={"task_id": "party-task-1", "run_id": "party-run-1", "status": "pending"})
+        if http_request.url.path == "/task-manager/runs/party-run-1":
+            return httpx.Response(200, json={
+                "run": {
+                    "id": "party-run-1",
+                    "task_id": "party-task-1",
+                    "status": "running",
+                    "current_stage_id": "resolve_parties",
+                    "cancel_requested": False,
+                    "updated_at": "2026-07-19T10:00:00Z",
+                }
+            })
+        raise AssertionError(http_request.url.path)
+
+    calls: list[httpx.Request] = []
+
+    def recording_handler(http_request: httpx.Request) -> httpx.Response:
+        calls.append(http_request)
+        return handler(http_request)
+
+    gateway = FrameworkHttpGateway(_settings(), transport=httpx.MockTransport(recording_handler))
+    snapshot = gateway.create_execution(request)
+
+    assert snapshot.current_stage_id == "PARTY_RESOLUTION"
+    assert calls[0].headers["idempotency-key"] == "contract-party-resolution:resolution-1:attempt:1"
+    assert calls[1].headers["idempotency-key"] == "contract-party-resolution:resolution-1:attempt:1:run"
 
 
 def test_cancel_returns_real_terminal_snapshot() -> None:

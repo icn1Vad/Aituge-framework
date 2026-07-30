@@ -5,7 +5,13 @@ import hashlib
 import pytest
 from pydantic import ValidationError
 
-from contract.api.models import CreateReviewData, Evidence, ReviewResultData
+from contract.api.models import (
+    CreateReviewData,
+    CreateReviewRequest,
+    Evidence,
+    PartyResolutionStatusData,
+    ReviewResultData,
+)
 
 
 def test_created_mapping_must_be_empty() -> None:
@@ -28,6 +34,43 @@ def test_running_mapping_must_be_complete() -> None:
             current_stage="PARSING",
             framework_attempt_no=1,
             reused=False,
+        )
+
+
+def test_confirmed_parties_must_be_a_complete_distinct_pair_for_the_selected_perspective() -> None:
+    with pytest.raises(ValidationError):
+        CreateReviewRequest(
+            business_task_id="10001",
+            contract_version_id="20001",
+            perspective="PARTY_A",
+            confirmed_party_a_name="甲方单位",
+            contract_type="AUTO",
+            review_attitude="NEUTRAL",
+            schema_version="1.0",
+        )
+
+    with pytest.raises(ValidationError):
+        CreateReviewRequest(
+            business_task_id="10001",
+            contract_version_id="20001",
+            perspective="PARTY_B",
+            our_party_name="甲方单位",
+            confirmed_party_a_name="甲方单位",
+            confirmed_party_b_name="乙方单位",
+            contract_type="AUTO",
+            review_attitude="NEUTRAL",
+            schema_version="1.0",
+        )
+
+
+def test_succeeded_party_resolution_must_expose_both_party_names() -> None:
+    with pytest.raises(ValidationError):
+        PartyResolutionStatusData(
+            resolution_id="resolution-1",
+            contract_version_id="20001",
+            document_id="document-1",
+            status="SUCCEEDED",
+            updated_at="2026-07-30T00:00:00Z",
         )
 
 

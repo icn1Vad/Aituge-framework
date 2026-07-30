@@ -11,6 +11,9 @@ from contract.api.models import (
     CreateReviewData,
     CreateReviewRequest,
     ErrorData,
+    PartyResolutionCreateData,
+    PartyResolutionCreateRequest,
+    PartyResolutionStatusData,
     ReviewResultData,
     ReviewStage,
     PartyResolutionData,
@@ -25,7 +28,11 @@ from contract.application.framework_gateway import (
     FrameworkProtocolError,
     FrameworkRunSnapshot,
 )
-from contract.application.idempotency import build_request_fingerprint, sha256_bytes
+from contract.application.idempotency import (
+    build_party_resolution_fingerprint,
+    build_request_fingerprint,
+    sha256_bytes,
+)
 from contract.application.ports import InternalRequestContext, UploadedContract
 from contract.config import Settings
 from contract.errors import ContractError
@@ -70,6 +77,113 @@ class RuntimeContractReviewService:
             )
         return {"status": "UP", "service": "contract", "schema_version": "1.0", "mode": "runtime"}
 
+    def create_party_resolution(
+        self,
+        *,
+        upload: UploadedContract,
+        request: PartyResolutionCreateRequest,
+        context: InternalRequestContext,
+    ) -> PartyResolutionCreateData:
+        idempotency_key = context.idempotency_key
+        if not idempotency_key:
+            raise ContractError(
+                "INVALID_REQUEST",
+                "Idempotency-Key is required",
+                status_code=400,
+                user_action_required=True,
+            )
+        request = request.model_copy(
+            update={"model_pack_id": resolve_model_pack_id(request.model_pack_id)}
+        )
+        file_sha256 = sha256_bytes(upload.content)
+        fingerprint = build_party_resolution_fingerprint(
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            request=request,
+            file_sha256=file_sha256,
+        )
+        business_task_id = self._id("party-resolution")
+        existing = self.state_repository.find_for_request(
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            business_task_id=business_task_id,
+            idempotency_key=idempotency_key,
+            request_fingerprint=fingerprint,
+            execution_mode="PARTY_RESOLUTION",
+        )
+        reused = existing is not None
+        if existing is None:
+            resolution_id = self._id("resolution")
+            processed = self.document_processor.process(
+                upload=upload,
+                document_id=self._id("document"),
+                generation_id=self._id("generation"),
+                tenant_id=context.tenant_id,
+                user_id=context.user_id,
+                contract_version_id=request.contract_version_id,
+            )
+            review, reused = self.repository.create_review(
+                ReviewCreate(
+                    review_id=resolution_id,
+                    tenant_id=context.tenant_id,
+                    user_id=context.user_id,
+                    business_task_id=business_task_id,
+                    contract_version_id=request.contract_version_id,
+                    model_pack_id=request.model_pack_id or "",
+                    document_id=processed.document_id,
+                    idempotency_key=idempotency_key,
+                    request_id=context.request_id,
+                    request_fingerprint=fingerprint,
+                    file_sha256=file_sha256,
+                    # This is an internal pipeline placeholder only. The preflight API never
+                    # accepts or returns a party perspective before the user confirms one.
+                    perspective="PARTY_A",
+                    our_party_name=None,
+                    contract_type="AUTO",
+                    review_attitude="NEUTRAL",
+                    schema_version=request.schema_version,
+                    execution_mode="PARTY_RESOLUTION",
+                )
+            )
+            resolution_id = review["id"]
+        else:
+            resolution_id = existing["id"]
+
+        self.state_repository.ensure_initial_attempt(
+            resolution_id,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+        )
+        state = self.state_repository.get_state(
+            resolution_id,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+        )
+        if state["status"] not in {"CREATED", "RUNNING"}:
+            raise ContractError(
+                "PARTY_RESOLUTION_TERMINAL",
+                "The existing party resolution is terminal; create a new resolution request to retry",
+                status_code=409,
+                user_action_required=True,
+                details={"current_status": state["status"], "resolution_id": resolution_id},
+            )
+        return self._party_resolution_create_data(state, reused=reused)
+
+    def get_party_resolution(
+        self,
+        resolution_id: str,
+        *,
+        context: InternalRequestContext,
+    ) -> PartyResolutionStatusData:
+        state = self.state_repository.get_state(
+            resolution_id,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+        )
+        self._require_execution_mode(state, "PARTY_RESOLUTION")
+        party_resolution = self._party_resolution(state)
+        return self._party_resolution_status_data(state, party_resolution)
+
     def create_review(
         self,
         *,
@@ -88,6 +202,13 @@ class RuntimeContractReviewService:
         request = request.model_copy(
             update={"model_pack_id": resolve_model_pack_id(request.model_pack_id)}
         )
+        if request.confirmed_party_a_name is not None:
+            expected_our_party = (
+                request.confirmed_party_a_name
+                if request.perspective.value == "PARTY_A"
+                else request.confirmed_party_b_name
+            )
+            request = request.model_copy(update={"our_party_name": expected_our_party})
         file_sha256 = sha256_bytes(upload.content)
         fingerprint, normalized = build_request_fingerprint(
             tenant_id=context.tenant_id,
@@ -131,6 +252,8 @@ class RuntimeContractReviewService:
                     contract_type=request.contract_type,
                     review_attitude=request.review_attitude,
                     schema_version=request.schema_version,
+                    confirmed_party_a_name=normalized["confirmed_party_a_name"],
+                    confirmed_party_b_name=normalized["confirmed_party_b_name"],
                 )
             )
             review_id = review["id"]
@@ -155,6 +278,7 @@ class RuntimeContractReviewService:
             tenant_id=context.tenant_id,
             user_id=context.user_id,
         )
+        self._require_execution_mode(state, "FULL_REVIEW")
         return self._status_data(state, self._party_resolution(state))
 
     def get_result(self, review_id: str, *, context: InternalRequestContext) -> ReviewResultData:
@@ -225,6 +349,12 @@ class RuntimeContractReviewService:
         return reconciled
 
     def cancel_review(self, review_id: str, *, context: InternalRequestContext) -> CancelReviewData:
+        state = self.state_repository.get_state(
+            review_id,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+        )
+        self._require_execution_mode(state, "FULL_REVIEW")
         plan = self.state_repository.begin_cancel(
             review_id,
             tenant_id=context.tenant_id,
@@ -376,6 +506,9 @@ class RuntimeContractReviewService:
             contract_type=reservation.contract_type,
             review_attitude=reservation.review_attitude,
             schema_version=reservation.schema_version,
+            execution_mode=reservation.execution_mode,
+            confirmed_party_a_name=reservation.confirmed_party_a_name,
+            confirmed_party_b_name=reservation.confirmed_party_b_name,
         )
         try:
             snapshot = self.framework_gateway.create_execution(request)
@@ -490,6 +623,44 @@ class RuntimeContractReviewService:
         )
 
     @staticmethod
+    def _party_resolution_create_data(
+        state: dict,
+        *,
+        reused: bool,
+    ) -> PartyResolutionCreateData:
+        attempt = state["active_attempt"]
+        mapped = (
+            attempt is not None
+            and attempt["framework_task_id"] is not None
+            and attempt["framework_run_id"] is not None
+        )
+        if mapped:
+            return PartyResolutionCreateData(
+                resolution_id=state["id"],
+                contract_version_id=state["contract_version_id"],
+                document_id=state["document_id"],
+                model_pack_id=state["model_pack_id"],
+                status=ReviewStatus.RUNNING,
+                current_stage=state["current_stage"] or ReviewStage.PARSING,
+                framework_attempt_no=attempt["attempt_no"],
+                framework_task_id=attempt["framework_task_id"],
+                framework_run_id=attempt["framework_run_id"],
+                reused=reused,
+            )
+        return PartyResolutionCreateData(
+            resolution_id=state["id"],
+            contract_version_id=state["contract_version_id"],
+            document_id=state["document_id"],
+            model_pack_id=state["model_pack_id"],
+            status=ReviewStatus.CREATED,
+            current_stage=None,
+            framework_attempt_no=None,
+            framework_task_id=None,
+            framework_run_id=None,
+            reused=reused,
+        )
+
+    @staticmethod
     def _status_data(
         state: dict,
         party_resolution: PartyResolutionData | None,
@@ -519,6 +690,48 @@ class RuntimeContractReviewService:
             updated_at=state["updated_at"],
             party_resolution=party_resolution,
         )
+
+    @staticmethod
+    def _party_resolution_status_data(
+        state: dict,
+        party_resolution: PartyResolutionData | None,
+    ) -> PartyResolutionStatusData:
+        attempt = state["active_attempt"]
+        error = None
+        if state["status"] == "FAILED":
+            error = ErrorData(
+                code=state["error_code"],
+                message=state["error_message"] or "Contract party resolution failed",
+                retryable=state["retryable"],
+                user_action_required=state["user_action_required"],
+                details=state["error_details_json"],
+            )
+        return PartyResolutionStatusData(
+            resolution_id=state["id"],
+            contract_version_id=state["contract_version_id"],
+            model_pack_id=state["model_pack_id"],
+            status=state["status"],
+            current_stage=state["current_stage"],
+            document_id=state["document_id"],
+            framework_attempt_no=attempt["attempt_no"] if attempt else None,
+            framework_task_id=attempt["framework_task_id"] if attempt else None,
+            framework_run_id=attempt["framework_run_id"] if attempt else None,
+            error=error,
+            party_a_name=party_resolution.party_a.name if party_resolution else None,
+            party_b_name=party_resolution.party_b.name if party_resolution else None,
+            updated_at=state["updated_at"],
+        )
+
+    @staticmethod
+    def _require_execution_mode(state: dict, expected: str) -> None:
+        # Rows written before the preflight migration, and lightweight legacy
+        # adapters used by callers, are formal reviews by definition.
+        if state.get("execution_mode", "FULL_REVIEW") != expected:
+            raise ContractError(
+                "REVIEW_NOT_FOUND",
+                "Contract review resource does not exist or is not accessible",
+                status_code=404,
+            )
 
     @staticmethod
     def _gateway_error(exc: FrameworkGatewayError) -> ContractError:

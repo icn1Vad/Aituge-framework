@@ -40,6 +40,12 @@ DIRECT_REQUIRED_STAGE_IDS = frozenset(
         "finalize_review",
     }
 )
+PARTY_RESOLUTION_REQUIRED_STAGE_IDS = frozenset(
+    {
+        "parse_contract",
+        "resolve_parties",
+    }
+)
 REQUIRED_STAGE_PROFILES = frozenset(
     {
         LEGACY_REQUIRED_STAGE_IDS,
@@ -363,6 +369,11 @@ class FrameworkCallbackRepository:
             and task.document_id == review["document_id"]
             and task.perspective == review["perspective"]
             and normalize_party_name(task.our_party_name) == review["our_party_name"]
+            and task.execution_mode == review["execution_mode"]
+            and normalize_party_name(task.confirmed_party_a_name)
+            == review["confirmed_party_a_name"]
+            and normalize_party_name(task.confirmed_party_b_name)
+            == review["confirmed_party_b_name"]
             and task.contract_type == review["contract_type"]
             and task.review_attitude == review["review_attitude"]
         )
@@ -720,6 +731,7 @@ class FrameworkCallbackRepository:
                     "Resolved party perspective does not match the review",
                 )
             FrameworkCallbackRepository._validate_party_sources(conn, review, result)
+            FrameworkCallbackRepository._validate_confirmed_party_resolution(review, result)
             return
         if stage_id in MODEL_REVIEW_STAGE_IDS:
             FrameworkCallbackRepository._validate_review_candidate_sources(
@@ -913,6 +925,32 @@ class FrameworkCallbackRepository:
                 result,
                 "Resolved party does not match the user-provided party name",
                 extra_details={"requested_our_party_name": requested_our_party},
+            )
+
+    @staticmethod
+    def _validate_confirmed_party_resolution(review: dict[str, Any], result: dict[str, Any]) -> None:
+        confirmed_party_a = normalize_party_name(review["confirmed_party_a_name"])
+        confirmed_party_b = normalize_party_name(review["confirmed_party_b_name"])
+        if confirmed_party_a is None and confirmed_party_b is None:
+            return
+        if confirmed_party_a is None or confirmed_party_b is None:
+            raise FrameworkCallbackRepository._mismatch(
+                "Persisted confirmed contract party names are incomplete"
+            )
+        if (
+            FrameworkCallbackRepository._normalized_text(result["party_a"]["name"])
+            != FrameworkCallbackRepository._normalized_text(confirmed_party_a)
+            or FrameworkCallbackRepository._normalized_text(result["party_b"]["name"])
+            != FrameworkCallbackRepository._normalized_text(confirmed_party_b)
+        ):
+            raise FrameworkCallbackRepository._party_unresolved(
+                review,
+                result,
+                "Resolved parties do not match the confirmed contract parties",
+                extra_details={
+                    "confirmed_party_a_name": confirmed_party_a,
+                    "confirmed_party_b_name": confirmed_party_b,
+                },
             )
 
     @staticmethod
@@ -1166,6 +1204,37 @@ class FrameworkCallbackRepository:
             (review["id"], attempt_no),
         ).fetchall()
         completed_stages = {row["stage_id"] for row in stage_rows}
+        if review["execution_mode"] == "PARTY_RESOLUTION":
+            party_stage = conn.execute(
+                """
+                SELECT result_json FROM contract_review_stage_result
+                WHERE review_id = %s AND attempt_no = %s
+                  AND callback_type = 'STAGE_RESULT' AND stage_id = 'resolve_parties'
+                  AND validation_status = 'VALIDATED'
+                ORDER BY event_sequence DESC, received_at DESC
+                LIMIT 1
+                """,
+                (review["id"], attempt_no),
+            ).fetchone()
+            if (
+                attempt is None
+                or attempt["status"] != "SUCCEEDED"
+                or party_stage is None
+                or frozenset(completed_stages) != PARTY_RESOLUTION_REQUIRED_STAGE_IDS
+            ):
+                return False
+            conn.execute(
+                """
+                UPDATE contract_review_run
+                SET status = 'SUCCEEDED', current_stage = 'PARTY_RESOLUTION',
+                    error_code = NULL, error_message = NULL, retryable = false,
+                    user_action_required = false, error_details_json = NULL,
+                    completed_at = now(), version = version + 1
+                WHERE id = %s AND status = 'RUNNING'
+                """,
+                (review["id"],),
+            )
+            return True
         if (
             attempt is None
             or attempt["status"] != "SUCCEEDED"
