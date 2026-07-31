@@ -4,6 +4,7 @@ import json
 import time
 from typing import Any, AsyncIterator
 
+from aituge_model_config import load_model_registry
 from db.db_context import create_db_session
 from scheduling.agent_registry import ensure_default_agent_profiles, get_agent_profile
 from scheduling.scheduler import (
@@ -22,6 +23,7 @@ from tool.artifacts import extract_artifacts
 
 
 TOOL_ARGUMENT_MAX_CHARS = 4_000
+LOCAL_PROOF_QA_INCOMPATIBLE_TOOLS = frozenset({"html_report_renderer"})
 
 
 class SchedulerTaskHandler:
@@ -43,6 +45,9 @@ class SchedulerTaskHandler:
             raise ValueError(f"Agent profile '{task.agent_id or definition.default_agent_id}' is not available.")
         if profile.agent_type != "single":
             raise ValueError(f"Agent profile '{profile.agent_id}' has unsupported type '{profile.agent_type}'.")
+        profile.default_tools_json = json.dumps(
+            _compatible_scheduler_tools(task, profile.default_tools)
+        )
 
         task_message, task_input_context = _build_scheduler_input(task, definition)
         runtime_context = context.runtime_context
@@ -63,7 +68,7 @@ class SchedulerTaskHandler:
             stream=True,
             model=_selected_model_id(task),
             skill_package=definition.default_skill_package,
-            extra_tools=definition.default_tools,
+            extra_tools=_compatible_scheduler_tools(task, definition.default_tools),
             extra_datasets=definition.default_datasets,
         )
 
@@ -269,6 +274,20 @@ def _selected_model_id(task: TaskEntity) -> str | None:
     value = (task.input_payload_json or {}).get("model_id")
     normalized = str(value or "").strip()
     return normalized or None
+
+
+def _compatible_scheduler_tools(task: TaskEntity, declared_tools: list[str]) -> list[str]:
+    """Remove tools whose schemas cannot be compiled by the selected local LLM."""
+
+    tools = list(declared_tools)
+    if task.task_type != "proof.qa.chat":
+        return tools
+
+    pack = load_model_registry().resolve_pack(task.model_pack_id)
+    if pack.llm.mode != "local":
+        return tools
+
+    return [tool for tool in tools if tool not in LOCAL_PROOF_QA_INCOMPATIBLE_TOOLS]
 
 
 def _extract_delta(data: dict[str, Any]) -> str:
