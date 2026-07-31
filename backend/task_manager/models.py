@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from common.system_constants import DEFAULT_TENANT_ID
-from sqlalchemy import Column, DateTime, JSON, Text, UniqueConstraint, text
+from sqlalchemy import Column, DateTime, Index, JSON, Text, UniqueConstraint, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlmodel import Field, SQLModel
 
@@ -59,6 +59,18 @@ class TaskEntity(SQLModel, table=True):
 
 class TaskEventEntity(SQLModel, table=True):
     __tablename__ = "tuge_task_event"
+    __table_args__ = (
+        Index(
+            "idx_tuge_task_event_task_created",
+            "task_id",
+            "created_at",
+        ),
+        Index(
+            "idx_tuge_task_event_type_created",
+            "event_type",
+            "created_at",
+        ),
+    )
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True, max_length=80)
     task_id: str = Field(foreign_key="tuge_task.id", nullable=False, max_length=80)
@@ -347,6 +359,20 @@ async def ensure_task_manager_schema(engine: AsyncEngine) -> None:
             )
             await conn.execute(
                 text(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "idx_tuge_task_event_task_created "
+                    "ON tuge_task_event (task_id, created_at)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "idx_tuge_task_event_type_created "
+                    "ON tuge_task_event (event_type, created_at)"
+                )
+            )
+            await conn.execute(
+                text(
                     "UPDATE tuge_task_run SET next_event_sequence = "
                     "COALESCE((SELECT MAX(sequence) FROM tuge_task_event "
                     "WHERE tuge_task_event.run_id = tuge_task_run.id), 0)"
@@ -453,6 +479,18 @@ async def ensure_task_manager_schema(engine: AsyncEngine) -> None:
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_tuge_task_event_run_sequence "
                 "ON tuge_task_event (run_id, sequence) WHERE run_id IS NOT NULL"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_tuge_task_event_task_created "
+                "ON tuge_task_event (task_id, created_at)"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_tuge_task_event_type_created "
+                "ON tuge_task_event (event_type, created_at)"
             )
         )
         await conn.execute(
