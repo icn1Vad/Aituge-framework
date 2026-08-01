@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -530,6 +531,127 @@ def _party_window_context(party: PartyResolutionStageResult) -> str:
             "REVIEW_ATTITUDE=NEUTRAL",
         )
     )
+
+
+def _unique_party_name(candidates: list[Any], role: str) -> str:
+    names: dict[str, str] = {}
+    for candidate in candidates:
+        if candidate.role != role:
+            continue
+        # Parser table cells may retain a trailing column separator. It is
+        # structural markup, not part of the legal entity name.
+        name = " ".join(candidate.name.split()).strip().rstrip("|｜").rstrip()
+        if name:
+            names.setdefault(name.casefold(), name)
+    if len(names) != 1:
+        raise StageExecutionError(
+            f"Contract has {len(names)} unambiguous {role} candidates; manual input is required.",
+            code="PARTY_UNRESOLVED",
+            retryable=False,
+        )
+    return next(iter(names.values()))
+
+
+def _direct_party_resolution_handler(base_url: str, token: str):
+    """Resolve explicitly labelled contract parties without an LLM call."""
+
+    async def execute(context: StageExecutionContext) -> StageServiceResult:
+        from contract.party import extract_party_candidates
+
+        started_at = time.perf_counter()
+        task_input = ContractTaskInput.model_validate(context.task.input_payload_json or {})
+        parse_artifact = context.artifacts.get("parse_contract")
+        if parse_artifact is None or not isinstance(parse_artifact.content_json, dict):
+            raise StageExecutionError(
+                "Validated contract parse artifact is missing.",
+                code="PARTY_UNRESOLVED",
+                retryable=False,
+            )
+        parsed = ParseContractStageResult.model_validate(parse_artifact.content_json)
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=2.5) as client:
+                response = await client.post(
+                    "/v1/internal/contract-tools/blocks",
+                    headers={
+                        "X-Internal-Service": "aituge-framework",
+                        "X-Internal-Token": token,
+                        "X-Request-Id": (
+                            f"contract-party-direct:{context.run.id}:{context.stage.stage_id}"
+                        ),
+                    },
+                    json={
+                        "review_id": task_input.review_id,
+                        "document_id": task_input.document_id,
+                        "block_ids": [],
+                        "limit": 2000,
+                    },
+                )
+            response.raise_for_status()
+            envelope = InternalContractBlocksEnvelope.model_validate(response.json())
+        except httpx.HTTPStatusError as exc:
+            raise StageExecutionError(
+                f"Contract blocks returned HTTP {exc.response.status_code}; manual input is required.",
+                code="PARTY_UNRESOLVED",
+                retryable=False,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise StageExecutionError(
+                "Contract blocks were not available within the party-resolution deadline; "
+                "manual input is required.",
+                code="PARTY_UNRESOLVED",
+                retryable=False,
+            ) from exc
+        except ValueError as exc:
+            raise StageExecutionError(
+                "Contract blocks response is invalid; manual input is required.",
+                code="PARTY_UNRESOLVED",
+                retryable=False,
+            ) from exc
+
+        blocks = envelope.data
+        if (
+            blocks.review_id != task_input.review_id
+            or blocks.document_id != task_input.document_id
+            or blocks.generation_id != parsed.generation_id
+        ):
+            raise StageExecutionError(
+                "Contract block identity does not match the validated parse; manual input is required.",
+                code="PARTY_UNRESOLVED",
+                retryable=False,
+            )
+        candidates = extract_party_candidates(blocks.blocks)
+        party_a_name = _unique_party_name(candidates, "PARTY_A")
+        party_b_name = _unique_party_name(candidates, "PARTY_B")
+        if party_a_name.casefold() == party_b_name.casefold():
+            raise StageExecutionError(
+                "Resolved contract parties are identical; manual input is required.",
+                code="PARTY_UNRESOLVED",
+                retryable=False,
+            )
+        our_party = party_a_name if task_input.perspective == "PARTY_A" else party_b_name
+        counterparty = party_b_name if task_input.perspective == "PARTY_A" else party_a_name
+        result = PartyResolutionStageResult(
+            result_type="PARTY_RESOLUTION_STAGE_V1",
+            contract_type="AUTO",
+            party_a={"name": party_a_name},
+            party_b={"name": party_b_name},
+            perspective=task_input.perspective,
+            our_party=our_party,
+            counterparty=counterparty,
+        )
+        duration_ms = max(0, round((time.perf_counter() - started_at) * 1000))
+        return StageServiceResult(
+            output=result.model_dump(mode="json"),
+            summary=f"Resolved explicit contract parties deterministically in {duration_ms} ms.",
+            metadata={
+                "party_resolution_engine": "deterministic-explicit-labels-v1",
+                "duration_ms": duration_ms,
+                "candidate_count": len(candidates),
+                "model_call_count": 0,
+            },
+        )
+
+    return execute
 
 
 def _window_contract_ir_handler(base_url: str, token: str, model_id: str):
@@ -1265,6 +1387,10 @@ async def register(registry, settings) -> None:
     gateway_handler = _stage_gateway_handler(base_url, callback_token, model_id)
     registry.register_stage_handler(name="contract_stage_gateway_v1", handler=gateway_handler)
     registry.register_stage_handler(
+        name="contract_party_resolution_direct_v1",
+        handler=_direct_party_resolution_handler(base_url, callback_token),
+    )
+    registry.register_stage_handler(
         name="contract_ir_window_v1",
         handler=_window_contract_ir_handler(base_url, callback_token, model_id),
     )
@@ -1345,7 +1471,7 @@ async def register(registry, settings) -> None:
         "contract_get_clause_context",
         "contract_get_ir",
     ]
-    party_resolution_stages: list[dict[str, Any]] = [
+    review_party_resolution_stages: list[dict[str, Any]] = [
         {
             "stage_id": "parse_contract",
             "name": "Validate persisted contract parse",
@@ -1378,7 +1504,33 @@ async def register(registry, settings) -> None:
             },
         },
     ]
-    stages: list[dict[str, Any]] = [*party_resolution_stages]
+    party_resolution_stages: list[dict[str, Any]] = [
+        {
+            "stage_id": "parse_contract",
+            "name": "Validate persisted contract parse for fast party resolution",
+            "stage_type": "gateway",
+            "input_model": ContractTaskInput,
+            "output_model": ParseContractStageResult,
+            "input_adapter": "task_input",
+            "artifact_type": "contract_parse_result",
+            "service_handler": "contract_stage_gateway_v1",
+            "timeout_seconds": 2,
+            "retry_policy": {"max_attempts": 1, "retry_on": []},
+        },
+        {
+            "stage_id": "resolve_parties",
+            "name": "Resolve explicitly labelled contract parties without a model",
+            "stage_type": "finalizer",
+            "depends_on": ["parse_contract"],
+            "input_model": PipelineContextInput,
+            "output_model": PartyResolutionStageResult,
+            "artifact_type": "contract_party_resolution",
+            "service_handler": "contract_party_resolution_direct_v1",
+            "timeout_seconds": 3,
+            "retry_policy": {"max_attempts": 1, "retry_on": []},
+        },
+    ]
+    stages: list[dict[str, Any]] = [*review_party_resolution_stages]
     stages.append(
         {
             "stage_id": "extract_contract_ir",
@@ -1436,7 +1588,7 @@ async def register(registry, settings) -> None:
         task_type=PARTY_RESOLUTION_TASK_TYPE,
         description="Parse a contract and resolve PARTY_A and PARTY_B without starting risk review.",
         final_artifact_type="contract_party_resolution",
-        timeout_seconds=300,
+        timeout_seconds=5,
         resumable=False,
         max_parallelism=1,
         stages=party_resolution_stages,

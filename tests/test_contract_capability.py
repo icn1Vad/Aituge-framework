@@ -123,6 +123,7 @@ def test_contract_capability_registers_frozen_pipeline_and_internal_tools() -> N
     assert stages["extract_contract_ir"]["output_model"] is capability.ExtractContractIrStageResult
     assert [item["name"] for item in registry.stage_handlers] == [
         "contract_stage_gateway_v1",
+        "contract_party_resolution_direct_v1",
         "contract_ir_window_v1",
         "contract_direct_review_v1",
         "contract_grounded_answer_finalize_v1",
@@ -133,6 +134,22 @@ def test_contract_capability_registers_frozen_pipeline_and_internal_tools() -> N
         "extract_contract_ir",
     ]
     assert stages["finalize_review"]["service_handler"] == "contract_direct_review_v1"
+
+    party_pipeline = next(
+        item
+        for item in registry.pipelines
+        if item["pipeline_id"] == "contract-party-resolution-pipeline-v1"
+    )
+    party_stages = {item["stage_id"]: item for item in party_pipeline["stages"]}
+    assert party_pipeline["timeout_seconds"] == 5
+    assert party_stages["parse_contract"]["timeout_seconds"] == 2
+    assert party_stages["resolve_parties"]["stage_type"] == "finalizer"
+    assert party_stages["resolve_parties"]["service_handler"] == (
+        "contract_party_resolution_direct_v1"
+    )
+    assert party_stages["resolve_parties"]["timeout_seconds"] == 3
+    assert stages["resolve_parties"]["stage_type"] == "agent"
+    assert stages["resolve_parties"]["timeout_seconds"] == 180
 
 
 def test_legacy_ir_execution_path_is_removed() -> None:
@@ -488,6 +505,193 @@ def test_window_ir_handler_injects_party_context_without_changing_source(monkeyp
     assert "section context" in captured["request"].windows[0].context_text
     assert captured["tenant_id"] == "tenant-1"
     assert captured["model_id"] == "contract-model"
+
+
+def test_direct_party_resolution_uses_explicit_labels_without_model(monkeypatch) -> None:
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "success": True,
+                "data": {
+                    "review_id": "resolution-1",
+                    "document_id": "document-1",
+                    "generation_id": "generation-1",
+                    "blocks": [
+                        {
+                            "block_id": "block-1",
+                            "block_no": 1,
+                            "block_type": "paragraph",
+                            "page_number": 1,
+                            "paragraph_no": 1,
+                            "char_start": 0,
+                            "char_end": 31,
+                            "text": "甲方：星河智造有限公司；乙方：云岚数科有限公司",
+                            "heading_path": [],
+                            "metadata": {},
+                        }
+                    ],
+                },
+                "request_id": "request-1",
+            }
+
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs["timeout"] == 2.5
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, path, *, headers, json):
+            assert path == "/v1/internal/contract-tools/blocks"
+            assert json["limit"] == 2000
+            return Response()
+
+    monkeypatch.setattr(capability.httpx, "AsyncClient", Client)
+    context = SimpleNamespace(
+        task=SimpleNamespace(
+            input_payload_json={
+                "schema_version": "1.0",
+                "review_id": "resolution-1",
+                "attempt_no": 1,
+                "business_task_id": "party-resolution-1",
+                "contract_version_id": "version-1",
+                "document_id": "document-1",
+                "perspective": "PARTY_A",
+                "execution_mode": "PARTY_RESOLUTION",
+                "contract_type": "AUTO",
+                "review_attitude": "NEUTRAL",
+            }
+        ),
+        run=SimpleNamespace(id="run-1"),
+        stage=SimpleNamespace(stage_id="resolve_parties"),
+        artifacts={
+            "parse_contract": SimpleNamespace(
+                content_json={
+                    "result_type": "PARSE_CONTRACT_STAGE_V1",
+                    "document_id": "document-1",
+                    "generation_id": "generation-1",
+                    "block_count": 1,
+                    "ir_hash": "sha256:" + "0" * 64,
+                }
+            )
+        },
+    )
+
+    result = asyncio.run(
+        capability._direct_party_resolution_handler(
+            "http://ai-contract:18200", "secret"
+        )(context)
+    )
+
+    assert result.output == {
+        "result_type": "PARTY_RESOLUTION_STAGE_V1",
+        "contract_type": "AUTO",
+        "party_a": {"name": "星河智造有限公司"},
+        "party_b": {"name": "云岚数科有限公司"},
+        "perspective": "PARTY_A",
+        "our_party": "星河智造有限公司",
+        "counterparty": "云岚数科有限公司",
+    }
+    assert result.metadata["model_call_count"] == 0
+    assert result.metadata["party_resolution_engine"] == (
+        "deterministic-explicit-labels-v1"
+    )
+
+
+def test_unique_party_name_removes_trailing_table_separator() -> None:
+    candidates = [SimpleNamespace(role="PARTY_A", name="星河智造有限公司 |")]
+
+    assert capability._unique_party_name(candidates, "PARTY_A") == "星河智造有限公司"
+
+
+def test_direct_party_resolution_requires_manual_input_when_ambiguous(monkeypatch) -> None:
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "success": True,
+                "data": {
+                    "review_id": "resolution-1",
+                    "document_id": "document-1",
+                    "generation_id": "generation-1",
+                    "blocks": [
+                        {
+                            "block_id": "block-1",
+                            "block_no": 1,
+                            "block_type": "paragraph",
+                            "page_number": 1,
+                            "paragraph_no": 1,
+                            "char_start": 0,
+                            "char_end": 15,
+                            "text": "甲方：第一公司；甲方：第二公司",
+                            "heading_path": [],
+                            "metadata": {},
+                        }
+                    ],
+                },
+                "request_id": "request-1",
+            }
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(capability.httpx, "AsyncClient", Client)
+    context = SimpleNamespace(
+        task=SimpleNamespace(
+            input_payload_json={
+                "schema_version": "1.0",
+                "review_id": "resolution-1",
+                "attempt_no": 1,
+                "business_task_id": "party-resolution-1",
+                "contract_version_id": "version-1",
+                "document_id": "document-1",
+                "perspective": "PARTY_A",
+                "execution_mode": "PARTY_RESOLUTION",
+                "contract_type": "AUTO",
+                "review_attitude": "NEUTRAL",
+            }
+        ),
+        run=SimpleNamespace(id="run-1"),
+        stage=SimpleNamespace(stage_id="resolve_parties"),
+        artifacts={
+            "parse_contract": SimpleNamespace(
+                content_json={
+                    "result_type": "PARSE_CONTRACT_STAGE_V1",
+                    "document_id": "document-1",
+                    "generation_id": "generation-1",
+                    "block_count": 1,
+                    "ir_hash": "sha256:" + "0" * 64,
+                }
+            )
+        },
+    )
+
+    with pytest.raises(StageExecutionError) as captured:
+        asyncio.run(
+            capability._direct_party_resolution_handler(
+                "http://ai-contract:18200", "secret"
+            )(context)
+        )
+    assert captured.value.code == "PARTY_UNRESOLVED"
+    assert captured.value.retryable is False
 
 
 def test_contract_result_sink_emits_three_frozen_callback_shapes(monkeypatch) -> None:
