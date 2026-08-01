@@ -272,16 +272,17 @@ class FrameworkGroundedAnswerService:
             )
         elif task.status in {"created", "pending"}:
             run_key = f"{task_key}:run"
-            completed = await self._request(
+            await self._request(
                 "POST",
-                f"/task-manager/tasks/{task.id}/run",
-                headers=headers,
+                f"/task-manager/tasks/{task.id}/runs",
+                headers={**headers, "Idempotency-Key": run_key},
                 json={
                     "stream": False,
-                    "idempotency_key": run_key,
                 },
             )
-            task = self._validate_task(completed, payload, context)
+            task = await self._wait_for_task(
+                task_id=task.id, headers=headers, payload=payload, context=context
+            )
         elif task.status not in {"succeeded", "failed", "cancelled"}:
             raise ContractError(
                 "FRAMEWORK_PROTOCOL_ERROR",

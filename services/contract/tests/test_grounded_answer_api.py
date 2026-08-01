@@ -80,7 +80,7 @@ def test_framework_service_runs_report_task_and_reuses_succeeded_task() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        body = json.loads(request.content)
+        body = json.loads(request.content) if request.content else {}
         if request.url.path == "/task-manager/tasks":
             return httpx.Response(
                 200,
@@ -101,7 +101,17 @@ def test_framework_service_runs_report_task_and_reuses_succeeded_task() -> None:
                     }
                 },
             )
-        if request.url.path == "/task-manager/tasks/task-1/run":
+        if request.url.path == "/task-manager/tasks/task-1/runs":
+            return httpx.Response(
+                200,
+                json={
+                    "task_id": "task-1",
+                    "run_id": "run-1",
+                    "status": "running",
+                    "stream_url": "/task-manager/runs/run-1/events/stream",
+                },
+            )
+        if request.url.path == "/task-manager/tasks/task-1":
             return httpx.Response(
                 200,
                 json={
@@ -150,11 +160,13 @@ def test_framework_service_runs_report_task_and_reuses_succeeded_task() -> None:
     assert result.references[0].reference_id == "docref-ref-1"
     assert [request.url.path for request in requests] == [
         "/task-manager/tasks",
-        "/task-manager/tasks/task-1/run",
+        "/task-manager/tasks/task-1/runs",
+        "/task-manager/tasks/task-1",
     ]
     assert requests[0].headers["idempotency-key"].startswith(
         "contract-grounded:report:"
     )
+    assert requests[1].headers["idempotency-key"].endswith(":run")
     assert requests[0].headers["x-ai-mode"] == "private"
 
 
