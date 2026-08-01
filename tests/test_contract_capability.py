@@ -610,6 +610,27 @@ def test_unique_party_name_removes_trailing_table_separator() -> None:
     assert capability._unique_party_name(candidates, "PARTY_A") == "星河智造有限公司"
 
 
+def test_unique_party_name_merges_terminal_parenthetical_suffix_with_bare_name() -> None:
+    candidates = [
+        SimpleNamespace(role="PARTY_A", name="华东星河科技有限公司"),
+        SimpleNamespace(role="PARTY_A", name="华东星河科技有限公司（盖章）"),
+    ]
+
+    assert capability._unique_party_name(candidates, "PARTY_A") == "华东星河科技有限公司"
+
+
+def test_unique_party_name_keeps_distinct_parenthetical_candidate_without_bare_name() -> None:
+    candidates = [
+        SimpleNamespace(role="PARTY_A", name="华东星河科技有限公司（盖章）"),
+        SimpleNamespace(role="PARTY_A", name="华东星河科技有限公司（签章）"),
+    ]
+
+    with pytest.raises(StageExecutionError) as captured:
+        capability._unique_party_name(candidates, "PARTY_A")
+
+    assert captured.value.code == "PARTY_UNRESOLVED"
+
+
 def test_direct_party_resolution_requires_manual_input_when_ambiguous(monkeypatch) -> None:
     class Response:
         def raise_for_status(self):
