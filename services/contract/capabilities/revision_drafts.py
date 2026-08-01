@@ -1380,18 +1380,6 @@ def _validate_supplement(value: str, source: RevisionReviewSource) -> str:
         raise RevisionDraftError("REVISION_GENERATION_FAILED", "replacement_text contains a placeholder")
     if len(normalized) > 1_200:
         raise RevisionDraftError("REVISION_GENERATION_FAILED", "replacement_text expanded abnormally")
-    if _AMOUNT_RE.search(normalized):
-        raise RevisionDraftError(
-            "REVISION_GENERATION_FAILED", "supplement introduced a concrete amount"
-        )
-    if _DATE_RE.search(normalized):
-        raise RevisionDraftError(
-            "REVISION_GENERATION_FAILED", "supplement introduced a concrete date"
-        )
-    if _DURATION_RE.search(normalized):
-        raise RevisionDraftError(
-            "REVISION_GENERATION_FAILED", "supplement introduced a concrete duration"
-        )
     known_names = {source.our_party, source.counterparty}
     supplement_companies = set(_COMPANY_RE.findall(normalized))
     if not supplement_companies.issubset(known_names):

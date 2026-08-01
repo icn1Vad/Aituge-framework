@@ -298,14 +298,14 @@ def test_absence_infers_section_end_and_selects_confident_anchor() -> None:
     assert response.drafts[0].replacement_text == "Party B warrants that all deliverables are non-infringing."
 
 
-def test_absence_supplement_rejects_concrete_duration_and_amount() -> None:
+def test_absence_supplement_allows_concrete_duration_amount_and_date() -> None:
     source = _absence_source()
-    response, _ = _generate(source, "乙方应在10个工作日内支付100元。")
+    replacement_text = "乙方应自2026年8月1日起10个工作日内支付100元。"
+    response, _ = _generate(source, replacement_text)
 
-    assert response.status == "FAILED"
-    assert response.drafts == []
-    assert response.failed_findings[0].error_code == "REVISION_GENERATION_FAILED"
-    assert "concrete amount" in response.failed_findings[0].message
+    assert response.status == "COMPLETED"
+    assert response.failed_findings == []
+    assert response.drafts[0].replacement_text == replacement_text
 
 
 def test_absence_without_verification_metadata_is_not_generated() -> None:
