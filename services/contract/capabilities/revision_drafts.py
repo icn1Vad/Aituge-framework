@@ -24,6 +24,9 @@ PROMPT_TARGET_TOKENS = 6_000
 PROMPT_HARD_LIMIT_TOKENS = 7_000
 MAX_BATCH_FINDINGS = 6
 MAX_INSERTION_CANDIDATES = 24
+# Bump whenever deterministic draft-planning semantics change.  A cached
+# failure must not outlive the validation rule that produced it.
+REVISION_DRAFT_CACHE_VERSION = "anchor-position-v2"
 _PLACEHOLDER_RE = re.compile(r"(?:TODO|TBD|XXX|待补充|待定|请填写)", re.IGNORECASE)
 _DATE_RE = re.compile(
     r"(?:\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}[-/.]\d{1,2}[-/.]\d{1,2})"
@@ -1313,13 +1316,22 @@ def _resolve_target(
             continue
         if evidence.quoted_text in item.extraction_text:
             candidates.append(item)
-    unique = {(item.ir_id, item.anchor_id): item for item in candidates}
-    if len(unique) != 1:
+    # A single physical Word span may legitimately produce several semantic
+    # IR items (for example, payment, price adjustment and party obligation).
+    # Those semantic labels are not separate edit locations.  Only distinct
+    # block/range coordinates make automatic replacement unsafe.
+    unique_by_position: dict[tuple[str, int, int], RevisionIrSource] = {}
+    for item in candidates:
+        unique_by_position.setdefault(
+            (item.block_id, item.char_start, item.char_end),
+            item,
+        )
+    if len(unique_by_position) != 1:
         raise RevisionDraftError(
             "FINDING_SOURCE_NOT_UNIQUE",
             "Finding Evidence does not resolve to exactly one IR/Anchor",
         )
-    item = next(iter(unique.values()))
+    item = next(iter(unique_by_position.values()))
     return (
         RevisionTarget(
             ir_id=item.ir_id,
@@ -1552,7 +1564,9 @@ async def _complete_revision_batch(
 
 
 def _cache_key(review_id: str, generation_id: str, result_hash: str) -> str:
-    return "\0".join((review_id, generation_id, result_hash))
+    return "\0".join(
+        (REVISION_DRAFT_CACHE_VERSION, review_id, generation_id, result_hash)
+    )
 
 
 def _sha256(value: str) -> str:

@@ -11,6 +11,7 @@ from services.contract.capabilities.revision_drafts import (
     InMemoryRevisionDraftCache,
     InMemoryRevisionSourceProvider,
     ReplacementBatchResult,
+    REVISION_DRAFT_CACHE_VERSION,
     RevisionDraftResponse,
     RevisionDraftService,
     RevisionDocumentBlock,
@@ -20,6 +21,7 @@ from services.contract.capabilities.revision_drafts import (
     RevisionIrSource,
     RevisionReviewSource,
     SupplementRequest,
+    _cache_key,
     _find_contract_ir_list,
     source_from_formal_payload,
 )
@@ -343,6 +345,64 @@ def test_text_quote_continues_to_generate_a_replace_draft() -> None:
         ).encode("utf-8")
     ).hexdigest()
     assert draft.revision_hash == expected_hash
+
+
+def test_same_physical_anchor_across_semantic_ir_items_generates_replace_draft() -> None:
+    source = _replace_source()
+    primary = source.contract_ir[0]
+    source = source.model_copy(
+        update={
+            "contract_ir": [
+                primary,
+                primary.model_copy(update={"ir_id": "ir-price", "anchor_id": "anchor-price"}),
+                primary.model_copy(update={"ir_id": "ir-obligation", "anchor_id": "anchor-obligation"}),
+            ]
+        }
+    )
+
+    response, generator = _generate(source, "乙方应按约完成服务并提交验收材料。")
+
+    assert response.status == "COMPLETED"
+    assert response.failed_findings == []
+    assert len(generator.calls) == 1
+    assert response.drafts[0].operation == "REPLACE"
+    assert response.drafts[0].target is not None
+    assert response.drafts[0].target.block_id == "block-1"
+    assert response.drafts[0].target.char_start == 0
+    assert response.drafts[0].target.char_end == len("乙方应按要求完成服务。")
+
+
+def test_distinct_physical_anchor_ranges_remain_unsafe_for_replace() -> None:
+    source = _replace_source()
+    primary = source.contract_ir[0]
+    source = source.model_copy(
+        update={
+            "contract_ir": [
+                primary,
+                primary.model_copy(
+                    update={
+                        "ir_id": "ir-wider-range",
+                        "anchor_id": "anchor-wider-range",
+                        "char_end": primary.char_end + 1,
+                        "extraction_text": primary.extraction_text + " ",
+                    }
+                ),
+            ]
+        }
+    )
+
+    response, generator = _generate(source, "乙方应按约完成服务并提交验收材料。")
+
+    assert response.status == "FAILED"
+    assert response.drafts == []
+    assert generator.calls == []
+    assert response.failed_findings[0].error_code == "FINDING_SOURCE_NOT_UNIQUE"
+
+
+def test_revision_draft_cache_key_is_versioned_for_anchor_rule_changes() -> None:
+    key = _cache_key("review-1", "generation-1", "sha256:" + "d" * 64)
+
+    assert key.split("\0", 1)[0] == REVISION_DRAFT_CACHE_VERSION
 
 
 def test_formal_payload_retains_absence_verification_note() -> None:
