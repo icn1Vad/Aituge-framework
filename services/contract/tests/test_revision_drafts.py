@@ -372,26 +372,83 @@ def test_same_physical_anchor_across_semantic_ir_items_generates_replace_draft()
     assert response.drafts[0].target.char_end == len("乙方应按要求完成服务。")
 
 
-def test_distinct_physical_anchor_ranges_remain_unsafe_for_replace() -> None:
+def test_exact_evidence_anchor_wins_over_enclosing_clause_anchor() -> None:
     source = _replace_source()
     primary = source.contract_ir[0]
+    evidence_start = 2
+    evidence_text = primary.extraction_text[evidence_start:]
+    evidence = source.evidences[0].model_copy(
+        update={
+            "char_start": evidence_start,
+            "char_end": primary.char_end,
+            "quoted_text": evidence_text,
+            "quoted_text_hash": "sha256:"
+            + hashlib.sha256(evidence_text.encode("utf-8")).hexdigest(),
+        }
+    )
+    semantic = primary.model_copy(
+        update={
+            "ir_id": "ir-semantic",
+            "anchor_id": "anchor-semantic",
+            "char_start": evidence_start,
+            "char_end": primary.char_end,
+            "extraction_text": evidence_text,
+        }
+    )
     source = source.model_copy(
         update={
+            "evidences": [evidence],
             "contract_ir": [
                 primary,
-                primary.model_copy(
-                    update={
-                        "ir_id": "ir-wider-range",
-                        "anchor_id": "anchor-wider-range",
-                        "char_end": primary.char_end + 1,
-                        "extraction_text": primary.extraction_text + " ",
-                    }
-                ),
+                semantic,
+                semantic.model_copy(update={"ir_id": "ir-semantic-duplicate"}),
             ]
         }
     )
 
-    response, generator = _generate(source, "乙方应按约完成服务并提交验收材料。")
+    response, generator = _generate(source, "Party B shall perform the services as agreed.")
+
+    assert response.status == "COMPLETED"
+    assert len(generator.calls) == 1
+    assert response.drafts[0].target is not None
+    assert response.drafts[0].target.anchor_id == "anchor-semantic"
+    assert response.drafts[0].target.char_start == evidence_start
+    assert response.drafts[0].target.char_end == primary.char_end
+
+
+def test_distinct_enclosing_ir_ranges_remain_unsafe_without_exact_evidence_anchor() -> None:
+    source = _replace_source()
+    primary = source.contract_ir[0]
+    evidence_start = 2
+    evidence_end = primary.char_end - 1
+    evidence_text = primary.extraction_text[evidence_start:evidence_end]
+    evidence = source.evidences[0].model_copy(
+        update={
+            "char_start": evidence_start,
+            "char_end": evidence_end,
+            "quoted_text": evidence_text,
+            "quoted_text_hash": "sha256:"
+            + hashlib.sha256(evidence_text.encode("utf-8")).hexdigest(),
+        }
+    )
+    source = source.model_copy(
+        update={
+            "evidences": [evidence],
+            "contract_ir": [
+                primary,
+                primary.model_copy(
+                    update={
+                        "ir_id": "ir-narrower-clause",
+                        "anchor_id": "anchor-narrower-clause",
+                        "char_start": 1,
+                        "extraction_text": primary.extraction_text[1:],
+                    }
+                ),
+            ],
+        }
+    )
+
+    response, generator = _generate(source, "Party B shall perform the services as agreed.")
 
     assert response.status == "FAILED"
     assert response.drafts == []

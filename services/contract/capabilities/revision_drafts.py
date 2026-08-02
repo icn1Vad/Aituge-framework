@@ -26,7 +26,7 @@ MAX_BATCH_FINDINGS = 6
 MAX_INSERTION_CANDIDATES = 24
 # Bump whenever deterministic draft-planning semantics change.  A cached
 # failure must not outlive the validation rule that produced it.
-REVISION_DRAFT_CACHE_VERSION = "anchor-position-v2"
+REVISION_DRAFT_CACHE_VERSION = "evidence-exact-anchor-v3"
 _PLACEHOLDER_RE = re.compile(r"(?:TODO|TBD|XXX|待补充|待定|请填写)", re.IGNORECASE)
 _DATE_RE = re.compile(
     r"(?:\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}[-/.]\d{1,2}[-/.]\d{1,2})"
@@ -1296,42 +1296,46 @@ def _resolve_target(
         raise RevisionDraftError("SOURCE_TEXT_INVALID", "quoted_text_hash does not match original_text")
     if evidence.char_end - evidence.char_start != len(evidence.quoted_text):
         raise RevisionDraftError("SOURCE_TEXT_INVALID", "Evidence range length does not match original_text")
-    candidates = []
+    candidates: list[RevisionIrSource] = []
     for item in source.contract_ir:
         if item.block_id != evidence.block_id:
             continue
         if item.char_start > evidence.char_start or item.char_end < evidence.char_end:
             continue
-        # Formal Evidence has already been hash- and block-validated.  IR
-        # coordinates therefore provide the authoritative Evidence-to-Anchor
-        # relationship even when the compact semantic IR stores only an SPO
-        # projection rather than the full source excerpt.
-        if item.char_start <= evidence.char_start and item.char_end >= evidence.char_end:
-            candidates.append(item)
-            continue
-        relative_start = evidence.char_start - item.char_start
-        relative_end = relative_start + len(evidence.quoted_text)
-        if item.extraction_text[relative_start:relative_end] == evidence.quoted_text:
-            candidates.append(item)
-            continue
-        if evidence.quoted_text in item.extraction_text:
-            candidates.append(item)
-    # A single physical Word span may legitimately produce several semantic
-    # IR items (for example, payment, price adjustment and party obligation).
-    # Those semantic labels are not separate edit locations.  Only distinct
-    # block/range coordinates make automatic replacement unsafe.
-    unique_by_position: dict[tuple[str, int, int], RevisionIrSource] = {}
-    for item in candidates:
-        unique_by_position.setdefault(
-            (item.block_id, item.char_start, item.char_end),
-            item,
+        candidates.append(item)
+
+    # The editor target is the hash-checked Evidence position, not the span
+    # of a semantic IR projection.  A clause IR routinely encloses a
+    # fine-grained semantic IR for that same Evidence.  Prefer the exact IR
+    # anchor when it exists so the enclosing clause does not create a false
+    # ambiguity.  Multiple semantic labels at the exact position are still a
+    # single Word location; select one deterministically for provenance.
+    exact_candidates = [
+        item
+        for item in candidates
+        if item.char_start == evidence.char_start and item.char_end == evidence.char_end
+    ]
+    if exact_candidates:
+        item = min(exact_candidates, key=lambda candidate: (candidate.anchor_id, candidate.ir_id))
+    else:
+        # Preserve the conservative behaviour for legacy payloads that have
+        # no exact Evidence anchor: different enclosing IR ranges remain
+        # unsafe to edit automatically.
+        unique_by_position: dict[tuple[str, int, int], RevisionIrSource] = {}
+        for candidate in candidates:
+            unique_by_position.setdefault(
+                (candidate.block_id, candidate.char_start, candidate.char_end),
+                candidate,
+            )
+        if len(unique_by_position) != 1:
+            raise RevisionDraftError(
+                "FINDING_SOURCE_NOT_UNIQUE",
+                "Finding Evidence does not resolve to exactly one IR/Anchor",
+            )
+        item = min(
+            unique_by_position.values(),
+            key=lambda candidate: (candidate.anchor_id, candidate.ir_id),
         )
-    if len(unique_by_position) != 1:
-        raise RevisionDraftError(
-            "FINDING_SOURCE_NOT_UNIQUE",
-            "Finding Evidence does not resolve to exactly one IR/Anchor",
-        )
-    item = next(iter(unique_by_position.values()))
     return (
         RevisionTarget(
             ir_id=item.ir_id,
