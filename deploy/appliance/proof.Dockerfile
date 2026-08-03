@@ -1,5 +1,3 @@
-FROM ghcr.io/astral-sh/uv:0.11.2 AS uv
-
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -10,8 +8,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app/services/proof
 
-COPY --from=uv /uv /usr/local/bin/uv
-COPY aituge_model_config/ /app/aituge_model_config/
+RUN pip install --no-cache-dir uv==0.11.2
+COPY aituge_model/ /app/aituge_model/
 COPY services/proof/pyproject.toml services/proof/uv.lock services/proof/README.md ./
 COPY services/proof/src/ ./src/
 COPY services/proof/examples/ ./examples/

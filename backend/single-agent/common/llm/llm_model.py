@@ -3,7 +3,7 @@ from typing import List, Optional, cast
 import uuid
 from common.llm.models import DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_RETRIES, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, DEFAULT_TIMEOUT, THINK_END_TAG, THINK_START_TAG, ChatResponseGenerator, ErrorChunk, ReasoningChunk, TextChunk
 from loguru import logger
-from openai import AsyncOpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
 from openai.types.chat import ChatCompletionChunk, ChatCompletionToolParam
 from openai.types.chat.chat_completion_chunk import ChoiceDeltaToolCall
 from extensions.trace.base import use_current_span
@@ -77,6 +77,9 @@ class PaiLlm():
         max_tokens: int = DEFAULT_MAX_TOKENS,
         timeout: int = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
+        component_id: str = "",
+        provider: str = "",
+        via_gateway: bool = False,
     ):
         self.api_base = api_base
         self.api_key = api_key
@@ -88,11 +91,19 @@ class PaiLlm():
         self.max_tokens = max_tokens
         self.timeout = timeout
         self.max_retries = max_retries
+        self.component_id = component_id
+        self.provider = provider
+        self.via_gateway = via_gateway
         self.client = AsyncOpenAI(
             api_key=self.api_key,
             base_url=self.api_base,
             timeout=self.timeout,
-            max_retries=self.max_retries,
+            max_retries=0 if self.via_gateway else self.max_retries,
+            default_headers=(
+                {"X-Aituge-Model-Component-ID": self.component_id}
+                if self.component_id and self.via_gateway
+                else {}
+            ),
         )
 
     async def astream(
@@ -106,6 +117,7 @@ class PaiLlm():
             tool_calls: List[ChoiceDeltaToolCall] = []
             is_reasoning = True
             has_reasoning_content = False
+            received_upstream_chunk = False
 
             tools_to_use = tools
             if not tools_to_use:
@@ -128,6 +140,7 @@ class PaiLlm():
                 )
                 logger.info(f"Calling model {self.model}, enable_thinking: {self.enable_thinking}, temperature: {self.temperature}")
                 async for chunk in response_gen:
+                    received_upstream_chunk = True
                     chunk = cast(ChatCompletionChunk, chunk)
 
                     if not chunk.choices or not chunk.choices[0].delta:
@@ -195,9 +208,40 @@ class PaiLlm():
                         )
             except Exception as ex:
                 logger.error(f"Llm stream error: {traceback.format_exc()}")
-                yield ErrorChunk(delta=f"{ex}", exception=str(ex), error_type="llm")
+                code, message, retryable = normalize_model_exception(ex)
+                if received_upstream_chunk:
+                    code = "MODEL_STREAM_INTERRUPTED"
+                    message = "模型服务响应中断，请稍后重试"
+                yield ErrorChunk(
+                    delta=message,
+                    error_message=message,
+                    exception=code,
+                    error_type=code,
+                    retryable=retryable,
+                )
 
         return gen()
+
+
+def normalize_model_exception(ex: BaseException) -> tuple[str, str, bool]:
+    if isinstance(ex, APIStatusError):
+        body = ex.body if isinstance(ex.body, dict) else {}
+        error = body.get("error") if isinstance(body.get("error"), dict) else {}
+        code = str(error.get("code") or "").strip()
+        message = str(error.get("message") or "").strip()
+        retryable = bool(error.get("retryable", ex.status_code in {408, 409, 429} or ex.status_code >= 500))
+        if code.startswith("MODEL_"):
+            return code, message or "模型服务暂时不可用，请稍后重试", retryable
+        if ex.status_code == 429:
+            return "MODEL_RATE_LIMITED", "模型服务请求过多，请稍后重试", True
+        if ex.status_code in {408, 409} or ex.status_code >= 500:
+            return "MODEL_PROVIDER_UNAVAILABLE", "模型服务暂时不可用，请稍后重试", True
+        return "MODEL_REQUEST_REJECTED", "模型服务拒绝了本次请求", False
+    if isinstance(ex, APITimeoutError):
+        return "MODEL_CONNECT_TIMEOUT", "模型服务连接超时，请稍后重试", True
+    if isinstance(ex, APIConnectionError):
+        return "MODEL_PROVIDER_UNAVAILABLE", "模型服务暂时不可用，请稍后重试", True
+    return "MODEL_PROVIDER_UNAVAILABLE", "模型服务暂时不可用，请稍后重试", True
 
 
 if __name__ == "__main__":

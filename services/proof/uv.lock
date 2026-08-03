@@ -3,22 +3,29 @@ revision = 3
 requires-python = ">=3.11"
 
 [[package]]
-name = "aituge-model-config"
-version = "0.1.0"
-source = { directory = "../../aituge_model_config" }
+name = "aituge-model"
+version = "0.2.0"
+source = { directory = "../../aituge_model" }
 dependencies = [
     { name = "pyyaml" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pyyaml", specifier = ">=6,<7" }]
+requires-dist = [
+    { name = "aiohttp", marker = "extra == 'gateway'", specifier = "==3.14.3" },
+    { name = "dnspython", marker = "extra == 'gateway'", specifier = "==2.8.0" },
+    { name = "pyyaml", specifier = "==6.0.3" },
+    { name = "redis", marker = "extra == 'gateway'", specifier = "==6.4.0" },
+    { name = "tenacity", marker = "extra == 'gateway'", specifier = "==9.1.4" },
+]
+provides-extras = ["gateway"]
 
 [[package]]
 name = "aituge-proof"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "aituge-model-config" },
+    { name = "aituge-model" },
     { name = "fastapi" },
     { name = "httpx", extra = ["socks"] },
     { name = "pgvector" },
@@ -39,7 +46,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aituge-model-config", directory = "../../aituge_model_config" },
+    { name = "aituge-model", directory = "../../aituge_model" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27,<1" },
     { name = "pgvector", specifier = ">=0.3,<1" },

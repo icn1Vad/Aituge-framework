@@ -1,4 +1,4 @@
-from aituge_model_config import ModelRuntimeProvider
+from aituge_model.config import ModelRuntimeProvider
 
 
 DEFAULT_LLM_MODEL_ID = (

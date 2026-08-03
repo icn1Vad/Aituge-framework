@@ -2,7 +2,7 @@ import asyncio
 import json
 import time
 import uuid
-from common.llm.models import ChatResponseGenerator, ErrorChunk, ReasoningChunk, ToolResultChunk, TextChunk
+from common.llm.models import ChatResponseGenerator, ErrorChunk, ModelInvocationError, ReasoningChunk, ToolResultChunk, TextChunk
 from extensions.guardrail.guardrail_check import TextCheckResult
 from openai.types.chat import ChatCompletionChunk, ChatCompletion, ChatCompletionMessage
 from openai.types.completion_usage import CompletionUsage
@@ -123,6 +123,7 @@ async def convert_gen_to_stream_chat_completions(
     check_tasks = []
     output_check_result = TextCheckResult()
     fail_fast = False
+    failure: ModelInvocationError | None = None
     final_content = ""  # 累积完整的助手回复内容
     tool_history_messages = []  # 收集 tool 交互消息用于保存历史
 
@@ -132,6 +133,15 @@ async def convert_gen_to_stream_chat_completions(
             if output_check_result.reject:
                 logger.info("convert_gen_to_stream_chat_completions: output_check_result.reject=True, break")
                 fail_fast = True
+                break
+
+            if isinstance(chunk, ErrorChunk) and chunk.error_type.startswith("MODEL_"):
+                fail_fast = True
+                failure = ModelInvocationError(
+                    chunk.error_type or "MODEL_PROVIDER_UNAVAILABLE",
+                    chunk.error_message or chunk.delta or "模型服务暂时不可用，请稍后重试",
+                    retryable=chunk.retryable,
+                )
                 break
 
             if chunk.usage:
@@ -181,6 +191,7 @@ async def convert_gen_to_stream_chat_completions(
             if isinstance(chunk, ErrorChunk):
                 fail_fast = True
                 break
+
     finally:
         if response_generator and hasattr(response_generator, "aclose"):
             await response_generator.aclose()
@@ -207,6 +218,9 @@ async def convert_gen_to_stream_chat_completions(
                 logger.info(f"Session history saved in stream mode for user={user_id}, session={session_id}")
             except Exception as e:
                 logger.error(f"Failed to save session history in stream mode: {e}", exc_info=True)
+
+    if failure is not None:
+        raise failure
 
     if not fail_fast and len(current_content) > CHECK_OUTPUT_CHUNK_OVERLAP and enable_output_check and checker:
         check_tasks.append(asyncio.create_task(checker.acheck_output(text=current_content, current_result=output_check_result)))
@@ -284,6 +298,12 @@ async def convert_gen_to_chat_completions(
 
     async for chunk in response_generator:
         if isinstance(chunk, ErrorChunk):
+            if chunk.error_type.startswith("MODEL_"):
+                raise ModelInvocationError(
+                    chunk.error_type,
+                    chunk.error_message or chunk.delta or "模型服务暂时不可用，请稍后重试",
+                    retryable=chunk.retryable,
+                )
             logger.info(f"Input guardrail failed: {chunk.delta}, directly return.")
             content = chunk.delta
             checked = True

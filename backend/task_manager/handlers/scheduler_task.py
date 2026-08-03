@@ -4,7 +4,7 @@ import json
 import time
 from typing import Any, AsyncIterator
 
-from aituge_model_config import load_model_registry
+from aituge_model.config import load_model_registry
 from db.db_context import create_db_session
 from scheduling.agent_registry import ensure_default_agent_profiles, get_agent_profile
 from scheduling.scheduler import (
@@ -179,7 +179,7 @@ class SchedulerTaskHandler:
             await update_stage_run(
                 stage_run.id,
                 status="failed",
-                error_code=exc.__class__.__name__,
+                error_code=str(getattr(exc, "code", exc.__class__.__name__)),
                 error_message=str(exc),
                 finished_at=utc_now(),
                 duration_ms=int((time.perf_counter() - started) * 1000),

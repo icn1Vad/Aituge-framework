@@ -4,10 +4,11 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
-from aituge_model_config import ModelRuntimeProvider, ResolvedLlmModel
+from aituge_model.config import ModelRuntimeProvider, ResolvedLlmModel
 from common.encrypt_utils import decrypt_key
 from common.llm.constants import DEFAULT_LLM_MODEL_ID
-from common.llm.llm_model import PaiLlm
+from common.llm.llm_model import PaiLlm, normalize_model_exception
+from common.llm.models import ModelInvocationError
 from common.system_constants import DEFAULT_TENANT_ID
 from db.db_context import create_db_session
 from db.models.llm import LlmModelEntity
@@ -42,7 +43,7 @@ def _llm_cache_key(config: LlmModelEntity | ResolvedLlmModel) -> str:
     if isinstance(config, ResolvedLlmModel):
         return (
             f"llm:{config.base_url}:{config.api_key}:"
-            f"{config.model}:{config.enable_thinking}:{config.vision_support}:"
+            f"{config.id}:{config.provider}:{config.model}:{config.enable_thinking}:{config.vision_support}:"
             f"{config.temperature}:{config.context_window}:{config.max_tokens}"
         )
     return (
@@ -79,6 +80,9 @@ def create_llm(config: LlmModelEntity | ResolvedLlmModel) -> PaiLlm:
         temperature=config.temperature,
         context_window=config.context_window,
         max_tokens=config.max_tokens,
+        component_id=config.id if isinstance(config, ResolvedLlmModel) else "",
+        provider=config.provider if isinstance(config, ResolvedLlmModel) else "",
+        via_gateway=config.via_gateway if isinstance(config, ResolvedLlmModel) else False,
     )
     llm_cache.put(cache_key, llm)
     return llm
@@ -109,7 +113,7 @@ class LlmRuntime:
         credential = self.model_runtime_provider.resolve_optional_credential(
             registration.credential_ref
         )
-        if not credential:
+        if not credential and not self.model_runtime_provider.gateway_enabled:
             credential = await self._legacy_database_credential(resolved_model_id)
         resolved_config = self.model_runtime_provider.resolve_llm(
             resolved_model_id,
@@ -130,7 +134,7 @@ class LlmRuntime:
             return ""
         logger.warning(
             "Model credential for '{}' uses legacy tuge_llm_model fallback; "
-            "move it to aituge_model_config/secrets.",
+            "move it to aituge_model/config/secrets.",
             model_id,
         )
         return decrypt_key(row.encrypted_api_key)
@@ -152,14 +156,17 @@ class LlmRuntime:
                 *runtime_messages,
             ]
 
-        response = await llm.client.chat.completions.create(
-            model=llm.model,
-            messages=runtime_messages,
-            stream=False,
-            temperature=llm.temperature if temperature is None else temperature,
-            max_tokens=llm.max_tokens if max_tokens is None else max_tokens,
-            extra_body=_build_thinking_extra_body(llm, thinking_override),
-        )
+        try:
+            response = await llm.client.chat.completions.create(
+                model=llm.model,
+                messages=runtime_messages,
+                stream=False,
+                temperature=llm.temperature if temperature is None else temperature,
+                max_tokens=llm.max_tokens if max_tokens is None else max_tokens,
+                extra_body=_build_thinking_extra_body(llm, thinking_override),
+            )
+        except Exception as exc:
+            raise _model_invocation_error(exc) from exc
         if not response.choices:
             return ""
         return response.choices[0].message.content or ""
@@ -212,24 +219,27 @@ class LlmRuntime:
         }
         if response_format is not None:
             request_kwargs["response_format"] = response_format
-        stream = await llm.client.chat.completions.create(
-            **request_kwargs,
-        )
-        async for chunk in stream:
-            provider_request_id = provider_request_id or getattr(chunk, "id", None)
-            chunk_usage = getattr(chunk, "usage", None)
-            if chunk_usage is not None:
-                usage = chunk_usage
-            choices = getattr(chunk, "choices", None) or []
-            for choice in choices:
-                if getattr(choice, "finish_reason", None) is not None:
-                    finish_reason = choice.finish_reason
-                delta = getattr(choice, "delta", None)
-                value = getattr(delta, "content", None) if delta is not None else None
-                if value:
-                    if first_token_at is None:
-                        first_token_at = time.perf_counter()
-                    content_parts.append(value)
+        try:
+            stream = await llm.client.chat.completions.create(
+                **request_kwargs,
+            )
+            async for chunk in stream:
+                provider_request_id = provider_request_id or getattr(chunk, "id", None)
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage is not None:
+                    usage = chunk_usage
+                choices = getattr(chunk, "choices", None) or []
+                for choice in choices:
+                    if getattr(choice, "finish_reason", None) is not None:
+                        finish_reason = choice.finish_reason
+                    delta = getattr(choice, "delta", None)
+                    value = getattr(delta, "content", None) if delta is not None else None
+                    if value:
+                        if first_token_at is None:
+                            first_token_at = time.perf_counter()
+                        content_parts.append(value)
+        except Exception as exc:
+            raise _model_invocation_error(exc) from exc
 
         completed = time.perf_counter()
         prompt_details = getattr(usage, "prompt_tokens_details", None)
@@ -267,9 +277,17 @@ def _build_thinking_extra_body(llm: Any, thinking_override: Optional[bool]) -> d
 
 
 def _is_official_deepseek_v4(llm: Any) -> bool:
+    provider = str(getattr(llm, "provider", "")).lower()
     hostname = (urlparse(str(getattr(llm, "api_base", ""))).hostname or "").lower()
     model = str(getattr(llm, "model", "")).lower()
-    return hostname == "api.deepseek.com" and model.startswith("deepseek-v4-")
+    return (provider == "deepseek" or hostname == "api.deepseek.com") and model.startswith("deepseek-v4-")
+
+
+def _model_invocation_error(exc: BaseException) -> ModelInvocationError:
+    if isinstance(exc, ModelInvocationError):
+        return exc
+    code, message, retryable = normalize_model_exception(exc)
+    return ModelInvocationError(code, message, retryable=retryable)
 
 
 def _optional_int(value: Any, attribute: str) -> int | None:

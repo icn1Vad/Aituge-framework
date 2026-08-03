@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from aituge_model_config import (
+from aituge_model.config import (
     ModelRuntimeProvider,
     ResolvedEmbeddingModel,
     ResolvedRerankerModel,

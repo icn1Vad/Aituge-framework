@@ -9,6 +9,7 @@ import httpx
 
 from proof.config import Settings
 from proof.errors import ProofError
+from proof.infrastructure.model_gateway import gateway_headers, raise_gateway_error
 from proof.model_runtime import EmbeddingRuntimeConfig, build_proof_model_runtime
 
 
@@ -39,9 +40,11 @@ class OpenAICompatibleEmbeddingClient:
         self.model = config.model
         self.dimensions = config.dimensions
         self.timeout = config.timeout_seconds
+        self.via_gateway = config.via_gateway
         # Preserve the established profile algorithm so moving the same model
         # into the registry does not invalidate existing pgvector rows.
-        profile_source = f"openai_compatible|{self.base_url}|{self.model}|{self.dimensions}"
+        identity_base_url = config.identity_base_url or self.base_url
+        profile_source = f"openai_compatible|{identity_base_url.rstrip('/')}|{self.model}|{self.dimensions}"
         self.profile = EmbeddingProfile(
             id=hashlib.sha256(profile_source.encode("utf-8")).hexdigest()[:24],
             provider="openai_compatible",
@@ -64,21 +67,22 @@ class OpenAICompatibleEmbeddingClient:
             "encoding_format": "float",
         }
         last_error = ""
-        for attempt in range(3):
+        attempts = 1 if self.via_gateway else 3
+        for attempt in range(attempts):
             try:
                 response = httpx.post(
                     endpoint,
-                    headers=(
-                        {"Authorization": f"Bearer {self.api_key}"}
-                        if self.api_key
-                        else {}
+                    headers=gateway_headers(
+                        self.api_key,
+                        self.registration_id,
+                        via_gateway=self.via_gateway,
                     ),
                     json=payload,
                     timeout=self.timeout,
                 )
             except httpx.HTTPError as exc:
                 last_error = str(exc)
-                if attempt < 2:
+                if attempt < attempts - 1:
                     time.sleep(0.5 * (2**attempt))
                     continue
                 raise ProofError(
@@ -88,9 +92,11 @@ class OpenAICompatibleEmbeddingClient:
                     details={"reason": last_error},
                 ) from exc
 
+            if self.via_gateway and response.status_code >= 400:
+                raise_gateway_error(response)
             if response.status_code == 429 or response.status_code >= 500:
                 last_error = f"HTTP {response.status_code}"
-                if attempt < 2:
+                if attempt < attempts - 1:
                     time.sleep(0.5 * (2**attempt))
                     continue
                 raise ProofError(

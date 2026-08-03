@@ -8,6 +8,7 @@ Remote layout:
 ```text
 /home/aituge/workspace/AI-framework/
 ├── backend/
+├── aituge_model/
 ├── frontend/
 ├── pyproject.toml
 ├── poetry.lock
@@ -37,8 +38,14 @@ The stable dependency image is separated from the frequently changing Framework
 source layer. After the first dependency build, ordinary source updates only
 rebuild the lightweight runtime layer.
 
-Runtime secrets are stored only in `deploy/appliance/.env` and
-`deploy/appliance/proof.env`. Never commit either file.
+Runtime tokens are stored in `deploy/appliance/.env`; provider credentials are
+mounted from `aituge_model/config/secrets` into Model Gateway only. Never commit
+these values or credential files.
+
+`MODEL_GATEWAY_TOKEN` authenticates Framework, Proof, and Contract requests to
+the internal Model Gateway. All public and local model requests use
+`http://model-gateway:18300`; provider credentials are not mounted into those
+business containers.
 
 `CONTRACT_INTERNAL_TOKEN` must equal ContiNew Java's
 `BUSINESS_CONTRACT_AGENT_INTERNAL_TOKEN`. `FRAMEWORK_RESULT_SINK_INTERNAL_TOKEN`
@@ -79,7 +86,8 @@ git fetch origin proof
 git switch proof
 ```
 
-The host endpoints are Framework `:8894`, Proof `:18100`, and Smoke `:18200`. Containers on the
+The host endpoints are Framework `:8894`, Proof `:18100`, Smoke `:18200`, and the
+host-local Model Gateway diagnostic port `:18300`. Containers on the
 existing `proofspace-network` can use `http://ai-framework:8894` and
 `http://ai-proof:18100`. Java reaches Contract Python through the shared
 `agent-internal` network. PostgreSQL and Redis remain host-local on ports 15432

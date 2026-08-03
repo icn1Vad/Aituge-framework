@@ -126,7 +126,7 @@ uv run python -m proof.tools.reprocess_structures
 ## 模型能力包
 
 LLM、Embedding 和 Reranker 的公共定义位于仓库根目录
-`aituge_model_config/`。当前提供两个包：
+`aituge_model/config/`。当前提供两个包：
 
 - `api-rerank`：DeepSeek API、DashScope Embedding、DashScope Reranker；
 - `local-rerank`：与 API 包共用 DeepSeek 和 Embedding，只把 Reranker
@@ -137,7 +137,7 @@ Embedding 注册，因此切换 Reranker 不改变 `embedding_profile_id`，也�
 本地 Reranker 只完成了注册和配置校验，需在服务器具备相应模型服务后再做连通测试。
 
 模型包只保存 `credential_ref`。正式部署默认从
-`aituge_model_config/secrets/` 读取同名密钥文件；如有需要，可用
+`aituge_model/config/secrets/` 读取同名密钥文件；如有需要，可用
 `MODEL_SECRET_DIR` 指向其他目录。启用模型包后，密钥、Embedding 和 Reranker
 的地址、模型名称及维度均以共享配置目录为准。旧的
 `PROOF_EMBEDDING_API_KEY`/`PROOF_RERANK_API_KEY` 及模型元数据只在未启用

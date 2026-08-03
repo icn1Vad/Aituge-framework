@@ -8,6 +8,7 @@ import httpx
 from proof.application.retrieval import RerankScore
 from proof.config import Settings
 from proof.errors import ProofError
+from proof.infrastructure.model_gateway import gateway_headers, raise_gateway_error
 from proof.model_runtime import RerankerRuntimeConfig, build_proof_model_runtime
 
 
@@ -39,6 +40,7 @@ class OpenAICompatiblePolicyReranker:
         self.model = config.model.strip()
         self.timeout = config.timeout_seconds
         self.instruction = (instruction or default_instruction).strip()
+        self.via_gateway = config.via_gateway
 
     def rerank(
         self,
@@ -81,21 +83,22 @@ class OpenAICompatiblePolicyReranker:
 
     def _post(self, payload: dict[str, Any]):
         last_reason = ""
-        for attempt in range(3):
+        attempts = 1 if self.via_gateway else 3
+        for attempt in range(attempts):
             try:
                 response = httpx.post(
                     self.endpoint,
-                    headers=(
-                        {"Authorization": f"Bearer {self.api_key}"}
-                        if self.api_key
-                        else {}
+                    headers=gateway_headers(
+                        self.api_key,
+                        self.registration_id,
+                        via_gateway=self.via_gateway,
                     ),
                     json=payload,
                     timeout=self.timeout,
                 )
             except httpx.HTTPError as exc:
                 last_reason = type(exc).__name__
-                if attempt < 2:
+                if attempt < attempts - 1:
                     time.sleep(0.5 * (2**attempt))
                     continue
                 raise ProofError(
@@ -104,9 +107,11 @@ class OpenAICompatiblePolicyReranker:
                     status_code=503,
                     details={"reason": last_reason},
                 ) from exc
+            if self.via_gateway and response.status_code >= 400:
+                raise_gateway_error(response)
             if response.status_code == 429 or response.status_code >= 500:
                 last_reason = f"HTTP {response.status_code}"
-                if attempt < 2:
+                if attempt < attempts - 1:
                     time.sleep(0.5 * (2**attempt))
                     continue
                 raise ProofError(

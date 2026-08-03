@@ -1,14 +1,16 @@
+"""Typed registry for model components and deployable model packs."""
+
 from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import yaml
-
 
 MODEL_MODES = frozenset({"api", "local"})
 AI_MODES = frozenset({"public", "private"})
@@ -81,7 +83,7 @@ class ModelRegistry:
     packs: Mapping[str, ModelPackRegistration]
 
     @classmethod
-    def from_directory(cls, directory: str | Path) -> "ModelRegistry":
+    def from_directory(cls, directory: str | Path) -> ModelRegistry:
         root = Path(directory).expanduser().resolve()
         components = _load_yaml(root / "components.yaml")
         default_pack_id = _required_text(components, "default_pack_id", "components.yaml")
@@ -250,7 +252,7 @@ def _load_yaml(path: Path) -> dict[str, Any]:
         raise ValueError(f"Model configuration file does not exist: {path}")
     data = yaml.safe_load(path.read_text("utf-8"))
     if not isinstance(data, dict):
-        raise ValueError(f"Model configuration must be an object: {path}")
+        raise ValueError(f"Model configuration must be an object: {path}")  # noqa: TRY004
     return data
 
 
@@ -260,7 +262,7 @@ def _component_map(raw: Any, *, kind: str, factory):
     result = {}
     for component_id, values in raw.items():
         if not isinstance(values, dict):
-            raise ValueError(f"Model component '{component_id}' must be an object.")
+            raise ValueError(f"Model component '{component_id}' must be an object.")  # noqa: TRY004
         normalized_id = str(component_id).strip()
         if not normalized_id:
             raise ValueError(f"Empty {kind} model id.")

@@ -3,7 +3,7 @@ from typing import Optional, List
 from sqlmodel import select, func
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.exc import IntegrityError
-from aituge_model_config import load_model_registry
+from aituge_model.config import load_model_registry
 from db.models.llm import LlmModelCreate, LlmModelEntity
 from common.encrypt_utils import encrypt_key
 from common.chat.response_model import PagedResult

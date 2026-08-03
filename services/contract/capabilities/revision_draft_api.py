@@ -13,7 +13,7 @@ from typing import Annotated
 
 from fastapi import Body, Depends, FastAPI, Header, Query, Request
 from fastapi.responses import JSONResponse
-from aituge_model_config import ModelRuntimeProvider
+from aituge_model.config import ModelRuntimeProvider
 
 from services.contract.capabilities.revision_drafts import (
     RevisionDraftError,

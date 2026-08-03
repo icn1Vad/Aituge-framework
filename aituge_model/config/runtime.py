@@ -1,9 +1,11 @@
+"""Resolve model registrations for direct or gateway-backed runtimes."""
+
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
 
 from .registry import (
     EmbeddingModelRegistration,
@@ -29,6 +31,8 @@ class ResolvedLlmModel:
     temperature: float
     enable_thinking: bool
     vision_support: bool
+    identity_base_url: str = ""
+    via_gateway: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +45,8 @@ class ResolvedEmbeddingModel:
     api_key: str
     dimensions: int
     timeout_seconds: float
+    identity_base_url: str = ""
+    via_gateway: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +59,8 @@ class ResolvedRerankerModel:
     api_key: str
     timeout_seconds: float
     instruction: str
+    identity_base_url: str = ""
+    via_gateway: bool = False
 
 
 class ModelRuntimeProvider:
@@ -77,7 +85,7 @@ class ModelRuntimeProvider:
         pack_id: str = "",
         secret_dir: str | Path | None = None,
         secret_overrides: Mapping[str, str] | None = None,
-    ) -> "ModelRuntimeProvider":
+    ) -> ModelRuntimeProvider:
         configured_dir = str(directory or os.getenv("MODEL_CONFIG_DIR", "")).strip()
         config_root = (
             Path(configured_dir).expanduser().resolve()
@@ -110,6 +118,10 @@ class ModelRuntimeProvider:
             raise ValueError(f"LLM model '{resolved_id}' is not registered.")
         return registration
 
+    @property
+    def gateway_enabled(self) -> bool:
+        return bool(_gateway_base_url())
+
     def embedding_registration(self) -> EmbeddingModelRegistration:
         return self.active_pack.embedding
 
@@ -124,23 +136,30 @@ class ModelRuntimeProvider:
         require_credential: bool = True,
     ) -> ResolvedLlmModel:
         registration = self.llm_registration(model_id)
-        api_key = self._credential(
-            registration.credential_ref,
-            required=registration.mode == "api" and require_credential,
-            fallback=credential_fallback,
+        gateway_base_url = _gateway_base_url()
+        api_key = (
+            _gateway_token()
+            if gateway_base_url
+            else self._credential(
+                registration.credential_ref,
+                required=registration.mode == "api" and require_credential,
+                fallback=credential_fallback,
+            )
         )
         return ResolvedLlmModel(
             id=registration.id,
             mode=registration.mode,
             provider=registration.provider,
             model=registration.model,
-            base_url=registration.base_url,
+            base_url=f"{gateway_base_url}/v1" if gateway_base_url else registration.base_url,
             api_key=api_key,
             context_window=registration.context_window,
             max_tokens=registration.max_tokens,
             temperature=registration.temperature,
             enable_thinking=registration.enable_thinking,
             vision_support=registration.vision_support,
+            identity_base_url=registration.base_url,
+            via_gateway=bool(gateway_base_url),
         )
 
     def resolve_embedding(
@@ -149,20 +168,27 @@ class ModelRuntimeProvider:
         credential_fallback: str = "",
     ) -> ResolvedEmbeddingModel:
         registration = self.embedding_registration()
-        api_key = self._credential(
-            registration.credential_ref,
-            required=registration.mode == "api",
-            fallback=credential_fallback,
+        gateway_base_url = _gateway_base_url()
+        api_key = (
+            _gateway_token()
+            if gateway_base_url
+            else self._credential(
+                registration.credential_ref,
+                required=registration.mode == "api",
+                fallback=credential_fallback,
+            )
         )
         return ResolvedEmbeddingModel(
             id=registration.id,
             mode=registration.mode,
             provider=registration.provider,
             model=registration.model,
-            base_url=registration.base_url,
+            base_url=f"{gateway_base_url}/v1" if gateway_base_url else registration.base_url,
             api_key=api_key,
             dimensions=registration.dimensions,
             timeout_seconds=registration.timeout_seconds,
+            identity_base_url=registration.base_url,
+            via_gateway=bool(gateway_base_url),
         )
 
     def resolve_reranker(
@@ -171,20 +197,27 @@ class ModelRuntimeProvider:
         credential_fallback: str = "",
     ) -> ResolvedRerankerModel:
         registration = self.reranker_registration()
-        api_key = self._credential(
-            registration.credential_ref,
-            required=registration.mode == "api",
-            fallback=credential_fallback,
+        gateway_base_url = _gateway_base_url()
+        api_key = (
+            _gateway_token()
+            if gateway_base_url
+            else self._credential(
+                registration.credential_ref,
+                required=registration.mode == "api",
+                fallback=credential_fallback,
+            )
         )
         return ResolvedRerankerModel(
             id=registration.id,
             mode=registration.mode,
             provider=registration.provider,
             model=registration.model,
-            base_url=registration.base_url,
+            base_url=f"{gateway_base_url}/v1/reranks" if gateway_base_url else registration.base_url,
             api_key=api_key,
             timeout_seconds=registration.timeout_seconds,
             instruction=registration.instruction,
+            identity_base_url=registration.base_url,
+            via_gateway=bool(gateway_base_url),
         )
 
     def resolve_optional_credential(self, credential_ref: str | None) -> str:
@@ -208,3 +241,14 @@ class ModelRuntimeProvider:
         if required:
             return self.secret_resolver.resolve(credential_ref, required=True)
         return ""
+
+
+def _gateway_base_url() -> str:
+    return os.getenv("MODEL_GATEWAY_URL", "").strip().rstrip("/")
+
+
+def _gateway_token() -> str:
+    token = os.getenv("MODEL_GATEWAY_TOKEN", "").strip()
+    if not token:
+        raise ValueError("MODEL_GATEWAY_TOKEN is required when MODEL_GATEWAY_URL is set.")
+    return token

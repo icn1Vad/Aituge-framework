@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import httpx
 
-from aituge_model_config import ResolvedRerankerModel
+from aituge_model.config import ResolvedRerankerModel
 from proof.config import Settings
 from proof.infrastructure.reranking import DashScopePolicyReranker
 

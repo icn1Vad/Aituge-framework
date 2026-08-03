@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import httpx
 import pytest
-
 from proof.config import Settings
 from proof.errors import ProofError
 from proof.infrastructure.embedding import OpenAICompatibleEmbeddingClient
+
+from aituge_model.config import ResolvedEmbeddingModel
 
 
 class FakeResponse:
@@ -78,3 +79,32 @@ def test_embedding_too_long_response_is_identified(monkeypatch) -> None:
     with pytest.raises(ProofError) as exc_info:
         client.embed(["one complete clause"])
     assert exc_info.value.code == "embedding_too_long"
+
+
+def test_gateway_routing_preserves_existing_embedding_profile() -> None:
+    direct = ResolvedEmbeddingModel(
+        id="embedding",
+        mode="api",
+        provider="dashscope",
+        model="text-embedding-v4",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        api_key="provider-key",
+        dimensions=1024,
+        timeout_seconds=30,
+    )
+    gateway = ResolvedEmbeddingModel(
+        id="embedding",
+        mode="api",
+        provider="dashscope",
+        model="text-embedding-v4",
+        base_url="http://model-gateway:18300/v1",
+        api_key="gateway-token",
+        dimensions=1024,
+        timeout_seconds=30,
+        identity_base_url=direct.base_url,
+        via_gateway=True,
+    )
+
+    assert OpenAICompatibleEmbeddingClient(direct).profile.id == (
+        OpenAICompatibleEmbeddingClient(gateway).profile.id
+    )

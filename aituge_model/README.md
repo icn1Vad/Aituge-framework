@@ -1,7 +1,7 @@
-# Aituge Model Configuration
+# Aituge Model Configuration and Gateway
 
 This package is the single source of truth for model metadata and model-pack
-composition.
+composition, and hosts the internal resilient model gateway.
 
 - `components.yaml` registers LLM, Embedding, and Reranker components.
 - `packs/*.yaml` composes those components into deployable model packs.
@@ -18,7 +18,7 @@ Credential values are resolved by `credential_ref` from the package's
 Framework may read the encrypted credential from `tuge_llm_model`, but it does
 not read model metadata from that table.
 
-This makes `aituge_model_config/` a self-contained deployment unit: copy the
+This makes `aituge_model/config/` a self-contained deployment unit: copy the
 directory with its local `secrets/` files and select a pack through
 `MODEL_PACK_ID`. Secret files are intentionally ignored by Git and must never be
 committed.
@@ -47,3 +47,15 @@ registration. This lets development tests prove package routing through the
 stored package ID, runtime provider, and `X-Model-Pack-ID` tool header without
 requiring a local inference server; the actual local Reranker connectivity is a
 deployment test.
+
+## Internal gateway
+
+Set `MODEL_GATEWAY_URL` and `MODEL_GATEWAY_TOKEN` in model-consuming services to
+route registered LLM, Embedding, and Reranker requests through the internal
+gateway. The gateway itself must not set `MODEL_GATEWAY_URL`; it reads the real
+upstream URLs and credentials from this package, then exposes OpenAI-compatible
+routes on port 18300.
+
+The gateway uses aiohttp for connection pooling and address racing, dnspython
+for fallback DNS resolution, Tenacity for bounded retries, and Redis for shared
+DNS and circuit-breaker state. It never accepts an arbitrary upstream URL.

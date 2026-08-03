@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
-from aituge_model_config import ModelRuntimeProvider
+from aituge_model.config import ModelRuntimeProvider
 
 from task_manager.pipeline.errors import StageExecutionError
 from task_manager.pipeline.stage_registry import StageExecutionContext, StageServiceResult

@@ -8,7 +8,7 @@ from typing import Literal
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from aituge_model_config import ModelRuntimeProvider
+from aituge_model.config import ModelRuntimeProvider
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 

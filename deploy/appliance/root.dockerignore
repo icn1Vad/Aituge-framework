@@ -6,6 +6,8 @@
 **/.ruff_cache
 **/*.pyc
 **/.env
+aituge_model/config/secrets/*
+!aituge_model/config/secrets/README.md
 **/.proof-data
 runtime
 backups

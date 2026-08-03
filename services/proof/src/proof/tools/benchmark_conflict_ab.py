@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 from pydantic import ValidationError
-from aituge_model_config import ModelRuntimeProvider
+from aituge_model.config import ModelRuntimeProvider
 
 from capabilities.register import ProofConflictItemOutput
 from proof.api.app import _conflict_agent_view

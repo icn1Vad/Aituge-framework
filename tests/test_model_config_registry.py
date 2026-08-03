@@ -3,7 +3,7 @@ from pathlib import Path
 
 import yaml
 
-from aituge_model_config import (
+from aituge_model.config import (
     ModelRuntimeProvider,
     ResolvedLlmModel,
     SecretResolver,
@@ -176,3 +176,27 @@ def test_single_agent_gets_llm_metadata_from_shared_runtime_provider(
     assert resolved.base_url == "https://api.deepseek.com"
     assert resolved.context_window == 110_000
     assert resolved.api_key == "legacy-database-credential"
+
+
+def test_gateway_overlay_routes_all_components_without_exposing_provider_secrets(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("MODEL_GATEWAY_URL", "http://model-gateway:18300/")
+    monkeypatch.setenv("MODEL_GATEWAY_TOKEN", "internal-token")
+    provider = ModelRuntimeProvider.from_environment(
+        secret_dir=tmp_path,
+        secret_overrides={},
+    )
+
+    llm = provider.resolve_llm(require_credential=True)
+    embedding = provider.resolve_embedding()
+    reranker = provider.resolve_reranker()
+
+    assert llm.base_url == "http://model-gateway:18300/v1"
+    assert embedding.base_url == "http://model-gateway:18300/v1"
+    assert reranker.base_url == "http://model-gateway:18300/v1/reranks"
+    assert llm.api_key == embedding.api_key == reranker.api_key == "internal-token"
+    assert llm.identity_base_url == "https://api.deepseek.com"
+    assert embedding.identity_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert llm.via_gateway and embedding.via_gateway and reranker.via_gateway

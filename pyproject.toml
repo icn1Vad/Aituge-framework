@@ -11,7 +11,7 @@ version = "0.1.0"
 description = "TUGE single-agent, scheduling, tool, RAG, and discussion framework."
 authors = ["AI-tuge"]
 packages = [
-  {include = "aituge_model_config"},
+  {include = "aituge_model"},
   {include = "backend"},
   {include = "api", from = "backend/single-agent"},
   {include = "agent", from = "backend/single-agent"},
@@ -44,6 +44,7 @@ redis = "^6.2.0"
 loguru = "^0.7.3"
 httpx = {extras = ["socks"], version = "^0.28.1"}
 aiohttp = "^3.9.0"
+dnspython = "^2.7.0"
 openai = "^1.0.0"
 llama-index-core = "^0.14.8"
 llama-index-llms-openai = "^0.6.10"

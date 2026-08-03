@@ -42,6 +42,14 @@ class ErrorChunk(TextChunk):
     error_message: str = ""
     exception: str | None = None
     error_type: str = ""
+    retryable: bool = True
+
+
+class ModelInvocationError(RuntimeError):
+    def __init__(self, code: str, message: str, *, retryable: bool = True) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
 
 
 ChatResponseGenerator = AsyncGenerator[TextChunk, None]

@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 
-from aituge_model_config import ModelRuntimeProvider, get_model_pack_for_ai_mode
+from aituge_model.config import ModelRuntimeProvider, get_model_pack_for_ai_mode
 
 from proof.errors import ProofError
 

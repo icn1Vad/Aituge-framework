@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from collections.abc import Callable
 from typing import Optional
 
-from aituge_model_config import ModelRuntimeProvider
+from aituge_model.config import ModelRuntimeProvider
 from common.system_constants import DEFAULT_TENANT_ID
 from data.RAG.tool_retrieval import ToolRetrievalRAG
 from llama_index.core.tools.function_tool import FunctionTool

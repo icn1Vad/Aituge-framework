@@ -9,7 +9,7 @@ description = "Minimal policy ingestion, clause retrieval, and proof tool servic
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "aituge-model-config",
+  "aituge-model",
   "fastapi>=0.115,<1",
   "httpx[socks]>=0.27,<1",
   "pgvector>=0.3,<1",
@@ -29,7 +29,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-aituge-model-config = { path = "../../aituge_model_config" }
+aituge-model = { path = "../../aituge_model" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/proof"]

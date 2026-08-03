@@ -4,7 +4,7 @@ import hmac
 import os
 from typing import Annotated
 
-from aituge_model_config import get_model_pack_for_ai_mode
+from aituge_model.config import get_model_pack_for_ai_mode
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 

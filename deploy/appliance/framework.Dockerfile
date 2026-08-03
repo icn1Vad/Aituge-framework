@@ -21,7 +21,7 @@ RUN poetry install --only main --no-root --no-interaction --no-ansi
 FROM dependencies AS runtime
 
 COPY backend/ ./backend/
-COPY aituge_model_config/ ./aituge_model_config/
+COPY aituge_model/ ./aituge_model/
 COPY frontend/ ./frontend/
 COPY scripts/ ./scripts/
 COPY services/contract/src/ ./services/contract/src/

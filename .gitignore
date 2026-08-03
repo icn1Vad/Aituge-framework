@@ -32,8 +32,8 @@ localdata/*.log
 .env
 *.env
 !*.env.example
-aituge_model_config/secrets/*
-!aituge_model_config/secrets/README.md
+aituge_model/config/secrets/*
+!aituge_model/config/secrets/README.md
 services/contract/.contract-data/
 
 # Nested worktrees

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from aituge_model_config import ModelRuntimeProvider
+from aituge_model.config import ModelRuntimeProvider
 
 from contract.errors import ContractError
 

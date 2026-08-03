@@ -56,6 +56,49 @@ services:
     networks:
       - ai_internal
 
+  model-gateway:
+    image: ai-framework-model-gateway:local
+    build:
+      context: ../..
+      dockerfile: deploy/appliance/model-gateway.Dockerfile
+      network: host
+    restart: unless-stopped
+    environment:
+      MODEL_CONFIG_DIR: /app/aituge_model/config
+      MODEL_SECRET_DIR: /app/aituge_model/config/secrets
+      MODEL_GATEWAY_TOKEN: ${MODEL_GATEWAY_TOKEN}
+      MODEL_GATEWAY_REDIS_HOST: redis
+      MODEL_GATEWAY_REDIS_PORT: "6379"
+      MODEL_GATEWAY_REDIS_PASSWORD: ${REDIS_PASSWORD}
+      MODEL_GATEWAY_REDIS_DB: "0"
+      MODEL_GATEWAY_FALLBACK_DNS: ${MODEL_GATEWAY_FALLBACK_DNS:-223.5.5.5,223.6.6.6}
+      MODEL_GATEWAY_DNS_TTL_SECONDS: ${MODEL_GATEWAY_DNS_TTL_SECONDS:-60}
+      MODEL_GATEWAY_CONNECT_TIMEOUT_SECONDS: ${MODEL_GATEWAY_CONNECT_TIMEOUT_SECONDS:-5}
+      MODEL_GATEWAY_STREAM_IDLE_TIMEOUT_SECONDS: ${MODEL_GATEWAY_STREAM_IDLE_TIMEOUT_SECONDS:-30}
+      MODEL_GATEWAY_MAX_ATTEMPTS: ${MODEL_GATEWAY_MAX_ATTEMPTS:-3}
+      MODEL_GATEWAY_CIRCUIT_FAILURE_THRESHOLD: ${MODEL_GATEWAY_CIRCUIT_FAILURE_THRESHOLD:-5}
+      MODEL_GATEWAY_CIRCUIT_OPEN_SECONDS: ${MODEL_GATEWAY_CIRCUIT_OPEN_SECONDS:-30}
+    ports:
+      - "127.0.0.1:${MODEL_GATEWAY_PORT:-18300}:18300"
+    volumes:
+      - ../../aituge_model/config/secrets:/app/aituge_model/config/secrets:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18300/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks:
+      - ai_internal
+      - model_runtime
+
   proof:
     image: ai-framework-proof:local
     build:
@@ -66,7 +109,9 @@ services:
     env_file:
       - ${PROOF_ENV_FILE:-proof.env}
     environment:
-      MODEL_CONFIG_DIR: /aituge_model_config
+      MODEL_CONFIG_DIR: /aituge_model/config
+      MODEL_GATEWAY_URL: http://model-gateway:18300
+      MODEL_GATEWAY_TOKEN: ${MODEL_GATEWAY_TOKEN}
       MODEL_PACK_ID: ${MODEL_PACK_ID:-api-rerank}
       MODEL_PACK_PUBLIC_ID: ${MODEL_PACK_PUBLIC_ID:-api-rerank}
       MODEL_PACK_PRIVATE_ID: ${MODEL_PACK_PRIVATE_ID:-api-rerank-similarity}
@@ -85,6 +130,8 @@ services:
       - ${AI_FRAMEWORK_RUNTIME_ROOT:-../../runtime}/proof-data:/app/.proof-data
     depends_on:
       postgres:
+        condition: service_healthy
+      model-gateway:
         condition: service_healthy
     healthcheck:
       test:
@@ -134,6 +181,9 @@ services:
       network: host
     restart: unless-stopped
     environment:
+      MODEL_CONFIG_DIR: /aituge_model/config
+      MODEL_GATEWAY_URL: http://model-gateway:18300
+      MODEL_GATEWAY_TOKEN: ${MODEL_GATEWAY_TOKEN}
       CONTRACT_DATABASE_MAX_CONNECTIONS: ${CONTRACT_DATABASE_MAX_CONNECTIONS:-5}
       CONTRACT_DATABASE_CONNECTION_ACQUIRE_TIMEOUT_SECONDS: ${CONTRACT_DATABASE_CONNECTION_ACQUIRE_TIMEOUT_SECONDS:-30}
       CONTRACT_DATABASE_APPLICATION_NAME: ai-contract
@@ -158,6 +208,8 @@ services:
       postgres:
         condition: service_healthy
       framework:
+        condition: service_healthy
+      model-gateway:
         condition: service_healthy
     healthcheck:
       test:
@@ -203,7 +255,9 @@ services:
       PROOF_SERVICE_BASE_URL: http://proof:18100
       SMOKE_SERVICE_BASE_URL: http://smoke:18200
       CONTRACT_SERVICE_BASE_URL: http://ai-contract:18200
-      MODEL_CONFIG_DIR: /app/aituge_model_config
+      MODEL_CONFIG_DIR: /app/aituge_model/config
+      MODEL_GATEWAY_URL: http://model-gateway:18300
+      MODEL_GATEWAY_TOKEN: ${MODEL_GATEWAY_TOKEN}
       MODEL_PACK_ID: ${MODEL_PACK_ID:-api-rerank}
       MODEL_PACK_PUBLIC_ID: ${MODEL_PACK_PUBLIC_ID:-api-rerank}
       MODEL_PACK_PRIVATE_ID: ${MODEL_PACK_PRIVATE_ID:-api-rerank-similarity}
@@ -246,6 +300,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      model-gateway:
         condition: service_healthy
     healthcheck:
       test:

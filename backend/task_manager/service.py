@@ -7,7 +7,7 @@ from dataclasses import asdict
 from typing import Any, AsyncIterator, Optional
 
 from loguru import logger
-from aituge_model_config import ModelRuntimeProvider
+from aituge_model.config import ModelRuntimeProvider
 from sqlalchemy import desc
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
@@ -910,11 +910,12 @@ class TaskManagerService:
         except RunLeaseLost:
             raise
         except Exception as exc:
+            error_code = str(getattr(exc, "code", exc.__class__.__name__))
             error = {
-                "type": exc.__class__.__name__,
+                "type": error_code,
                 "stage": "task_manager",
                 "message": str(exc),
-                "retryable": True,
+                "retryable": bool(getattr(exc, "retryable", True)),
             }
             failed = await self.record_event(
                 task_id=task.id,
@@ -926,7 +927,7 @@ class TaskManagerService:
                 payload=error,
                 step_id="task_finish",
                 step_index=99,
-                error_code=exc.__class__.__name__,
+                error_code=error_code,
             )
             task = await self._finish_task(task.id, status="failed", error=error, outcome="failure")
             yield TaskEventRead.model_validate(failed)

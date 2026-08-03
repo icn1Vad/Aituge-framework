@@ -240,8 +240,9 @@ class ReactAgent:
                         f"LLM stream idle for >{LLM_STREAM_IDLE_TIMEOUT}s (no package received); aborting."
                     )
                     yield ErrorChunk(
-                        error_message=f"模型调用超时：{LLM_STREAM_IDLE_TIMEOUT}s 内未收到任何响应分片。",
-                        error_type="llm_stream_timeout",
+                        error_message="模型服务响应超时，请稍后重试",
+                        delta="模型服务响应超时，请稍后重试",
+                        error_type="MODEL_CONNECT_TIMEOUT",
                     )
                     return
 

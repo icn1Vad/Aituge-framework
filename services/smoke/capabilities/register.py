@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from aituge_model_config import ModelRuntimeProvider
+from aituge_model.config import ModelRuntimeProvider
 
 
 CAPABILITY_ID = "smoke"

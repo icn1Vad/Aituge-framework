@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from aituge_model_config import ModelRuntimeProvider
+from aituge_model.config import ModelRuntimeProvider
 
 from .tools.html_report import create_capability_html_report_bundle
 

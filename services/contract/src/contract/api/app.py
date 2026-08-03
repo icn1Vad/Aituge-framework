@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
-from aituge_model_config import ModelRuntimeProvider, get_model_pack_for_ai_mode
+from aituge_model.config import ModelRuntimeProvider, get_model_pack_for_ai_mode
 
 from contract.api.models import (
     CancelReviewData,
