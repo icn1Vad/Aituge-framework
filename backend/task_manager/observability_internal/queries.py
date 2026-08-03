@@ -263,6 +263,7 @@ class TaskSecurityQueryService:
         event_type: str | None = None,
         level: str | None = None,
         error_code: str | None = None,
+        event_id: str | None = None,
     ) -> InternalTaskEventList:
         from_at, to_at, snapshot_to = _validate_window(
             from_at, to_at, snapshot_to, context.request_id
@@ -272,6 +273,7 @@ class TaskSecurityQueryService:
         stage_id = _optional_filter(stage_id, maximum=80, context=context)
         event_type = _optional_filter(event_type, maximum=80, context=context)
         error_code = _optional_filter(error_code, maximum=120, context=context)
+        event_id = _optional_filter(event_id, maximum=80, context=context)
         if level is not None and level not in {"DEBUG", "INFO", "WARN", "ERROR"}:
             raise invalid_request(context.request_id)
         filters = {
@@ -284,6 +286,7 @@ class TaskSecurityQueryService:
             "eventType": event_type,
             "level": level,
             "errorCode": error_code,
+            "eventId": event_id,
         }
 
         async def load():
@@ -322,6 +325,8 @@ class TaskSecurityQueryService:
                     statement = statement.where(
                         TaskEventEntity.error_code == error_code
                     )
+                if event_id is not None:
+                    statement = statement.where(TaskEventEntity.id == event_id)
                 pairs = list(
                     (
                         await session.exec(
@@ -355,6 +360,28 @@ class TaskSecurityQueryService:
         return _validate_event_list(
             frozen, page.limit, self.snapshots, context.request_id
         )
+
+    async def get_task_event(
+        self,
+        context: InternalAuthContext,
+        event_id: str,
+    ) -> InternalTaskEvent:
+        event_id = _required_identifier(
+            event_id, maximum=80, request_id=context.request_id
+        )
+        async with create_db_session() as session:
+            event = await session.get(TaskEventEntity, event_id)
+            if event is None:
+                raise invisible(context.request_id, exists=False)
+            task = await session.get(TaskEntity, event.task_id)
+            if task is None:
+                raise invalid_source(context.request_id)
+            if not context.permits_tenant(task.tenant_id):
+                raise invisible(context.request_id, exists=True)
+            await _validate_event_relationships(
+                session, [event], {task.id: task}, context.request_id
+            )
+        return _event_dto(event, task, context.request_id)
 
     async def list_run_stages(
         self,

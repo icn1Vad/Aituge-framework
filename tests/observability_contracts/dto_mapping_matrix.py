@@ -385,9 +385,4 @@ DTO_MAPPING_MATRIX = {
 }
 
 
-KNOWN_FROZEN_SCHEMA_GAPS = {
-    ("SECURITY_EVENT", "sourceIpMasked", "sourceIpMasked"): (
-        "frozen 04 caps sourceIpMasked at 64 although registered "
-        "hmac-sha256 plus digest is 76 characters"
-    ),
-}
+KNOWN_FROZEN_SCHEMA_GAPS: dict[tuple[str, str, str], str] = {}

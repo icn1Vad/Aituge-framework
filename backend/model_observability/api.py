@@ -35,6 +35,7 @@ from .schemas import (
     ErrorResponse,
     InternalModelEventList,
     InternalModelInvocationDetail,
+    InternalModelInvocationEvent,
     InternalModelInvocationList,
     InternalModelSummary,
 )
@@ -254,6 +255,7 @@ def create_model_observability_router(
         run_id: str | None = Query(default=None, alias="runId", min_length=1, max_length=80, pattern=_SAFE_FILTER_PATTERN),
         logical_call_id: str | None = Query(default=None, alias="logicalCallId", min_length=1, max_length=80, pattern=_SAFE_FILTER_PATTERN),
         invocation_id: str | None = Query(default=None, alias="invocationId", min_length=1, max_length=80, pattern=_SAFE_FILTER_PATTERN),
+        event_id: str | None = Query(default=None, alias="eventId", min_length=1, max_length=80, pattern=_SAFE_FILTER_PATTERN),
         event_type: ModelInvocationEventType | None = Query(default=None, alias="eventType"),
         scope_token: str = Header(
             alias="X-Observability-Scope", min_length=20, max_length=4096
@@ -283,6 +285,7 @@ def create_model_observability_router(
                         run_id=run_id,
                         logical_call_id=logical_call_id,
                         invocation_id=invocation_id,
+                        event_id=event_id,
                         event_type=event_type.value if event_type else None,
                     ),
                     high_watermark=high_watermark,
@@ -298,6 +301,49 @@ def create_model_observability_router(
         **_ERROR_RESPONSES,
         404: {"model": ErrorResponse, "description": "资源不存在或 Scope 不可见"},
     }
+
+    @router.get(
+        "/model-invocation-events/{eventId}",
+        operation_id="internalGetModelInvocationEvent",
+        response_model=InternalModelInvocationEvent,
+        responses=detail_responses,
+        openapi_extra={"x-mtls-required": True, "x-detail-consistency": "LATEST"},
+    )
+    async def get_model_invocation_event(
+        request: Request,
+        response: Response,
+        event_id: str = Path(
+            alias="eventId",
+            min_length=1,
+            max_length=80,
+            pattern=_SAFE_FILTER_PATTERN,
+        ),
+        scope_token: str = Header(
+            alias="X-Observability-Scope", min_length=20, max_length=4096
+        ),
+        request_id: str = Header(alias="X-Request-ID"),
+        traceparent: str | None = Header(default=None),
+        deadline_ms: int = Header(
+            alias="X-Request-Deadline-Ms", ge=100, le=5000
+        ),
+    ) -> InternalModelInvocationEvent:
+        safe_request_id = _safe_response_request_id(request_id)
+        del traceparent
+        try:
+            async with asyncio.timeout(deadline_ms / 1000):
+                scope = await authorizer.authorize(
+                    request=request,
+                    scope_token=scope_token,
+                    request_id=safe_request_id,
+                )
+                result = await query_service.get_event(
+                    scope=scope,
+                    event_id=event_id,
+                )
+            _set_protected_headers(response, safe_request_id)
+            return result
+        except Exception as exc:
+            return _to_error_response(exc, safe_request_id)
 
     @router.get(
         "/model-invocations/{invocationId}",

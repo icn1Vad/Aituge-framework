@@ -16,11 +16,13 @@ INTERNAL_TO_EXTERNAL = {
     "/tasks/{taskId}/timeline": {"/tasks/{taskId}/timeline", "/timeline"},
     "/task-events": {"/events", "/timeline"},
     "/runs/{runId}/stages": {"/runs/{runId}/stages"},
+    "/task-events/{eventId}": {"/events/{source}/{eventId}"},
     "/runs/{runId}/events": {"/runs/{runId}/events", "/timeline"},
     "/runs/{runId}/events/stream": {"/runs/{runId}/events/stream"},
     "/model-invocations": {"/model-invocations"},
     "/model-invocation-events": {"/events", "/timeline"},
     "/model-invocations/{invocationId}": {"/model-invocations/{invocationId}"},
+    "/model-invocation-events/{eventId}": {"/events/{source}/{eventId}"},
     "/model-summary": {"/model-summary"},
     "/security-events": {"/security-events"},
     "/security-events/{eventId}": {"/security-events/{eventId}"},
@@ -195,13 +197,6 @@ def test_unified_event_routes_cannot_select_security_or_runtime(
     assert set(path_source) == set(source["enum"])
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "冻结契约 P0：外部统一事件详情允许 TASK_EVENT/MODEL_EVENT，"
-        "内部事件列表没有 eventId 精确过滤，也没有对应详情 Path"
-    ),
-)
 def test_event_detail_mapping_has_exact_internal_lookup(
     external_spec: dict,
     internal_spec: dict,
@@ -219,6 +214,13 @@ def test_event_detail_mapping_has_exact_internal_lookup(
             names.add(parameter["name"])
         assert "eventId" in names
 
+    for path in ["/task-events/{eventId}", "/model-invocation-events/{eventId}"]:
+        names = set()
+        for parameter in internal_spec["paths"][path]["get"].get("parameters", []):
+            if "$ref" in parameter:
+                parameter = resolve_local_ref(internal_spec, parameter["$ref"])
+            names.add(parameter["name"])
+        assert "eventId" in names
 
 def _resolved_schema(document: dict, schema: dict) -> dict:
     while "$ref" in schema:

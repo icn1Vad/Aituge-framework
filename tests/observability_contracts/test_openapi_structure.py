@@ -20,7 +20,7 @@ HTTP_METHODS = {"get", "post", "put", "patch", "delete", "options", "head"}
     ("fixture_name", "expected_paths", "expected_operations"),
     [
         ("external_spec", 25, 25),
-        ("internal_spec", 13, 13),
+        ("internal_spec", 15, 15),
     ],
 )
 def test_frozen_operation_inventory(
@@ -115,13 +115,6 @@ def test_cross_tenant_rows_require_tenant_id(external_spec: dict) -> None:
     assert "tenantId" in schemas["ModelInvocationSummary"]["required"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "冻结契约缺陷：hmac-sha256: 前缀加 64 位摘要共 76 字符，"
-        "04 响应字段与 06 查询参数仍限制 64"
-    ),
-)
 def test_masked_source_ip_schema_accepts_hmac_sha256(
     external_spec: dict,
     internal_spec: dict,

@@ -134,6 +134,7 @@ paths:
         - {name: taskId, in: query, schema: {type: string}}
         - {name: runId, in: query, schema: {type: string}}
         - {name: stageId, in: query, schema: {type: string}}
+        - {name: eventId, in: query, schema: {type: string}}
         - {name: eventType, in: query, schema: {type: string}}
         - {name: level, in: query, schema: {type: string, enum: [DEBUG, INFO, WARN, ERROR]}}
         - {name: errorCode, in: query, schema: {type: string}}
@@ -147,6 +148,7 @@ paths:
         '503': {$ref: '#/components/responses/Unavailable'}
 
   /runs/{runId}/stages:
+
     get:
       tags: [Tasks]
       summary: 查询 Run Stage
@@ -173,6 +175,33 @@ paths:
         '500': {$ref: '#/components/responses/InternalError'}
         '503': {$ref: '#/components/responses/Unavailable'}
 
+  /task-events/{eventId}:
+    get:
+      tags: [Tasks]
+      summary: 获取 Task Event 详情
+      operationId: internalGetTaskEvent
+      x-mtls-required: true
+      x-detail-consistency: LATEST
+      parameters:
+        - $ref: '#/components/parameters/ScopeToken'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+        - $ref: '#/components/parameters/DeadlineMs'
+        - {name: eventId, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: 结构化 Task Event 详情
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/InternalTaskEvent'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFoundOrInvisible'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
   /runs/{runId}/events:
     get:
       tags: [Tasks]
@@ -307,6 +336,7 @@ paths:
         - {name: runId, in: query, schema: {type: string}}
         - {name: logicalCallId, in: query, schema: {type: string}}
         - {name: invocationId, in: query, schema: {type: string}}
+        - {name: eventId, in: query, schema: {type: string}}
         - {name: eventType, in: query, schema: {type: string}}
       responses:
         '200': {$ref: '#/components/responses/ModelEventList'}
@@ -318,6 +348,7 @@ paths:
         '503': {$ref: '#/components/responses/Unavailable'}
 
   /model-invocations/{invocationId}:
+
     get:
       tags: [Models]
       summary: 获取 invocation 投影和完整生命周期事件
@@ -346,6 +377,33 @@ paths:
         '500': {$ref: '#/components/responses/InternalError'}
         '503': {$ref: '#/components/responses/Unavailable'}
 
+  /model-invocation-events/{eventId}:
+    get:
+      tags: [Models]
+      summary: 获取模型生命周期事件详情
+      operationId: internalGetModelInvocationEvent
+      x-mtls-required: true
+      x-detail-consistency: LATEST
+      parameters:
+        - $ref: '#/components/parameters/ScopeToken'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+        - $ref: '#/components/parameters/DeadlineMs'
+        - {name: eventId, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: 结构化模型生命周期事件详情
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/InternalModelInvocationEvent'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFoundOrInvisible'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
   /model-summary:
     get:
       tags: [Models]
@@ -410,7 +468,7 @@ paths:
         - {name: subjectType, in: query, schema: {type: string}}
         - {name: subjectId, in: query, schema: {type: string}}
         - {name: reasonCode, in: query, schema: {type: string}}
-        - {name: sourceIpMasked, in: query, schema: {type: string, maxLength: 64}}
+        - {name: sourceIpMasked, in: query, schema: {type: string, maxLength: 80}}
         - {name: crossTenant, in: query, schema: {type: boolean}}
         - {name: auditActionId, in: query, schema: {type: string}}
         - {name: accessSessionId, in: query, schema: {type: string}}
@@ -766,7 +824,7 @@ components:
         missingContextReason: {type: string, nullable: true, description: tenant、actor 或 subject 缺失时必须说明原因；禁止空对象占位}
         crossTenant: {type: boolean}
         reasonCode: {type: string, nullable: true}
-        sourceIpMasked: {type: string, nullable: true}
+        sourceIpMasked: {type: string, nullable: true, maxLength: 80}
         requestId: {type: string, nullable: true}
         traceId: {type: string, nullable: true}
         outcome: {$ref: '#/components/schemas/Outcome'}

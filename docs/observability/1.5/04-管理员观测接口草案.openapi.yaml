@@ -440,7 +440,7 @@ paths:
         - {name: subjectType, in: query, schema: {type: string}}
         - {name: subjectId, in: query, schema: {type: string}}
         - {name: reasonCode, in: query, schema: {type: string}}
-        - {name: sourceIpMasked, in: query, schema: {type: string, maxLength: 64}}
+        - {name: sourceIpMasked, in: query, schema: {type: string, maxLength: 80}}
         - {name: auditActionId, in: query, schema: {type: string}}
         - {name: accessSessionId, in: query, schema: {type: string}}
         - {name: auditLayer, in: query, schema: {$ref: '#/components/schemas/AuditLayer'}}
@@ -1441,7 +1441,7 @@ components:
         missingContextReason: {type: string, nullable: true, description: tenant、actor 或 subject 缺失时说明原因；禁止用空对象占位}
         crossTenant: {type: boolean}
         reasonCode: {type: string, nullable: true}
-        sourceIpMasked: {type: string, nullable: true, maxLength: 64}
+        sourceIpMasked: {type: string, nullable: true, maxLength: 80}
         outcome: {$ref: '#/components/schemas/Outcome'}
         errorCode: {type: string, nullable: true}
         displayCode: {type: string}

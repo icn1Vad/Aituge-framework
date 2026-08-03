@@ -120,6 +120,7 @@ class ModelEventFilters:
     run_id: str | None = None
     logical_call_id: str | None = None
     invocation_id: str | None = None
+    event_id: str | None = None
     event_type: str | None = None
 
 
@@ -303,6 +304,23 @@ class ModelInvocationQueryService:
             ),
             watermark=_watermark(page),
         )
+
+    async def get_event(
+        self,
+        *,
+        scope: ModelQueryScope,
+        event_id: str,
+    ) -> InternalModelInvocationEvent:
+        scope.validate()
+        _validate_filter_value("event_id", event_id)
+        async with self._session_factory() as session:
+            event = await ModelInvocationRepository(session).get_event(event_id)
+        if event is None or (
+            not scope.all_tenants
+            and event.tenant_id not in scope.canonical_tenant_ids
+        ):
+            raise InvocationNotFoundError(event_id)
+        return _event_to_schema(event)
 
     async def get_invocation(
         self,
@@ -849,6 +867,7 @@ def _validate_event_filters(filters: ModelEventFilters) -> None:
         "run_id",
         "logical_call_id",
         "invocation_id",
+        "event_id",
         "event_type",
     ):
         _validate_filter_value(name, values[name])

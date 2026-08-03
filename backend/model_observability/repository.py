@@ -869,6 +869,14 @@ class ModelInvocationRepository:
             result.append(item)
         return result
 
+    async def get_event(
+        self, event_id: str
+    ) -> ModelInvocationEventEntity | None:
+        statement = select(ModelInvocationEventEntity).where(
+            ModelInvocationEventEntity.event_id == event_id
+        )
+        return (await self.session.execute(statement)).scalar_one_or_none()
+
     async def query_events(
         self,
         *,
@@ -882,6 +890,7 @@ class ModelInvocationRepository:
         run_id: str | None = None,
         logical_call_id: str | None = None,
         invocation_id: str | None = None,
+        event_id: str | None = None,
         event_type: str | None = None,
     ) -> list[ModelInvocationEventEntity]:
         _validate_tenant_scope(tenant_ids, all_tenants)
@@ -899,6 +908,7 @@ class ModelInvocationRepository:
             ModelInvocationEventEntity.run_id: run_id,
             ModelInvocationEventEntity.logical_call_id: logical_call_id,
             ModelInvocationEventEntity.invocation_id: invocation_id,
+            ModelInvocationEventEntity.event_id: event_id,
             ModelInvocationEventEntity.event_type: event_type,
         }
         conditions.extend(column == value for column, value in optional.items() if value is not None)

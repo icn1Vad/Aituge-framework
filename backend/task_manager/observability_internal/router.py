@@ -26,6 +26,7 @@ from .schemas import (
     InternalSecurityEvent,
     InternalSecurityEventList,
     InternalStageList,
+    InternalTaskEvent,
     InternalTask,
     InternalTaskEventList,
     InternalTaskList,
@@ -483,6 +484,7 @@ def create_task_security_observability_router(
         event_type: str | None = Query(default=None, alias="eventType", max_length=80),
         level: Literal["DEBUG", "INFO", "WARN", "ERROR"] | None = None,
         error_code: str | None = Query(default=None, alias="errorCode", max_length=120),
+        event_id: str | None = Query(default=None, alias="eventId", max_length=80),
     ):
         context = await authorize(request, VIEW_PERMISSIONS)
         result = await audited(
@@ -503,7 +505,32 @@ def create_task_security_observability_router(
                 event_type=event_type,
                 level=level,
                 error_code=error_code,
+                event_id=event_id,
             ),
+        )
+        return _success(result, context.request_id)
+
+    @router.get(
+        "/task-events/{eventId}",
+        tags=["Tasks"],
+        summary="查询任务事件详情",
+        operation_id="internalGetTaskEvent",
+        response_model=InternalTaskEvent,
+        responses=_responses(401, 403, 404, 429, 500, 503),
+        openapi_extra={**MTLS, "x-detail-consistency": "LATEST"},
+    )
+    async def get_task_event(
+        request: Request,
+        eventId: str = Path(min_length=1, max_length=80),
+    ):
+        context = await authorize(request, DETAIL_PERMISSIONS)
+        result = await audited(
+            context,
+            action="OBSERVABILITY_TASK_EVENT_DETAIL",
+            subject_type="TASK_EVENT",
+            subject_id=eventId,
+            sensitive=True,
+            operation=lambda: queries.get_task_event(context, eventId),
         )
         return _success(result, context.request_id)
 
@@ -654,7 +681,7 @@ def create_task_security_observability_router(
             default=None, alias="reasonCode", max_length=80
         ),
         source_ip_masked: str | None = Query(
-            default=None, alias="sourceIpMasked", max_length=64
+            default=None, alias="sourceIpMasked", max_length=80
         ),
         cross_tenant: bool | None = Query(default=None, alias="crossTenant"),
         audit_action_id: str | None = Query(

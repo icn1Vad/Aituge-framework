@@ -113,6 +113,24 @@ class _SuccessfulQueryService:
             "events": [],
         }
 
+    async def get_event(self, **_kwargs):
+        return {
+            "eventId": "model-event-success",
+            "eventType": "MODEL_INVOCATION_SUCCEEDED",
+            "logicalCallId": "call-success",
+            "invocationId": "inv-success",
+            "attemptNo": 1,
+            "tenantId": "tenant-a",
+            "featureCode": "contract.review",
+            "occurredAt": "2026-07-31T12:00:00Z",
+            "ingestedAt": "2026-07-31T12:00:00Z",
+            "outcome": "SUCCESS",
+            "dispatchStatus": "DISPATCHED",
+            "provider": "deepseek",
+            "modelName": "deepseek-v4-pro",
+            "privacyMode": "PRIVATE",
+            "routeType": "EXTERNAL",
+        }
 
 def _unexpected_session_factory():
     raise AssertionError("sensitive input must be rejected before database access")
@@ -139,6 +157,7 @@ def test_router_factory_matches_frozen_model_paths_without_registering_itself() 
         "/internal/observability/v1/model-invocations",
         "/internal/observability/v1/model-invocation-events",
         "/internal/observability/v1/model-invocations/{invocationId}",
+        "/internal/observability/v1/model-invocation-events/{eventId}",
         "/internal/observability/v1/model-summary",
     }
 
@@ -153,12 +172,14 @@ def test_router_factory_matches_frozen_model_paths_without_registering_itself() 
         "/internal/observability/v1/model-invocations",
         "/internal/observability/v1/model-invocation-events",
         "/internal/observability/v1/model-invocations/{invocationId}",
+        "/internal/observability/v1/model-invocation-events/{eventId}",
         "/internal/observability/v1/model-summary",
     }
     expected_operation_ids = {
         "/internal/observability/v1/model-invocations": "internalListModelInvocations",
         "/internal/observability/v1/model-invocation-events": "internalListModelInvocationEvents",
         "/internal/observability/v1/model-invocations/{invocationId}": "internalGetModelInvocation",
+        "/internal/observability/v1/model-invocation-events/{eventId}": "internalGetModelInvocationEvent",
         "/internal/observability/v1/model-summary": "internalGetModelSummary",
     }
     assert {
