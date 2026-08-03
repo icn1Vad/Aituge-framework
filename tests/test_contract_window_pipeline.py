@@ -284,6 +284,23 @@ def _pipeline_request(count: int = 4, *, source: str = "履行事项") -> Window
     )
 
 
+def _single_window_request(
+    source_text: str,
+    *,
+    heading_path: list[str],
+    clause_nos: list[str],
+) -> WindowPipelineRequest:
+    request = _pipeline_request(count=1, source="placeholder")
+    window = request.windows[0]
+    window.source_text = source_text
+    window.heading_path = heading_path
+    window.clause_nos = clause_nos
+    window.offset_map[0].rendered_end = len(source_text)
+    window.offset_map[0].block_char_end = len(source_text)
+    request.expected_blocks[0].text_length = len(source_text)
+    return request
+
+
 @pytest.mark.asyncio
 async def test_pipeline_runs_rolling_concurrency_ten_and_retries_only_failed_window() -> None:
     extractor = FakePipelineExtractor(fail_first={"window-002"})
@@ -539,6 +556,106 @@ async def test_pipeline_accepts_reviewed_empty_non_business_window() -> None:
     assert result.retry_count == 0
     assert result.semantic_ir.obligations == []
     assert result.coverage.valid is True
+
+
+@pytest.mark.asyncio
+async def test_pipeline_ignores_document_title_cues_before_current_clause_body() -> None:
+    source_text = "\n\n".join(
+        (
+            "\u5e76\u53d1\u6d4b\u8bd5\u6837\u672c C03-R2 | \u4ed8\u6b3e\u9a8c\u6536\u98ce\u9669",
+            "\u5408\u540c\u91d1\u989d/\u79df\u91d1 | \u6bcf\u6708\u79df\u91d1\u4eba\u6c11\u5e01 186,000 \u5143\uff08\u542b\u7a0e\uff09",
+            "\u7b2c\u4e00\u6761 \u79df\u8d41\u6807\u7684",
+            "1.1 \u79df\u8d41\u9762\u79ef\u4e3a\u5efa\u7b51\u9762\u79ef 2,100 \u5e73\u65b9\u7c73\u3002",
+            "1.2 \u7532\u65b9\u4fdd\u8bc1\u5bf9\u79df\u8d41\u623f\u5c4b\u62e5\u6709\u5408\u6cd5\u51fa\u79df\u6743\u3002",
+        )
+    )
+    extractor = FakePipelineExtractor()
+
+    result = await ContractIrWindowPipeline(extractor=extractor).run(
+        _single_window_request(
+            source_text,
+            heading_path=["\u7b2c\u4e00\u6761 \u79df\u8d41\u6807\u7684"],
+            clause_nos=["\u7b2c\u4e00\u6761"],
+        ),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    assert extractor.call_counts == {"window-001": 1}
+    assert result.retry_count == 0
+    assert result.coverage.valid is True
+
+
+@pytest.mark.asyncio
+async def test_pipeline_allows_empty_signature_only_window() -> None:
+    source_text = "\n\n".join(
+        (
+            "\u7b7e\u7f72\u9875",
+            "\u7532\u65b9\uff1a\u661f\u6cb3\u667a\u9020\u6709\u9650\u516c\u53f8 | \u4e59\u65b9\uff1a\u4e91\u5c9a\u6570\u79d1\u6709\u9650\u516c\u53f8",
+            "\u6388\u6743\u4ee3\u8868\uff1a____________ | \u6388\u6743\u4ee3\u8868\uff1a____________",
+            "\u7b7e\u7f72\u65e5\u671f\uff1a____\u5e74__\u6708__\u65e5 | \u7b7e\u7f72\u65e5\u671f\uff1a____\u5e74__\u6708__\u65e5",
+            "\uff08\u76d6\u7ae0\uff09 | \uff08\u76d6\u7ae0\uff09",
+        )
+    )
+    extractor = FakePipelineExtractor(empty=True)
+
+    result = await ContractIrWindowPipeline(extractor=extractor).run(
+        _single_window_request(
+            source_text,
+            heading_path=["\u7b7e\u7f72\u9875"],
+            clause_nos=[],
+        ),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    assert extractor.call_counts == {"window-001": 1}
+    assert result.retry_count == 0
+    assert result.coverage.valid is True
+
+
+@pytest.mark.asyncio
+async def test_pipeline_keeps_real_acceptance_clause_strict() -> None:
+    extractor = FakePipelineExtractor()
+
+    with pytest.raises(WindowPipelineError) as exc_info:
+        await ContractIrWindowPipeline(extractor=extractor).run(
+            _single_window_request(
+                "\u7b2c\u516d\u6761 \u9a8c\u6536\n\u7532\u65b9\u5e94\u5f53\u5b8c\u6210\u9a8c\u6536\u3002",
+                heading_path=["\u7b2c\u516d\u6761 \u9a8c\u6536"],
+                clause_nos=["\u7b2c\u516d\u6761"],
+            ),
+            tenant_id="tenant-001",
+            model_id="contract-model",
+        )
+
+    assert exc_info.value.code == "WINDOW_EXTRACTION_FAILED"
+    assert extractor.call_counts == {"window-001": 2}
+    attempts = exc_info.value.details["windows"][0]["attempts"]
+    assert attempts[0]["status"] == "SUSPICIOUS_CATEGORY"
+    assert "ACCEPTANCE" in attempts[0]["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_keeps_substantive_signature_window_strict() -> None:
+    extractor = FakePipelineExtractor(empty=True)
+
+    with pytest.raises(WindowPipelineError) as exc_info:
+        await ContractIrWindowPipeline(extractor=extractor).run(
+            _single_window_request(
+                "\u7b7e\u7f72\u9875\n\u7532\u65b9\uff1a\u672c\u5408\u540c\u7b7e\u7f72\u540e\u5e94\u652f\u4ed8\u670d\u52a1\u8d39\u3002",
+                heading_path=["\u7b7e\u7f72\u9875"],
+                clause_nos=[],
+            ),
+            tenant_id="tenant-001",
+            model_id="contract-model",
+        )
+
+    assert exc_info.value.code == "WINDOW_EXTRACTION_FAILED"
+    assert extractor.call_counts == {"window-001": 2}
+    attempt = exc_info.value.details["windows"][0]["attempts"][0]
+    assert attempt["status"] == "SUSPICIOUS_CATEGORY"
+    assert "PAYMENT" in attempt["error_message"]
 
 
 @pytest.mark.asyncio

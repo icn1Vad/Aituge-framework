@@ -68,6 +68,22 @@ _CATEGORY_CUES = {
     "DATE": EXPLICIT_DATE_PATTERN,
     "AMOUNT": EXPLICIT_AMOUNT_PATTERN,
 }
+_SIGNATURE_WINDOW_HEADING = re.compile(r"签署|签字|签章|盖章")
+_SIGNATURE_FIELD = re.compile(
+    r"^(?:"
+    r"(?:签署|签字|签章|盖章)页"
+    r"|(?:甲|乙|丙|丁)方(?:[（(][^（）()]+[）)])?\s*[:：].*"
+    r"|(?:法定代表人|授权代表|签署日期|日期)\s*[:：].*"
+    r"|(?:法定代表人|授权代表)(?:[（(](?:签字|签章)[）)])?"
+    r"|[（(](?:盖章|签章|签字)[）)]"
+    r"|[（(]?以下无正文[）)]?"
+    r")$"
+)
+_SIGNATURE_FIELD_SEPARATOR = re.compile(r"[|｜]")
+_SIGNATURE_SUBSTANTIVE_CUES = re.compile(
+    r"付款|支付|价款|费用|交付|验收|违约|赔偿|责任|解除|终止|保密|"
+    r"知识产权|争议|仲裁|诉讼|权利|义务|应当|必须|不得|有权|承担|约定|生效|履行|期限"
+)
 
 
 class StrictModel(BaseModel):
@@ -628,7 +644,9 @@ def _validate_structural_coverage(request: WindowPipelineRequest) -> PipelineCov
 
 
 def _is_suspicious_empty(window: PipelineWindowInput) -> bool:
-    searchable = "\n".join([*window.heading_path, *window.clause_nos, window.source_text])
+    if _is_signature_only_window(window):
+        return False
+    searchable = _validation_text(window)
     return _CRITICAL_CONTENT.search(searchable) is not None
 
 
@@ -642,12 +660,49 @@ def _missing_expected_categories(
 
 
 def _expected_categories(window: PipelineWindowInput) -> list[str]:
-    searchable = "\n".join([*window.heading_path, *window.clause_nos, window.source_text])
+    searchable = _validation_text(window)
     return [
         category
         for category, pattern in _CATEGORY_CUES.items()
         if pattern.search(searchable) is not None
     ]
+
+
+def _validation_text(window: PipelineWindowInput) -> str:
+    """Return clause text for semantic validation without document preamble metadata."""
+
+    source_text = window.source_text
+    anchors = [*reversed(window.heading_path), *window.clause_nos]
+    for anchor in anchors:
+        normalized_anchor = " ".join(anchor.split())
+        if not normalized_anchor:
+            continue
+        for match in re.finditer(r"(?m)^[^\n]*$", source_text):
+            normalized_line = " ".join(match.group(0).split())
+            if normalized_line == normalized_anchor or normalized_line.startswith(
+                f"{normalized_anchor} "
+            ):
+                return source_text[match.start() :]
+    # Preserve the prior behavior when the planner does not expose a usable
+    # heading anchor; only verified clause starts are allowed to trim text.
+    return "\n".join([*window.heading_path, *window.clause_nos, source_text])
+
+
+def _is_signature_only_window(window: PipelineWindowInput) -> bool:
+    """Allow an empty result only for a window that contains signing fields alone."""
+
+    heading_text = "\n".join(window.heading_path)
+    if _SIGNATURE_WINDOW_HEADING.search(heading_text) is None:
+        return False
+    if _SIGNATURE_SUBSTANTIVE_CUES.search(window.source_text) is not None:
+        return False
+    fields = [
+        " ".join(fragment.split())
+        for line in window.source_text.splitlines()
+        for fragment in _SIGNATURE_FIELD_SEPARATOR.split(line)
+        if fragment.strip()
+    ]
+    return bool(fields) and all(_SIGNATURE_FIELD.fullmatch(field) for field in fields)
 
 
 def _map_extraction(
