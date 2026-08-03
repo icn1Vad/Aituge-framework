@@ -1,0 +1,55 @@
+{
+	auto_https off
+	admin off
+}
+
+:80 {
+	log {
+		output stdout
+		format filter {
+			request>uri delete
+			request>headers delete
+			request>host delete
+			request>remote_ip delete
+			request>remote_port delete
+			request>method delete
+			request>client_ip delete
+			wrap json
+		}
+	}
+	@admin path /monitor/observability /monitor/observability/*
+	header @admin {
+		Cache-Control "no-store, private"
+		Referrer-Policy "no-referrer"
+		Vary "Authorization"
+	}
+
+	@eventStream path_regexp event_stream ^/monitor/observability/runs/[^/]+/events/stream$
+	handle @eventStream {
+		header {
+			Cache-Control "no-cache, no-store, private"
+			Referrer-Policy "no-referrer"
+			Vary "Authorization"
+			X-Accel-Buffering "no"
+		}
+		reverse_proxy java:18000 {
+			flush_interval -1
+			stream_timeout 30m
+			stream_close_delay 5m
+		}
+	}
+
+	@continew path /business/* /auth/* /captcha/* /system/* /user/* /tenant/* /monitor/*
+	handle @continew {
+		reverse_proxy java:18000
+	}
+
+	handle {
+		reverse_proxy frontnew-test:3000
+	}
+}
+
+:8082 {
+	encode zstd gzip
+	reverse_proxy onlyoffice:80
+}

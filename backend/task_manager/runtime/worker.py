@@ -20,6 +20,7 @@ from db.db_context import (
     init_db,
     reset_database_pool_metrics,
 )
+from backend.observability_integration import assert_observability_schema_if_required
 from scheduling.agent_registry import ensure_default_agent_profiles
 from scheduling.scheduler import SchedulingRuntimeOptions
 from skill import ensure_default_skill_packages
@@ -303,6 +304,7 @@ def build_worker_options() -> SchedulingRuntimeOptions:
 
 async def main() -> None:
     await init_db()
+    await assert_observability_schema_if_required()
     # Registries are process-local. A standalone Worker must load the same
     # capabilities, Agent profiles, and Skill packages as the API process
     # before it can execute a persisted Run.

@@ -1,0 +1,920 @@
+openapi: 3.0.3
+info:
+  title: Java-Python 内部观测 API
+  version: 0.6.0-draft
+  description: |
+    当前环境 Java 查询当前环境 Python Task、Run、模型投影、模型生命周期和安全事件。
+    测试与正式分别部署，不接受 environment 查询参数。入口必须在网关、Service Mesh
+    或应用 TLS 层实际启用 mTLS；x-mtls-required 只是契约标记，代码生成不会自动启用 TLS。
+servers:
+  - url: /internal/observability/v1
+    description: 当前环境 Python Framework 内部地址
+security:
+  - serviceBearer: []
+x-observability-capability-policy:
+  sensitiveNames: [X-Observability-Scope, cursor, highWatermark, traceparent]
+  accessLogReplacement: '[REDACTED]'
+  description: Python、内部网关、APM 和 Loki 不得记录 Scope Token、高水位句柄或完整调用 URL
+tags:
+  - {name: Tasks}
+  - {name: Models}
+  - {name: Security}
+
+paths:
+  /tasks:
+    get:
+      tags: [Tasks]
+      summary: 查询 Python Task
+      operationId: internalListTasks
+      x-mtls-required: true
+      x-fixed-sort:
+        - {field: createdAt, direction: DESC}
+        - {field: taskId, direction: DESC}
+      description: 首次查询由 Python 物化短期有界结果清单，冻结有序 taskId、projectionVersion 和返回摘要；highWatermark 引用该清单，后续页不得重查可变状态表。
+      parameters:
+        - $ref: '#/components/parameters/ScopeToken'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+        - $ref: '#/components/parameters/DeadlineMs'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/SnapshotTo'
+        - $ref: '#/components/parameters/HighWatermark'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - {name: featureCode, in: query, schema: {type: string}}
+        - {name: status, in: query, schema: {type: string}}
+        - {name: errorCode, in: query, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/TaskList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /tasks/{taskId}:
+    get:
+      tags: [Tasks]
+      summary: 获取 Task 详情
+      operationId: internalGetTask
+      x-mtls-required: true
+      x-detail-consistency: LATEST
+      description: 返回最新 Task 投影及 projectionVersion/dataAsOf；不提供列表快照的 as-of 详情。
+      parameters:
+        - $ref: '#/components/parameters/ScopeToken'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+        - $ref: '#/components/parameters/DeadlineMs'
+        - {name: taskId, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: 完整 Task 详情
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/InternalTask'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFoundOrInvisible'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /tasks/{taskId}/timeline:
+    get:
+      tags: [Tasks]
+      summary: 获取 Task/Run/Stage 时间线
+      operationId: internalGetTaskTimeline
+      x-mtls-required: true
+      x-fixed-sort:
+        - {field: sequence, direction: ASC}
+        - {field: eventId, direction: ASC}
+      parameters:
+        - $ref: '#/components/parameters/ScopeToken'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+        - $ref: '#/components/parameters/DeadlineMs'
+        - {name: taskId, in: path, required: true, schema: {type: string}}
+        - $ref: '#/components/parameters/SnapshotTo'
+        - $ref: '#/components/parameters/HighWatermark'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200': {$ref: '#/components/responses/TaskEventList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFoundOrInvisible'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /task-events:
+    get:
+      tags: [Tasks]
+      summary: 全局查询 Task Event，支撑外部统一事件中心
+      operationId: internalListTaskEvents
+      x-mtls-required: true
+      x-fixed-sort:
+        - {field: occurredAt, direction: DESC}
+        - {field: eventId, direction: DESC}
+      parameters:
+        - $ref: '#/components/parameters/ScopeToken'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+        - $ref: '#/components/parameters/DeadlineMs'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/SnapshotTo'
+        - $ref: '#/components/parameters/HighWatermark'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - {name: taskId, in: query, schema: {type: string}}
+        - {name: runId, in: query, schema: {type: string}}
+        - {name: stageId, in: query, schema: {type: string}}
+        - {name: eventType, in: query, schema: {type: string}}
+        - {name: level, in: query, schema: {type: string, enum: [DEBUG, INFO, WARN, ERROR]}}
+        - {name: errorCode, in: query, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/TaskEventList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /runs/{runId}/stages:
+    get:
+      tags: [Tasks]
+      summary: 查询 Run Stage
+      operationId: internalListRunStages
+      x-mtls-required: true
+      parameters:
+        - $ref: '#/components/parameters/ScopeToken'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+        - $ref: '#/components/parameters/DeadlineMs'
+        - {name: runId, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Stage 列表
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/InternalStageList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFoundOrInvisible'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /runs/{runId}/events:
+    get:
+      tags: [Tasks]
+      summary: 查询 Run Task Event
+      operationId: internalListRunEvents
+      x-mtls-required: true
+      x-fixed-sort:
+        - {field: sequence, direction: ASC}
+        - {field: eventId, direction: ASC}
+      parameters:
+        - $ref: '#/components/parameters/ScopeToken'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+        - $ref: '#/components/parameters/DeadlineMs'
+        - {name: runId, in: path, required: true, schema: {type: string}}
+        - $ref: '#/components/parameters/SnapshotTo'
+        - $ref: '#/components/parameters/HighWatermark'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200': {$ref: '#/components/responses/TaskEventList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFoundOrInvisible'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /runs/{runId}/events/stream:
+    get:
+      tags: [Tasks]
+      summary: Java 订阅单个 Run 增量事件
+      operationId: internalStreamRunEvents
+      x-mtls-required: true
+      description: |
+        Scope Token 必须绑定 GET、当前 Path、runId 和最大连接时长。SSE id 的值就是 eventId；
+        Last-Event-ID 必须提交最后收到的 eventId，Python 由 eventId 定位对应 sequence 后继续。
+        Java 按 eventId + sequence 恢复和去重，不能把 sequence 当成 Last-Event-ID。可识别但超出
+        重放窗口时返回 409 EVENT_STREAM_REPLAY_GAP；事件已清理、无法定位或 Run 已归档时返回
+        410 EVENT_STREAM_RESET_REQUIRED。建连后发现缺口则发送 reset-required 后关闭。每连接积压
+        上限 1000 个事件或 5 MiB；连续 30 秒无消费进展时断开。代理必须禁用缓冲和不适当压缩。
+      parameters:
+        - $ref: '#/components/parameters/ScopeToken'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+        - {name: runId, in: path, required: true, schema: {type: string}}
+        - {name: Last-Event-ID, in: header, schema: {type: string}}
+      responses:
+        '200':
+          description: SSE；15 秒 heartbeat，最长 30 分钟
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+            Cache-Control: {schema: {type: string, enum: ['no-cache, no-store, private']}}
+            X-Accel-Buffering: {schema: {type: string, enum: ['no']}}
+          content:
+            text/event-stream:
+              schema: {type: string}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFoundOrInvisible'}
+        '409': {$ref: '#/components/responses/StreamReplayGap'}
+        '410': {$ref: '#/components/responses/StreamResetRequired'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /model-invocations:
+    get:
+      tags: [Models]
+      summary: 查询一行一个模型调度 invocation 的投影
+      operationId: internalListModelInvocations
+      x-mtls-required: true
+      x-fixed-sort:
+        - {field: startedAt, direction: DESC}
+        - {field: invocationId, direction: DESC}
+      description: invocation 表示进入模型调度边界的一次尝试；已确认实际请求只统计 dispatchStatus=DISPATCHED，DISPATCH_UNKNOWN 单列。首次查询物化有界结果清单，后续页不得重查可变投影。
+      parameters:
+        - $ref: '#/components/parameters/ScopeToken'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+        - $ref: '#/components/parameters/DeadlineMs'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/SnapshotTo'
+        - $ref: '#/components/parameters/HighWatermark'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - {name: taskId, in: query, schema: {type: string}}
+        - {name: runId, in: query, schema: {type: string}}
+        - {name: stageId, in: query, schema: {type: string}}
+        - {name: featureCode, in: query, schema: {type: string}}
+        - {name: logicalCallId, in: query, schema: {type: string}}
+        - {name: invocationId, in: query, schema: {type: string}}
+        - {name: provider, in: query, schema: {type: string}}
+        - {name: modelPackId, in: query, schema: {type: string}}
+        - {name: modelName, in: query, schema: {type: string}}
+        - {name: privacyMode, in: query, schema: {type: string, enum: [STANDARD, PRIVATE]}}
+        - {name: routeType, in: query, schema: {type: string, enum: [LOCAL, EXTERNAL]}}
+        - {name: lifecycleStatus, in: query, schema: {$ref: '#/components/schemas/InvocationLifecycleStatus'}}
+        - {name: dispatchStatus, in: query, schema: {$ref: '#/components/schemas/DispatchStatus'}}
+        - {name: outcome, in: query, schema: {$ref: '#/components/schemas/Outcome'}}
+        - {name: errorCode, in: query, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/ModelInvocationList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /model-invocation-events:
+    get:
+      tags: [Models]
+      summary: 查询模型追加式生命周期事件，支撑统一事件中心
+      operationId: internalListModelInvocationEvents
+      x-mtls-required: true
+      x-fixed-sort:
+        - {field: occurredAt, direction: DESC}
+        - {field: eventId, direction: DESC}
+      parameters:
+        - $ref: '#/components/parameters/ScopeToken'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+        - $ref: '#/components/parameters/DeadlineMs'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/SnapshotTo'
+        - $ref: '#/components/parameters/HighWatermark'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - {name: taskId, in: query, schema: {type: string}}
+        - {name: runId, in: query, schema: {type: string}}
+        - {name: logicalCallId, in: query, schema: {type: string}}
+        - {name: invocationId, in: query, schema: {type: string}}
+        - {name: eventType, in: query, schema: {type: string}}
+      responses:
+        '200': {$ref: '#/components/responses/ModelEventList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /model-invocations/{invocationId}:
+    get:
+      tags: [Models]
+      summary: 获取 invocation 投影和完整生命周期事件
+      operationId: internalGetModelInvocation
+      x-mtls-required: true
+      x-detail-consistency: LATEST
+      description: 返回最新 invocation 投影及 projectionVersion/dataAsOf，并附追加式生命周期；不提供列表快照的 as-of 详情。
+      parameters:
+        - $ref: '#/components/parameters/ScopeToken'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+        - $ref: '#/components/parameters/DeadlineMs'
+        - {name: invocationId, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: 投影摘要和追加式生命周期
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/InternalModelInvocationDetail'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFoundOrInvisible'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /model-summary:
+    get:
+      tags: [Models]
+      summary: 在 Python/数据库投影侧聚合模型统计
+      operationId: internalGetModelSummary
+      x-mtls-required: true
+      description: 禁止 Java 通过全量分页事件自行计算。
+      parameters:
+        - $ref: '#/components/parameters/ScopeToken'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+        - $ref: '#/components/parameters/DeadlineMs'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - {name: featureCode, in: query, schema: {type: string}}
+        - {name: provider, in: query, schema: {type: string}}
+        - {name: modelPackId, in: query, schema: {type: string}}
+        - {name: modelName, in: query, schema: {type: string}}
+        - {name: privacyMode, in: query, schema: {type: string, enum: [STANDARD, PRIVATE]}}
+        - {name: routeType, in: query, schema: {type: string, enum: [LOCAL, EXTERNAL]}}
+      responses:
+        '200':
+          description: 已聚合统计
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/InternalModelSummary'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /security-events:
+    get:
+      tags: [Security]
+      summary: 查询 Python 安全审计事件
+      operationId: internalListSecurityEvents
+      x-mtls-required: true
+      x-fixed-sort:
+        - {field: occurredAt, direction: DESC}
+        - {field: eventId, direction: DESC}
+      parameters:
+        - $ref: '#/components/parameters/ScopeToken'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+        - $ref: '#/components/parameters/DeadlineMs'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/SnapshotTo'
+        - $ref: '#/components/parameters/HighWatermark'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - {name: scopeType, in: query, schema: {type: string, enum: [TENANT, SYSTEM]}}
+        - {name: category, in: query, schema: {type: string}}
+        - {name: action, in: query, schema: {type: string}}
+        - {name: riskLevel, in: query, schema: {type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL]}}
+        - {name: actorId, in: query, schema: {type: string}}
+        - {name: outcome, in: query, schema: {$ref: '#/components/schemas/Outcome'}}
+        - {name: subjectType, in: query, schema: {type: string}}
+        - {name: subjectId, in: query, schema: {type: string}}
+        - {name: reasonCode, in: query, schema: {type: string}}
+        - {name: sourceIpMasked, in: query, schema: {type: string, maxLength: 64}}
+        - {name: crossTenant, in: query, schema: {type: boolean}}
+        - {name: auditActionId, in: query, schema: {type: string}}
+        - {name: accessSessionId, in: query, schema: {type: string}}
+        - {name: auditLayer, in: query, schema: {$ref: '#/components/schemas/AuditLayer'}}
+      responses:
+        '200': {$ref: '#/components/responses/SecurityEventList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /security-events/{eventId}:
+    get:
+      tags: [Security]
+      summary: 获取 Python 安全事件详情
+      operationId: internalGetSecurityEvent
+      x-mtls-required: true
+      parameters:
+        - $ref: '#/components/parameters/ScopeToken'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Traceparent'
+        - $ref: '#/components/parameters/DeadlineMs'
+        - {name: eventId, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: 结构化安全事件详情
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/InternalSecurityEvent'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFoundOrInvisible'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+components:
+  securitySchemes:
+    serviceBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Service JWT 短期可复用并绑定 mTLS 服务身份，校验 iss、aud、exp、nbf。
+        jti 用于追踪和撤销，不按一次使用处理。
+
+  headers:
+    RequestId: {description: Java 传入或 Python 生成的 request ID, schema: {type: string}}
+
+  parameters:
+    ScopeToken:
+      name: X-Observability-Scope
+      in: header
+      required: true
+      description: |
+        Java 为每个下游调用单独签发的短期 JWT，绑定 method、path、queryHash、requestId、
+        environment、actor、tenant scope、permissions 和 access context。每个调用使用独立 jti；
+        网络重试重新签发并沿用 requestId。流式 Token 额外绑定 runId 和最大连接时长。
+        这是能力型凭据，Python、网关、APM 和日志均不得记录原值。
+      schema: {type: string, minLength: 20, maxLength: 4096}
+    RequestId: {name: X-Request-ID, in: header, required: true, schema: {type: string}}
+    Traceparent: {name: traceparent, in: header, schema: {type: string}}
+    DeadlineMs:
+      name: X-Request-Deadline-Ms
+      in: header
+      required: true
+      schema: {type: integer, minimum: 100, maximum: 5000}
+    From: {name: from, in: query, required: true, schema: {type: string, format: date-time}}
+    To: {name: to, in: query, required: true, schema: {type: string, format: date-time}}
+    SnapshotTo: {name: snapshotTo, in: query, required: true, schema: {type: string, format: date-time}}
+    HighWatermark:
+      name: highWatermark
+      in: query
+      description: 首次省略；后续页只传 Python 签发的短期、不可猜测服务端句柄（例如 hwm_01J...）。数据库 PIT、签名 JWT、租户和筛选明文只保存在 Python 服务端，不得放入 Query String
+      schema: {type: string, minLength: 14, maxLength: 84, pattern: '^hwm_[A-Za-z0-9_-]{10,80}$', example: hwm_01JABCDEF1234567890}
+    Cursor:
+      name: cursor
+      in: query
+      description: 绑定 Scope、筛选、snapshotTo 和短 highWatermark 句柄的能力型游标；访问日志和 APM 必须屏蔽
+      schema: {type: string, minLength: 16, maxLength: 4096}
+    Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+
+  responses:
+    TaskList:
+      description: Task 列表
+      headers: {X-Request-ID: {$ref: '#/components/headers/RequestId'}}
+      content: {application/json: {schema: {$ref: '#/components/schemas/InternalTaskList'}}}
+    TaskEventList:
+      description: Task Event 列表
+      headers: {X-Request-ID: {$ref: '#/components/headers/RequestId'}}
+      content: {application/json: {schema: {$ref: '#/components/schemas/InternalTaskEventList'}}}
+    ModelInvocationList:
+      description: 一行一个 invocation 的投影列表
+      headers: {X-Request-ID: {$ref: '#/components/headers/RequestId'}}
+      content: {application/json: {schema: {$ref: '#/components/schemas/InternalModelInvocationList'}}}
+    ModelEventList:
+      description: 模型生命周期事件列表
+      headers: {X-Request-ID: {$ref: '#/components/headers/RequestId'}}
+      content: {application/json: {schema: {$ref: '#/components/schemas/InternalModelEventList'}}}
+    SecurityEventList:
+      description: 安全事件列表
+      headers: {X-Request-ID: {$ref: '#/components/headers/RequestId'}}
+      content: {application/json: {schema: {$ref: '#/components/schemas/InternalSecurityEventList'}}}
+    BadRequest: {$ref: '#/components/responses/Error400'}
+    Unauthorized: {$ref: '#/components/responses/Error401'}
+    Forbidden: {$ref: '#/components/responses/Error403'}
+    NotFoundOrInvisible: {$ref: '#/components/responses/Error404'}
+    StreamReplayGap: {$ref: '#/components/responses/ErrorStreamReplayGap'}
+    StreamResetRequired: {$ref: '#/components/responses/ErrorStreamResetRequired'}
+    TooManyRequests: {$ref: '#/components/responses/Error429'}
+    InternalError: {$ref: '#/components/responses/Error500'}
+    Unavailable: {$ref: '#/components/responses/Error503'}
+    Error400: {description: 参数、时间窗、快照、高水位或游标无效, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    Error401: {description: mTLS、Service JWT 或 Scope Token 无效, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    Error403: {description: 环境、权限、Path 绑定或租户范围不允许, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    Error404: {description: 资源不存在或对 Scope 不可见, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    ErrorStreamReplayGap: {description: Last-Event-ID 超出可重放窗口；错误码 EVENT_STREAM_REPLAY_GAP，Java 必须先分页补齐, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    ErrorStreamResetRequired: {description: Last-Event-ID 已清理、无法定位或 Run 已归档；错误码 EVENT_STREAM_RESET_REQUIRED, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    Error429: {description: 查询预算、速率或快照容量限制；快照容量超限使用 OBSERVABILITY_SNAPSHOT_CAPACITY_EXCEEDED, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    Error500: {description: Python 内部错误, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    Error503: {description: 来源不可用；Java 严格分页不得发放下一页游标, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+
+  schemas:
+    Outcome:
+      type: string
+      enum: [SUCCESS, FAILURE, DENIED, CANCELLED, TIMEOUT, PARTIAL, UNKNOWN, ABANDONED]
+    InvocationLifecycleStatus:
+      type: string
+      description: RUNNING 表示仍在执行；TERMINAL 才允许填写 outcome
+      enum: [RUNNING, TERMINAL]
+    DispatchStatus:
+      type: string
+      description: 已确认实际请求只统计 DISPATCHED；DISPATCH_UNKNOWN 必须独立展示
+      enum: [NOT_DISPATCHED, DISPATCHED, DISPATCH_UNKNOWN]
+    AuditLayer:
+      type: string
+      enum: [JAVA_GATEWAY, PYTHON_EXECUTION]
+    Actor:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {type: string, enum: [USER, SERVICE, SYSTEM, ANONYMOUS, UNKNOWN]}
+        id: {type: string, nullable: true}
+    Subject:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {type: string}
+        id: {type: string, nullable: true}
+    MetadataField:
+      type: object
+      additionalProperties: false
+      required: [key, value, masked]
+      properties:
+        key: {type: string, maxLength: 64}
+        value: {type: string, maxLength: 512}
+        masked: {type: boolean}
+    InternalTask:
+      type: object
+      additionalProperties: false
+      required: [taskId, projectionVersion, dataAsOf, featureCode, tenantId, status, createdAt, ingestedAt, schemaVersion]
+      properties:
+        taskId: {type: string}
+        projectionVersion: {type: integer, format: int64, minimum: 1, description: 列表中为物化结果清单冻结版本；详情中为最新 Task 投影版本}
+        dataAsOf: {type: string, format: date-time, description: 列表中为冻结摘要的数据时点；详情中为最新投影读取时点}
+        featureCode: {type: string}
+        tenantId: {type: string}
+        initiator: {$ref: '#/components/schemas/Actor'}
+        subject: {$ref: '#/components/schemas/Subject'}
+        status: {type: string}
+        stage: {type: string, nullable: true}
+        progress: {type: number, minimum: 0, maximum: 100}
+        createdAt: {type: string, format: date-time}
+        startedAt: {type: string, format: date-time, nullable: true}
+        finishedAt: {type: string, format: date-time, nullable: true}
+        durationMs: {type: integer, format: int64, minimum: 0, nullable: true}
+        retryCount: {type: integer, minimum: 0}
+        privacyMode: {type: string, enum: [STANDARD, PRIVATE], nullable: true}
+        routeType: {type: string, enum: [LOCAL, EXTERNAL], nullable: true}
+        currentRun: {$ref: '#/components/schemas/InternalRun'}
+        ingestedAt: {type: string, format: date-time}
+        schemaVersion: {type: integer, minimum: 1}
+        requestId: {type: string, nullable: true}
+        traceIds: {type: array, items: {type: string}}
+        errorCode: {type: string, nullable: true}
+    InternalRun:
+      type: object
+      additionalProperties: false
+      required: [runId, status, attemptNo, startedAt, finishedAt]
+      properties:
+        runId: {type: string}
+        status: {type: string}
+        attemptNo: {type: integer, minimum: 1}
+        startedAt: {type: string, format: date-time, nullable: true}
+        finishedAt: {type: string, format: date-time, nullable: true}
+    InternalStage:
+      type: object
+      additionalProperties: false
+      required: [stageId, runId, name, status, sequence, startedAt, finishedAt, durationMs, retryCount, errorCode]
+      properties:
+        stageId: {type: string}
+        runId: {type: string}
+        name: {type: string}
+        status: {type: string}
+        sequence: {type: integer, format: int64, minimum: 1}
+        startedAt: {type: string, format: date-time, nullable: true}
+        finishedAt: {type: string, format: date-time, nullable: true}
+        durationMs: {type: integer, format: int64, minimum: 0, nullable: true}
+        retryCount: {type: integer, minimum: 0}
+        errorCode: {type: string, nullable: true}
+    InternalTaskEvent:
+      type: object
+      additionalProperties: false
+      required: [eventId, sequence, eventType, schemaVersion, tenantId, occurredAt, ingestedAt, displayCode]
+      properties:
+        eventId: {type: string}
+        sequence: {type: integer, format: int64, minimum: 1}
+        eventType: {type: string}
+        schemaVersion: {type: integer, minimum: 1}
+        tenantId: {type: string}
+        occurredAt: {type: string, format: date-time}
+        ingestedAt: {type: string, format: date-time}
+        taskId: {type: string}
+        runId: {type: string, nullable: true}
+        stageId: {type: string, nullable: true}
+        agentName: {type: string, nullable: true}
+        toolName: {type: string, nullable: true}
+        requestId: {type: string, nullable: true}
+        traceId: {type: string, nullable: true}
+        level: {type: string, enum: [DEBUG, INFO, WARN, ERROR]}
+        displayCode: {type: string}
+        outcome: {$ref: '#/components/schemas/Outcome'}
+        errorCode: {type: string, nullable: true}
+        durationMs: {type: integer, format: int64, minimum: 0, nullable: true}
+        metadata: {type: array, items: {$ref: '#/components/schemas/MetadataField'}}
+    InternalModelInvocation:
+      type: object
+      additionalProperties: false
+      required: [invocationId, projectionVersion, dataAsOf, logicalCallId, attemptNo, tenantId, featureCode, startedAt, ingestedAt, lifecycleStatus, dispatchStatus, provider, modelName, privacyMode, routeType]
+      properties:
+        invocationId: {type: string}
+        projectionVersion: {type: integer, format: int64, minimum: 1, description: 列表中为物化结果清单冻结版本；详情中为最新 invocation 投影版本}
+        dataAsOf: {type: string, format: date-time, description: 列表中为冻结摘要的数据时点；详情中为最新投影读取时点}
+        logicalCallId: {type: string}
+        attemptNo: {type: integer, minimum: 1}
+        fallbackFromInvocationId: {type: string, nullable: true}
+        tenantId: {type: string}
+        featureCode: {type: string}
+        taskId: {type: string, nullable: true}
+        runId: {type: string, nullable: true}
+        stageId: {type: string, nullable: true}
+        requestId: {type: string, nullable: true}
+        traceId: {type: string, nullable: true}
+        startedAt: {type: string, format: date-time}
+        finishedAt: {type: string, format: date-time, nullable: true}
+        ingestedAt: {type: string, format: date-time}
+        lifecycleStatus: {$ref: '#/components/schemas/InvocationLifecycleStatus'}
+        dispatchStatus: {$ref: '#/components/schemas/DispatchStatus'}
+        outcome:
+          type: string
+          nullable: true
+          enum: [SUCCESS, FAILURE, DENIED, CANCELLED, TIMEOUT, PARTIAL, UNKNOWN, ABANDONED]
+          description: RUNNING 时必须为空；UNKNOWN 只表示 reconciliation 追加的结果未知终态
+        errorCode: {type: string, nullable: true}
+        provider: {type: string}
+        providerRequestIdHash: {type: string, nullable: true}
+        modelPackId: {type: string, nullable: true}
+        modelPackVersion: {type: string, nullable: true}
+        modelName: {type: string}
+        deploymentName: {type: string, nullable: true}
+        providerRegion: {type: string, nullable: true}
+        privacyMode: {type: string, enum: [STANDARD, PRIVATE]}
+        routeType: {type: string, enum: [LOCAL, EXTERNAL]}
+        inputTokens: {type: integer, format: int64, minimum: 0, nullable: true}
+        outputTokens: {type: integer, format: int64, minimum: 0, nullable: true}
+        latencyMs: {type: integer, format: int64, minimum: 0, nullable: true}
+        timeToFirstTokenMs: {type: integer, format: int64, minimum: 0, nullable: true}
+        costAmount: {type: number, format: double, minimum: 0, nullable: true}
+        costCurrency: {type: string, pattern: '^[A-Z]{3}$', nullable: true}
+        costSource: {type: string, enum: [PROVIDER, ESTIMATED], nullable: true}
+        pricingVersion: {type: string, nullable: true}
+        costCalculatedAt: {type: string, format: date-time, nullable: true}
+    InternalModelInvocationEvent:
+      type: object
+      additionalProperties: false
+      required: [eventId, eventType, schemaVersion, logicalCallId, invocationId, attemptNo, tenantId, occurredAt, ingestedAt, dispatchStatus, provider, modelName, privacyMode, routeType]
+      properties:
+        eventId: {type: string}
+        eventType: {type: string, enum: [MODEL_INVOCATION_STARTED, MODEL_INVOCATION_DISPATCHED, MODEL_INVOCATION_DISPATCH_UNKNOWN, MODEL_INVOCATION_SUCCEEDED, MODEL_INVOCATION_FAILED, MODEL_INVOCATION_VALIDATION_FAILED, MODEL_INVOCATION_OUTPUT_GUARDRAIL_REJECTED, MODEL_INVOCATION_OUTCOME_UNKNOWN, MODEL_INVOCATION_ABANDONED]}
+        schemaVersion: {type: integer, minimum: 1}
+        logicalCallId: {type: string}
+        invocationId: {type: string}
+        attemptNo: {type: integer, minimum: 1}
+        fallbackFromInvocationId: {type: string, nullable: true}
+        tenantId: {type: string}
+        featureCode: {type: string}
+        taskId: {type: string, nullable: true}
+        runId: {type: string, nullable: true}
+        stageId: {type: string, nullable: true}
+        requestId: {type: string, nullable: true}
+        traceId: {type: string, nullable: true}
+        occurredAt: {type: string, format: date-time}
+        ingestedAt: {type: string, format: date-time}
+        dispatchStatus: {$ref: '#/components/schemas/DispatchStatus'}
+        provider: {type: string}
+        providerRequestIdHash: {type: string, nullable: true}
+        modelPackId: {type: string, nullable: true}
+        modelPackVersion: {type: string, nullable: true}
+        modelName: {type: string}
+        deploymentName: {type: string, nullable: true}
+        providerRegion: {type: string, nullable: true}
+        privacyMode: {type: string, enum: [STANDARD, PRIVATE]}
+        routeType: {type: string, enum: [LOCAL, EXTERNAL]}
+        inputTokens: {type: integer, format: int64, minimum: 0, nullable: true}
+        outputTokens: {type: integer, format: int64, minimum: 0, nullable: true}
+        latencyMs: {type: integer, format: int64, minimum: 0, nullable: true}
+        timeToFirstTokenMs: {type: integer, format: int64, minimum: 0, nullable: true}
+        costAmount: {type: number, format: double, minimum: 0, nullable: true}
+        costCurrency: {type: string, pattern: '^[A-Z]{3}$', nullable: true}
+        costSource: {type: string, enum: [PROVIDER, ESTIMATED], nullable: true}
+        pricingVersion: {type: string, nullable: true}
+        costCalculatedAt: {type: string, format: date-time, nullable: true}
+        outcome: {$ref: '#/components/schemas/Outcome'}
+        errorCode: {type: string, nullable: true}
+        metadata: {type: array, items: {$ref: '#/components/schemas/MetadataField'}}
+    InternalSecurityEvent:
+      type: object
+      additionalProperties: false
+      required: [eventId, auditActionId, auditLayer, scopeType, schemaVersion, service, occurredAt, ingestedAt, category, action, riskLevel, crossTenant, outcome, displayCode]
+      properties:
+        eventId: {type: string}
+        auditActionId: {type: string}
+        accessSessionId: {type: string, nullable: true}
+        auditLayer: {$ref: '#/components/schemas/AuditLayer'}
+        parentAuditEventId: {type: string, nullable: true}
+        scopeType: {type: string, enum: [TENANT, SYSTEM]}
+        schemaVersion: {type: integer, minimum: 1}
+        service: {type: string}
+        tenantId: {type: string, nullable: true, description: scopeType=SYSTEM 或事件发生在租户解析前时为空}
+        occurredAt: {type: string, format: date-time}
+        ingestedAt: {type: string, format: date-time}
+        category: {type: string}
+        action: {type: string}
+        riskLevel: {type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL]}
+        actor: {$ref: '#/components/schemas/Actor'}
+        subject: {$ref: '#/components/schemas/Subject'}
+        missingContextReason: {type: string, nullable: true, description: tenant、actor 或 subject 缺失时必须说明原因；禁止空对象占位}
+        crossTenant: {type: boolean}
+        reasonCode: {type: string, nullable: true}
+        sourceIpMasked: {type: string, nullable: true}
+        requestId: {type: string, nullable: true}
+        traceId: {type: string, nullable: true}
+        outcome: {$ref: '#/components/schemas/Outcome'}
+        errorCode: {type: string, nullable: true}
+        displayCode: {type: string}
+        metadata: {type: array, items: {$ref: '#/components/schemas/MetadataField'}}
+    InternalModelInvocationDetail:
+      type: object
+      additionalProperties: false
+      required: [invocation, events]
+      properties:
+        invocation: {$ref: '#/components/schemas/InternalModelInvocation'}
+        events: {type: array, items: {$ref: '#/components/schemas/InternalModelInvocationEvent'}}
+    Percentiles:
+      type: object
+      additionalProperties: false
+      required: [p50, p95, p99]
+      properties:
+        p50: {type: number, format: double, minimum: 0}
+        p95: {type: number, format: double, minimum: 0}
+        p99: {type: number, format: double, minimum: 0}
+    BreakdownItem:
+      type: object
+      additionalProperties: false
+      required: [key, count, ratio]
+      properties:
+        key: {type: string}
+        count: {type: integer, format: int64, minimum: 0}
+        ratio: {type: number, format: double, minimum: 0, maximum: 1}
+    InternalModelSummary:
+      type: object
+      additionalProperties: false
+      required: [logicalCallCount, dispatchAttemptCount, dispatchedRequestCount, notDispatchedCount, dispatchUnknownCount, activeAttemptCount, logicalSuccessRate, attemptSuccessRate, retryRate, costs]
+      properties:
+        logicalCallCount: {type: integer, format: int64, minimum: 0}
+        dispatchAttemptCount: {type: integer, format: int64, minimum: 0}
+        dispatchedRequestCount: {type: integer, format: int64, minimum: 0}
+        notDispatchedCount: {type: integer, format: int64, minimum: 0}
+        dispatchUnknownCount: {type: integer, format: int64, minimum: 0}
+        activeAttemptCount: {type: integer, format: int64, minimum: 0, description: lifecycleStatus=RUNNING 的调度尝试，不进入终态成功率分母}
+        logicalSuccessRate: {type: number, format: double, minimum: 0, maximum: 1}
+        attemptSuccessRate: {type: number, format: double, minimum: 0, maximum: 1, description: 分母只包含已终态且 DISPATCHED 的 invocation}
+        retryRate: {type: number, format: double, minimum: 0, maximum: 1, description: NOT_DISPATCHED 不计模型重试}
+        inputTokens: {type: integer, format: int64, minimum: 0}
+        outputTokens: {type: integer, format: int64, minimum: 0}
+        costs: {type: array, items: {$ref: '#/components/schemas/CurrencyAmount'}}
+        latencyPercentiles: {$ref: '#/components/schemas/Percentiles'}
+        ttftPercentiles: {$ref: '#/components/schemas/Percentiles'}
+        timeSeries: {type: array, items: {$ref: '#/components/schemas/ModelTimeSeriesPoint'}}
+        errorBreakdown: {type: array, items: {$ref: '#/components/schemas/BreakdownItem'}}
+        providerBreakdown: {type: array, items: {$ref: '#/components/schemas/BreakdownItem'}}
+        modelBreakdown: {type: array, items: {$ref: '#/components/schemas/BreakdownItem'}}
+        routeTypeBreakdown: {type: array, items: {$ref: '#/components/schemas/BreakdownItem'}}
+        privacyModeBreakdown: {type: array, items: {$ref: '#/components/schemas/BreakdownItem'}}
+    ModelTimeSeriesPoint:
+      type: object
+      additionalProperties: false
+      required: [bucketStart, logicalCallCount, dispatchAttemptCount, dispatchedRequestCount, successRate, p95LatencyMs]
+      properties:
+        bucketStart: {type: string, format: date-time}
+        logicalCallCount: {type: integer, format: int64, minimum: 0}
+        dispatchAttemptCount: {type: integer, format: int64, minimum: 0}
+        dispatchedRequestCount: {type: integer, format: int64, minimum: 0}
+        successRate: {type: number, format: double, minimum: 0, maximum: 1}
+        p95LatencyMs: {type: number, format: double, minimum: 0}
+    CurrencyAmount:
+      type: object
+      additionalProperties: false
+      required: [currency, amount]
+      properties:
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
+        amount: {type: number, format: double, minimum: 0}
+    PageInfo:
+      type: object
+      additionalProperties: false
+      required: [hasMore, limit]
+      properties:
+        nextCursor: {type: string, nullable: true}
+        hasMore: {type: boolean}
+        limit: {type: integer, minimum: 1}
+    SourceWatermark:
+      type: object
+      additionalProperties: false
+      required: [querySnapshotId, snapshotTo, expiresAt, snapshotMode, highWatermarkHandle]
+      properties:
+        querySnapshotId: {type: string, description: Python 生成的短期查询快照标识}
+        snapshotTo: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time, description: 到期后 Java 必须从第一页重新查询}
+        snapshotMode:
+          type: string
+          enum: [APPEND_ONLY_HIGH_WATERMARK, MATERIALIZED_RESULT_SET]
+          description: Task 和 invocation 投影必须使用 MATERIALIZED_RESULT_SET
+        maxIngestedAt: {type: string, format: date-time, nullable: true}
+        maxSequence: {type: integer, format: int64, minimum: 1, nullable: true}
+        maxEventId: {type: string, nullable: true}
+        highWatermarkHandle: {type: string, minLength: 14, maxLength: 84, pattern: '^hwm_[A-Za-z0-9_-]{10,80}$', description: Python 服务端状态的短期不可猜测句柄；不包含原生 PIT、JWT、租户或筛选明文}
+        dataThrough: {type: string, format: date-time, nullable: true}
+    InternalTaskList:
+      type: object
+      additionalProperties: false
+      required: [data, page, watermark]
+      properties:
+        data: {type: array, items: {$ref: '#/components/schemas/InternalTask'}}
+        page: {$ref: '#/components/schemas/PageInfo'}
+        watermark: {$ref: '#/components/schemas/SourceWatermark'}
+    InternalTaskEventList:
+      type: object
+      additionalProperties: false
+      required: [data, page, watermark]
+      properties:
+        data: {type: array, items: {$ref: '#/components/schemas/InternalTaskEvent'}}
+        page: {$ref: '#/components/schemas/PageInfo'}
+        watermark: {$ref: '#/components/schemas/SourceWatermark'}
+    InternalStageList:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data: {type: array, items: {$ref: '#/components/schemas/InternalStage'}}
+    InternalModelInvocationList:
+      type: object
+      additionalProperties: false
+      required: [data, page, watermark]
+      properties:
+        data: {type: array, items: {$ref: '#/components/schemas/InternalModelInvocation'}}
+        page: {$ref: '#/components/schemas/PageInfo'}
+        watermark: {$ref: '#/components/schemas/SourceWatermark'}
+    InternalModelEventList:
+      type: object
+      additionalProperties: false
+      required: [data, page, watermark]
+      properties:
+        data: {type: array, items: {$ref: '#/components/schemas/InternalModelInvocationEvent'}}
+        page: {$ref: '#/components/schemas/PageInfo'}
+        watermark: {$ref: '#/components/schemas/SourceWatermark'}
+    InternalSecurityEventList:
+      type: object
+      additionalProperties: false
+      required: [data, page, watermark]
+      properties:
+        data: {type: array, items: {$ref: '#/components/schemas/InternalSecurityEvent'}}
+        page: {$ref: '#/components/schemas/PageInfo'}
+        watermark: {$ref: '#/components/schemas/SourceWatermark'}
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [code, requestId]
+      properties:
+        code: {type: string}
+        requestId: {type: string}
+        retryable: {type: boolean}

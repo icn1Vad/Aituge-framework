@@ -1,4 +1,3 @@
-import traceback
 from typing import List, Optional, cast
 import uuid
 from common.llm.models import DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_RETRIES, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, DEFAULT_TIMEOUT, THINK_END_TAG, THINK_START_TAG, ChatResponseGenerator, ErrorChunk, ReasoningChunk, TextChunk
@@ -180,6 +179,7 @@ class PaiLlm():
                                 delta=delta,
                                 tool_calls=tool_calls,
                                 usage=chunk.usage,
+                                finish_reason=chunk.choices[0].finish_reason,
                             )
                         elif reasoning_delta:
                             yield ReasoningChunk(
@@ -187,6 +187,7 @@ class PaiLlm():
                                 reasoning_delta=reasoning_delta,
                                 tool_calls=tool_calls,
                                 usage=chunk.usage,
+                                finish_reason=chunk.choices[0].finish_reason,
                             )
                     else:
                         reasoning_delta = ""
@@ -198,6 +199,7 @@ class PaiLlm():
                                 reasoning_delta=reasoning_delta,
                                 tool_calls=tool_calls,
                                 usage=chunk.usage,
+                                finish_reason=chunk.choices[0].finish_reason,
                             )
                             continue
 
@@ -205,6 +207,7 @@ class PaiLlm():
                             delta=delta,
                             tool_calls=tool_calls,
                             usage=chunk.usage,
+                            finish_reason=chunk.choices[0].finish_reason,
                         )
             except Exception as ex:
                 logger.error(f"Llm stream error: {traceback.format_exc()}")
@@ -221,6 +224,19 @@ class PaiLlm():
                 )
 
         return gen()
+
+def _is_retryable_provider_error(exc: BaseException) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if status_code is not None:
+        return int(status_code) in {408, 409, 429} or int(status_code) >= 500
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    name = exc.__class__.__name__.lower()
+    return any(
+        marker in name
+        for marker in ("timeout", "connection", "ratelimit", "internalserver")
+    )
+
 
 
 def normalize_model_exception(ex: BaseException) -> tuple[str, str, bool]:

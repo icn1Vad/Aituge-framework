@@ -1,6 +1,6 @@
-from typing import List, Optional
+from typing import Any, List, Optional
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from openai.types.chat.chat_completion_chunk import ChoiceDeltaToolCall, CompletionUsage
 from typing import AsyncGenerator
 
@@ -26,6 +26,12 @@ class TextChunk(BaseModel):
     usage: Optional[CompletionUsage] = None
     stage: str = ""  # planning/acting/response
     trace_id: str = ""
+    finish_reason: str | None = None
+    observability_finalizer: Any = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+    )
 
 
 class ReasoningChunk(TextChunk):
@@ -51,5 +57,9 @@ class ModelInvocationError(RuntimeError):
         self.code = code
         self.retryable = retryable
 
+    observability_retry_from_invocation_id: str | None = Field(
+        default=None,
+        exclude=True,
+    )
 
 ChatResponseGenerator = AsyncGenerator[TextChunk, None]

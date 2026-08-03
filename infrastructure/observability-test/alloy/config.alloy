@@ -1,0 +1,46 @@
+local.file_match "test_application_logs" {
+	path_targets = [{
+		"__path__" = "/var/log/contract-review-code-dev/*.jsonl",
+	}]
+	sync_period = "2s"
+}
+
+loki.source.file "test_application_logs" {
+	targets       = local.file_match.test_application_logs.targets
+	forward_to    = [loki.process.test_application_logs.receiver]
+	tail_from_end = false
+}
+
+loki.process "test_application_logs" {
+	stage.json {
+		expressions = {
+			environment = "environment",
+			service     = "service",
+			stream      = "stream",
+			level       = "level",
+			logger      = "logger",
+		}
+	}
+
+	stage.labels {
+		values = {
+			environment = "",
+			service     = "",
+			stream      = "",
+			level       = "",
+			logger      = "",
+		}
+	}
+
+	stage.label_drop {
+		values = ["filename"]
+	}
+
+	forward_to = [loki.write.test_loki.receiver]
+}
+
+loki.write "test_loki" {
+	endpoint {
+		url = "http://loki:3100/loki/api/v1/push"
+	}
+}

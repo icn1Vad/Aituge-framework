@@ -1,0 +1,42 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: test
+    stack: contract-review-code-dev-observability
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: [prometheus:9090]
+        labels:
+          environment: test
+  - job_name: otel-collector
+    static_configs:
+      - targets: [otel-collector:9464]
+        labels:
+          environment: test
+  - job_name: loki
+    static_configs:
+      - targets: [loki:3100]
+        labels:
+          environment: test
+  - job_name: tempo
+    static_configs:
+      - targets: [tempo:3200]
+        labels:
+          environment: test
+  - job_name: alloy
+    static_configs:
+      - targets: [alloy:12345]
+        labels:
+          environment: test

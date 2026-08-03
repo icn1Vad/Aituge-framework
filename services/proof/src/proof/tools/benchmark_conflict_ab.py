@@ -15,6 +15,11 @@ from capabilities.register import ProofConflictItemOutput
 from proof.api.app import _conflict_agent_view
 from proof.application.service import ProofService
 from proof.config import Settings
+from proof.infrastructure.model_observability import (
+    new_logical_call_id,
+    observed_tool_attempt,
+    usage_token_counts,
+)
 from proof.tools.benchmark_conflict_judge import _extract_json
 from proof.tools.benchmark_conflict_retrieval import (
     _load_samples,
@@ -231,47 +236,80 @@ def _call_validated(
     total_tokens = 0
     elapsed_ms = 0
     errors: list[str] = []
-    for attempt in range(1, attempts + 1):
+    model = ModelRuntimeProvider.from_environment().active_pack.llm.id
+    logical_call_id = new_logical_call_id()
+    fallback_from_invocation_id: str | None = None
+    for attempt_no in range(1, attempts + 1):
         started = time.perf_counter()
         try:
-            response = httpx.post(
-                settings.embedding_base_url.rstrip("/") + "/chat/completions",
-                headers={"Authorization": f"Bearer {settings.embedding_api_key}"},
-                json={
-                    "model": (
-                        ModelRuntimeProvider.from_environment()
-                        .active_pack.llm.id
-                    ),
-                    "messages": messages,
-                    "temperature": 0.1,
-                    "max_tokens": 8000,
-                    "stream": False,
-                    "enable_thinking": False,
-                    "chat_template_kwargs": {"enable_thinking": False},
-                },
-                timeout=180,
-            )
-            response.raise_for_status()
-            body = response.json()
-            usage = body.get("usage") or {}
-            total_tokens += int(usage.get("total_tokens") or 0)
-            content = str(body["choices"][0]["message"].get("content") or "")
-            output = ProofConflictItemOutput.model_validate(_extract_json(content))
-            for finding in output.findings:
-                service._validate_conflict_finding(
-                    finding.model_dump(),
-                    target_ids={source_id},
+            with observed_tool_attempt(
+                settings,
+                feature_code="proof.offline.conflict_ab",
+                model_name=model,
+                logical_call_id=logical_call_id,
+                attempt_no=attempt_no,
+                fallback_from_invocation_id=fallback_from_invocation_id,
+                retry_reason=(
+                    "PROVIDER_RETRY" if attempt_no < attempts else None
+                ),
+            ) as observation:
+                response = httpx.post(
+                    settings.embedding_base_url.rstrip("/")
+                    + "/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {settings.embedding_api_key}"
+                    },
+                    json={
+                        "model": model,
+                        "messages": messages,
+                        "temperature": 0.1,
+                        "max_tokens": 8000,
+                        "stream": False,
+                        "enable_thinking": False,
+                        "chat_template_kwargs": {
+                            "enable_thinking": False
+                        },
+                    },
+                    timeout=180,
                 )
-            elapsed_ms += int((time.perf_counter() - started) * 1000)
-            return {
-                "status": "succeeded",
-                "attempts": attempt,
-                "tokens": total_tokens,
-                "elapsed_ms": elapsed_ms,
-                "errors": errors,
-                "output": output,
-            }
-        except (httpx.HTTPError, KeyError, TypeError, ValueError, ValidationError) as exc:
+                observation.dispatched(response)
+                response.raise_for_status()
+                body = response.json()
+                usage = body.get("usage") or {}
+                total_tokens += int(usage.get("total_tokens") or 0)
+                content = str(
+                    body["choices"][0]["message"].get("content") or ""
+                )
+                output = ProofConflictItemOutput.model_validate(
+                    _extract_json(content)
+                )
+                for finding in output.findings:
+                    service._validate_conflict_finding(
+                        finding.model_dump(),
+                        target_ids={source_id},
+                    )
+                input_tokens, output_tokens = usage_token_counts(usage)
+                observation.succeeded(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
+                elapsed_ms += int((time.perf_counter() - started) * 1000)
+                return {
+                    "status": "succeeded",
+                    "attempts": attempt_no,
+                    "tokens": total_tokens,
+                    "elapsed_ms": elapsed_ms,
+                    "errors": errors,
+                    "output": output,
+                }
+        except (
+            httpx.HTTPError,
+            KeyError,
+            TypeError,
+            ValueError,
+            ValidationError,
+        ) as exc:
+            fallback_from_invocation_id = observation.invocation_id
             elapsed_ms += int((time.perf_counter() - started) * 1000)
             errors.append(type(exc).__name__)
     return {

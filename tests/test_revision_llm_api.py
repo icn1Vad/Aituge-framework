@@ -15,10 +15,15 @@ class _Completion:
     cached_tokens: int = 10
     completion_tokens: int = 5
     total_tokens: int = 105
+    time_to_first_token_ms: int | None = 8
     model_duration_ms: int = 25
     trace_id: str = "request-1"
     provider_request_id: str = "provider-1"
     finish_reason: str = "stop"
+    terminal_finalizer: object | None = None
+    logical_call_id: str | None = None
+    invocation_id: str | None = None
+    model_attempt_no: int | None = None
 
 
 class _Runtime:
@@ -46,6 +51,7 @@ def test_revision_completion_is_hidden_and_authenticated(monkeypatch) -> None:
         "task": "GENERATE_CONTRACT_REPLACEMENT_TEXT_ONLY",
         "model_id": "model-1",
         "user_prompt": '{"draft_requests":[]}',
+        "defer_terminal": True,
     }
 
     assert client.post(

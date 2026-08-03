@@ -1,5 +1,7 @@
 import asyncio
-import traceback
+import json
+import re
+import uuid
 from typing import Dict, Optional, Tuple
 from common.llm.models import ErrorChunk, ReasoningChunk, ToolResultChunk, TextChunk
 from openai.types.chat.chat_completion_chunk import ChoiceDeltaToolCall
@@ -11,6 +13,7 @@ from utils.constants import try_get_int_env
 from agent.state import AgentState
 from llama_index.core.tools.function_tool import FunctionTool, ToolOutput
 from common.llm.llm_model import PaiLlm, ChatResponseGenerator
+from service.conversation.llm_runner import LlmRuntime
 from extensions.trace.base import use_current_span
 from opentelemetry import trace
 from utils.json_utils import parse_tool_arguments
@@ -32,14 +35,158 @@ async def _iter_with_idle_timeout(stream, timeout: int):
             chunk = await asyncio.wait_for(iterator.__anext__(), timeout=timeout)
         except StopAsyncIteration:
             return
+
         yield chunk
 
+async def _finalize_success(finalizer) -> None:
+    await _finalize_observation(finalizer, "SUCCESS")
+
+
+async def _finalize_validation_failed(finalizer, code: str) -> None:
+    await _finalize_observation(finalizer, "VALIDATION_FAILED", code)
+
+
+async def _finalize_observation(
+    finalizer,
+    decision: str,
+    code: str | None = None,
+) -> None:
+    if finalizer is None:
+        return
+    try:
+        if decision == "SUCCESS":
+            await finalizer.succeed()
+        else:
+            await finalizer.validation_failed(code)
+    except Exception as exc:
+        conflict_code = getattr(exc, "code", None)
+        if (
+            conflict_code
+            in {
+                "MODEL_INVOCATION_DUPLICATE_ATTEMPT",
+                "MODEL_INVOCATION_IDENTITY_CONFLICT",
+                "MODEL_INVOCATION_LOGICAL_CALL_CONFLICT",
+            }
+            or str(exc).startswith("model invocation already finalized as ")
+        ):
+            raise
+        logger.warning(
+            "Model invocation finalize degraded: decision={}, error_type={}",
+            decision,
+            exc.__class__.__name__,
+        )
+
+
+async def _close_async_stream(stream) -> None:
+    close = getattr(stream, "aclose", None)
+    if not callable(close):
+        return
+    try:
+        await close()
+    except (GeneratorExit, asyncio.CancelledError):
+        raise
+    except Exception as exc:
+        logger.warning(
+            "Model stream close degraded: error_type={}",
+            exc.__class__.__name__,
+        )
+
+
+def _validate_tool_calls(
+    tool_calls: list[ChoiceDeltaToolCall],
+    tool_fn_map: Dict[str, FunctionTool],
+) -> tuple[list[ChoiceDeltaToolCall], str | None]:
+    if not tool_calls:
+        return [], None
+
+    def reject_duplicate_keys(pairs):
+        parsed: dict = {}
+        for key, value in pairs:
+            if key in parsed:
+                raise ValueError("duplicate JSON object key")
+            parsed[key] = value
+        return parsed
+
+    def reject_json_constant(_value):
+        raise ValueError("non-finite JSON number")
+
+    seen_ids: set[str] = set()
+    seen_indexes: set[int] = set()
+    validated: list[ChoiceDeltaToolCall] = []
+    for tool_call in tool_calls:
+        index = getattr(tool_call, "index", None)
+        tool_id = getattr(tool_call, "id", None)
+        function = getattr(tool_call, "function", None)
+        name = getattr(function, "name", None)
+        arguments = getattr(function, "arguments", None)
+        if (
+            getattr(tool_call, "type", None) != "function"
+            or isinstance(index, bool)
+            or not isinstance(index, int)
+            or index < 0
+            or index in seen_indexes
+            or not isinstance(tool_id, str)
+            or not tool_id
+            or len(tool_id) > 255
+            or tool_id.strip() != tool_id
+            or any(ord(char) < 33 or ord(char) == 127 for char in tool_id)
+            or tool_id in seen_ids
+            or not isinstance(name, str)
+            or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name) is None
+        ):
+            return [], "MODEL_TOOL_CALL_ENVELOPE_INVALID"
+        if name not in tool_fn_map:
+            return [], "MODEL_TOOL_CALL_UNKNOWN"
+        if not isinstance(arguments, str) or not arguments.strip():
+            return [], "MODEL_TOOL_ARGUMENTS_INVALID"
+        try:
+            parsed = json.loads(
+                arguments,
+                object_pairs_hook=reject_duplicate_keys,
+                parse_constant=reject_json_constant,
+            )
+        except (TypeError, ValueError):
+            return [], "MODEL_TOOL_ARGUMENTS_INVALID"
+        if not isinstance(parsed, dict):
+            return [], "MODEL_TOOL_ARGUMENTS_INVALID"
+
+        schema = getattr(tool_fn_map[name].metadata, "fn_schema", None)
+        if schema is not None:
+            try:
+                fields = getattr(schema, "model_fields", None)
+                if fields is None:
+                    fields = getattr(schema, "__fields__", None)
+                if fields is not None:
+                    allowed_names = set(fields)
+                    for field in fields.values():
+                        alias = getattr(field, "alias", None)
+                        if isinstance(alias, str):
+                            allowed_names.add(alias)
+                    if not set(parsed).issubset(allowed_names):
+                        raise ValueError("unknown tool argument")
+                if hasattr(schema, "model_validate"):
+                    schema.model_validate(parsed, strict=True)
+                elif hasattr(schema, "parse_obj"):
+                    schema.parse_obj(parsed)
+                else:
+                    schema(**parsed)
+            except Exception:
+                return [], "MODEL_TOOL_ARGUMENTS_INVALID"
+
+        seen_indexes.add(index)
+        seen_ids.add(tool_id)
+        validated.append(tool_call)
+    return validated, None
 
 # 当模型只"预告"下一步动作却没产生 tool_call 时,最多纠正(轻推)几次
 MAX_INTENT_NUDGES = try_get_int_env("MAX_INTENT_NUDGES", 1)
 _INTENT_NUDGE_MSG = (
     "你刚才只描述了下一步,但没有真正执行。请在本次响应中**直接调用合适的工具**,"
     "或者直接给出最终答案。不要再预告或描述将要调用的工具。"
+)
+_OUTPUT_REPAIR_MSG = (
+    "上一条模型输出未通过结构校验。请重新生成：如需工具，必须调用已提供的工具并给出"
+    "严格 JSON 参数；否则直接给出非空最终答案。"
 )
 # 行动预告的常见措辞(中英),用于识别"只说不做"的悬空消息。
 # 刻意只保留"明显要去用工具"的短语,避免误伤正常答案(去掉了"接下来/下一步/我将"等宽泛词)。
@@ -81,8 +228,8 @@ async def execute_single_tool_call(
     function_name = tool_call.function.name
 
     if not function_name or function_name not in tool_fn_map:
-        logger.warning(f"Unknown tool: {function_name}, skipping.")
-        return (tool_call, None, f"Unknown tool: {function_name}", f"Unknown tool: {function_name}")
+        logger.warning("Unknown tool requested; skipping.")
+        return (tool_call, None, "Unknown tool.", "Unknown tool.")
 
     # Parse tool arguments
     function_args = parse_tool_arguments(
@@ -91,7 +238,7 @@ async def execute_single_tool_call(
 
     # Execute tool with retry
     async_fn = tool_fn_map[function_name]
-    logger.info(f"Calling tool {function_name} with args: {function_args}")
+    logger.info("Calling tool: tool_name={}", function_name)
 
     try:
         tool_result = await call_tool_with_retry(async_fn, function_args)
@@ -99,15 +246,27 @@ async def execute_single_tool_call(
         tool_error = None
         message_content = tool_content
     except RetryError as retry_err:
-        logger.error(f"Tool call failed after retries: {traceback.format_exc()}")
         inner_exception = retry_err.last_attempt.exception()
+        logger.error(
+            "Tool call failed after retries: tool_name={}, error_type={}",
+            function_name,
+            (
+                inner_exception.__class__.__name__
+                if inner_exception is not None
+                else "UnknownError"
+            ),
+        )
         tool_content = None
-        tool_error = f"Tool call failed: {inner_exception}"
+        tool_error = "Tool call failed after retries."
         message_content = tool_error
     except Exception as ex:
-        logger.error(f"Tool call failed: {traceback.format_exc()}")
+        logger.error(
+            "Tool call failed: tool_name={}, error_type={}",
+            function_name,
+            ex.__class__.__name__,
+        )
         tool_content = None
-        tool_error = f"Tool call failed: {ex}"
+        tool_error = "Tool call failed."
         message_content = tool_error
 
     return (tool_call, tool_content, tool_error, message_content)
@@ -121,10 +280,14 @@ class ReactAgent:
         llm: PaiLlm,
         system_prompt: str,
         tools: list[FunctionTool],
+        llm_runtime: LlmRuntime | None = None,
         max_steps: int = MAX_RECURSION_STEPS,
+        model_id: str | None = None,
     ):
         self.llm = llm
+        self.llm_runtime = llm_runtime
         self.system_prompt = system_prompt
+        self.model_id = model_id
         self.max_steps = max_steps
 
         self.tools = tools
@@ -145,233 +308,358 @@ class ReactAgent:
 
         @use_current_span(trace.get_current_span())
         async def gen():
-            # Initialize messages with system prompt and conversation history
             messages = state.messages.copy()
             for i in range(len(messages) - 1, -1, -1):
-                if messages[i].get("role") == "user":
-                    time_prefix = f"[System Time: {get_current_time_str()}]\n"
-                    content = messages[i].get("content", "")
-                    if isinstance(content, str):
-                        messages[i]["content"] = time_prefix + content
-                    elif isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                block["text"] = time_prefix + (block.get("text") or "")
-                                break
-                        else:
-                            content.insert(0, {"type": "text", "text": time_prefix})
-                    break
+                if messages[i].get("role") != "user":
+                    continue
+                time_prefix = f"[System Time: {get_current_time_str()}]\n"
+                content = messages[i].get("content", "")
+                if isinstance(content, str):
+                    messages[i]["content"] = time_prefix + content
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            block["text"] = time_prefix + (block.get("text") or "")
+                            break
+                    else:
+                        content.insert(0, {"type": "text", "text": time_prefix})
+                break
             messages = [{"role": "system", "content": self.system_prompt}] + messages
 
-            # Build tool metadata, adding plan tool if enable_agent is True
             tools_to_use = self.tool_metadata.copy()
             react_step = 1
-            nudge_count = 0  # times we've corrected an "announce-but-don't-act" turn
+            nudge_count = 0
+            repair_logical_call_id: str | None = None
+            repair_attempt_no = 1
+            repair_fallback_id: str | None = None
+            active_finalizer = None
 
-            # ReAct loop: continue calling tools until completion or max_steps
-            while react_step <= self.max_steps:
-                logger.info(f"ReAct step {react_step} / {self.max_steps}")
-                react_step += 1
+            try:
+                while react_step <= self.max_steps:
+                    logger.info(
+                        "ReAct step {} / {}",
+                        react_step,
+                        self.max_steps,
+                    )
+                    if repair_logical_call_id is None:
+                        logical_call_id = f"logical_{uuid.uuid4().hex}"
+                        physical_attempt_no = 1
+                        fallback_from_invocation_id = None
+                    else:
+                        logical_call_id = repair_logical_call_id
+                        physical_attempt_no = repair_attempt_no
+                        fallback_from_invocation_id = repair_fallback_id
+                    react_step += 1
 
-                tool_calls = []
-                step_content = ""
-                step_reasoning_content = ""
-                # If we can still nudge this turn, withhold streamed text until we
-                # know it isn't a bare action-preview — otherwise the user sees the
-                # dangling "let me search…" before we silently correct it. We only
-                # hold back the short intent window; past _INTENT_MAX_LEN (or once a
-                # tool_call appears) the text can't be a preview, so flush and stream
-                # live. `pending` is the held-back, not-yet-yielded text.
-                buffering = nudge_count < MAX_INTENT_NUDGES
-                pending = ""
-                # Usage normally rides only the final chunk, so while we withhold
-                # text we keep the latest usage seen and re-attach it on flush —
-                # otherwise a buffered short answer would drop its token counts.
-                pending_usage = None
+                    tool_calls: list[ChoiceDeltaToolCall] = []
+                    step_content = ""
+                    step_reasoning_content = ""
+                    finish_reasons: set[str] = set()
+                    buffering = True
+                    pending = ""
+                    pending_usage = None
+                    step_finalizer = None
+                    stream = None
 
-                # Compress messages to fit within token budget
-                messages = self.msg_manager.fit_to_budget(messages)
+                    messages = self.msg_manager.fit_to_budget(messages)
+                    try:
+                        if self.llm_runtime is not None:
+                            runtime_kwargs = {
+                                "messages": messages,
+                                "tools": tools_to_use,
+                                "model_id": self.model_id,
+                                "logical_call_id": logical_call_id,
+                                "model_attempt_no": physical_attempt_no,
+                            }
+                            if fallback_from_invocation_id is not None:
+                                runtime_kwargs["fallback_from_invocation_id"] = (
+                                    fallback_from_invocation_id
+                                )
+                            stream = await self.llm_runtime.astream(**runtime_kwargs)
+                        else:
+                            stream = await self.llm.astream(
+                                messages=messages,
+                                tools=tools_to_use,
+                            )
 
-                # Call LLM with current messages and available tools.
-                # Wrap the stream with an idle timeout: if no package arrives within
-                # LLM_STREAM_IDLE_TIMEOUT seconds, abort with a clear error.
-                _llm_stream = await self.llm.astream(
-                    messages=messages,
-                    tools=tools_to_use,
-                )
-                try:
-                    async for chunk in _iter_with_idle_timeout(_llm_stream, LLM_STREAM_IDLE_TIMEOUT):
-                        if isinstance(chunk, ErrorChunk):
-                            logger.error(f"LLM call failed: {chunk.error_message}")
-                            yield chunk
-                            return
+                        async for chunk in _iter_with_idle_timeout(
+                            stream,
+                            LLM_STREAM_IDLE_TIMEOUT,
+                        ):
+                            finalizer = getattr(
+                                chunk,
+                                "observability_finalizer",
+                                None,
+                            )
+                            if finalizer is not None:
+                                if (
+                                    step_finalizer is not None
+                                    and finalizer is not step_finalizer
+                                ):
+                                    raise RuntimeError(
+                                        "MODEL_MULTIPLE_TERMINAL_FINALIZERS"
+                                    )
+                                step_finalizer = finalizer
+                                active_finalizer = finalizer
+                                continue
 
-                        if chunk.tool_calls:
-                            tool_calls = chunk.tool_calls
-                            # A tool call means any text so far is legit pre-call
-                            # narration, not a dangling preview — release it.
-                            if buffering:
-                                if pending:
-                                    yield TextChunk(delta=pending, usage=chunk.usage or pending_usage)
+                            if isinstance(chunk, ErrorChunk):
+                                logger.error(
+                                    "LLM call failed: code=MODEL_STREAM_ERROR"
+                                )
+                                yield chunk
+                                return
+                            if not isinstance(chunk, TextChunk):
+                                raise RuntimeError("MODEL_STREAM_CHUNK_INVALID")
+
+                            finish_reason = chunk.finish_reason
+                            if finish_reason is not None:
+                                if not isinstance(finish_reason, str):
+                                    raise RuntimeError(
+                                        "MODEL_OUTPUT_FINISH_REASON_INVALID"
+                                    )
+                                finish_reasons.add(finish_reason)
+
+                            if chunk.tool_calls:
+                                tool_calls = chunk.tool_calls
+                                if buffering:
+                                    if pending:
+                                        yield TextChunk(
+                                            delta=pending,
+                                            usage=(
+                                                chunk.usage or pending_usage
+                                            ),
+                                        )
+                                        pending = ""
+                                        pending_usage = None
+                                    buffering = False
+
+                            if isinstance(chunk, ReasoningChunk):
+                                step_reasoning_content += chunk.reasoning_delta
+                                yield chunk
+                            elif buffering:
+                                step_content += chunk.delta
+                                pending += chunk.delta
+                                if chunk.usage is not None:
+                                    pending_usage = chunk.usage
+                                if len(step_content) >= _INTENT_MAX_LEN:
+                                    yield TextChunk(
+                                        delta=pending,
+                                        usage=(
+                                            chunk.usage or pending_usage
+                                        ),
+                                    )
                                     pending = ""
                                     pending_usage = None
-                                buffering = False
+                                    buffering = False
+                            else:
+                                step_content += chunk.delta
+                                yield TextChunk(
+                                    delta=chunk.delta,
+                                    usage=chunk.usage,
+                                    finish_reason=chunk.finish_reason,
+                                )
+                    except asyncio.TimeoutError:
+                        logger.error(
+                            "LLM stream idle timeout: timeout_seconds={}",
+                            LLM_STREAM_IDLE_TIMEOUT,
+                        )
+                        if active_finalizer is not None:
+                            finalizer = active_finalizer
+                            active_finalizer = None
+                            await _finalize_validation_failed(
+                                finalizer,
+                                "MODEL_STREAM_IDLE_TIMEOUT",
+                            )
+                        yield ErrorChunk(
+                            error_message=(
+                                f"模型调用超时：{LLM_STREAM_IDLE_TIMEOUT}s "
+                                "内未收到任何响应分片。"
+                            ),
+                            error_type="llm_stream_timeout",
+                        )
+                        return
+                    finally:
+                        if stream is not None:
+                            await _close_async_stream(stream)
 
-                        if isinstance(chunk, ReasoningChunk):
-                            step_reasoning_content += chunk.reasoning_delta
-                            yield chunk
-                        elif buffering:
-                            step_content += chunk.delta
-                            pending += chunk.delta
-                            if chunk.usage:
-                                pending_usage = chunk.usage
-                            # Past the intent window it can't be a short preview:
-                            # flush what we held and stream the rest live.
-                            if len(step_content) >= _INTENT_MAX_LEN:
-                                yield TextChunk(delta=pending, usage=chunk.usage or pending_usage)
-                                pending = ""
-                                pending_usage = None
-                                buffering = False
-                        else:
-                            step_content += chunk.delta
-                            yield TextChunk(delta=chunk.delta, usage=chunk.usage)
-                except asyncio.TimeoutError:
-                    logger.error(
-                        f"LLM stream idle for >{LLM_STREAM_IDLE_TIMEOUT}s (no package received); aborting."
-                    )
-                    yield ErrorChunk(
-                        error_message="模型服务响应超时，请稍后重试",
-                        delta="模型服务响应超时，请稍后重试",
-                        error_type="MODEL_CONNECT_TIMEOUT",
-                    )
-                    return
+                    validation_code: str | None = None
+                    if len(finish_reasons) > 1:
+                        validation_code = "MODEL_OUTPUT_FINISH_REASON_INVALID"
+                    else:
+                        finish_reason = next(iter(finish_reasons), None)
+                        if tool_calls:
+                            if finish_reason not in (None, "tool_calls"):
+                                validation_code = (
+                                    "MODEL_OUTPUT_FINISH_REASON_INVALID"
+                                )
+                        elif finish_reason not in (None, "stop"):
+                            validation_code = (
+                                "MODEL_OUTPUT_FINISH_REASON_INVALID"
+                            )
 
-                # No tool calls: either a genuine final answer, OR the model only
-                # narrated an intended next action (finish_reason=stop, no tool_call).
-                # In the latter case, nudge once to act instead of ending the run.
-                if not tool_calls:
+                    valid_tool_calls: list[ChoiceDeltaToolCall] = []
+                    if validation_code is None:
+                        valid_tool_calls, validation_code = _validate_tool_calls(
+                            tool_calls,
+                            self.tool_fn_map,
+                        )
                     if (
-                        step_content
-                        and nudge_count < MAX_INTENT_NUDGES
+                        validation_code is None
+                        and not valid_tool_calls
+                        and not step_content.strip()
+                    ):
+                        validation_code = "MODEL_OUTPUT_EMPTY"
+                    if (
+                        validation_code is None
+                        and not valid_tool_calls
                         and _looks_like_unfinished_intent(step_content)
                     ):
-                        # Dangling preview: it was withheld (still in `pending`), so
-                        # the user never saw it — drop the TEXT and nudge to actually
-                        # act, but still surface the usage so token accounting is kept.
-                        nudge_count += 1
-                        if pending_usage:
+                        validation_code = "MODEL_INTENT_UNFINISHED"
+
+                    if validation_code is not None:
+                        if pending_usage is not None:
                             yield TextChunk(delta="", usage=pending_usage)
-                        messages.append({"role": "assistant", "content": step_content})
-                        messages.append({"role": "user", "content": _INTENT_NUDGE_MSG})
-                        logger.info(
-                            f"Action-preview without tool call; nudging ({nudge_count}/{MAX_INTENT_NUDGES})."
+                        finalizer = active_finalizer
+                        active_finalizer = None
+                        await _finalize_validation_failed(
+                            finalizer,
+                            validation_code,
                         )
-                        step_content = ""
-                        step_reasoning_content = ""
-                        pending = ""
-                        pending_usage = None
+
+                        observed_attempt = physical_attempt_no
+                        handle = getattr(finalizer, "handle", None)
+                        handle_attempt = getattr(handle, "attempt_no", None)
+                        if (
+                            isinstance(handle_attempt, int)
+                            and not isinstance(handle_attempt, bool)
+                            and handle_attempt >= observed_attempt
+                        ):
+                            observed_attempt = handle_attempt
+                        repair_logical_call_id = logical_call_id
+                        repair_attempt_no = observed_attempt + 1
+                        repair_fallback_id = getattr(
+                            finalizer,
+                            "invocation_id",
+                            None,
+                        )
+
+                        if step_content:
+                            messages.append(
+                                {
+                                    "role": "assistant",
+                                    "content": step_content,
+                                }
+                            )
+                        if validation_code == "MODEL_INTENT_UNFINISHED":
+                            nudge_count += 1
+                            repair_message = (
+                                _INTENT_NUDGE_MSG
+                                if nudge_count <= MAX_INTENT_NUDGES
+                                else _OUTPUT_REPAIR_MSG
+                            )
+                        else:
+                            repair_message = _OUTPUT_REPAIR_MSG
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": repair_message,
+                            }
+                        )
+                        logger.info(
+                            "Model output rejected for repair: code={}, "
+                            "attempt_no={}",
+                            validation_code,
+                            repair_attempt_no,
+                        )
                         continue
-                    # Real final answer (or nudges exhausted): release any held text
-                    # (with its usage), then persist + finish.
-                    if pending:
-                        yield TextChunk(delta=pending, usage=pending_usage)
-                        pending = ""
-                        pending_usage = None
-                    if step_content:
-                        messages.append({"role": "assistant", "content": step_content})
-                        step_content = ""
-                    logger.info("No tool calls. ReAct loop complete.")
-                    break
 
-                # Tool calls present: carry any pre-call narration ON the tool-call
-                # assistant message (below), NOT as a separate assistant turn — the
-                # "narration then tool_call" history pattern teaches the model to
-                # emit bare previews.
-                narration_content = step_content or None
-                step_content = ""
-                reasoning_content = step_reasoning_content or None
-                step_reasoning_content = ""
+                    repair_logical_call_id = None
+                    repair_attempt_no = 1
+                    repair_fallback_id = None
 
-                # Filter valid tool calls
-                valid_tool_calls = [
-                    tc for tc in tool_calls
-                    if tc.type == "function" and tc.function.name in self.tool_fn_map
-                ]
+                    if not valid_tool_calls:
+                        if pending:
+                            yield TextChunk(
+                                delta=pending,
+                                usage=pending_usage,
+                                finish_reason=(
+                                    next(iter(finish_reasons), None)
+                                ),
+                            )
+                            pending = ""
+                            pending_usage = None
+                        if step_content:
+                            messages.append(
+                                {
+                                    "role": "assistant",
+                                    "content": step_content,
+                                }
+                            )
+                        logger.info("No tool calls. ReAct loop complete.")
+                        if active_finalizer is not None:
+                            finalizer = active_finalizer
+                            active_finalizer = None
+                            yield TextChunk(
+                                observability_finalizer=finalizer
+                            )
+                        return
 
-                if not valid_tool_calls:
-                    # Log invalid tool calls for debugging
-                    logger.warning(f"No valid function tool calls. Invalid tools: {tool_calls}")
+                    finalizer = active_finalizer
+                    active_finalizer = None
+                    await _finalize_success(finalizer)
 
-                    # Add assistant message with invalid tool calls to maintain conversation state
-                    if tool_calls:
-                        invalid_tc = tool_calls[0]
-                        assistant_msg = {
-                            "role": "assistant",
-                            "content": narration_content,
-                            "tool_calls": [invalid_tc]
-                        }
-                        if reasoning_content:
-                            assistant_msg["reasoning_content"] = reasoning_content
-                        messages.append(assistant_msg)
+                    narration_content = step_content or None
+                    reasoning_content = step_reasoning_content or None
+                    for tool_call in valid_tool_calls:
+                        yield TextChunk(tool_calls=[tool_call])
 
-                        # Add error messages for invalid tool calls
-                        error_msg = f"Error: Tool '{invalid_tc.function.name}' is not available. Available tools: {list(self.tool_fn_map.keys())}"
-                        messages.append({
-                            "role": "tool",
-                            "content": error_msg,
-                            "tool_call_id": invalid_tc.id
-                        })
-
-                        # Continue the loop to let LLM correct itself
-                        logger.info("Continuing ReAct loop to allow LLM to correct invalid tool calls.")
-                        continue
-                    else:
-                        # No tool calls at all but also no content - this shouldn't happen
-                        logger.info("No valid function tool calls and no content. ReAct loop complete.")
-                        break
-
-                # Yield tool calls before execution
-                for tool_call in valid_tool_calls:
-                    yield TextChunk(tool_calls=[tool_call])
-
-                # Execute all tool calls in parallel
-                logger.info(f"Executing {len(valid_tool_calls)} tool calls in parallel")
-                tool_execution_tasks = [
-                    execute_single_tool_call(tc, self.tool_fn_map)
-                    for tc in valid_tool_calls
-                ]
-                tool_results = await asyncio.gather(*tool_execution_tasks)
-
-                assistant_msg = {
-                    "role": "assistant",
-                    "content": narration_content,
-                    "tool_calls": valid_tool_calls,
-                }
-                if reasoning_content:
-                    assistant_msg["reasoning_content"] = reasoning_content
-                messages.append(assistant_msg)
-
-                # Process results and check for return_direct
-                should_return = False
-                for idx, (tool_call, tool_content, tool_error, message_content) in enumerate(tool_results):
-                    # Add tool result message (cap large results)
-                    capped_content = self.msg_manager.cap_tool_result(message_content) if message_content else message_content
-                    messages.append({
-                        "role": "tool",
-                        "content": capped_content,
-                        "tool_call_id": tool_call.id
-                    })
-
-                    # Yield tool result chunk
-                    yield ToolResultChunk(
-                        tool=tool_call,
-                        result=tool_content,
-                        error=tool_error
+                    logger.info(
+                        "Executing {} tool calls in parallel",
+                        len(valid_tool_calls),
+                    )
+                    tool_results = await asyncio.gather(
+                        *[
+                            execute_single_tool_call(tc, self.tool_fn_map)
+                            for tc in valid_tool_calls
+                        ]
                     )
 
-                    # Check if tool has return_direct=True
-                    function_name = tool_call.function.name
-                    if function_name in self.tool_fn_map:
+                    assistant_msg = {
+                        "role": "assistant",
+                        "content": narration_content,
+                        "tool_calls": valid_tool_calls,
+                    }
+                    if reasoning_content:
+                        assistant_msg["reasoning_content"] = reasoning_content
+                    messages.append(assistant_msg)
+
+                    should_return = False
+                    for (
+                        tool_call,
+                        tool_content,
+                        tool_error,
+                        message_content,
+                    ) in tool_results:
+                        capped_content = (
+                            self.msg_manager.cap_tool_result(message_content)
+                            if message_content
+                            else message_content
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "content": capped_content,
+                                "tool_call_id": tool_call.id,
+                            }
+                        )
+                        yield ToolResultChunk(
+                            tool=tool_call,
+                            result=tool_content,
+                            error=tool_error,
+                        )
+
+                        function_name = tool_call.function.name
                         tool_obj = self.tool_fn_map[function_name]
                         return_chunk = check_and_handle_return_direct(
                             tool_obj=tool_obj,
@@ -384,13 +672,26 @@ class ReactAgent:
                             should_return = True
                             break
 
-                if should_return:
-                    return
+                    if should_return:
+                        return
 
-            # Max steps exceeded warning
-            if react_step > self.max_steps:
-                warning_msg = f"Reached max steps: {self.max_steps}. Stopping."
+                warning_msg = (
+                    f"Reached max steps: {self.max_steps}. Stopping."
+                )
                 logger.warning(warning_msg)
-                yield TextChunk(delta=f"\n\nReached maximum iteration count ({self.max_steps}), task ended.")
+                yield TextChunk(
+                    delta=(
+                        "\n\nReached maximum iteration count "
+                        f"({self.max_steps}), task ended."
+                    )
+                )
+            finally:
+                if active_finalizer is not None:
+                    finalizer = active_finalizer
+                    active_finalizer = None
+                    await _finalize_validation_failed(
+                        finalizer,
+                        "MODEL_OUTPUT_PROCESSING_CANCELLED",
+                    )
 
         return gen()

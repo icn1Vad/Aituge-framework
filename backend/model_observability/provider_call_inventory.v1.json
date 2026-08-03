@@ -1,0 +1,140 @@
+{
+  "schemaVersion": "1.1",
+  "generatedFrom": "page2-owned-model-boundary-ast",
+  "inventoryScope": "Page2-modified direct inference boundaries plus known backend legacy model adapters. Internal callbacks, result sinks, search APIs, and other non-model HTTP calls are out of scope.",
+  "boundaries": [
+    {
+      "id": "legacy-openai-adapter",
+      "path": "backend/single-agent/common/llm/openai/openai.py",
+      "boundaryType": "CHAT_PROVIDER",
+      "executionScope": "LEGACY_UNREACHABLE",
+      "directCallCount": 12,
+      "astCallEndings": [
+        "chat.completions.create",
+        "completions.create"
+      ],
+      "status": "UNWIRED_RED",
+      "evidence": "OpenAILike has no production importer or constructor outside its definition files."
+    },
+    {
+      "id": "pai-llm-provider",
+      "path": "backend/single-agent/common/llm/llm_model.py",
+      "boundaryType": "CHAT_PROVIDER",
+      "executionScope": "PRODUCTION",
+      "directCallCount": 1,
+      "astCallEndings": [
+        "chat.completions.create"
+      ],
+      "status": "COVERED_BY_LLM_RUNTIME",
+      "evidence": "The sole production PaiLlm constructor is LlmRuntime.create_llm; SingleAgentRunner injects LlmRuntime into ReactAgent."
+    },
+    {
+      "id": "llm-runtime-provider",
+      "path": "backend/single-agent/service/conversation/llm_runner.py",
+      "boundaryType": "CHAT_PROVIDER",
+      "executionScope": "PRODUCTION",
+      "directCallCount": 2,
+      "astCallEndings": [
+        "chat.completions.create"
+      ],
+      "status": "COVERED_BY_LLM_RUNTIME",
+      "evidence": "Both non-streaming and streaming provider calls create lifecycle attempts at the provider boundary."
+    },
+    {
+      "id": "tool-retrieval-reranker",
+      "path": "backend/data/RAG/tool_retrieval/rerank.py",
+      "boundaryType": "RERANK_PROVIDER",
+      "executionScope": "LEGACY_UNREACHABLE",
+      "directCallCount": 1,
+      "astCallEndings": [
+        "client.post"
+      ],
+      "status": "UNWIRED_RED",
+      "evidence": "OpenAICompatibleReranker has no production constructor; ToolRetrievalRAG defaults to ScoreReranker."
+    },
+    {
+      "id": "proof-embedding-provider",
+      "path": "services/proof/src/proof/infrastructure/embedding.py",
+      "boundaryType": "EMBEDDING_PROVIDER",
+      "executionScope": "PRODUCTION",
+      "directCallCount": 1,
+      "astCallEndings": [
+        "httpx.post"
+      ],
+      "status": "COVERED_BY_PROOF_OBSERVER",
+      "evidence": "Each physical retry has a Proof observer attempt with dispatch, validation, failure, and success terminals."
+    },
+    {
+      "id": "proof-reranker-provider",
+      "path": "services/proof/src/proof/infrastructure/reranking.py",
+      "boundaryType": "RERANK_PROVIDER",
+      "executionScope": "PRODUCTION",
+      "directCallCount": 1,
+      "astCallEndings": [
+        "httpx.post"
+      ],
+      "status": "COVERED_BY_PROOF_OBSERVER",
+      "evidence": "Each physical retry has a Proof observer attempt with dispatch, validation, failure, and success terminals."
+    },
+    {
+      "id": "proof-offline-conflict-judge",
+      "path": "services/proof/src/proof/tools/benchmark_conflict_judge.py",
+      "boundaryType": "CHAT_PROVIDER",
+      "executionScope": "OFFLINE_TOOL",
+      "directCallCount": 1,
+      "astCallEndings": [
+        "httpx.post"
+      ],
+      "status": "COVERED_BY_PROOF_OBSERVER",
+      "evidence": "The direct judge request is enclosed by observed_tool_attempt and records provider usage."
+    },
+    {
+      "id": "proof-offline-atomic-retrieval",
+      "path": "services/proof/src/proof/tools/benchmark_atomic_retrieval.py",
+      "boundaryType": "CHAT_PROVIDER",
+      "executionScope": "OFFLINE_TOOL",
+      "directCallCount": 1,
+      "astCallEndings": [
+        "httpx.post"
+      ],
+      "status": "COVERED_BY_PROOF_OBSERVER",
+      "evidence": "Every retry is enclosed by observed_tool_attempt with fallback identity."
+    },
+    {
+      "id": "proof-offline-atomic-validation",
+      "path": "services/proof/src/proof/tools/validate_atomic_extraction.py",
+      "boundaryType": "CHAT_PROVIDER",
+      "executionScope": "OFFLINE_TOOL",
+      "directCallCount": 1,
+      "astCallEndings": [
+        "httpx.post"
+      ],
+      "status": "COVERED_BY_PROOF_OBSERVER",
+      "evidence": "The direct validation request is enclosed by observed_tool_attempt and records provider usage."
+    },
+    {
+      "id": "proof-offline-conflict-ab",
+      "path": "services/proof/src/proof/tools/benchmark_conflict_ab.py",
+      "boundaryType": "CHAT_PROVIDER",
+      "executionScope": "OFFLINE_TOOL",
+      "directCallCount": 1,
+      "astCallEndings": [
+        "httpx.post"
+      ],
+      "status": "COVERED_BY_PROOF_OBSERVER",
+      "evidence": "Every direct model retry is enclosed by observed_tool_attempt with fallback identity."
+    },
+    {
+      "id": "contract-revision-observability-proxy",
+      "path": "services/contract/src/contract/revision_llm_gateway.py",
+      "boundaryType": "INTERNAL_OBSERVABILITY_PROXY",
+      "executionScope": "PRODUCTION",
+      "directCallCount": 2,
+      "astCallEndings": [
+        "client.post"
+      ],
+      "status": "INTERNAL_PROXY_NOT_PROVIDER",
+      "evidence": "The completion and finalize POSTs target the internal Framework API; the Framework LlmRuntime owns the provider attempt and signed finalize token."
+    }
+  ]
+}

@@ -14,6 +14,11 @@ from capabilities.register import ProofConflictItemOutput
 from proof.api.app import _conflict_agent_view
 from proof.application.service import ProofService
 from proof.config import Settings
+from proof.infrastructure.model_observability import (
+    new_logical_call_id,
+    observed_tool_attempt,
+    usage_token_counts,
+)
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -66,51 +71,68 @@ def run(unit_id: str, *, candidate_limit: int, output: Path) -> dict[str, Any]:
     )
 
     judge_started = time.perf_counter()
-    response = httpx.post(
-        settings.embedding_base_url.rstrip("/") + "/chat/completions",
-        headers={"Authorization": f"Bearer {settings.embedding_api_key}"},
-        json={
-            "model": ModelRuntimeProvider.from_environment().active_pack.llm.id,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.1,
-            "max_tokens": 8000,
-            "stream": False,
-            "enable_thinking": False,
-            "chat_template_kwargs": {"enable_thinking": False},
-        },
-        timeout=180,
-    )
-    response.raise_for_status()
-    body = response.json()
-    content = str(body["choices"][0]["message"].get("content") or "")
-    parsed = _extract_json(content)
-    try:
-        validated = ProofConflictItemOutput.model_validate(parsed)
-    except ValidationError as exc:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(
-            json.dumps(
-                {
-                    "status": "validation_failed",
-                    "unit_id": unit_id,
-                    "candidate_limit": candidate_limit,
-                    "usage": body.get("usage") or {},
-                    "validation_errors": exc.errors(include_input=False),
-                    "model_output": parsed,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
+    model = ModelRuntimeProvider.from_environment().active_pack.llm.id
+    with observed_tool_attempt(
+        settings,
+        feature_code="proof.offline.conflict_judge",
+        model_name=model,
+        logical_call_id=new_logical_call_id(),
+        attempt_no=1,
+        fallback_from_invocation_id=None,
+    ) as observation:
+        response = httpx.post(
+            settings.embedding_base_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {settings.embedding_api_key}"},
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.1,
+                "max_tokens": 8000,
+                "stream": False,
+                "enable_thinking": False,
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+            timeout=180,
         )
-        raise
-    for finding in validated.findings:
-        proof_service._validate_conflict_finding(
-            finding.model_dump(),
-            target_ids={str(view["source"]["id"])},
+        observation.dispatched(response)
+        response.raise_for_status()
+        body = response.json()
+        content = str(body["choices"][0]["message"].get("content") or "")
+        parsed = _extract_json(content)
+        try:
+            validated = ProofConflictItemOutput.model_validate(parsed)
+        except ValidationError as exc:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(
+                json.dumps(
+                    {
+                        "status": "validation_failed",
+                        "unit_id": unit_id,
+                        "candidate_limit": candidate_limit,
+                        "usage": body.get("usage") or {},
+                        "validation_errors": exc.errors(include_input=False),
+                        "model_output": parsed,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            raise
+        for finding in validated.findings:
+            proof_service._validate_conflict_finding(
+                finding.model_dump(),
+                target_ids={str(view["source"]["id"])},
+            )
+        input_tokens, output_tokens = usage_token_counts(
+            body.get("usage") or {}
+        )
+        observation.succeeded(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
     judge_ms = int((time.perf_counter() - judge_started) * 1000)
 

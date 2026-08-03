@@ -95,6 +95,21 @@ class TaskEventEntity(SQLModel, table=True):
     visible: bool = True
     message: str = Field(default="", sa_column=Column(Text))
     payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # Observability context is intentionally nullable for legacy rows. New
+    # writers populate all context already known by the Task boundary; the
+    # page-3 migration backfills tenant/user/service and event timestamps.
+    tenant_id: Optional[str] = Field(default=None, max_length=64)
+    user_id: Optional[str] = Field(default=None, max_length=120)
+    request_id: Optional[str] = Field(default=None, max_length=120)
+    trace_id: Optional[str] = Field(default=None, max_length=64)
+    span_id: Optional[str] = Field(default=None, max_length=32)
+    privacy_mode: Optional[str] = Field(default=None, max_length=16)
+    route_type: Optional[str] = Field(default=None, max_length=16)
+    service_name: Optional[str] = Field(default=None, max_length=80)
+    service_version: Optional[str] = Field(default=None, max_length=80)
+    environment: Optional[str] = Field(default=None, max_length=32)
+    occurred_at: Optional[datetime] = Field(default_factory=utc_now, sa_column=Column(DateTime))
+    ingested_at: Optional[datetime] = Field(default_factory=utc_now, sa_column=Column(DateTime))
     created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime))
 
 

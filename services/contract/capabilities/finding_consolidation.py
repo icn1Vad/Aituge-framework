@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
@@ -13,6 +14,11 @@ from typing import Any, Callable, Literal, Mapping, Protocol
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from service.conversation.llm_runner import LlmRuntime
+from services.contract.capabilities.model_observation import (
+    deferred_completion_kwargs,
+    finalize_completion_success,
+    finalize_completion_validation_failed,
+)
 from services.contract.capabilities.prompt_budget import evaluate_prompt_budget
 from task_manager.output_parser import parse_json_output
 
@@ -58,7 +64,7 @@ class PromptBudgetHardLimitError(RuntimeError):
 
 
 class LlmCompleter(Protocol):
-    async def complete(
+    async def complete_with_usage(
         self,
         messages: list[dict[str, str]],
         model_id: str | None = None,
@@ -205,110 +211,103 @@ class FindingConsolidationEngine:
         feedback: str | None = None
         last_error: Exception | None = None
         runtime = self.runtime_factory(tenant_id)
+        previous_completion: Any | None = None
         for attempt in (1, 2):
             prompt = f"请判断以下候选对：{payload}"
             if feedback:
                 prompt += f"\n上次输出未通过结构校验：{feedback}。请完整重发全部判断。"
+            completion_result: Any | None = None
             try:
-                completion = getattr(runtime, "complete_with_usage", None)
-                if callable(completion):
-                    batch_id = _consolidation_batch_id(candidates)
-                    result = await completion(
-                        messages=[{"role": "user", "content": prompt}],
-                        model_id=model_id,
-                        system_prompt=_SYSTEM_PROMPT,
-                        max_tokens=max(800, min(8_000, 200 + len(candidates) * 80)),
-                        temperature=0,
-                        thinking_override=False,
-                        response_format={"type": "json_object"},
-                        review_unit_id="finding_consolidation",
+                batch_id = _consolidation_batch_id(candidates)
+                completion_result = await runtime.complete_with_usage(
+                    messages=[{"role": "user", "content": prompt}],
+                    model_id=model_id,
+                    system_prompt=_SYSTEM_PROMPT,
+                    max_tokens=max(800, min(8_000, 200 + len(candidates) * 80)),
+                    temperature=0,
+                    thinking_override=False,
+                    response_format={"type": "json_object"},
+                    review_unit_id="finding_consolidation",
+                    repair_no=attempt - 1,
+                    **deferred_completion_kwargs(
+                        previous_completion,
                         repair_no=attempt - 1,
+                    ),
+                )
+                budget = evaluate_prompt_budget(
+                    unit_id="finding_consolidation",
+                    batch_id=batch_id,
+                    estimated_business_context_tokens=max(1, round(len(payload) / 2)),
+                    provider_prompt_tokens=completion_result.prompt_tokens,
+                    provider_cached_tokens=completion_result.cached_tokens,
+                )
+                metric = {
+                    "batch_id": batch_id,
+                    "repair_no": attempt - 1,
+                    "prompt_tokens": completion_result.prompt_tokens,
+                    "cached_tokens": completion_result.cached_tokens,
+                    "completion_tokens": completion_result.completion_tokens,
+                    "total_tokens": completion_result.total_tokens,
+                    "time_to_first_token_ms": completion_result.time_to_first_token_ms,
+                    "model_duration_ms": completion_result.model_duration_ms,
+                    "trace_id": completion_result.trace_id,
+                    "provider_request_id": completion_result.provider_request_id,
+                    "finish_reason": completion_result.finish_reason,
+                    "prompt_budget": budget.model_dump(mode="json"),
+                }
+                if call_metrics is not None:
+                    call_metrics.append(metric)
+                if budget.budget_status == "HARD_LIMIT_EXCEEDED":
+                    await finalize_completion_validation_failed(
+                        completion_result,
+                        "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED",
                     )
-                    budget = evaluate_prompt_budget(
-                        unit_id="finding_consolidation",
-                        batch_id=batch_id,
-                        estimated_business_context_tokens=max(1, round(len(payload) / 2)),
-                        provider_prompt_tokens=result.prompt_tokens,
-                        provider_cached_tokens=result.cached_tokens,
+                    raise PromptBudgetHardLimitError(
+                        "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED"
                     )
-                    metric = {
-                        "batch_id": batch_id,
-                        "repair_no": attempt - 1,
-                        "prompt_tokens": result.prompt_tokens,
-                        "cached_tokens": result.cached_tokens,
-                        "completion_tokens": result.completion_tokens,
-                        "total_tokens": result.total_tokens,
-                        "time_to_first_token_ms": result.time_to_first_token_ms,
-                        "model_duration_ms": result.model_duration_ms,
-                        "trace_id": result.trace_id,
-                        "provider_request_id": result.provider_request_id,
-                        "finish_reason": result.finish_reason,
-                        "prompt_budget": budget.model_dump(mode="json"),
-                    }
-                    if call_metrics is not None:
-                        call_metrics.append(metric)
-                    if budget.budget_status == "HARD_LIMIT_EXCEEDED":
-                        raise PromptBudgetHardLimitError(
-                            "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED"
-                        )
-                    content = result.content
-                else:
-                    content = await runtime.complete(
-                        messages=[{"role": "user", "content": prompt}],
-                        model_id=model_id,
-                        system_prompt=_SYSTEM_PROMPT,
-                        max_tokens=max(800, min(8_000, 200 + len(candidates) * 80)),
-                        temperature=0,
-                        thinking_override=False,
-                    )
-                    if call_metrics is not None:
-                        call_metrics.append(
-                            {
-                                "batch_id": _consolidation_batch_id(candidates),
-                                "repair_no": attempt - 1,
-                                "prompt_tokens": None,
-                                "cached_tokens": None,
-                                "completion_tokens": None,
-                                "total_tokens": None,
-                                "time_to_first_token_ms": None,
-                                "model_duration_ms": 0,
-                                "trace_id": None,
-                                "provider_request_id": None,
-                                "finish_reason": None,
-                                "prompt_budget": evaluate_prompt_budget(
-                                    unit_id="finding_consolidation",
-                                    batch_id=_consolidation_batch_id(candidates),
-                                    estimated_business_context_tokens=max(
-                                        1, round(len(payload) / 2)
-                                    ),
-                                    provider_prompt_tokens=None,
-                                    provider_cached_tokens=None,
-                                ).model_dump(mode="json"),
-                            }
-                        )
-                envelope = _parse_model_output(content)
+                envelope = _parse_model_output(completion_result.content)
                 actual_ids = [item.pair_id for item in envelope.decisions]
                 if len(actual_ids) != len(set(actual_ids)) or set(actual_ids) != set(expected):
                     raise ValueError("pair_id coverage does not match the request")
                 by_id = {item.pair_id: item.relation for item in envelope.decisions}
-                return (
-                    [
-                        {
-                            "pair_id": item.pair_id,
-                            "left": item.left.as_dict(),
-                            "right": item.right.as_dict(),
-                            "relation": by_id[item.pair_id],
-                        }
-                        for item in candidates
-                    ],
-                    attempt,
-                )
+                decisions = [
+                    {
+                        "pair_id": item.pair_id,
+                        "left": item.left.as_dict(),
+                        "right": item.right.as_dict(),
+                        "relation": by_id[item.pair_id],
+                    }
+                    for item in candidates
+                ]
+                await finalize_completion_success(completion_result)
+                return decisions, attempt
+            except asyncio.CancelledError:
+                if completion_result is not None:
+                    await finalize_completion_validation_failed(
+                        completion_result,
+                        "MODEL_OUTPUT_PROCESSING_CANCELLED",
+                    )
+                raise
+            except PromptBudgetHardLimitError:
+                raise
             except (ValueError, ValidationError) as exc:
+                if completion_result is not None:
+                    await finalize_completion_validation_failed(
+                        completion_result,
+                        "FINDING_CONSOLIDATION_OUTPUT_INVALID",
+                    )
+                    previous_completion = completion_result
                 last_error = exc
                 feedback = str(exc)[:300]
+            except Exception:
+                if completion_result is not None:
+                    await finalize_completion_validation_failed(
+                        completion_result,
+                        "MODEL_OUTPUT_PROCESSING_FAILED",
+                    )
+                raise
         assert last_error is not None
         raise last_error
-
 
 def build_candidate_pairs(
     artifacts: dict[str, Any],

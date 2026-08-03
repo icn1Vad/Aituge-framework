@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import asyncio
 from typing import Any, Literal
 
 from sqlalchemy import desc
@@ -11,6 +12,10 @@ from scheduling.scheduler import SchedulingRuntimeOptions
 from scheduling.scheduler.runtime_context import RuntimeContextBlock, SchedulingRuntimeContext
 from service.conversation import LlmRuntime
 from skill import SkillManager
+from model_observability.runtime import (
+    finalize_deferred_completion_success,
+    finalize_deferred_completion_validation_failed,
+)
 
 from .models import TaskEntity, TaskMemoryEntity
 from .output_parser import parse_json_output
@@ -140,19 +145,43 @@ class TaskMemoryService:
         skill_context = await SkillManager(tenant_id=tenant_id).create_context(
             skill_package
         )
-        content = await LlmRuntime(
+        completion = await LlmRuntime(
             tenant_id=tenant_id,
             model_pack_id=model_pack_id,
-        ).complete(
+        ).complete_with_usage(
             messages=[{"role": "user", "content": message}],
             system_prompt=skill_context.task_prompt,
+            review_unit_id="task_memory_consolidation",
+            defer_terminal=True,
         )
-        parsed = parse_json_output(content)
-        if not parsed.ok or not isinstance(parsed.structured, dict):
-            raise ValueError("Memory consolidation did not return a valid JSON object.")
-        memory_text = str(parsed.structured.get("memory") or "").strip()
-        if not memory_text:
-            raise ValueError("Memory consolidation returned an empty memory.")
+        try:
+            parsed = parse_json_output(completion.content)
+            if not parsed.ok or not isinstance(parsed.structured, dict):
+                raise ValueError(
+                    "Memory consolidation did not return a valid JSON object."
+                )
+            memory_text = str(parsed.structured.get("memory") or "").strip()
+            if not memory_text:
+                raise ValueError("Memory consolidation returned an empty memory.")
+        except asyncio.CancelledError:
+            await finalize_deferred_completion_validation_failed(
+                completion,
+                "MODEL_OUTPUT_PROCESSING_CANCELLED",
+            )
+            raise
+        except ValueError:
+            await finalize_deferred_completion_validation_failed(
+                completion,
+                "TASK_MEMORY_OUTPUT_INVALID",
+            )
+            raise
+        except Exception:
+            await finalize_deferred_completion_validation_failed(
+                completion,
+                "MODEL_OUTPUT_PROCESSING_FAILED",
+            )
+            raise
+        await finalize_deferred_completion_success(completion)
 
         row = TaskMemoryEntity(
             tenant_id=tenant_id,

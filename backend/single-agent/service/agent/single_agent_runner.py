@@ -1,3 +1,4 @@
+import inspect
 import json
 from typing import AsyncIterator, List, Optional, Sequence
 
@@ -74,6 +75,25 @@ def _normalize_messages(
     return normalized
 
 
+def _react_agent_accepts_keyword(keyword: str) -> bool:
+    """Return whether the currently injected agent accepts an optional keyword."""
+
+    try:
+        parameters = inspect.signature(ReactAgent).parameters
+    except (TypeError, ValueError):
+        return False
+    if any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        return True
+    parameter = parameters.get(keyword)
+    return parameter is not None and parameter.kind in {
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    }
+
+
 class SingleAgentRunner:
     """Runs one single-agent chat turn without depending on an HTTP layer."""
 
@@ -86,17 +106,48 @@ class SingleAgentRunner:
     ):
         self.tenant_id = tenant_id
         self.system_prompt = system_prompt
-        llm_runtime = LlmRuntime(
+        self.llm_runtime = LlmRuntime(
             tenant_id=tenant_id,
             llm_factory=lambda config: create_llm(config),
             model_pack_id=model_pack_id,
         )
         self.default_model_id = (
-            default_model_id or llm_runtime.model_runtime_provider.active_pack.llm.id
+            default_model_id or self.llm_runtime.model_runtime_provider.active_pack.llm.id
         )
         self.conversation = ConversationManager(
             tenant_id=tenant_id,
-            llm_runner=llm_runtime,
+            llm_runner=self.llm_runtime,
+        )
+
+    def _create_agent(
+        self,
+        *,
+        llm,
+        system_prompt: str,
+        tools: Sequence[FunctionTool],
+        model_id: str,
+    ):
+        accepts_runtime = _react_agent_accepts_keyword("llm_runtime")
+        accepts_model_id = _react_agent_accepts_keyword("model_id")
+        if accepts_runtime and accepts_model_id:
+            return ReactAgent(
+                llm=llm,
+                system_prompt=system_prompt,
+                tools=list(tools),
+                llm_runtime=self.llm_runtime,
+                model_id=model_id,
+            )
+
+        optional_kwargs = {}
+        if accepts_runtime:
+            optional_kwargs["llm_runtime"] = self.llm_runtime
+        if accepts_model_id:
+            optional_kwargs["model_id"] = model_id
+        return ReactAgent(
+            llm=llm,
+            system_prompt=system_prompt,
+            tools=list(tools),
+            **optional_kwargs,
         )
 
     async def chat(
@@ -156,10 +207,11 @@ class SingleAgentRunner:
                     f"user={user_id}, session={session_id}."
                 )
 
-        agent = ReactAgent(
+        agent = self._create_agent(
             llm=llm,
             system_prompt=system_prompt,
             tools=tools,
+            model_id=model_id,
         )
         agent_state = AgentState.from_messages(runtime_messages, max_rounds=0)
         response_gen = await agent.run_async(agent_state)
@@ -269,10 +321,11 @@ class SingleAgentRunner:
                 data={"observation": compression.observation},
             )
 
-        agent = ReactAgent(
+        agent = self._create_agent(
             llm=llm,
             system_prompt=system_prompt,
             tools=tools,
+            model_id=model_id,
         )
         agent_state = AgentState.from_messages(runtime_messages, max_rounds=0)
         response_gen = await agent.run_async(agent_state)

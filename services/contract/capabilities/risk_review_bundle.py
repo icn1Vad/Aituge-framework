@@ -39,6 +39,11 @@ from contract.risk.lre_source_policy import (
 )
 from contract.risk.po_source_policy import PO_SOURCE_PATTERN_RULES
 from service.conversation.llm_runner import LlmCompletionResult, LlmRuntime
+from services.contract.capabilities.model_observation import (
+    deferred_completion_kwargs,
+    finalize_completion_success,
+    finalize_completion_validation_failed,
+)
 from services.contract.capabilities.risk_review import (
     BASE_CHECK_CODE_PATTERN,
     BASE_UNIT_ID_PATTERN,
@@ -1493,6 +1498,10 @@ class GenericBaseDirectReviewer:
                     framework_run_id=framework_run_id,
                     attempt_no=request.attempt_no,
                     repair_no=repair_no,
+                    **deferred_completion_kwargs(
+                        calls[-1] if calls else None,
+                        repair_no=repair_no,
+                    ),
                 )
             except Exception as exc:
                 _emit_generic_attempt_artifact(
@@ -1549,6 +1558,14 @@ class GenericBaseDirectReviewer:
                     )
                 )
                 accepted_snapshot = _generic_repair_snapshot(parsed.raw_object)
+                if (
+                    completion.completion_tokens is not None
+                    and completion.completion_tokens > 4000
+                ):
+                    raise DirectReviewError(
+                        "RISK_OUTPUT_BUDGET_EXCEEDED",
+                        f"{request.unit_id} exceeded the hard output token limit",
+                    )
                 _emit_generic_attempt_artifact(
                     attempt_artifact_sink,
                     request=request,
@@ -1568,8 +1585,10 @@ class GenericBaseDirectReviewer:
                     input_diagnostics=input_diagnostics,
                 )
                 accepted_normalization = parsed.normalization
+                await finalize_completion_success(completion)
                 break
             except DirectReviewError as exc:
+                await finalize_completion_validation_failed(completion, exc.code)
                 raw_object = (
                     parsed.raw_object
                     if parsed is not None
@@ -1638,6 +1657,18 @@ class GenericBaseDirectReviewer:
                     else (parsed.raw_object if parsed is not None else None)
                 )
                 repair_reasons.append(invalid_reason)
+            except asyncio.CancelledError:
+                await finalize_completion_validation_failed(
+                    completion,
+                    "MODEL_OUTPUT_PROCESSING_CANCELLED",
+                )
+                raise
+            except Exception:
+                await finalize_completion_validation_failed(
+                    completion,
+                    "MODEL_OUTPUT_PROCESSING_FAILED",
+                )
+                raise
         else:  # pragma: no cover
             raise DirectReviewError(
                 "RISK_DIRECT_OUTPUT_INVALID",
@@ -1817,6 +1848,10 @@ async def _review_po_candidate_batch(
                 framework_run_id=framework_run_id,
                 attempt_no=request.attempt_no,
                 repair_no=repair_no,
+                **deferred_completion_kwargs(
+                    calls[-1] if calls else None,
+                    repair_no=repair_no,
+                ),
             )
         except Exception as exc:
             _emit_generic_attempt_artifact(
@@ -1877,6 +1912,14 @@ async def _review_po_candidate_batch(
                     semantic_preservation_passed=semantic_preservation_passed,
                 )
             )
+            if (
+                completion.completion_tokens is not None
+                and completion.completion_tokens > 4000
+            ):
+                raise DirectReviewError(
+                    "RISK_OUTPUT_BUDGET_EXCEEDED",
+                    "performance_obligations exceeded the hard output token limit",
+                )
             _emit_generic_attempt_artifact(
                 attempt_artifact_sink,
                 request=request,
@@ -1894,8 +1937,10 @@ async def _review_po_candidate_batch(
                 accepted=True,
                 acceptance_reason="ACCEPTED",
             )
+            await finalize_completion_success(completion)
             break
         except DirectReviewError as exc:
+            await finalize_completion_validation_failed(completion, exc.code)
             parsed_object = (
                 parsed_object
                 if parsed_object is not None
@@ -1939,6 +1984,18 @@ async def _review_po_candidate_batch(
             invalid_reason = f"{exc.code}: {exc}"
             first_snapshot = _po_decision_snapshot(parsed_object)
             repair_reasons.append(invalid_reason)
+        except asyncio.CancelledError:
+            await finalize_completion_validation_failed(
+                completion,
+                "MODEL_OUTPUT_PROCESSING_CANCELLED",
+            )
+            raise
+        except Exception:
+            await finalize_completion_validation_failed(
+                completion,
+                "MODEL_OUTPUT_PROCESSING_FAILED",
+            )
+            raise
     else:  # pragma: no cover
         raise DirectReviewError(
             "RISK_DIRECT_OUTPUT_INVALID",
