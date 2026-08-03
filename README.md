@@ -84,3 +84,9 @@ poetry run pytest -q
 
 If Poetry is unavailable, create a Python 3.11 virtual environment and install
 the dependencies from `pyproject.toml`.
+
+## 合同审查产品镜像
+
+本仓库为合同审查构建三个可独立升级的镜像：`python-framework` 负责调度、Worker和能力注册，`python-contract` 负责合同运行与结果组织，`python-model-gateway` 负责模型路由和鉴权。
+
+正式组合由 `AI-tuge/aituge-deployment` 的 `environments/contract-review/` 管理，对应变量为 `PYTHON_FRAMEWORK_IMAGE`、`PYTHON_CONTRACT_IMAGE` 和 `PYTHON_MODEL_GATEWAY_IMAGE`。Framework API与Worker必须使用同一个镜像。运行数据写PostgreSQL、Redis和命名卷，模型密钥通过只读文件注入，不能进入源码或镜像。
