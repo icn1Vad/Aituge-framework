@@ -333,7 +333,7 @@ def test_conversation_manager_compresses_large_redis_history(monkeypatch):
         await session_history_manager.restore_history_messages(user_id, session_id, history)
         manager = ConversationManager()
         restored = await manager.restore_history_messages(
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
             user_id=user_id,
             session_id=session_id,
             thread_id=session_id,

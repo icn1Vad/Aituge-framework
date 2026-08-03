@@ -19,7 +19,7 @@ def test_scheduler_uses_optional_task_model_without_exposing_it_to_agent_prompt(
         input_payload_json={
             "question": "采购审批要求是什么？",
             "top_k": 3,
-            "model_id": " deepseek-v4-pro ",
+            "model_id": " deepseek-v4-flash ",
         },
         user_id="user-1",
         tenant_id="tenant-1",
@@ -27,7 +27,7 @@ def test_scheduler_uses_optional_task_model_without_exposing_it_to_agent_prompt(
 
     message, context = _build_scheduler_input(task, PROOF_QA)
 
-    assert _selected_model_id(task) == "deepseek-v4-pro"
+    assert _selected_model_id(task) == "deepseek-v4-flash"
     assert message == "采购审批要求是什么？"
     assert '"top_k": 3' in context
     assert "model_id" not in context

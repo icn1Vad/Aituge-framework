@@ -1303,7 +1303,7 @@ def test_po003_our_party_duty_is_resolved_before_model_review() -> None:
         GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
             request,
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
         )
     )
     decision = next(
@@ -1585,7 +1585,7 @@ def test_po006_unsupported_factor_is_audited_without_repair_or_upgrade() -> None
         GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
             request,
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
         )
     )
     decision = next(
@@ -1717,7 +1717,7 @@ def test_generic_direct_review_maps_real_anchor_and_uses_zero_tools() -> None:
         GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
             _request(),
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
             framework_run_id="run-base-1",
         )
     )
@@ -2068,7 +2068,7 @@ def test_po_strong_negative_decision_requires_counter_evidence(
             ).review(
                 request,
                 tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
+                model_id="deepseek-v4-flash",
             )
         )
     assert raised.value.code == "RISK_NEGATIVE_DECISION_UNSUPPORTED"
@@ -2091,7 +2091,7 @@ def test_po_semantic_no_risk_is_explicit_and_creates_no_finding() -> None:
         GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
             request,
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
         )
     )
 
@@ -2132,7 +2132,7 @@ def test_po_risk_materialization_and_severity_are_deterministic() -> None:
         GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
             request,
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
         )
     )
     decision = next(
@@ -2205,7 +2205,7 @@ def test_po_shared_core_candidates_materialize_one_stable_root_and_finding() -> 
             ).review(
                 request,
                 tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
+                model_id="deepseek-v4-flash",
             )
         )
 
@@ -2305,7 +2305,7 @@ def test_po_independent_scope_and_delivery_candidates_remain_two_roots() -> None
         GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
             request,
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
         )
     )
 
@@ -2403,7 +2403,7 @@ def test_po_supporting_evidence_change_does_not_change_root_identity() -> None:
         GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
             request,
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
         )
     )
     _prompt, ir_refs, anchor_refs = _generic_prompt(request)
@@ -2490,7 +2490,7 @@ def test_po_primary_repeated_as_supporting_is_deduplicated_without_repair() -> N
         GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
             request,
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
         )
     )
 
@@ -2554,7 +2554,7 @@ def test_po_wrong_party_summary_is_audited_but_cannot_pollute_final_finding() ->
         GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
             request,
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
         )
     )
 
@@ -2612,7 +2612,7 @@ def test_po_control_code_materializes_suggestion_without_domain_leakage() -> Non
         GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
             request,
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
         )
     )
 
@@ -2652,7 +2652,7 @@ def test_po_unknown_or_cross_candidate_control_code_is_rejected() -> None:
             ).review(
                 request,
                 tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
+                model_id="deepseek-v4-flash",
             )
         )
     assert raised.value.code == "RISK_CONTROL_CODE_NOT_ALLOWED"
@@ -2682,7 +2682,7 @@ def test_po_insufficient_evidence_is_scoped_to_candidate_and_check() -> None:
         ).review(
             request,
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
         )
     )
 
@@ -2999,7 +2999,7 @@ def test_po_direct_reviewer_uses_only_source_id_and_derives_final_evidence() -> 
         ).review(
             request,
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
             framework_run_id="run-po-1",
         )
     )
@@ -3056,7 +3056,7 @@ def test_po_technical_fields_and_primary_evidence_are_deterministic() -> None:
         GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
             request,
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
         )
     )
 
@@ -3115,7 +3115,7 @@ def test_legacy_po_check_level_output_is_rejected_without_candidate_repair() -> 
             GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
                 generic_request_from_context(context),
                 tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
+                model_id="deepseek-v4-flash",
                 allow_evidence_selection_repair=False,
             )
         )
@@ -3194,7 +3194,7 @@ def test_latest_candidate_failure_replays_with_deterministic_roles_and_text() ->
         GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
             request,
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
         )
     )
 
@@ -3244,7 +3244,7 @@ def test_po_model_never_controls_check_category_or_risk_type() -> None:
         GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
             request,
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
         )
     )
 
@@ -3278,7 +3278,7 @@ def test_po_unknown_candidate_is_rejected_without_repair() -> None:
             ).review(
                 request,
                 tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
+                model_id="deepseek-v4-flash",
             )
         )
 
@@ -3597,7 +3597,7 @@ def test_po_acceptance_mode_stops_before_evidence_selection_repair() -> None:
             reviewer.review(
                 request,
                 tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
+                model_id="deepseek-v4-flash",
                 allow_evidence_selection_repair=False,
             )
         )
@@ -3668,7 +3668,7 @@ def test_fva002_cannot_assert_unseen_external_facts() -> None:
             GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
                 _request(),
                 tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
+                model_id="deepseek-v4-flash",
             )
         )
 
@@ -3691,7 +3691,7 @@ def test_fva002_external_verification_is_not_a_finding() -> None:
         GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
             _request(),
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
         )
     )
 
@@ -3731,7 +3731,7 @@ def test_fva002_external_verification_rejects_personnel_scope_leakage() -> None:
             GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
                 _request(),
                 tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
+                model_id="deepseek-v4-flash",
             )
         )
 
@@ -3770,7 +3770,7 @@ def test_fva002_explicit_textual_conflict_requires_source_evidence() -> None:
         GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
             _request(),
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
         )
     )
 
@@ -3819,7 +3819,7 @@ def test_fva002_explicit_no_authority_text_can_form_a_textual_risk() -> None:
         GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
             _request(),
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
         )
     )
 
@@ -3880,7 +3880,7 @@ def test_fva002_rejects_inconsistent_state_combinations(
             GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
                 _request(),
                 tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
+                model_id="deepseek-v4-flash",
             )
         )
 
@@ -3906,7 +3906,7 @@ def test_fva002_no_visible_issue_cannot_claim_external_authority_was_verified() 
             GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
                 _request(),
                 tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
+                model_id="deepseek-v4-flash",
             )
         )
 
@@ -3930,7 +3930,7 @@ def test_fva002_assessment_fields_are_rejected_on_other_checks() -> None:
             GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
                 _request(),
                 tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
+                model_id="deepseek-v4-flash",
             )
         )
 
@@ -3959,7 +3959,7 @@ def test_structural_repair_can_only_add_compatible_evidence_type() -> None:
         GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
             _request(),
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
         )
     )
 
@@ -3994,7 +3994,7 @@ def test_structural_repair_cannot_change_fva002_assessment() -> None:
             GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
                 _request(),
                 tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
+                model_id="deepseek-v4-flash",
             )
         )
 
@@ -4020,7 +4020,7 @@ def test_semantic_change_failure_persists_both_complete_attempts() -> None:
             GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
                 _request(),
                 tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
+                model_id="deepseek-v4-flash",
                 attempt_artifact_sink=persisted.append,
             )
         )
@@ -4068,7 +4068,7 @@ def test_generic_direct_review_never_returns_partial_or_invalid_evidence(mutate)
             GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
                 _request(),
                 tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
+                model_id="deepseek-v4-flash",
             )
         )
 
@@ -4371,7 +4371,7 @@ def _run_fake_bundle(plan, *, generic=None, commercial=None, **kwargs):
         execute_base_risk_review_bundle(
             plan,
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
             contract_hash=TEST_CONTRACT_HASH,
             fixture_id=TEST_FIXTURE_ID,
             generic_reviewer=generic or FakeGenericReviewer(tracker),
@@ -4392,7 +4392,7 @@ def test_fixed_fixture_builds_seven_batches_and_parallel_complete_bundle() -> No
         execute_base_risk_review_bundle(
             plan,
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
             contract_hash=TEST_CONTRACT_HASH,
             fixture_id=TEST_FIXTURE_ID,
             generic_reviewer=FakeGenericReviewer(tracker),
@@ -4696,7 +4696,7 @@ def test_one_batch_failure_preserves_other_validated_results() -> None:
         execute_base_risk_review_bundle(
             plan,
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
             contract_hash=TEST_CONTRACT_HASH,
             fixture_id=TEST_FIXTURE_ID,
             generic_reviewer=FakeGenericReviewer(

@@ -14,7 +14,7 @@ class FakeLlm:
 def test_explicitly_disables_thinking_for_official_deepseek_v4() -> None:
     llm = FakeLlm(
         api_base="https://api.deepseek.com",
-        model="deepseek-v4-pro",
+        model="deepseek-v4-flash",
         enable_thinking=True,
     )
 
@@ -26,7 +26,7 @@ def test_explicitly_disables_thinking_for_official_deepseek_v4() -> None:
 def test_keeps_configured_behavior_when_contract_layer_does_not_override() -> None:
     llm = FakeLlm(
         api_base="https://api.deepseek.com",
-        model="deepseek-v4-pro",
+        model="deepseek-v4-flash",
         enable_thinking=True,
     )
 
@@ -114,7 +114,7 @@ def _runtime_with_fake_llm():
         ordinary_response=ordinary,
     )
     llm = SimpleNamespace(
-        model="deepseek-v4-pro",
+        model="deepseek-v4-flash",
         api_base="https://api.deepseek.com",
         temperature=0.7,
         max_tokens=8192,
@@ -138,7 +138,7 @@ def test_complete_with_usage_streams_and_keeps_unit_attribution() -> None:
     result = asyncio.run(
         runtime.complete_with_usage(
             [{"role": "user", "content": "review"}],
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
             system_prompt="system",
             max_tokens=4000,
             temperature=0,
@@ -176,7 +176,7 @@ def test_complete_remains_non_streaming_and_backward_compatible() -> None:
     value = asyncio.run(
         runtime.complete(
             [{"role": "user", "content": "ordinary"}],
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
             temperature=0,
             thinking_override=False,
         )

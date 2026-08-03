@@ -91,9 +91,9 @@ async def _seed_llm_config():
             LlmModelEntity(
                 tenant_id=DEFAULT_TENANT_ID,
                 base_url="http://example.test/v1",
-                model="deepseek-v4-pro",
-                model_name="deepseek-v4-pro",
-                model_id="deepseek-v4-pro",
+                model="deepseek-v4-flash",
+                model_name="deepseek-v4-flash",
+                model_id="deepseek-v4-flash",
                 encrypted_api_key=encrypt_key("test-key"),
                 provider_name="openai_like",
                 source="openai_like",

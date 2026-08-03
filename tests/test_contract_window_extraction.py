@@ -935,7 +935,7 @@ def test_window_extractor_test_api_uses_configured_model(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["result"]["window_id"] == "window-001"
     assert engine.calls[0]["tenant_id"] == "tenant-001"
-    assert engine.calls[0]["model_id"] == "deepseek-v4-pro"
+    assert engine.calls[0]["model_id"] == "deepseek-v4-flash"
     assert response.json()["party_context"]["our_party"] == "甲方测试单位"
     assert response.json()["party_context"]["counterparty"] == "乙方测试单位"
     sent_window = engine.calls[0]["window"]

@@ -1,5 +1,5 @@
 id: api-rerank-similarity
 display_name: API Reranker - Similarity
-llm: deepseek-v4-pro
+llm: deepseek-v4-flash
 embedding: policy-embedding-v4
 reranker: api-qwen3-rerank-similarity

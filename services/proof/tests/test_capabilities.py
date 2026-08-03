@@ -229,12 +229,12 @@ def test_proof_search_input_matches_retrieval_api_contract():
 def test_proof_qa_input_normalizes_question_and_validates_top_k():
     payload = proof_capability.ProofQaInput(
         question="  关联交易如何审批？  ",
-        model_id="  deepseek-v4-pro  ",
+        model_id="  deepseek-v4-flash  ",
     )
 
     assert payload.question == "关联交易如何审批？"
     assert payload.top_k == 8
-    assert payload.model_id == "deepseek-v4-pro"
+    assert payload.model_id == "deepseek-v4-flash"
     with pytest.raises(ValidationError):
         proof_capability.ProofQaInput(question=" ")
     with pytest.raises(ValidationError):

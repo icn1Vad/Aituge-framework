@@ -2,10 +2,10 @@ version: 1
 default_pack_id: api-rerank
 
 llms:
-  deepseek-v4-pro:
+  deepseek-v4-flash:
     mode: api
     provider: deepseek
-    model: deepseek-v4-pro
+    model: deepseek-v4-flash
     base_url: https://api.deepseek.com
     credential_ref: deepseek_api_key
     context_window: 110000

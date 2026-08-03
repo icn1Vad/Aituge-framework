@@ -194,7 +194,7 @@ def _review(responses: list[LlmCompletionResult]):
         reviewer.review(
             _request(),
             tenant_id="tenant-1",
-            model_id="deepseek-v4-pro",
+            model_id="deepseek-v4-flash",
             framework_run_id="run-1",
         )
     )
@@ -259,7 +259,7 @@ def test_provider_prompt_hard_limit_stops_before_schema_repair() -> None:
             reviewer.review(
                 _request(),
                 tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
+                model_id="deepseek-v4-flash",
                 framework_run_id="run-1",
             )
         )
@@ -909,7 +909,7 @@ def test_cf005_strong_candidate_cannot_be_skipped_by_model() -> None:
             reviewer.review(
                 request,
                 tenant_id="tenant-1",
-                model_id="deepseek-v4-pro",
+                model_id="deepseek-v4-flash",
                 framework_run_id="run-1",
             )
         )

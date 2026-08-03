@@ -792,7 +792,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--attempt-output", type=Path)
     parser.add_argument("--tenant-id", default="0")
-    parser.add_argument("--model-id", default="deepseek-v4-pro")
+    parser.add_argument("--model-id", default="deepseek-v4-flash")
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--offline-only", action="store_true")
     args = parser.parse_args()

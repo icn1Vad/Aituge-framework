@@ -31,7 +31,7 @@ async def _bootstrap_single_agent_db() -> None:
     await db_context.init_db()
     async with db_context.create_db_session() as session:
         statement = select(LlmModelEntity).where(
-            LlmModelEntity.model_id == "deepseek-v4-pro",
+            LlmModelEntity.model_id == "deepseek-v4-flash",
             LlmModelEntity.tenant_id == DEFAULT_TENANT_ID,
         )
         existing = (await session.exec(statement)).first()
@@ -42,9 +42,9 @@ async def _bootstrap_single_agent_db() -> None:
             LlmModelEntity(
                 tenant_id=DEFAULT_TENANT_ID,
                 base_url="http://llm.example.test/v1",
-                model="deepseek-v4-pro",
-                model_name="deepseek-v4-pro",
-                model_id="deepseek-v4-pro",
+                model="deepseek-v4-flash",
+                model_name="deepseek-v4-flash",
+                model_id="deepseek-v4-flash",
                 provider_name="openai_like",
                 source="openai_like",
                 encrypted_api_key=None,

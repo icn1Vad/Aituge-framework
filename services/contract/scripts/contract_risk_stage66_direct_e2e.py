@@ -1126,7 +1126,7 @@ def _args() -> argparse.Namespace:
     parser.add_argument("--replay-output", required=True, type=Path)
     parser.add_argument("--failure-output", required=True, type=Path)
     parser.add_argument("--tenant-id", default=DEFAULT_TENANT_ID)
-    parser.add_argument("--model-id", default="deepseek-v4-pro")
+    parser.add_argument("--model-id", default="deepseek-v4-flash")
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--resume", action="store_true")
     return parser.parse_args()

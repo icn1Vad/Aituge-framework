@@ -132,9 +132,9 @@ async def _seed_llm_config(*, tenant_id: str = DEFAULT_TENANT_ID) -> None:
             LlmModelEntity(
                 tenant_id=tenant_id,
                 base_url="http://example.test/v1",
-                model="deepseek-v4-pro",
-                model_name="deepseek-v4-pro",
-                model_id="deepseek-v4-pro",
+                model="deepseek-v4-flash",
+                model_name="deepseek-v4-flash",
+                model_id="deepseek-v4-flash",
                 encrypted_api_key=encrypt_key("test-key"),
                 provider_name="openai_like",
                 source="openai_like",
@@ -291,7 +291,7 @@ def test_mounted_capability_registers_and_runs_through_task_scheduler(tmp_path, 
             for event in response.json()["events"]
             if event["event_type"] == "scheduler_request_built"
         )
-        assert scheduler_event["payload_json"]["model_id"] == "deepseek-v4-pro"
+        assert scheduler_event["payload_json"]["model_id"] == "deepseek-v4-flash"
 
         async with httpx.AsyncClient(
             transport=transport,

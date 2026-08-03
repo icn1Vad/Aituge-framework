@@ -2790,7 +2790,7 @@ def main() -> None:
     parser.add_argument("--replay-attempts", type=Path)
     parser.add_argument("--unit-id", choices=GENERIC_UNIT_IDS)
     parser.add_argument("--tenant-id", default=DEFAULT_TENANT_ID)
-    parser.add_argument("--model-id", default="deepseek-v4-pro")
+    parser.add_argument("--model-id", default="deepseek-v4-flash")
     parser.add_argument("--repetitions", type=int, default=3, choices=range(1, 6))
     asyncio.run(_main(parser.parse_args()))
 

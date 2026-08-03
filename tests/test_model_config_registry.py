@@ -19,6 +19,8 @@ def test_api_modes_share_llm_and_embedding_but_change_rerank_instruction() -> No
     private_pack = registry.resolve_pack("api-rerank-similarity")
 
     assert public_pack.llm == private_pack.llm
+    assert public_pack.llm.id == "deepseek-v4-flash"
+    assert public_pack.llm.model == "deepseek-v4-flash"
     assert public_pack.embedding == private_pack.embedding
     assert public_pack.reranker.id == "api-qwen3-rerank"
     assert private_pack.reranker.id == "api-qwen3-rerank-similarity"
@@ -142,12 +144,12 @@ def test_runtime_provider_resolves_llm_from_registry_with_credential_fallback(
     )
 
     resolved = provider.resolve_llm(
-        "deepseek-v4-pro",
+        "deepseek-v4-flash",
         credential_fallback="legacy-database-credential",
     )
 
     assert resolved.base_url == "https://api.deepseek.com"
-    assert resolved.model == "deepseek-v4-pro"
+    assert resolved.model == "deepseek-v4-flash"
     assert resolved.provider == "deepseek"
     assert resolved.api_key == "legacy-database-credential"
 
@@ -170,7 +172,7 @@ def test_single_agent_gets_llm_metadata_from_shared_runtime_provider(
         return "legacy-database-credential"
 
     monkeypatch.setattr(runtime, "_legacy_database_credential", legacy_credential)
-    resolved = asyncio.run(runtime.get_llm("deepseek-v4-pro"))
+    resolved = asyncio.run(runtime.get_llm("deepseek-v4-flash"))
 
     assert isinstance(resolved, ResolvedLlmModel)
     assert resolved.base_url == "https://api.deepseek.com"
