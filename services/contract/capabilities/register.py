@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Literal
@@ -533,6 +534,16 @@ def _party_window_context(party: PartyResolutionStageResult) -> str:
     )
 
 
+_TRAILING_PARENTHETICAL_SUFFIX = re.compile(
+    r"^(?P<base>.*\S)\s*[（(][^（）()]+[）)]$"
+)
+
+
+def _normalized_party_name(value: str) -> str:
+    """Normalize parser formatting without altering legal-entity punctuation."""
+    return " ".join(value.split()).strip().rstrip("|｜").rstrip()
+
+
 def _unique_party_name(candidates: list[Any], role: str) -> str:
     names: dict[str, str] = {}
     for candidate in candidates:
@@ -540,16 +551,22 @@ def _unique_party_name(candidates: list[Any], role: str) -> str:
             continue
         # Parser table cells may retain a trailing column separator. It is
         # structural markup, not part of the legal entity name.
-        name = " ".join(candidate.name.split()).strip().rstrip("|｜").rstrip()
+        name = _normalized_party_name(candidate.name)
         if name:
             names.setdefault(name.casefold(), name)
-    if len(names) != 1:
+    canonical_names: dict[str, str] = {}
+    for key, name in names.items():
+        suffix = _TRAILING_PARENTHETICAL_SUFFIX.match(name)
+        base = _normalized_party_name(suffix.group("base")) if suffix else ""
+        canonical_key = base.casefold() if base and base.casefold() in names else key
+        canonical_names.setdefault(canonical_key, names.get(canonical_key, name))
+    if len(canonical_names) != 1:
         raise StageExecutionError(
-            f"Contract has {len(names)} unambiguous {role} candidates; manual input is required.",
+            f"Contract has {len(canonical_names)} unambiguous {role} candidates; manual input is required.",
             code="PARTY_UNRESOLVED",
             retryable=False,
         )
-    return next(iter(names.values()))
+    return next(iter(canonical_names.values()))
 
 
 def _direct_party_resolution_handler(base_url: str, token: str):
