@@ -10,7 +10,7 @@ from contract.errors import ContractError
 from contract.parser.models import ParsedContract, ParsedContractBlock
 
 
-PARSER_VERSION = "contract-parser-v1.1"
+PARSER_VERSION = "contract-parser-v1.2"
 SUPPORTED_EXTENSIONS = frozenset({".pdf", ".docx"})
 _OLE_COMPOUND_SIGNATURE = bytes.fromhex("D0CF11E0A1B11AE1")
 _CHINESE_DIGITS = "〇零一二三四五六七八九十百千万两"
@@ -77,6 +77,13 @@ class NativeContractParser:
                 continue
             for line in page_text.splitlines():
                 builder.add(line, page_number=page_number)
+        if pages_without_text and builder.blocks:
+            raise ContractError(
+                "OCR_PREPROCESS_REQUIRED",
+                "PDF包含无法读取文字的页面，需先完成OCR预处理",
+                status_code=422,
+                user_action_required=True,
+            )
         if not builder.blocks:
             raise ContractError(
                 "SCANNED_DOCUMENT_UNSUPPORTED",
@@ -84,16 +91,11 @@ class NativeContractParser:
                 status_code=422,
                 user_action_required=True,
             )
-        warnings = (
-            ["pages_without_selectable_text:" + ",".join(str(item) for item in pages_without_text)]
-            if pages_without_text
-            else []
-        )
         return ParsedContract(
             file_type="pdf",
             blocks=builder.blocks,
             page_count=len(reader.pages),
-            warnings=warnings,
+            warnings=[],
         )
 
     @staticmethod

@@ -18,7 +18,10 @@ RUN python -m pip install \
         "fastapi>=0.115,<1" \
         "uvicorn[standard]>=0.30,<1" \
         "paddleocr[doc-parser]==3.7.0" \
-        "paddlepaddle==3.3.1"
+        "paddlepaddle==3.2.2" \
+        "pypdf>=5,<7" \
+        "python-docx>=1.1,<2" \
+        "python-multipart>=0.0.9,<1"
 
 COPY services/contract-ocr/src/ ./src/
 RUN python -m pip install --no-deps .

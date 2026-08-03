@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from docx import Document
-from pypdf import PdfWriter
+from pypdf import PdfReader, PdfWriter
 
 from contract.errors import ContractError
 from contract.parser.native import NativeContractParser
@@ -72,6 +72,21 @@ def test_scanned_pdf_is_rejected_with_frozen_error(tmp_path: Path) -> None:
         NativeContractParser().parse(path, generation_id="generation-scanned")
 
     assert captured.value.code == "SCANNED_DOCUMENT_UNSUPPORTED"
+
+
+def test_mixed_pdf_requires_ocr_preprocessing(tmp_path: Path) -> None:
+    reader = PdfReader(io.BytesIO(text_pdf_bytes("第一条 甲方应按期付款。")))
+    writer = PdfWriter()
+    writer.add_page(reader.pages[0])
+    writer.add_blank_page(width=612, height=792)
+    path = tmp_path / "mixed.pdf"
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+    with pytest.raises(ContractError) as captured:
+        NativeContractParser().parse(path, generation_id="generation-mixed")
+
+    assert captured.value.code == "OCR_PREPROCESS_REQUIRED"
 
 
 def test_encrypted_pdf_is_rejected_with_frozen_error(tmp_path: Path) -> None:
