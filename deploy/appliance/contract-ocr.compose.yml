@@ -1,0 +1,43 @@
+name: contract-ocr-test
+
+services:
+  contract-ocr:
+    image: contract-ocr:bootstrap-3.7.0-test
+    build:
+      context: ../..
+      dockerfile: services/contract-ocr/Dockerfile
+      network: host
+    container_name: contract-review-dev-contract-ocr-1
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      HOME: /models
+      PADDLE_HOME: /models/paddle
+      PADDLE_PDX_CACHE_HOME: /models/paddlex
+    volumes:
+      - contract_ocr_models:/models
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18300/health', timeout=5)"
+      interval: 15s
+      timeout: 8s
+      retries: 20
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      agent_internal:
+        aliases:
+          - contract-ocr
+
+networks:
+  agent_internal:
+    external: true
+    name: ${CONTRACT_OCR_AGENT_NETWORK:-contract-review-code-dev-agent-internal}
+
+volumes:
+  contract_ocr_models:
+    name: ${CONTRACT_OCR_MODEL_VOLUME:-contract-review-dev-ocr-models}
