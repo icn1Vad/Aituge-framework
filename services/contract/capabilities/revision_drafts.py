@@ -14,10 +14,16 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Literal, Protocol, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from services.contract.capabilities.model_observation import (
+    ModelObservationFinalizeError,
+    deferred_completion_kwargs,
+    finalize_completion_success,
+    finalize_completion_validation_failed,
+)
 
 SCHEMA_VERSION = "1.0"
 PROMPT_TARGET_TOKENS = 6_000
@@ -291,6 +297,7 @@ class ReplacementBatchResult:
     prompt_tokens: int | None = None
     cached_tokens: int | None = None
     completion_tokens: int | None = None
+    terminal_finalizer: Any | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(slots=True)
@@ -572,67 +579,156 @@ class LlmRevisionTextGenerator:
                 for item in items
             ],
         }
-        completion = await _complete_revision_batch(
-            runtime,
-            tenant_id=self.tenant_id,
-            model_id=self.model_id,
-            user_prompt=_canonical_json(payload),
-        )
-        if completion.prompt_tokens is not None and completion.prompt_tokens > PROMPT_HARD_LIMIT_TOKENS:
-            raise RevisionDraftError(
-                "REVISION_GENERATION_FAILED",
-                f"Provider prompt tokens {completion.prompt_tokens} exceeded {PROMPT_HARD_LIMIT_TOKENS}",
+        previous_completion: Any | None = None
+        for repair_no in range(2):
+            request_payload = (
+                payload
+                if repair_no == 0
+                else {
+                    **payload,
+                    "_private_output_repair": (
+                        "上一次输出未通过严格JSON契约校验。请仅根据原始请求重新生成"
+                        "完整JSON；不得引用或复述上一次输出。"
+                    ),
+                }
             )
-        try:
-            raw = json.loads(completion.content)
-            if not isinstance(raw, dict) or set(raw) != {"drafts"}:
-                raise TypeError("top-level object must contain only drafts")
-            values = raw["drafts"]
-            if not isinstance(values, list):
-                raise TypeError("drafts must be a list")
-            parsed = []
-            for value in values:
-                if not isinstance(value, dict) or not set(value).issubset(
-                    {"revision_key", "replacement_text", "draft_note", "anchor_block_id"}
-                ):
-                    raise TypeError("draft item contains an unknown field")
-                if not {"revision_key", "replacement_text"}.issubset(value):
-                    raise TypeError("draft item is missing a required field")
-                parsed.append(
-                    GeneratedReplacement(
-                        revision_key=str(value["revision_key"]),
-                        replacement_text=str(value["replacement_text"]).strip(),
-                        draft_note=(
-                            str(value["draft_note"]).strip()
-                            if value.get("draft_note") is not None
-                            else None
-                        ),
-                        anchor_block_id=(
-                            str(value["anchor_block_id"]).strip()
-                            if value.get("anchor_block_id") is not None
-                            else None
-                        ),
-                    )
+            completion = await _complete_revision_batch(
+                runtime,
+                tenant_id=self.tenant_id,
+                model_id=self.model_id,
+                user_prompt=_canonical_json(request_payload),
+                previous_completion=previous_completion,
+                repair_no=repair_no,
+            )
+            if (
+                completion.prompt_tokens is not None
+                and completion.prompt_tokens > PROMPT_HARD_LIMIT_TOKENS
+            ):
+                await _reject_revision_completion(
+                    completion,
+                    "REVISION_PROMPT_TOKEN_LIMIT",
                 )
-            generated = tuple(parsed)
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise RevisionDraftError(
-                "REVISION_GENERATION_FAILED",
-                f"Revision model returned invalid JSON: {exc}",
-            ) from exc
-        expected = [item.revision_key for item in items]
-        actual = [item.revision_key for item in generated]
-        if actual != expected or len(actual) != len(set(actual)):
-            raise RevisionDraftError(
-                "REVISION_GENERATION_FAILED",
-                "Revision model did not return every revision_key exactly once",
+                raise RevisionDraftError(
+                    "REVISION_GENERATION_FAILED",
+                    "Provider prompt token limit was exceeded.",
+                )
+            try:
+                generated = _parse_generated_replacements(
+                    completion.content,
+                    items,
+                )
+            except _RevisionOutputValidation as exc:
+                await _reject_revision_completion(completion, exc.code)
+                if repair_no == 0:
+                    previous_completion = completion
+                    continue
+                raise RevisionDraftError(
+                    "REVISION_GENERATION_FAILED",
+                    exc.public_message,
+                ) from None
+            return ReplacementBatchResult(
+                items=generated,
+                prompt_tokens=completion.prompt_tokens,
+                cached_tokens=completion.cached_tokens,
+                completion_tokens=completion.completion_tokens,
+                terminal_finalizer=getattr(completion, "terminal_finalizer", None),
             )
-        return ReplacementBatchResult(
-            items=generated,
-            prompt_tokens=completion.prompt_tokens,
-            cached_tokens=completion.cached_tokens,
-            completion_tokens=completion.completion_tokens,
+        raise AssertionError("revision repair loop must return or raise")
+
+
+class _RevisionOutputValidation(ValueError):
+    def __init__(self, code: str, public_message: str) -> None:
+        super().__init__(code)
+        self.code = code
+        self.public_message = public_message
+
+
+def _reject_duplicate_json_keys(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON key")
+        value[key] = item
+    return value
+
+
+def _reject_json_constant(_: str) -> None:
+    raise ValueError("non-finite JSON number")
+
+
+def _parse_generated_replacements(
+    content: Any,
+    items: Sequence[RevisionGenerationRequest],
+) -> tuple[GeneratedReplacement, ...]:
+    try:
+        raw = json.loads(
+            content,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_json_constant,
         )
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raise _RevisionOutputValidation(
+            "REVISION_OUTPUT_INVALID_JSON",
+            "Revision model returned invalid JSON.",
+        ) from None
+    try:
+        if not isinstance(raw, dict) or set(raw) != {"drafts"}:
+            raise TypeError("invalid top-level object")
+        values = raw["drafts"]
+        if not isinstance(values, list):
+            raise TypeError("invalid drafts collection")
+        parsed: list[GeneratedReplacement] = []
+        for value in values:
+            if not isinstance(value, dict) or not set(value).issubset(
+                {
+                    "revision_key",
+                    "replacement_text",
+                    "draft_note",
+                    "anchor_block_id",
+                }
+            ):
+                raise TypeError("invalid draft item")
+            if not {"revision_key", "replacement_text"}.issubset(value):
+                raise TypeError("missing draft field")
+            if (
+                not isinstance(value["revision_key"], str)
+                or not isinstance(value["replacement_text"], str)
+            ):
+                raise TypeError("draft fields must be strings")
+            draft_note = value.get("draft_note")
+            anchor_block_id = value.get("anchor_block_id")
+            if draft_note is not None and not isinstance(draft_note, str):
+                raise TypeError("draft_note must be a string or null")
+            if anchor_block_id is not None and not isinstance(anchor_block_id, str):
+                raise TypeError("anchor_block_id must be a string or null")
+            parsed.append(
+                GeneratedReplacement(
+                    revision_key=value["revision_key"],
+                    replacement_text=value["replacement_text"].strip(),
+                    draft_note=(draft_note.strip() if draft_note is not None else None),
+                    anchor_block_id=(
+                        anchor_block_id.strip()
+                        if anchor_block_id is not None
+                        else None
+                    ),
+                )
+            )
+        generated = tuple(parsed)
+    except (KeyError, TypeError, ValueError):
+        raise _RevisionOutputValidation(
+            "REVISION_OUTPUT_SCHEMA_INVALID",
+            "Revision model returned an invalid output schema.",
+        ) from None
+    expected = [item.revision_key for item in items]
+    actual = [item.revision_key for item in generated]
+    if actual != expected or len(actual) != len(set(actual)):
+        raise _RevisionOutputValidation(
+            "REVISION_OUTPUT_KEY_MISMATCH",
+            "Revision model did not return every revision key exactly once.",
+        )
+    return generated
 
 
 def _model_request_payload(
@@ -754,10 +850,13 @@ class RevisionDraftService:
             max_items=self.max_batch_findings,
             target_tokens=self.target_prompt_tokens,
         ):
+            model_calls += 1
+            result: ReplacementBatchResult | None = None
             try:
                 result = await self.generator.generate(batch, source=source)
-                model_calls += 1
                 generated_by_key = {item.revision_key: item for item in result.items}
+                batch_drafts: list[RevisionDraft] = []
+                batch_failures: list[FailedRevisionFinding] = []
                 for item in batch:
                     generated = generated_by_key[item.revision_key]
                     try:
@@ -786,7 +885,7 @@ class RevisionDraftService:
                             operation = "SUPPLEMENT"
                             original_text = None
                             target = None
-                        drafts.append(
+                        batch_drafts.append(
                             _draft(
                                 revision_key=item.revision_key,
                                 finding=item.finding,
@@ -799,15 +898,26 @@ class RevisionDraftService:
                             )
                         )
                     except RevisionDraftError as exc:
-                        failures.append(
+                        batch_failures.append(
                             FailedRevisionFinding(
                                 finding_id=item.finding.finding_id,
                                 error_code="REVISION_GENERATION_FAILED",
                                 message=str(exc),
                             )
                         )
+                if batch_failures:
+                    await _reject_revision_completion(
+                        result,
+                        "REVISION_OUTPUT_BUSINESS_CONSTRAINT_FAILED",
+                    )
+                else:
+                    await _finalize_revision_observation(
+                        result,
+                        decision="SUCCESS",
+                    )
+                drafts.extend(batch_drafts)
+                failures.extend(batch_failures)
             except RevisionDraftError as exc:
-                model_calls += 1
                 failures.extend(
                     FailedRevisionFinding(
                         finding_id=item.finding.finding_id,
@@ -816,6 +926,20 @@ class RevisionDraftService:
                     )
                     for item in batch
                 )
+            except asyncio.CancelledError:
+                if result is not None:
+                    await _reject_revision_completion(
+                        result,
+                        "MODEL_OUTPUT_PROCESSING_CANCELLED",
+                    )
+                raise
+            except Exception:
+                if result is not None:
+                    await _reject_revision_completion(
+                        result,
+                        "MODEL_OUTPUT_PROCESSING_FAILED",
+                    )
+                raise
 
         drafts.sort(key=lambda item: item.finding_id)
         failures.sort(key=lambda item: item.finding_id)
@@ -1233,7 +1357,11 @@ def _plan_supplement(
     finding: RevisionFindingSource,
     evidences: Sequence[RevisionEvidenceSource],
     revision_key: str,
-) -> SupplementRequest | FailedRevisionFinding:
+) -> (
+    SupplementRequest
+    | RevisionDraft
+    | FailedRevisionFinding
+):
     absence_evidences = [
         item for item in evidences if item.evidence_type == "ABSENCE"
     ]
@@ -1252,10 +1380,18 @@ def _plan_supplement(
         )
     )
     if not checked_scopes or not verification_notes:
+        if not source.document_blocks:
+            return _unsupported(
+                revision_key,
+                finding,
+                "缺失性证据缺少可验证的检查范围或验证说明，V1不生成补充条款。",
+            )
         return FailedRevisionFinding(
             finding_id=finding.finding_id,
             error_code="SOURCE_TEXT_INVALID",
-            message="ABSENCE Evidence scope or verification metadata is incomplete",
+            message=(
+                "ABSENCE Evidence scope or verification metadata is incomplete"
+            ),
         )
     adjacent_context = "\n".join(
         item.quoted_text.strip()
@@ -1518,6 +1654,8 @@ async def _complete_revision_batch(
     tenant_id: str,
     model_id: str,
     user_prompt: str,
+    previous_completion: Any | None,
+    repair_no: int,
 ) -> Any:
     system_prompt = (
         "你是合同条款修订器。风险已由上游正式确认；"
@@ -1527,45 +1665,62 @@ async def _complete_revision_batch(
     )
     messages = [{"role": "user", "content": user_prompt}]
     complete_with_usage = getattr(runtime, "complete_with_usage", None)
-    if callable(complete_with_usage):
-        return await complete_with_usage(
-            messages=messages,
-            model_id=model_id,
-            system_prompt=system_prompt,
-            max_tokens=4_000,
-            temperature=0,
-            thinking_override=False,
-            response_format={"type": "json_object"},
-            review_unit_id="revision_draft_mvp",
+    if not callable(complete_with_usage):
+        raise RevisionDraftError(
+            "MODEL_RUNTIME_UNOBSERVABLE",
+            "Revision drafting requires the instrumented model runtime.",
+            status_code=503,
         )
-
-    # Compatibility with an older isolated Framework runtime.  This keeps the
-    # exact same configured model client and request controls; it is not a
-    # parser fallback and does not weaken JSON validation.
-    llm = await runtime.get_llm(model_id)
-    from service.conversation.llm_runner import _build_thinking_extra_body
-
-    response = await llm.client.chat.completions.create(
-        model=llm.model,
-        messages=[{"role": "system", "content": system_prompt}, *messages],
-        stream=False,
-        temperature=0,
+    return await complete_with_usage(
+        messages=messages,
+        model_id=model_id,
+        system_prompt=system_prompt,
         max_tokens=4_000,
-        extra_body=_build_thinking_extra_body(llm, False),
+        temperature=0,
+        thinking_override=False,
         response_format={"type": "json_object"},
-    )
-    content = response.choices[0].message.content if response.choices else ""
-    usage = getattr(response, "usage", None)
-    prompt_tokens = getattr(usage, "prompt_tokens", None)
-    details = getattr(usage, "prompt_tokens_details", None)
-    cached_tokens = getattr(details, "cached_tokens", None)
-    return SimpleNamespace(
-        content=content or "",
-        prompt_tokens=prompt_tokens,
-        cached_tokens=cached_tokens,
-        completion_tokens=getattr(usage, "completion_tokens", None),
+        review_unit_id="revision_draft_mvp",
+        repair_no=repair_no,
+        **deferred_completion_kwargs(previous_completion, repair_no=repair_no),
     )
 
+
+async def _finalize_revision_observation(
+    completion: Any,
+    *,
+    decision: Literal["SUCCESS", "VALIDATION_FAILED"],
+    validation_code: str | None = None,
+) -> None:
+    finalizer = getattr(completion, "terminal_finalizer", None)
+    if finalizer is None:
+        return
+    try:
+        if decision == "SUCCESS":
+            await finalize_completion_success(completion)
+            return
+        if not validation_code:
+            raise ValueError("validation_code is required")
+        await finalize_completion_validation_failed(
+            completion,
+            validation_code,
+        )
+    except ModelObservationFinalizeError:
+        raise RevisionDraftError(
+            "MODEL_OBSERVABILITY_FINALIZE_FAILED",
+            "Revision model observation could not be finalized.",
+            status_code=503,
+        ) from None
+
+
+async def _reject_revision_completion(
+    completion: Any,
+    validation_code: str,
+) -> None:
+    await _finalize_revision_observation(
+        completion,
+        decision="VALIDATION_FAILED",
+        validation_code=validation_code,
+    )
 
 def _cache_key(review_id: str, generation_id: str, result_hash: str) -> str:
     return "\0".join(

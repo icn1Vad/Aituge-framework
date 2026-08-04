@@ -1,3 +1,4 @@
+import asyncio
 from pydantic import BaseModel
 from extensions.guardrail.config import (
     CHECK_INPUT_ALGO,
@@ -54,6 +55,7 @@ class GuardrailChecker:
             )
 
         start = time.time()
+        check_type = "OUTPUT" if check_algo == CHECK_OUTPUT_AGLO else "INPUT"
 
         serviceParameters = {"content": text}
 
@@ -90,44 +92,50 @@ class GuardrailChecker:
                 )
 
                 logger.info(
-                    f"Check text {text} success. result:{response}. Elaspsed: {time.time() - start} seconds."
+                    "Guardrail check completed: check_type={}, rejected={}, elapsed_ms={}",
+                    check_type,
+                    reject,
+                    round((time.time() - start) * 1000),
                 )
                 return result
-            else:
-                logger.info(
-                    f"Check text response failed. status:{response.status_code} ,result:{response}, Elaspsed: {time.time() - start} seconds."
-                )
-                return TextCheckResult(
-                    reject=False,
-                    reason="request failed",
-                    risk_level="unknown",
-                    advice="internal error",
-                )
-        except Exception as err:
             logger.info(
-                f"Unhandled error: check text failed due to {err}. Elaspsed: {time.time() - start} seconds."
+                "Guardrail provider rejected request: check_type={}, status_code={}, elapsed_ms={}",
+                check_type,
+                response.status_code,
+                round((time.time() - start) * 1000),
             )
-            return TextCheckResult(
-                reject=False,
-                reason="Check text failed.",
-                risk_level="low",
+            raise RuntimeError("GUARDRAIL_PROVIDER_REJECTED")
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Guardrail provider timed out: check_type={}, elapsed_ms={}",
+                check_type,
+                round((time.time() - start) * 1000),
             )
+            raise TimeoutError("GUARDRAIL_PROVIDER_TIMEOUT") from None
+        except Exception as err:
+            logger.warning(
+                "Guardrail provider failed: check_type={}, error_type={}, elapsed_ms={}",
+                check_type,
+                err.__class__.__name__,
+                round((time.time() - start) * 1000),
+            )
+            raise RuntimeError("GUARDRAIL_PROVIDER_ERROR") from None
 
 
     async def acheck_input(self, text):
-        logger.info(f"Checking input: {text}.")
+        logger.info("Guardrail check requested: check_type=INPUT")
         return await self._acheck(text, check_algo=CHECK_INPUT_ALGO)
 
     async def acheck_output(self, text, current_result: TextCheckResult):
         if current_result.reject:
             return
 
-        logger.info(f"Checking output: {text}.")
+        logger.info("Guardrail check requested: check_type=OUTPUT")
 
         new_check_result = await self._acheck(text, check_algo=CHECK_OUTPUT_AGLO)
         if new_check_result.reject:
             current_result.reject = new_check_result.reject
             current_result.advice = new_check_result.advice
-            logger.info(f"Guardrail check failed for streaming output {text}. Advice: {current_result.advice}.")
+            logger.info("Guardrail check rejected content: check_type=OUTPUT")
 
         return

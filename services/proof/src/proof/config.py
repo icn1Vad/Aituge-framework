@@ -20,6 +20,13 @@ class Settings(BaseSettings):
     dataset_root: Path | None = None
     max_upload_bytes: int = 25 * 1024 * 1024
     model_pack_id: str = ""
+    model_invocation_ledger_enabled: bool = False
+    model_observability_database_url: str = ""
+    model_observability_tenant_id: str = ""
+    model_observability_offline_mode: bool = False
+    model_observability_offline_run_id: str = ""
+    model_observability_service_version: str = ""
+
     model_config_dir: Path | None = None
     model_secret_dir: Path | None = None
 

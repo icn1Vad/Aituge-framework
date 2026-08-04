@@ -16,6 +16,11 @@ import httpx
 from proof.config import Settings
 from proof.infrastructure.embedding import OpenAICompatibleEmbeddingClient
 from proof.infrastructure.postgres.repository import ProofRepository, _vector_text
+from proof.infrastructure.model_observability import (
+    new_logical_call_id,
+    observed_tool_attempt,
+    usage_token_counts,
+)
 from proof.tools.benchmark_conflict_retrieval import _load_samples, _load_units, _map_cases
 
 
@@ -51,6 +56,7 @@ class ExtractionUsage:
 class AtomicExtractor:
     def __init__(self, settings: Settings, model: str) -> None:
         self.endpoint = settings.embedding_base_url.rstrip("/") + "/chat/completions"
+        self.settings = settings
         self.api_key = settings.embedding_api_key
         self.model = model
         self.usage = ExtractionUsage()
@@ -73,35 +79,67 @@ class AtomicExtractor:
             "max_tokens": 4000,
             "response_format": {"type": "json_object"},
         }
+        logical_call_id = new_logical_call_id()
+        fallback_from_invocation_id: str | None = None
         last_error = ""
-        for attempt in range(3):
+        for attempt_index in range(3):
             try:
-                response = httpx.post(
-                    self.endpoint,
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json=payload,
-                    timeout=90,
-                )
-                response.raise_for_status()
-                body = response.json()
-                content = str(body["choices"][0]["message"]["content"])
-                parsed = _parse_json_object(content)
-                result = _validate_extraction_response(parsed, units)
-                with self._usage_lock:
-                    self.usage.add(body.get("usage") or {})
-                missing_ids = {str(unit["id"]) for unit in units} - set(result)
-                if missing_ids and len(units) > 1:
-                    for unit in units:
-                        if str(unit["id"]) in missing_ids:
-                            result.update(self.extract([unit]))
-                elif missing_ids:
-                    raise ValueError(f"Response omitted ids: {sorted(missing_ids)}")
-                return result
-            except (httpx.HTTPError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-                last_error = f"{type(exc).__name__}: {exc}"
-                if attempt < 2:
-                    time.sleep(0.75 * (2**attempt))
-        raise RuntimeError(f"Atomic extraction failed after retries: {last_error}")
+                with observed_tool_attempt(
+                    self.settings,
+                    feature_code="proof.offline.atomic_extraction",
+                    model_name=self.model,
+                    logical_call_id=logical_call_id,
+                    attempt_no=attempt_index + 1,
+                    fallback_from_invocation_id=fallback_from_invocation_id,
+                    retry_reason=(
+                        "PROVIDER_RETRY" if attempt_index < 2 else None
+                    ),
+                ) as observation:
+                    response = httpx.post(
+                        self.endpoint,
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        json=payload,
+                        timeout=90,
+                    )
+                    observation.dispatched(response)
+                    response.raise_for_status()
+                    body = response.json()
+                    content = str(body["choices"][0]["message"]["content"])
+                    parsed = _parse_json_object(content)
+                    result = _validate_extraction_response(parsed, units)
+                    with self._usage_lock:
+                        self.usage.add(body.get("usage") or {})
+                    missing_ids = {str(unit["id"]) for unit in units} - set(result)
+                    if missing_ids and len(units) > 1:
+                        for unit in units:
+                            if str(unit["id"]) in missing_ids:
+                                result.update(self.extract([unit]))
+                    elif missing_ids:
+                        raise ValueError(
+                            f"Response omitted ids: {sorted(missing_ids)}"
+                        )
+                    input_tokens, output_tokens = usage_token_counts(
+                        body.get("usage") or {}
+                    )
+                    observation.succeeded(
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                    )
+                    return result
+            except (
+                httpx.HTTPError,
+                KeyError,
+                TypeError,
+                ValueError,
+                json.JSONDecodeError,
+            ) as exc:
+                fallback_from_invocation_id = observation.invocation_id
+                last_error = type(exc).__name__
+                if attempt_index < 2:
+                    time.sleep(0.75 * (2**attempt_index))
+        raise RuntimeError(
+            f"Atomic extraction failed after retries: {last_error}"
+        )
 
 
 def _parse_json_object(content: str) -> dict[str, Any]:

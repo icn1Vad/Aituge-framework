@@ -12,6 +12,10 @@ from scheduling.scheduler import SchedulingChatRequest, SchedulingRuntimeOptions
 from service.conversation import LlmRuntime
 from skill import SkillManager
 
+from model_observability.runtime import (
+    finalize_deferred_completion_success,
+    finalize_deferred_completion_validation_failed,
+)
 from task_manager.handlers.batch_item_scheduler import BatchItemSchedulerHandler
 from task_manager.handlers.base import TaskExecutionContext, TaskHandlerEvent
 from task_manager.artifact_service import TaskArtifactPublisher
@@ -475,7 +479,7 @@ class PipelineExecutor:
             tenant_id=task.tenant_id,
             **({"model_pack_id": model_pack_id} if model_pack_id else {}),
         )
-        content = await runtime.complete(
+        completion = await runtime.complete_with_usage(
             messages=[{"role": "user", "content": _stage_message(task, stage, stage_input)}],
             model_id=(
                 runtime.model_runtime_provider.active_pack.llm.id
@@ -483,14 +487,36 @@ class PipelineExecutor:
                 else profile.model_id
             ),
             system_prompt=system_prompt,
+            review_unit_id=stage.stage_id,
+            defer_terminal=True,
         )
-        parsed = parse_json_output(content)
-        if not parsed.ok or not isinstance(parsed.structured, dict):
-            raise StageExecutionError(
-                f"Direct model output is not valid JSON: {parsed.error}",
-                code="invalid_output",
-                retryable=config.output_policy == "repair_once",
+        try:
+            parsed = parse_json_output(completion.content)
+            if not parsed.ok or not isinstance(parsed.structured, dict):
+                raise StageExecutionError(
+                    f"Direct model output is not valid JSON: {parsed.error}",
+                    code="invalid_output",
+                    retryable=config.output_policy == "repair_once",
+                )
+        except asyncio.CancelledError:
+            await finalize_deferred_completion_validation_failed(
+                completion,
+                "MODEL_OUTPUT_PROCESSING_CANCELLED",
             )
+            raise
+        except StageExecutionError:
+            await finalize_deferred_completion_validation_failed(
+                completion,
+                "PIPELINE_DIRECT_MODEL_OUTPUT_INVALID",
+            )
+            raise
+        except Exception:
+            await finalize_deferred_completion_validation_failed(
+                completion,
+                "MODEL_OUTPUT_PROCESSING_FAILED",
+            )
+            raise
+        await finalize_deferred_completion_success(completion)
         yield TaskHandlerEvent(
             event_type="direct_model_completed",
             stage=stage.stage_id,

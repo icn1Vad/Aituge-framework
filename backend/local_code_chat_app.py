@@ -20,6 +20,10 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from db.db_context import create_db_session, init_db
+from backend.observability_integration import (
+    create_observability_runtime_from_env,
+    install_observability_openapi_contract,
+)
 from capability_mount import mount_capabilities_from_env
 from scheduling.agent_registry import ensure_default_agent_profiles
 from scheduling.api import create_scheduling_router
@@ -132,6 +136,7 @@ def create_app() -> FastAPI:
         in {"1", "true", "yes", "on"}
         else None
     )
+    observability_runtime = create_observability_runtime_from_env()
 
     async def tool_provider(_request):
         tool_bundle = await ToolManager(
@@ -144,22 +149,26 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app):
         await init_db()
-        async with create_db_session() as session:
-            await remove_retired_framework_tool_configs(session)
-            await ensure_default_skill_packages(session)
-            await ensure_default_agent_profiles(session)
-            await mount_capabilities_from_env(session=session)
-        if embedded_contract_app is None:
-            yield
-            return
-        await asyncio.to_thread(
-            run_contract_migrations,
-            embedded_contract_app.state.settings,
-        )
-        async with embedded_contract_app.router.lifespan_context(
-            embedded_contract_app
-        ):
-            yield
+        await observability_runtime.start()
+        try:
+            async with create_db_session() as session:
+                await remove_retired_framework_tool_configs(session)
+                await ensure_default_skill_packages(session)
+                await ensure_default_agent_profiles(session)
+                await mount_capabilities_from_env(session=session)
+            if embedded_contract_app is None:
+                yield
+                return
+            await asyncio.to_thread(
+                run_contract_migrations,
+                embedded_contract_app.state.settings,
+            )
+            async with embedded_contract_app.router.lifespan_context(
+                embedded_contract_app
+            ):
+                yield
+        finally:
+            await observability_runtime.stop()
 
     app = create_simple_chat_app(tool_provider=tool_provider, lifespan=lifespan)
     scheduling_options = SchedulingRuntimeOptions(
@@ -171,6 +180,9 @@ def create_app() -> FastAPI:
     app.include_router(create_task_manager_router(scheduling_options))
     app.include_router(create_revision_llm_router())
     app.include_router(create_chat_title_llm_router())
+    for router in observability_runtime.routers:
+        app.include_router(router)
+
     @app.get("/rag/status")
     async def rag_status():
         return _rag_status_payload()
@@ -197,4 +209,5 @@ def create_app() -> FastAPI:
     if embedded_contract_app is not None:
         app.mount("/", embedded_contract_app, name="contract")
 
+    install_observability_openapi_contract(app)
     return app

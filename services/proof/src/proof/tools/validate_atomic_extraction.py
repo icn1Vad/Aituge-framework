@@ -10,6 +10,11 @@ from typing import Any
 import httpx
 
 from proof.config import Settings
+from proof.infrastructure.model_observability import (
+    new_logical_call_id,
+    observed_tool_attempt,
+    usage_token_counts,
+)
 
 
 SYSTEM_PROMPT = """你是制度原子规则抽取结果的完整性检查器。比较 source 与 assertions，只检查是否遗漏，不判断制度是否合理，也不判断规则之间是否矛盾。
@@ -35,28 +40,55 @@ def _validate_batch(
     model: str,
     items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    response = httpx.post(
-        settings.embedding_base_url.rstrip("/") + "/chat/completions",
-        headers={"Authorization": f"Bearer {settings.embedding_api_key}"},
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": json.dumps({"items": items}, ensure_ascii=False)},
-            ],
-            "temperature": 0,
-            "max_tokens": 3000,
-            "response_format": {"type": "json_object"},
-        },
-        timeout=90,
-    )
-    response.raise_for_status()
-    parsed = _parse(str(response.json()["choices"][0]["message"]["content"]))
-    expected = {item["id"] for item in items}
-    results = [item for item in parsed.get("items") or [] if item.get("id") in expected]
-    if {item.get("id") for item in results} != expected:
-        raise RuntimeError("Validator omitted one or more ids")
-    return results
+    with observed_tool_attempt(
+        settings,
+        feature_code="proof.offline.atomic_validation",
+        model_name=model,
+        logical_call_id=new_logical_call_id(),
+        attempt_no=1,
+        fallback_from_invocation_id=None,
+    ) as observation:
+        response = httpx.post(
+            settings.embedding_base_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {settings.embedding_api_key}"},
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {"items": items},
+                            ensure_ascii=False,
+                        ),
+                    },
+                ],
+                "temperature": 0,
+                "max_tokens": 3000,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=90,
+        )
+        observation.dispatched(response)
+        response.raise_for_status()
+        body = response.json()
+        parsed = _parse(str(body["choices"][0]["message"]["content"]))
+        expected = {item["id"] for item in items}
+        results = [
+            item
+            for item in parsed.get("items") or []
+            if item.get("id") in expected
+        ]
+        if {item.get("id") for item in results} != expected:
+            raise RuntimeError("Validator omitted one or more ids")
+        input_tokens, output_tokens = usage_token_counts(
+            body.get("usage") or {}
+        )
+        observation.succeeded(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+        return results
 
 
 def main() -> None:

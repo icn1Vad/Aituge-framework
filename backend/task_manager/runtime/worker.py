@@ -20,12 +20,17 @@ from db.db_context import (
     init_db,
     reset_database_pool_metrics,
 )
+from backend.observability_integration import assert_observability_schema_if_required
 from scheduling.agent_registry import ensure_default_agent_profiles
 from scheduling.scheduler import SchedulingRuntimeOptions
 from skill import ensure_default_skill_packages
 from task_manager.models import TaskEntity, TaskRunEntity, utc_now
 from task_manager.runtime.fencing import ExecutionLease, bind_execution_lease
-from task_manager.runtime.quota import DEFAULT_TENANT_CONCURRENCY, claim_fair_run
+from task_manager.runtime.quota import (
+    DEFAULT_TENANT_CONCURRENCY,
+    claim_fair_run,
+    lock_quota_scope,
+)
 from task_manager.service import TaskManagerService
 
 
@@ -178,15 +183,61 @@ class TaskWorker:
 
     async def release_lease(self, lease: RunLease) -> bool:
         async with create_db_session() as session:
-            result = await session.exec(
-                update(TaskRunEntity)
+            initial_run = await session.get(TaskRunEntity, lease.run_id)
+            if (
+                initial_run is None
+                or initial_run.lease_owner != lease.owner
+                or initial_run.lease_version != lease.version
+            ):
+                return False
+            task = await session.get(TaskEntity, initial_run.task_id)
+            if task is None:
+                result = await session.exec(
+                    update(TaskRunEntity)
+                    .where(TaskRunEntity.id == lease.run_id)
+                    .where(TaskRunEntity.lease_owner == lease.owner)
+                    .where(TaskRunEntity.lease_version == lease.version)
+                    .values(lease_owner=None, lease_until=None)
+                )
+                await session.commit()
+                return result.rowcount == 1
+
+            quota = None
+            if not initial_run.quota_slot_released:
+                quota = await lock_quota_scope(
+                    session,
+                    service=task.service,
+                    tenant_id=task.tenant_id,
+                    resource_pool=initial_run.resource_pool,
+                    max_concurrency=self.tenant_concurrency,
+                    sync_limit=False,
+                )
+            run_result = await session.exec(
+                select(TaskRunEntity)
                 .where(TaskRunEntity.id == lease.run_id)
-                .where(TaskRunEntity.lease_owner == lease.owner)
-                .where(TaskRunEntity.lease_version == lease.version)
-                .values(lease_owner=None, lease_until=None)
+                .execution_options(populate_existing=True)
+                .with_for_update()
             )
+            run = run_result.first()
+            if (
+                run is None
+                or run.lease_owner != lease.owner
+                or run.lease_version != lease.version
+            ):
+                return False
+            if not run.quota_slot_released:
+                if quota is None:
+                    raise RuntimeError(f"Run '{lease.run_id}' lost its quota scope while releasing its lease.")
+                quota.running_count = max(0, quota.running_count - 1)
+                quota.updated_at = utc_now()
+                run.quota_slot_released = True
+                session.add(quota)
+            run.lease_owner = None
+            run.lease_until = None
+            run.updated_at = utc_now()
+            session.add(run)
             await session.commit()
-            return result.rowcount == 1
+            return True
 
     async def run_once(self) -> bool:
         lease = await self.claim_one()
@@ -303,6 +354,7 @@ def build_worker_options() -> SchedulingRuntimeOptions:
 
 async def main() -> None:
     await init_db()
+    await assert_observability_schema_if_required()
     # Registries are process-local. A standalone Worker must load the same
     # capabilities, Agent profiles, and Skill packages as the API process
     # before it can execute a persisted Run.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import unicodedata
@@ -14,6 +15,10 @@ from langextract.resolver import Resolver
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from service.conversation.llm_runner import LlmRuntime
+from services.contract.capabilities.model_observation import (
+    finalize_completion_success,
+    finalize_completion_validation_failed,
+)
 from task_manager.output_parser import parse_json_output
 
 
@@ -200,7 +205,7 @@ class WindowExtractionResult(StrictModel):
 
 
 class LlmCompleter(Protocol):
-    async def complete(
+    async def complete_with_usage(
         self,
         messages: list[dict[str, str]],
         model_id: str | None = None,
@@ -225,45 +230,79 @@ class WindowExtractionEngine:
         retry_feedback: str | None = None,
     ) -> WindowExtractionResult:
         runtime = self.runtime_factory(tenant_id)
-        content = await runtime.complete(
-            messages=[
-                {
-                    "role": "user",
-                    "content": _user_prompt(request, retry_feedback=retry_feedback),
-                }
-            ],
-            model_id=model_id,
-            system_prompt=_SYSTEM_PROMPT,
-            max_tokens=20_000,
-            temperature=0,
-            thinking_override=False,
-        )
-        envelope = _remove_context_only_definitions(request, _parse_envelope(content))
+        completion = None
         try:
-            aligned = _align_extractions(request, envelope, self.resolver_factory())
-        except WindowExtractionError as exc:
-            accepted = _augment_explicit_value_extractions(
+            completion = await runtime.complete_with_usage(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": _user_prompt(request, retry_feedback=retry_feedback),
+                    }
+                ],
+                model_id=model_id,
+                system_prompt=_SYSTEM_PROMPT,
+                max_tokens=20_000,
+                temperature=0,
+                thinking_override=False,
+                response_format={"type": "json_object"},
+                review_unit_id="window_extraction",
+                repair_no=1 if retry_feedback else 0,
+                defer_terminal=True,
+            )
+            envelope = _remove_context_only_definitions(
                 request,
-                exc.accepted_extractions,
+                _parse_envelope(completion.content),
             )
-            accepted, canonicalizations = _canonicalize_value_extractions(
+            aligned = _align_extractions(request, envelope, self.resolver_factory())
+            aligned = _augment_explicit_value_extractions(request, aligned)
+            aligned, canonicalizations = _canonicalize_value_extractions(
                 request.source_text,
-                accepted,
+                aligned,
             )
-            exc.accepted_extractions = accepted
-            exc.value_canonicalizations = canonicalizations
+            result = WindowExtractionResult(
+                window_id=request.window_id,
+                model_id=model_id,
+                extractions=aligned,
+                value_canonicalizations=canonicalizations,
+            )
+            await finalize_completion_success(completion)
+            return result
+        except asyncio.CancelledError:
+            if completion is not None:
+                await finalize_completion_validation_failed(
+                    completion,
+                    "MODEL_OUTPUT_PROCESSING_CANCELLED",
+                )
             raise
-        aligned = _augment_explicit_value_extractions(request, aligned)
-        aligned, canonicalizations = _canonicalize_value_extractions(
-            request.source_text,
-            aligned,
-        )
-        return WindowExtractionResult(
-            window_id=request.window_id,
-            model_id=model_id,
-            extractions=aligned,
-            value_canonicalizations=canonicalizations,
-        )
+        except WindowExtractionError as exc:
+            try:
+                accepted = _augment_explicit_value_extractions(
+                    request,
+                    exc.accepted_extractions,
+                )
+                accepted, canonicalizations = _canonicalize_value_extractions(
+                    request.source_text,
+                    accepted,
+                )
+                exc.accepted_extractions = accepted
+                exc.value_canonicalizations = canonicalizations
+            except Exception:
+                if completion is not None:
+                    await finalize_completion_validation_failed(
+                        completion,
+                        "MODEL_OUTPUT_PROCESSING_FAILED",
+                    )
+                raise
+            if completion is not None:
+                await finalize_completion_validation_failed(completion, exc.code)
+            raise
+        except Exception:
+            if completion is not None:
+                await finalize_completion_validation_failed(
+                    completion,
+                    "MODEL_OUTPUT_PROCESSING_FAILED",
+                )
+            raise
 
 
 def _user_prompt(

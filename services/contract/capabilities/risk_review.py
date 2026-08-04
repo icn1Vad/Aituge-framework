@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -12,6 +13,11 @@ from typing import Any, Callable, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from service.conversation.llm_runner import LlmCompletionResult, LlmRuntime
+from services.contract.capabilities.model_observation import (
+    deferred_completion_kwargs,
+    finalize_completion_success,
+    finalize_completion_validation_failed,
+)
 from services.contract.capabilities.prompt_budget import (
     PromptBudgetResult,
     evaluate_prompt_budget,
@@ -669,6 +675,10 @@ class CommercialFinancialDirectReviewer:
                 framework_run_id=framework_run_id,
                 attempt_no=request.attempt_no,
                 repair_no=repair_no,
+                **deferred_completion_kwargs(
+                    calls[-1] if calls else None,
+                    repair_no=repair_no,
+                ),
             )
             calls.append(completion)
             try:
@@ -697,10 +707,20 @@ class CommercialFinancialDirectReviewer:
                         semantic_preservation_passed=semantic_preservation_passed,
                     )
                 )
+                if (
+                    completion.completion_tokens is not None
+                    and completion.completion_tokens > 4000
+                ):
+                    raise DirectReviewError(
+                        "RISK_OUTPUT_BUDGET_EXCEEDED",
+                        "Commercial Direct Review exceeded the hard output token limit",
+                    )
                 accepted_normalization = parsed.normalization
                 accepted_enrichment = enrichment
+                await finalize_completion_success(completion)
                 break
             except DirectReviewError as exc:
+                await finalize_completion_validation_failed(completion, exc.code)
                 diagnostics.append(
                     _attempt_diagnostic(
                         completion,
@@ -723,6 +743,18 @@ class CommercialFinancialDirectReviewer:
                     else (parsed.raw_object if parsed is not None else None)
                 )
                 repair_reasons.append(invalid_reason)
+            except asyncio.CancelledError:
+                await finalize_completion_validation_failed(
+                    completion,
+                    "MODEL_OUTPUT_PROCESSING_CANCELLED",
+                )
+                raise
+            except Exception:
+                await finalize_completion_validation_failed(
+                    completion,
+                    "MODEL_OUTPUT_PROCESSING_FAILED",
+                )
+                raise
         else:  # pragma: no cover - the loop either breaks or raises
             raise DirectReviewError("RISK_DIRECT_OUTPUT_INVALID", "Direct review did not return a result")
 

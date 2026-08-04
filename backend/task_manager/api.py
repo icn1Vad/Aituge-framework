@@ -48,6 +48,19 @@ RUN_EVENT_POLL_INTERVAL_SECONDS = 0.25
 RUN_EVENT_HEARTBEAT_INTERVAL_SECONDS = 10.0
 
 
+_REPLAYABLE_PERSISTED_STREAM_SEMANTICS = frozenset({"status", "reference"})
+_TERMINAL_RUN_STATUSES = frozenset(
+    {"succeeded", "failed", "cancelled", "waiting_human"}
+)
+_TERMINAL_EVENT_TYPES = frozenset(
+    {
+        "task_succeeded",
+        "task_failed",
+        "task_cancelled",
+        "human_review_required",
+    }
+)
+
 _STREAM_DONE = object()
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
@@ -670,15 +683,15 @@ def create_task_manager_router(options: SchedulingRuntimeOptions) -> APIRouter:
                 assert queue is not None
                 async for block in _queued_sse(queue, task.id):
                     yield block
-            except Exception as exc:
+            except Exception:
                 payload = json.dumps(
-                    {"message": str(exc), "type": exc.__class__.__name__},
+                    {
+                        "code": "TASK_STREAM_SOURCE_UNAVAILABLE",
+                        "retryable": True,
+                    },
                     ensure_ascii=False,
                 )
-                yield (
-                    "event: task_failed\n"
-                    f"data: {payload}\n\n"
-                )
+                yield "event: reset-required\n" f"data: {payload}\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream", headers=SSE_HEADERS)
 
@@ -702,12 +715,24 @@ async def _stream_run_sse(service: TaskManagerService, run, after_sequence: int 
     last_sequence = after_sequence
     broker = get_event_broker()
     async with broker.subscribe(run_id) as live:
-        replay = await service.list_run_events(run_id, after_sequence=last_sequence, limit=5000)
-        for row in replay:
-            envelope = event_to_envelope(row)
-            last_sequence = max(last_sequence, row.sequence)
-            yield _sse(envelope)
+        replay = await service.list_run_events(
+            run_id, after_sequence=last_sequence, limit=5000
+        )
+        blocks, last_sequence, replay_problem = _persisted_replay_blocks(
+            replay, last_sequence
+        )
+        for block in blocks:
+            yield block
         latest = await service.get_run(run_id)
+        if replay_problem is not None:
+            yield _stream_reset_required_sse(
+                run,
+                latest,
+                last_sequence=last_sequence,
+                observed_events=replay,
+                reason=replay_problem,
+            )
+            return
         if latest is None or latest.status in {"succeeded", "failed", "cancelled", "waiting_human"}:
             return
 
@@ -726,11 +751,22 @@ async def _stream_run_sse(service: TaskManagerService, run, after_sequence: int 
                         after_sequence=last_sequence,
                         limit=5000,
                     )
-                    for row in missed:
-                        envelope = event_to_envelope(row)
-                        last_sequence = max(last_sequence, row.sequence)
-                        yield _sse(envelope)
+                    blocks, next_sequence, replay_problem = (
+                        _persisted_replay_blocks(missed, last_sequence)
+                    )
+                    for block in blocks:
+                        yield block
+                    last_sequence = next_sequence
                     latest = await service.get_run(run_id)
+                    if replay_problem is not None:
+                        yield _stream_reset_required_sse(
+                            run,
+                            latest,
+                            last_sequence=last_sequence,
+                            observed_events=missed,
+                            reason=replay_problem,
+                        )
+                        return
                     if latest is None or latest.status in {"succeeded", "failed", "cancelled", "waiting_human"}:
                         return
                     now = loop.time()
@@ -753,9 +789,22 @@ async def _stream_run_sse(service: TaskManagerService, run, after_sequence: int 
                     continue
                 envelope = pending.result()
                 pending = asyncio.create_task(anext(live))
-                sequence = int(envelope.get("sequence") or 0)
-                if sequence <= last_sequence:
+                try:
+                    sequence = int(envelope.get("sequence") or 0)
+                except (TypeError, ValueError):
+                    sequence = 0
+                if 0 < sequence <= last_sequence:
                     continue
+                if sequence != last_sequence + 1:
+                    latest = await service.get_run(run_id)
+                    yield _stream_reset_required_sse(
+                        run,
+                        latest,
+                        last_sequence=last_sequence,
+                        observed_events=[envelope],
+                        reason="LIVE_SEQUENCE_GAP",
+                    )
+                    return
                 last_sequence = sequence
                 yield _sse(envelope)
                 if envelope.get("event_type") in {
@@ -767,6 +816,80 @@ async def _stream_run_sse(service: TaskManagerService, run, after_sequence: int 
                     return
         finally:
             pending.cancel()
+
+
+def _persisted_replay_blocks(rows, last_sequence: int):
+    blocks: list[str] = []
+    expected = last_sequence + 1
+    for row in rows:
+        if row.sequence != expected:
+            return blocks, last_sequence, "PERSISTED_SEQUENCE_GAP"
+        if row.stream_semantics not in _REPLAYABLE_PERSISTED_STREAM_SEMANTICS:
+            return blocks, last_sequence, "NON_REPLAYABLE_HISTORY"
+        blocks.append(_sse(event_to_envelope(row)))
+        last_sequence = row.sequence
+        expected += 1
+    return blocks, last_sequence, None
+
+
+def _stream_reset_required_sse(
+    run,
+    latest,
+    *,
+    last_sequence: int,
+    observed_events,
+    reason: str,
+) -> str:
+    observed_sequences: list[int] = []
+    terminal_event: dict | None = None
+    for event in observed_events:
+        if isinstance(event, dict):
+            sequence = event.get("sequence")
+            event_type = event.get("event_type")
+            event_id = event.get("event_id")
+        else:
+            sequence = getattr(event, "sequence", None)
+            event_type = getattr(event, "event_type", None)
+            event_id = getattr(event, "id", None)
+        if isinstance(sequence, int) and not isinstance(sequence, bool) and sequence > 0:
+            observed_sequences.append(sequence)
+            if event_type in _TERMINAL_EVENT_TYPES:
+                terminal_event = {
+                    "event_id": event_id,
+                    "event_type": event_type,
+                    "sequence": sequence,
+                }
+
+    run_status = getattr(latest, "status", None)
+    latest_sequence = getattr(latest, "next_event_sequence", 0)
+    if isinstance(latest_sequence, bool) or not isinstance(latest_sequence, int):
+        latest_sequence = 0
+    last_available_sequence = max(
+        [last_sequence, latest_sequence, *observed_sequences]
+    )
+    payload = {
+        "code": "EVENT_STREAM_RESET_REQUIRED",
+        "reason": reason,
+        "last_replayable_sequence": last_sequence,
+        "last_available_sequence": last_available_sequence,
+        "run_status": run_status,
+        "terminal": run_status in _TERMINAL_RUN_STATUSES or terminal_event is not None,
+    }
+    if terminal_event is not None:
+        payload["terminal_event"] = terminal_event
+    return _sse(
+        {
+            "schema_version": "1.0",
+            "event_id": None,
+            "task_id": run.task_id,
+            "run_id": run.id,
+            "sequence": last_sequence,
+            "event_type": "reset-required",
+            "stream_semantics": "status",
+            "payload": payload,
+        },
+        include_id=False,
+    )
 
 
 def _sse(envelope: dict, *, include_id: bool = True) -> str:

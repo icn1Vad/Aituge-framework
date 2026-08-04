@@ -1,0 +1,127 @@
+{
+  "registry": "tuge.model-invocation-metadata",
+  "schemaVersion": 1,
+  "metadataObjectMaxBytes": 1024,
+  "keyStyle": "snake_case",
+  "topLevelFieldsNotMetadata": [
+    "attemptNo",
+    "fallbackFromInvocationId",
+    "featureCode",
+    "timeToFirstTokenMs"
+  ],
+  "events": {
+    "MODEL_INVOCATION_STARTED": {
+      "required": [],
+      "properties": {
+        "worker_lease_state": {
+          "type": "string",
+          "enum": [
+            "ACQUIRED",
+            "EXPIRED",
+            "RELEASED",
+            "RENEWED"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "MODEL_INVOCATION_DISPATCHED": {
+      "required": [],
+      "properties": {},
+      "additionalProperties": false
+    },
+    "MODEL_INVOCATION_DISPATCH_UNKNOWN": {
+      "required": [],
+      "properties": {
+        "dispatch_evidence": {
+          "type": "string",
+          "enum": [
+            "missing_after_orphan_timeout"
+          ]
+        },
+        "reconciliation_reason": {
+          "type": "string",
+          "enum": [
+            "orphan_timeout"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "MODEL_INVOCATION_SUCCEEDED": {
+      "required": [],
+      "properties": {
+        "finish_reason": {
+          "type": "string",
+          "enum": [
+            "content_filter",
+            "function_call",
+            "length",
+            "provider_completed",
+            "stop",
+            "tool_calls"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "MODEL_INVOCATION_FAILED": {
+      "required": [],
+      "properties": {},
+      "additionalProperties": false
+    },
+    "MODEL_INVOCATION_VALIDATION_FAILED": {
+      "required": [],
+      "properties": {
+        "schema_validation_code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{2,119}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "MODEL_INVOCATION_OUTPUT_GUARDRAIL_REJECTED": {
+      "required": [],
+      "properties": {
+        "guardrail_code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{2,119}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "MODEL_INVOCATION_OUTCOME_UNKNOWN": {
+      "required": [],
+      "properties": {
+        "reconciliation_reason": {
+          "type": "string",
+          "enum": [
+            "orphan_timeout"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "MODEL_INVOCATION_ABANDONED": {
+      "required": [],
+      "properties": {
+        "reconciliation_reason": {
+          "type": "string",
+          "enum": [
+            "orphan_timeout"
+          ]
+        },
+        "worker_lease_state": {
+          "type": "string",
+          "enum": [
+            "ACQUIRED",
+            "EXPIRED",
+            "RELEASED",
+            "RENEWED"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 from common.chat.prompts import DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE
+from model_observability.runtime import (
+    finalize_deferred_completion_success,
+    finalize_deferred_completion_validation_failed,
+)
 from service.conversation.llm_runner import LlmRuntime
 
 
@@ -29,8 +34,30 @@ class ConversationTitleGenerator:
             response_format={"type": "json_object"},
             review_unit_id="conversation_title",
             trace_id=trace_id,
+            defer_terminal=True,
         )
-        return normalize_conversation_title(completion.content)
+        try:
+            title = normalize_conversation_title(completion.content)
+        except asyncio.CancelledError:
+            await finalize_deferred_completion_validation_failed(
+                completion,
+                "MODEL_OUTPUT_PROCESSING_CANCELLED",
+            )
+            raise
+        except ValueError:
+            await finalize_deferred_completion_validation_failed(
+                completion,
+                "CONVERSATION_TITLE_OUTPUT_INVALID",
+            )
+            raise
+        except Exception:
+            await finalize_deferred_completion_validation_failed(
+                completion,
+                "MODEL_OUTPUT_PROCESSING_FAILED",
+            )
+            raise
+        await finalize_deferred_completion_success(completion)
+        return title
 
 
 def normalize_conversation_title(content: str) -> str:

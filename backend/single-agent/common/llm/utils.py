@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 import time
 import uuid
 from common.llm.models import ChatResponseGenerator, ErrorChunk, ModelInvocationError, ReasoningChunk, ToolResultChunk, TextChunk
@@ -8,7 +9,11 @@ from openai.types.chat import ChatCompletionChunk, ChatCompletion, ChatCompletio
 from openai.types.completion_usage import CompletionUsage
 from openai.types.chat.chat_completion_chunk import ChoiceDelta, Choice as ChunkChoice
 from openai.types.chat.chat_completion import Choice
-from extensions.guardrail.config import CHECK_OUTPUT_CHUNK_SIZE, CHECK_OUTPUT_CHUNK_OVERLAP
+from extensions.guardrail.config import (
+    CHECK_OUTPUT_CHUNK_OVERLAP,
+    CHECK_OUTPUT_CHUNK_SIZE,
+    OUTPUT_CHECK_TIMEOUT_SECONDS,
+)
 from extensions.guardrail.guardrail_check import GuardrailChecker
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -98,6 +103,61 @@ async def error_chunk_gen(message: str, exception: Exception | None = None) -> C
     )
 
 
+
+async def _finalize_model_observation(
+    finalizer,
+    *,
+    denied: bool,
+) -> None:
+    if finalizer is None:
+        return
+    try:
+        write_task = None
+        if denied:
+            write_task = asyncio.create_task(
+                finalizer.deny("OUTPUT_POLICY_REJECTED")
+            )
+        else:
+            write_task = asyncio.create_task(finalizer.succeed())
+        try:
+            await asyncio.shield(write_task)
+        except asyncio.CancelledError:
+            await write_task
+            raise
+    except Exception as exc:
+        logger.warning(
+            "Model invocation finalize failed: error_type={}",
+            exc.__class__.__name__,
+        )
+
+async def _finalize_model_validation_failure(
+    finalizer,
+    validation_code: str,
+) -> None:
+    if finalizer is None:
+        return
+    try:
+        write_task = asyncio.create_task(
+            finalizer.validation_failed(validation_code)
+        )
+        try:
+            await asyncio.shield(write_task)
+        except asyncio.CancelledError:
+            await write_task
+            raise
+    except Exception as exc:
+        logger.warning(
+            "Model invocation validation-finalize failed: error_type={}",
+            exc.__class__.__name__,
+        )
+
+async def _cancel_output_check_tasks(tasks) -> None:
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
 async def convert_gen_to_stream_chat_completions(
     model: str,
     response_generator: ChatResponseGenerator,
@@ -109,7 +169,11 @@ async def convert_gen_to_stream_chat_completions(
     session_id: str = None,
     user_message: dict = None,
 ):
-    logger.info(f"convert_gen_to_stream_chat_completions: model={model}, enable_output_check={enable_output_check}, guardrail_hint={guardrail_hint}")
+    logger.info(
+        "convert_gen_to_stream_chat_completions: model={}, output_check={}",
+        model,
+        enable_output_check,
+    )
     if enable_output_check and not checker:
         logger.warning("convert_gen_to_stream_chat_completions: checker is None, set enable_output_check to False")
         enable_output_check = False
@@ -126,14 +190,16 @@ async def convert_gen_to_stream_chat_completions(
     failure: ModelInvocationError | None = None
     final_content = ""  # 累积完整的助手回复内容
     tool_history_messages = []  # 收集 tool 交互消息用于保存历史
+    finalizer = None
 
     try:
         async for chunk in response_generator:
-            # 出错直接返回
-            if output_check_result.reject:
-                logger.info("convert_gen_to_stream_chat_completions: output_check_result.reject=True, break")
-                fail_fast = True
-                break
+            candidate_finalizer = getattr(
+                chunk, "observability_finalizer", None
+            )
+            if candidate_finalizer is not None:
+                finalizer = candidate_finalizer
+                continue
 
             if isinstance(chunk, ErrorChunk) and chunk.error_type.startswith("MODEL_"):
                 fail_fast = True
@@ -151,6 +217,9 @@ async def convert_gen_to_stream_chat_completions(
                 has_reasoning_delta = isinstance(chunk, ReasoningChunk) and bool(chunk.reasoning_delta)
                 if not chunk.delta and not chunk.tool_calls and not has_reasoning_delta:
                     continue
+            if output_check_result.reject:
+                fail_fast = True
+                continue
 
             if isinstance(chunk, ToolResultChunk):
                 citations, citation_details = extract_citations(chunk)
@@ -193,12 +262,39 @@ async def convert_gen_to_stream_chat_completions(
                 break
 
     finally:
-        if response_generator and hasattr(response_generator, "aclose"):
-            await response_generator.aclose()
-            logger.info("convert_gen_to_stream_chat_completions: response_generator closed.")
-        if session:
-            await session.close()
-            logger.info("convert_gen_to_stream_chat_completions: session closed.")
+        active_error = sys.exc_info()[1]
+        try:
+            if response_generator and hasattr(response_generator, "aclose"):
+                await response_generator.aclose()
+                logger.info("convert_gen_to_stream_chat_completions: response_generator closed.")
+            if session:
+                await session.close()
+                logger.info("convert_gen_to_stream_chat_completions: session closed.")
+        except asyncio.CancelledError:
+            await _finalize_model_validation_failure(
+                finalizer,
+                "MODEL_OUTPUT_PROCESSING_CANCELLED",
+            )
+            finalizer = None
+            raise
+        except Exception:
+            await _finalize_model_validation_failure(
+                finalizer,
+                "MODEL_OUTPUT_PROCESSING_FAILED",
+            )
+            finalizer = None
+            raise
+
+        if active_error is not None:
+            await _finalize_model_validation_failure(
+                finalizer,
+                (
+                    "MODEL_OUTPUT_PROCESSING_CANCELLED"
+                    if isinstance(active_error, asyncio.CancelledError)
+                    else "MODEL_OUTPUT_PROCESSING_FAILED"
+                ),
+            )
+            finalizer = None
 
         # 保存会话历史
         if final_content and user_id and session_id and user_message:
@@ -215,9 +311,19 @@ async def convert_gen_to_stream_chat_completions(
                     assistant_message=assistant_message,
                     tool_messages=tool_history_messages if tool_history_messages else None,
                 )
-                logger.info(f"Session history saved in stream mode for user={user_id}, session={session_id}")
-            except Exception as e:
-                logger.error(f"Failed to save session history in stream mode: {e}", exc_info=True)
+                logger.info("Session history saved in stream mode.")
+            except asyncio.CancelledError:
+                await _finalize_model_validation_failure(
+                    finalizer,
+                    "MODEL_OUTPUT_PROCESSING_CANCELLED",
+                )
+                finalizer = None
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Failed to save session history in stream mode: error_type={}",
+                    exc.__class__.__name__,
+                )
 
     if failure is not None:
         raise failure
@@ -225,8 +331,45 @@ async def convert_gen_to_stream_chat_completions(
     if not fail_fast and len(current_content) > CHECK_OUTPUT_CHUNK_OVERLAP and enable_output_check and checker:
         check_tasks.append(asyncio.create_task(checker.acheck_output(text=current_content, current_result=output_check_result)))
 
-    if not fail_fast and len(check_tasks) > 0:
-        await asyncio.gather(*check_tasks)
+    try:
+        if check_tasks:
+            await asyncio.wait_for(
+                asyncio.gather(*check_tasks),
+                timeout=OUTPUT_CHECK_TIMEOUT_SECONDS,
+            )
+    except asyncio.TimeoutError:
+        await _cancel_output_check_tasks(check_tasks)
+        await _finalize_model_validation_failure(
+            finalizer,
+            "OUTPUT_GUARDRAIL_TIMEOUT",
+        )
+        finalizer = None
+        raise TimeoutError("OUTPUT_GUARDRAIL_TIMEOUT") from None
+    except asyncio.CancelledError:
+        await _cancel_output_check_tasks(check_tasks)
+        await _finalize_model_validation_failure(
+            finalizer,
+            "OUTPUT_GUARDRAIL_CANCELLED",
+        )
+        finalizer = None
+        raise
+    except Exception as exc:
+        await _cancel_output_check_tasks(check_tasks)
+        logger.warning(
+            "Output guardrail check failed: error_type={}",
+            exc.__class__.__name__,
+        )
+        await _finalize_model_validation_failure(
+            finalizer,
+            "OUTPUT_GUARDRAIL_CHECK_FAILED",
+        )
+        finalizer = None
+        raise RuntimeError("OUTPUT_GUARDRAIL_CHECK_FAILED") from None
+    await _finalize_model_observation(
+        finalizer,
+        denied=output_check_result.reject,
+    )
+    finalizer = None
 
     if output_check_result.reject:
         error_chunk = ChatCompletionChunk(
@@ -295,8 +438,15 @@ async def convert_gen_to_chat_completions(
 
     checked = False
     tool_history_messages = []
+    finalizer = None
+    output_rejected = False
 
     async for chunk in response_generator:
+        candidate_finalizer = getattr(chunk, "observability_finalizer", None)
+        if candidate_finalizer is not None:
+            finalizer = candidate_finalizer
+            continue
+
         if isinstance(chunk, ErrorChunk):
             if chunk.error_type.startswith("MODEL_"):
                 raise ModelInvocationError(
@@ -326,11 +476,45 @@ async def convert_gen_to_chat_completions(
 
     if not checked and enable_output_check and checker:
         current_result = TextCheckResult()
-        await checker.acheck_output(text=content, current_result=current_result)
+        try:
+            await asyncio.wait_for(
+                checker.acheck_output(
+                    text=content,
+                    current_result=current_result,
+                ),
+                timeout=OUTPUT_CHECK_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            await _finalize_model_validation_failure(
+                finalizer,
+                "OUTPUT_GUARDRAIL_TIMEOUT",
+            )
+            raise TimeoutError("OUTPUT_GUARDRAIL_TIMEOUT") from None
+        except asyncio.CancelledError:
+            await _finalize_model_validation_failure(
+                finalizer,
+                "OUTPUT_GUARDRAIL_CANCELLED",
+            )
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Output guardrail check failed: error_type={}",
+                exc.__class__.__name__,
+            )
+            await _finalize_model_validation_failure(
+                finalizer,
+                "OUTPUT_GUARDRAIL_CHECK_FAILED",
+            )
+            raise RuntimeError("OUTPUT_GUARDRAIL_CHECK_FAILED") from None
         if current_result.reject:
-            logger.warning(f"Check output text failed: {content}")
+            logger.warning("Model output guardrail rejected the response.")
+            output_rejected = True
             content = current_result.advice or guardrail_hint
 
+    await _finalize_model_observation(
+        finalizer,
+        denied=output_rejected,
+    )
     message = ChatCompletion(
             id=chat_id,
             model=model,
@@ -368,8 +552,11 @@ async def convert_gen_to_chat_completions(
                 assistant_message=assistant_message,
                 tool_messages=tool_history_messages if tool_history_messages else None,
             )
-            logger.info(f"Session history saved in non-stream mode for user={user_id}, session={session_id}")
-        except Exception as e:
-            logger.error(f"Failed to save session history in non-stream mode: {e}", exc_info=True)
+            logger.info("Session history saved in non-stream mode.")
+        except Exception as exc:
+            logger.error(
+                "Failed to save session history in non-stream mode: error_type={}",
+                exc.__class__.__name__,
+            )
 
     return message.model_dump(mode="json")

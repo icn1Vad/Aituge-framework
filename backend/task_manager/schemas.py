@@ -136,6 +136,18 @@ class TaskEventRead(BaseModel):
     visible: bool
     message: str
     payload_json: dict[str, Any]
+    tenant_id: Optional[str] = None
+    user_id: Optional[str] = None
+    request_id: Optional[str] = None
+    trace_id: Optional[str] = None
+    span_id: Optional[str] = None
+    privacy_mode: Optional[str] = None
+    route_type: Optional[str] = None
+    service_name: Optional[str] = None
+    service_version: Optional[str] = None
+    environment: Optional[str] = None
+    occurred_at: Optional[datetime] = None
+    ingested_at: Optional[datetime] = None
     created_at: datetime
 
 

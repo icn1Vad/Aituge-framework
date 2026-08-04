@@ -1,0 +1,11 @@
+groups:
+  - name: contract-review-code-dev-observability
+    rules:
+      - alert: TestObservabilityTargetDown
+        expr: up{environment="test"} == 0
+        for: 5m
+        labels:
+          severity: warning
+          environment: test
+        annotations:
+          summary: Test observability scrape target is unavailable

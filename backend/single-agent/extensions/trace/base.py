@@ -128,16 +128,22 @@ def use_current_span(span: Span):
     def decorator(func: Callable[..., AsyncGenerator]):
         @wraps(func)
         async def wrapper(*args, **kwargs) -> AsyncGenerator:
-            if span and span.is_recording():
-                trace_id = format(span.get_span_context().trace_id, '032x')
-                with trace.use_span(span, end_on_exit=False):
-                    async for item in func(*args, **kwargs):
-                        if hasattr(item, 'trace_id'):
-                            item.trace_id = trace_id
+            generator = func(*args, **kwargs)
+            try:
+                if span and span.is_recording():
+                    trace_id = format(span.get_span_context().trace_id, '032x')
+                    with trace.use_span(span, end_on_exit=False):
+                        async for item in generator:
+                            if hasattr(item, 'trace_id'):
+                                item.trace_id = trace_id
+                            yield item
+                else:
+                    async for item in generator:
                         yield item
-            else:
-                async for item in func(*args, **kwargs):
-                    yield item
+            finally:
+                close = getattr(generator, "aclose", None)
+                if callable(close):
+                    await close()
 
         return wrapper
 

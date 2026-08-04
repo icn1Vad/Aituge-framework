@@ -1,0 +1,167 @@
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 384
+    spike_limit_mib: 96
+  resource/test_environment:
+    attributes:
+      - key: deployment.environment.name
+        value: test
+        action: upsert
+  filter/drop_exemplar_datapoints:
+    error_mode: propagate
+    metrics:
+      datapoint:
+        - 'Len(datapoint.exemplars) > 0'
+  filter/drop_linked_spans:
+    error_mode: propagate
+    traces:
+      span:
+        - 'Len(span.links) > 0'
+  filter/drop_invalid_spans:
+    error_mode: propagate
+    traces:
+      span:
+        - 'resource.attributes["service.name"] == nil'
+        - 'not IsMatch(resource.attributes["service.name"], "^(page6-(metric|trace)|continew-java|contract-(review-)?[a-z0-9][a-z0-9._-]{0,79})$")'
+        - 'span.attributes["tenant_id"] != nil and not IsMatch(span.attributes["tenant_id"], "^([0-9]{1,20}|[0-9a-f]{16}|[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$")'
+        - 'span.attributes["request_id"] != nil and not IsMatch(span.attributes["request_id"], "^([0-9]{1,20}|[0-9a-f]{16}|[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$")'
+        - 'span.attributes["task_id"] != nil and not IsMatch(span.attributes["task_id"], "^([0-9]{1,20}|[0-9a-f]{16}|[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$")'
+        - 'span.attributes["run_id"] != nil and not IsMatch(span.attributes["run_id"], "^([0-9]{1,20}|[0-9a-f]{16}|[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$")'
+        - 'span.attributes["review_id"] != nil and not IsMatch(span.attributes["review_id"], "^([0-9]{1,20}|[0-9a-f]{16}|[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$")'
+        - 'span.attributes["stage_id"] != nil and not IsMatch(span.attributes["stage_id"], "^([0-9]{1,20}|[0-9a-f]{16}|[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$")'
+        - 'span.attributes["scope_type"] != nil and span.attributes["scope_type"] != "TENANT" and span.attributes["scope_type"] != "SYSTEM"'
+        - 'span.attributes["feature_code"] != nil and not IsMatch(span.attributes["feature_code"], "^(CONTRACT|MODEL|TASK|PROOF|AGENT|HTTP|SYSTEM|PYTHON|JAVA|OBSERVABILITY)_[A-Z0-9_]{1,96}$")'
+        - 'span.attributes["error.code"] != nil and not IsMatch(span.attributes["error.code"], "^(CONTRACT|MODEL|TASK|PROOF|AGENT|HTTP|SYSTEM|PYTHON|JAVA|OBSERVABILITY)_[A-Z0-9_]{1,96}$")'
+        - 'span.attributes["provider"] != nil and span.attributes["provider"] != "dashscope" and span.attributes["provider"] != "deepseek" and span.attributes["provider"] != "openai" and span.attributes["provider"] != "local" and span.attributes["provider"] != "vllm" and span.attributes["provider"] != "ollama"'
+        - 'span.attributes["model_name"] != nil and not IsMatch(span.attributes["model_name"], "^(deepseek|qwen|gpt|text-embedding|bge|rerank|local|vllm|ollama)[a-z0-9._/-]{0,96}$")'
+        - 'span.attributes["model_pack_id"] != nil and not IsMatch(span.attributes["model_pack_id"], "^(pack[_-])?[a-z0-9][a-z0-9._-]{0,95}$")'
+        - 'span.attributes["privacy_mode"] != nil and span.attributes["privacy_mode"] != "STANDARD" and span.attributes["privacy_mode"] != "PRIVATE"'
+        - 'span.attributes["route_type"] != nil and span.attributes["route_type"] != "LOCAL" and span.attributes["route_type"] != "EXTERNAL"'
+        - 'span.attributes["http.request.method"] != nil and span.attributes["http.request.method"] != "GET" and span.attributes["http.request.method"] != "POST" and span.attributes["http.request.method"] != "PUT" and span.attributes["http.request.method"] != "PATCH" and span.attributes["http.request.method"] != "DELETE" and span.attributes["http.request.method"] != "HEAD" and span.attributes["http.request.method"] != "OPTIONS"'
+        - 'span.attributes["http.response.status_code"] != nil and (span.attributes["http.response.status_code"] < 100 or span.attributes["http.response.status_code"] > 599)'
+  filter/drop_invalid_span_events:
+    error_mode: propagate
+    traces:
+      spanevent:
+        - 'spanevent.attributes["error.type"] != nil and not IsMatch(spanevent.attributes["error.type"], "^([A-Za-z_][A-Za-z0-9_$]{0,63}\\.){0,8}[A-Z][A-Za-z0-9_$]{0,63}(Error|Exception|Failure)$")'
+        - 'spanevent.attributes["error.code"] != nil and not IsMatch(spanevent.attributes["error.code"], "^(CONTRACT|MODEL|TASK|PROOF|AGENT|HTTP|SYSTEM|PYTHON|JAVA|OBSERVABILITY)_[A-Z0-9_]{1,96}$")'
+        - 'spanevent.attributes["exception.type"] != nil and not IsMatch(spanevent.attributes["exception.type"], "^([A-Za-z_][A-Za-z0-9_$]{0,63}\\.){0,8}[A-Z][A-Za-z0-9_$]{0,63}(Error|Exception|Failure)$")'
+  filter/drop_invalid_metric_schema:
+    error_mode: propagate
+    metrics:
+      metric:
+        - 'not IsMatch(metric.name, "^(page6_(safe_metric|exemplar_canary_metric|invalid_value_metric|invalid_unit_metric|service_value_metric)|contract_review_[a-z0-9_]{1,80}|model_[a-z0-9_]{1,80}|http_server_[a-z0-9_]{1,80}|process_[a-z0-9_]{1,80}|runtime_[a-z0-9_]{1,80})$")'
+        - 'metric.unit != "1" and metric.unit != "ms" and metric.unit != "s" and metric.unit != "By" and metric.unit != "{token}" and metric.unit != "USD" and metric.unit != "CNY"'
+  filter/drop_invalid_datapoints:
+    error_mode: propagate
+    metrics:
+      datapoint:
+        - 'resource.attributes["service.name"] == nil'
+        - 'not IsMatch(resource.attributes["service.name"], "^(page6-(metric|trace)|continew-java|contract-(review-)?[a-z0-9][a-z0-9._-]{0,79})$")'
+        - 'datapoint.attributes["operation"] != nil and not IsMatch(datapoint.attributes["operation"], "^(CREATE|READ|UPDATE|DELETE|SEARCH|EXPORT|DOWNLOAD|DISPATCH|CALLBACK|RETRY|CANCEL|RESOLVE_PARTIES|CONTRACT_REVIEW|MODEL_INVOKE|PAGE6_PROBE)$")'
+        - 'datapoint.attributes["outcome"] != nil and datapoint.attributes["outcome"] != "SUCCESS" and datapoint.attributes["outcome"] != "FAILURE" and datapoint.attributes["outcome"] != "UNKNOWN" and datapoint.attributes["outcome"] != "ABANDONED" and datapoint.attributes["outcome"] != "REJECTED"'
+        - 'datapoint.attributes["status"] != nil and not IsMatch(datapoint.attributes["status"], "^(CREATED|PENDING|PENDING_DISPATCH|DISPATCHING|RUNNING|SUCCEEDED|FAILED|CANCELLED|RETRYING|TERMINAL|FIRING|RESOLVED|HEALTHY|UNHEALTHY)$")'
+        - 'datapoint.attributes["provider"] != nil and datapoint.attributes["provider"] != "dashscope" and datapoint.attributes["provider"] != "deepseek" and datapoint.attributes["provider"] != "openai" and datapoint.attributes["provider"] != "local" and datapoint.attributes["provider"] != "vllm" and datapoint.attributes["provider"] != "ollama"'
+        - 'datapoint.attributes["model_name"] != nil and not IsMatch(datapoint.attributes["model_name"], "^(deepseek|qwen|gpt|text-embedding|bge|rerank|local|vllm|ollama)[a-z0-9._/-]{0,96}$")'
+        - 'datapoint.attributes["model_pack_id"] != nil and not IsMatch(datapoint.attributes["model_pack_id"], "^(pack[_-])?[a-z0-9][a-z0-9._-]{0,95}$")'
+        - 'datapoint.attributes["feature_code"] != nil and not IsMatch(datapoint.attributes["feature_code"], "^(CONTRACT|MODEL|TASK|PROOF|AGENT|HTTP|SYSTEM|PYTHON|JAVA|OBSERVABILITY)_[A-Z0-9_]{1,96}$")'
+        - 'datapoint.attributes["route_type"] != nil and datapoint.attributes["route_type"] != "LOCAL" and datapoint.attributes["route_type"] != "EXTERNAL"'
+        - 'datapoint.attributes["privacy_mode"] != nil and datapoint.attributes["privacy_mode"] != "STANDARD" and datapoint.attributes["privacy_mode"] != "PRIVATE"'
+        - 'datapoint.attributes["error_code"] != nil and not IsMatch(datapoint.attributes["error_code"], "^(CONTRACT|MODEL|TASK|PROOF|AGENT|HTTP|SYSTEM|PYTHON|JAVA|OBSERVABILITY)_[A-Z0-9_]{1,96}$")'
+        - 'datapoint.attributes["http.request.method"] != nil and datapoint.attributes["http.request.method"] != "GET" and datapoint.attributes["http.request.method"] != "POST" and datapoint.attributes["http.request.method"] != "PUT" and datapoint.attributes["http.request.method"] != "PATCH" and datapoint.attributes["http.request.method"] != "DELETE" and datapoint.attributes["http.request.method"] != "HEAD" and datapoint.attributes["http.request.method"] != "OPTIONS"'
+        - 'datapoint.attributes["http.response.status_code"] != nil and (datapoint.attributes["http.response.status_code"] < 100 or datapoint.attributes["http.response.status_code"] > 599)'
+  transform/fail_closed_redaction:
+    error_mode: propagate
+    trace_statements:
+      - context: resource
+        statements:
+          - set(resource.schema_url, "")
+          - keep_keys(resource.attributes, ["service.name", "deployment.environment.name"])
+      - context: scope
+        statements:
+          - set(scope.name, "redacted-scope")
+          - set(scope.version, "")
+          - set(scope.schema_url, "")
+          - keep_keys(scope.attributes, [])
+      - context: span
+        statements:
+          - set(span.name, "redacted-span")
+          - set(span.status.message, "")
+          - set(span.trace_state, "")
+          - keep_keys(span.attributes, ["http.request.method", "http.response.status_code", "tenant_id", "request_id", "task_id", "run_id", "review_id", "stage_id", "scope_type", "feature_code", "error.code", "provider", "model_name", "model_pack_id", "privacy_mode", "route_type"])
+      - context: spanevent
+        statements:
+          - set(spanevent.name, "redacted-event")
+          - keep_keys(spanevent.attributes, ["error.type", "error.code", "exception.type"])
+    metric_statements:
+      - context: resource
+        statements:
+          - set(resource.schema_url, "")
+          - keep_keys(resource.attributes, ["service.name", "deployment.environment.name"])
+      - context: scope
+        statements:
+          - set(scope.name, "redacted-scope")
+          - set(scope.version, "")
+          - set(scope.schema_url, "")
+          - keep_keys(scope.attributes, [])
+      # Metric names and units are code-owned schema identifiers. They must
+      # never derive from request, contract, prompt, response, or model data.
+      - context: metric
+        statements:
+          - set(metric.description, "")
+      - context: datapoint
+        statements:
+          - keep_keys(datapoint.attributes, ["operation", "outcome", "status", "provider", "model_name", "model_pack_id", "feature_code", "route_type", "privacy_mode", "error_code", "http.request.method", "http.response.status_code"])
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  prometheus:
+    endpoint: 0.0.0.0:9464
+    resource_to_telemetry_conversion:
+      enabled: true
+
+service:
+  extensions:
+    - health_check
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors:
+        - memory_limiter
+        - filter/drop_linked_spans
+        - filter/drop_invalid_spans
+        - filter/drop_invalid_span_events
+        - transform/fail_closed_redaction
+        - resource/test_environment
+        - batch
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors:
+        - memory_limiter
+        - filter/drop_exemplar_datapoints
+        - filter/drop_invalid_metric_schema
+        - filter/drop_invalid_datapoints
+        - transform/fail_closed_redaction
+        - resource/test_environment
+        - batch
+      exporters: [prometheus]

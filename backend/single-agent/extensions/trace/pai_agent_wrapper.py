@@ -78,6 +78,7 @@ def pai_agent_wrapper(func):
 
                 final_output = ""
                 final_reasoning_content = ""
+                response_gen = None
 
                 try:
                     response_gen = await func(self, *args, **kwargs)
@@ -97,6 +98,10 @@ def pai_agent_wrapper(func):
                     span.set_status(Status(StatusCode.ERROR, str(stream_exc)))
                     raise
                 finally:
+                    if response_gen is not None:
+                        close = getattr(response_gen, "aclose", None)
+                        if callable(close):
+                            await close()
                     span.set_attribute(OUTPUT_VALUE, final_output)
                     if final_reasoning_content:
                         span.set_attribute(REASONING_CONTENT, final_reasoning_content)

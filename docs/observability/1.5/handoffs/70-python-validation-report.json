@@ -1,0 +1,236 @@
+{
+  "schemaVersion": 1,
+  "kind": "observability-contract-validation-report",
+  "checkpoint": true,
+  "page": 7,
+  "repository": "python",
+  "branch": "obs/70-contract-tests",
+  "baselineCommit": "7cc289e52850de78f0cd985f0cc4dfb2c74ff247",
+  "runnerHead": "c60d5823a9c1362d4a270c68409a274b97b03a8b",
+  "workingTreeChangesCommitted": false,
+  "generatedAt": "2026-08-02T16:44:14+08:00",
+  "suite": {
+    "status": "passed-with-frozen-contract-xfails",
+    "strictStatus": "passed",
+    "exitCode": 0,
+    "claimAllGreen": false,
+    "realE2e": "not-run"
+  },
+  "frozenContractSource": {
+    "status": "passed",
+    "files": 8,
+    "sha256Validated": 8,
+    "pathOverride": "denied",
+    "byteTamper": "denied",
+    "hostilePathFullSuccess": "passed",
+    "bashEnv": "ignored-by-privileged-entry",
+    "toolchain": "fixed-root-owned-usr-bin",
+    "frozen02Sha256": "db78612a61c1f4a4f7085cebeea9c20e7bae1075d4014f4fa3c090df840dfd99"
+  },
+  "qualityGates": {
+    "ruff": {
+      "version": "0.12.7",
+      "check": "passed",
+      "formatCheck": "passed",
+      "alreadyFormattedFiles": 9
+    },
+    "pytest": {
+      "status": "passed-with-strict-xfails",
+      "passed": 55,
+      "xfailed": 2,
+      "failed": 0,
+      "strictXfails": true
+    },
+    "implementationDdl": {
+      "status": "passed",
+      "testsPassed": 3
+    }
+  },
+  "implementationSource": {
+    "status": "passed",
+    "pins": {
+      "page1": "ce65c64986d24d17e49f1381e38debcbf6ee4f74",
+      "page2": "0e6f00d1983130ced6f0158c50637b741bcdc678",
+      "page3": "6216b324bdd5d3da6a754ed466567853dbfa6fed"
+    },
+    "provenanceChecks": [
+      "branch",
+      "head",
+      "clean",
+      "origin",
+      "baseline-ancestor",
+      "approved-git-blob"
+    ],
+    "consumption": "approved-git-blob-private-snapshot",
+    "snapshotRootMode": "0700",
+    "snapshotFileMode": "0600",
+    "manifestMode": "0600",
+    "containerMount": "read-only",
+    "workingTreeBytesUsedAsInput": false
+  },
+  "safetyTests": {
+    "status": "passed",
+    "exitCode": 0,
+    "markers": [
+      "OBS_CONTRACT_SOURCE_SAFETY_OK",
+      "OBS_RUNNER_RESOURCE_SAFETY_OK",
+      "OBS_E2E_GUARD_SAFETY_OK",
+      "OBS_E2E_PROBE_SAFETY_OK",
+      "OBS_E2E_SECRET_SAFETY_OK",
+      "OBS_CAPABILITY_SCAN_SELF_TEST_OK"
+    ],
+    "aggregateMarker": "OBS_CONTRACT_HOST_SAFETY_MATRIX_OK cases=6 real_e2e=not-run",
+    "suiteMarker": "OBS_CONTRACT_SUITE_OK capability_manifest=validated host_safety=validated"
+  },
+  "entrypointHardening": {
+    "shell": "/usr/bin/bash -p",
+    "shellStartupEnvironment": "cleared-before-sensitive-work",
+    "path": "/usr/bin:/bin",
+    "python": "/usr/bin/python3.12 -I -B",
+    "maliciousPathAndShellEnvironmentTests": "passed"
+  },
+  "page6Trust": {
+    "commit": "fbce7a11dec66cd7957b6831d0dc104ad4758985",
+    "dockerTrustSha256": "15f0d75567c3ff4da4725507ad5e689eeb766da008a6602766386b13006b531f",
+    "status": "pinned",
+    "realE2eValidated": false
+  },
+  "strictExpectedFailures": {
+    "status": "frozen-contract-defects",
+    "claim": "red",
+    "count": 2,
+    "countAsGreen": false,
+    "executed": true,
+    "owner": "frozen OpenAPI contracts 04/06; Page 7 records evidence only",
+    "items": [
+      {
+        "test": "test_masked_source_ip_schema_accepts_hmac_sha256",
+        "reason": "hmac-sha256 plus the 64-character digest is 76 characters, but frozen external response and internal query contracts cap sourceIpMasked at 64."
+      },
+      {
+        "test": "test_event_detail_mapping_has_exact_internal_lookup",
+        "reason": "Frozen external unified-event detail supports TASK_EVENT and MODEL_EVENT, but the frozen internal contract has neither exact eventId filtering nor corresponding detail paths."
+      }
+    ]
+  },
+  "executionHistory": [
+    {
+      "sequence": 1,
+      "classification": "upstream-pin-invalidated / interrupted-before-tests",
+      "invalidatedPage3Commit": "1af8937d70fb571240201bc3a52ebd40e411b668",
+      "replacementPage3Commit": "6216b324bdd5d3da6a754ed466567853dbfa6fed",
+      "pytest": "not-run",
+      "countAsGreen": false,
+      "countedAsFinal": false
+    },
+    {
+      "sequence": 2,
+      "classification": "first-real-pytest-failed",
+      "pytest": {
+        "failed": 11,
+        "passed": 48,
+        "xfailed": 2
+      },
+      "countAsGreen": false,
+      "countedAsFinal": false
+    },
+    {
+      "sequence": 3,
+      "classification": "evidence-unavailable",
+      "scope": "complete-run",
+      "stdoutAvailable": false,
+      "exitCodeAvailable": false,
+      "result": "not-counted",
+      "countAsGreen": false,
+      "countedAsFinal": false
+    },
+    {
+      "sequence": 4,
+      "classification": "ruff-format-gate-failed",
+      "filesNeedingFormat": 2,
+      "evidenceSha256Prefix": "692b67...",
+      "countAsGreen": false,
+      "countedAsFinal": false
+    },
+    {
+      "sequence": 5,
+      "classification": "obsolete-mode-assertion-failed",
+      "pytest": {
+        "failed": 1,
+        "passed": 54,
+        "xfailed": 2
+      },
+      "evidenceSha256Prefix": "6f0728...",
+      "countAsGreen": false,
+      "countedAsFinal": false
+    },
+    {
+      "sequence": 6,
+      "classification": "obsolete-curl-assertion-failed",
+      "pytest": {
+        "failed": 1,
+        "passed": 54,
+        "xfailed": 2
+      },
+      "evidenceSha256Prefix": "d77d12...",
+      "countAsGreen": false,
+      "countedAsFinal": false
+    },
+    {
+      "sequence": 7,
+      "classification": "final-authoritative-success",
+      "ruff": {
+        "check": "passed",
+        "alreadyFormattedFiles": 9
+      },
+      "pytest": {
+        "failed": 0,
+        "passed": 55,
+        "xfailed": 2,
+        "strictXfails": true
+      },
+      "implementationDdlPassed": 3,
+      "hostSafetyMarkersPassed": 6,
+      "exitCode": 0,
+      "countAsGreen": true,
+      "countedAsFinal": true,
+      "frozenContractXfailsCountAsGreen": false
+    }
+  ],
+  "evidence": {
+    "status": "verified-then-deleted",
+    "originalSizeBytes": 4004,
+    "originalMode": "0600",
+    "sha256": "6c587cbcb32a83f786508e9ef3e95584dd602c1b45a36f7bb2b7abd5ce4007ee",
+    "rootVerifiedBeforeDeletion": true,
+    "temporaryFileDeleted": true
+  },
+  "scopeIntegrity": {
+    "frozenReadme01Through07Modified": false,
+    "openApiModified": false,
+    "businessCodeModified": false,
+    "ddlModified": false,
+    "configurationModified": false,
+    "deploymentModified": false,
+    "secretsModifiedOrRead": false,
+    "pushed": false,
+    "merged": false,
+    "deployed": false
+  },
+  "page8IntegrationManifest": {
+    "status": "not-started",
+    "claimed": false
+  },
+  "realE2e": {
+    "status": "not-run",
+    "authorized": false,
+    "secretsRead": false,
+    "productionValidated": false,
+    "claim": "red"
+  },
+  "unresolved": [
+    "Two strict xfails are owned by frozen OpenAPI contract defects; they executed but remain red and do not count as green.",
+    "Real E2E and production validation were not performed.",
+    "Page 8 has not started and no integration manifest is claimed."
+  ]
+}

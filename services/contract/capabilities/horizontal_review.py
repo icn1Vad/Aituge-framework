@@ -24,6 +24,10 @@ from contract.application.idempotency import canonical_json
 from contract.risk.models import RiskReviewPlanInput
 from contract.risk.playbooks import build_default_registry
 from service.conversation.llm_runner import LlmCompletionResult, LlmRuntime
+from services.contract.capabilities.model_observation import (
+    finalize_completion_success,
+    finalize_completion_validation_failed,
+)
 from services.contract.capabilities.prompt_budget import (
     PromptBudgetResult,
     evaluate_prompt_budget,
@@ -1503,6 +1507,7 @@ async def execute_horizontal_unit(
     ) -> tuple[list[HorizontalDecision], HorizontalBatchMetric]:
         batch_started = time.perf_counter()
         selected = [candidates[item] for item in batch.candidate_ids]
+        completion: LlmCompletionResult | None = None
         try:
             completion = await asyncio.wait_for(
                 runtime.complete_with_usage(
@@ -1518,6 +1523,7 @@ async def execute_horizontal_unit(
                     framework_run_id=framework_run_id,
                     attempt_no=value.attempt_no,
                     repair_no=0,
+                    defer_terminal=True,
                 ),
                 timeout=timeout_seconds,
             )
@@ -1538,7 +1544,7 @@ async def execute_horizontal_unit(
                 _validate_decision(item, candidate)
                 for item, candidate in zip(raw, selected, strict=True)
             ]
-            return decisions, HorizontalBatchMetric(
+            metric = HorizontalBatchMetric(
                 batch_id=batch.batch_id,
                 unit_id=unit_id,
                 wall_duration_ms=round(
@@ -1551,9 +1557,21 @@ async def execute_horizontal_unit(
                 total_tokens=completion.total_tokens,
                 prompt_budget=budget,
             )
+            await finalize_completion_success(completion)
+            return decisions, metric
         except asyncio.CancelledError:
+            if completion is not None:
+                await finalize_completion_validation_failed(
+                    completion,
+                    "MODEL_OUTPUT_PROCESSING_CANCELLED",
+                )
             raise
         except Exception as exc:
+            if completion is not None:
+                await finalize_completion_validation_failed(
+                    completion,
+                    "MODEL_OUTPUT_PROCESSING_FAILED",
+                )
             code = getattr(exc, "code", "HORIZONTAL_BATCH_FAILED")
             message = str(exc) or exc.__class__.__name__
             decisions = [
