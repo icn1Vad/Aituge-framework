@@ -8,8 +8,10 @@ reader="$repo_root/scripts/observability-contracts/read-private-e2e-secret.py"
 readonly PYTHON_CLI="/usr/bin/python3.12"
 readonly REAL_SECRETS_ROOT="/home/aituge/contract-review-code-dev-test-private/secrets"
 readonly LEGACY_WORKSPACE_ROOT="/home/aituge/workspace/contract-review-code-dev/secrets"
+readonly CALLER_USER_ID=$(/usr/bin/id -u)
+readonly CALLER_GROUP_ID=$(/usr/bin/id -g)
 
-if [[ $(id -u) != 1000 || $(id -g) != 1000 ]]; then
+if [[ "$CALLER_USER_ID" == 0 || "$CALLER_GROUP_ID" == 0 ]]; then
   echo "OBS_E2E_SECRET_SAFETY_CALLER_INVALID" >&2
   exit 1
 fi
@@ -125,10 +127,19 @@ printf '%s\n' "$safe_value" >"$secrets_root/wrong-mode"
 chmod 640 "$secrets_root/wrong-mode"
 expect_denied wrong-mode OBS_E2E_PRIVATE_FILE_PERMISSIONS_INVALID   --root "$secrets_root" --file "$secrets_root/wrong-mode"   --label wrong-mode --policy synthetic
 
-printf '%s\n' "$safe_value" >"$secrets_root/wrong-group"
-chmod 600 "$secrets_root/wrong-group"
-chgrp 100 "$secrets_root/wrong-group"
-expect_denied wrong-group OBS_E2E_PRIVATE_FILE_PERMISSIONS_INVALID   --root "$secrets_root" --file "$secrets_root/wrong-group"   --label wrong-group --policy synthetic
+wrong_group_id=""
+for candidate_group_id in $(/usr/bin/id -G); do
+  if [[ "$candidate_group_id" != "$CALLER_GROUP_ID" ]]; then
+    wrong_group_id="$candidate_group_id"
+    break
+  fi
+done
+if [[ -n "$wrong_group_id" ]]; then
+  printf '%s\n' "$safe_value" >"$secrets_root/wrong-group"
+  chmod 600 "$secrets_root/wrong-group"
+  /usr/bin/chgrp "$wrong_group_id" "$secrets_root/wrong-group"
+  expect_denied wrong-group OBS_E2E_PRIVATE_FILE_PERMISSIONS_INVALID     --root "$secrets_root" --file "$secrets_root/wrong-group"     --label wrong-group --policy synthetic
+fi
 
 printf '%s\n' "$alternate_value" >"$secrets_root/alternate"
 chmod 600 "$secrets_root/alternate"

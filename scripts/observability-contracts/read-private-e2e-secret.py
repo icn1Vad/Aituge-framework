@@ -8,8 +8,8 @@ import stat
 import sys
 
 SYNTHETIC_ROOT_PATTERN = re.compile(r"/tmp/obs70-e2e-secrets-[0-9a-f]{32}")
-EXPECTED_USER_ID = 1000
-EXPECTED_GROUP_ID = 1000
+EXPECTED_REAL_USER_ID = 1000
+EXPECTED_REAL_GROUP_ID = 1000
 REAL_PRIVATE_ROOT = "/home/aituge/contract-review-code-dev-test-private"
 REAL_SECRETS_ROOT = REAL_PRIVATE_ROOT + "/secrets"
 FORBIDDEN_SUBSTRINGS = ("formal", "prod", "production")
@@ -34,7 +34,11 @@ def checked_dir(parent_fd: int, name: str, label: str) -> tuple[int, os.stat_res
 
 
 def validate_ancestor(
-    metadata: os.stat_result, absolute: str, user_id: int, label: str
+    metadata: os.stat_result,
+    absolute: str,
+    user_id: int,
+    group_id: int,
+    label: str,
 ) -> None:
     permissions = stat.S_IMODE(metadata.st_mode)
     if absolute == "/tmp":
@@ -43,8 +47,8 @@ def validate_ancestor(
         return
     if absolute in (REAL_PRIVATE_ROOT, REAL_SECRETS_ROOT):
         if (
-            metadata.st_uid != EXPECTED_USER_ID
-            or metadata.st_gid != EXPECTED_GROUP_ID
+            metadata.st_uid != EXPECTED_REAL_USER_ID
+            or metadata.st_gid != EXPECTED_REAL_GROUP_ID
             or permissions != 0o700
         ):
             fail("OBS_E2E_SECRET_ANCESTOR_INVALID", label)
@@ -55,13 +59,13 @@ def validate_ancestor(
         return
     if (
         metadata.st_uid != user_id
-        or metadata.st_gid != EXPECTED_GROUP_ID
+        or metadata.st_gid != group_id
         or permissions & 0o022
     ):
         fail("OBS_E2E_SECRET_ANCESTOR_INVALID", label)
 
 
-def open_root(root: str, user_id: int, label: str) -> int:
+def open_root(root: str, user_id: int, group_id: int, label: str) -> int:
     current_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     absolute = ""
     try:
@@ -70,11 +74,11 @@ def open_root(root: str, user_id: int, label: str) -> int:
             os.close(current_fd)
             current_fd = next_fd
             absolute += "/" + component
-            validate_ancestor(metadata, absolute, user_id, label)
+            validate_ancestor(metadata, absolute, user_id, group_id, label)
         root_metadata = os.fstat(current_fd)
         if (
             root_metadata.st_uid != user_id
-            or root_metadata.st_gid != EXPECTED_GROUP_ID
+            or root_metadata.st_gid != group_id
             or stat.S_IMODE(root_metadata.st_mode) != 0o700
         ):
             fail("OBS_E2E_SECRETS_ROOT_PERMISSIONS_INVALID", label)
@@ -91,8 +95,9 @@ def read_secret(
     policy: str,
     expected_real_root: str,
 ) -> bytes:
-    user_id = EXPECTED_USER_ID
-    if os.getuid() != user_id:
+    caller_user_id = os.getuid()
+    caller_group_id = os.getgid()
+    if caller_user_id == 0 or caller_group_id == 0:
         fail("OBS_E2E_SECRET_CALLER_INVALID", label)
     lowered_paths = (root.lower(), file_name.lower(), expected_real_root.lower())
     if (
@@ -106,12 +111,21 @@ def read_secret(
     if policy == "synthetic":
         if not SYNTHETIC_ROOT_PATTERN.fullmatch(root) or expected_real_root:
             fail("OBS_E2E_SECRETS_ROOT_POLICY_INVALID", label)
+        user_id = caller_user_id
+        group_id = caller_group_id
     elif policy == "real":
         if (
             root != REAL_SECRETS_ROOT
             or expected_real_root != REAL_SECRETS_ROOT
         ):
             fail("OBS_E2E_SECRETS_ROOT_POLICY_INVALID", label)
+        if (
+            caller_user_id != EXPECTED_REAL_USER_ID
+            or caller_group_id != EXPECTED_REAL_GROUP_ID
+        ):
+            fail("OBS_E2E_SECRET_CALLER_INVALID", label)
+        user_id = EXPECTED_REAL_USER_ID
+        group_id = EXPECTED_REAL_GROUP_ID
     else:
         fail("OBS_E2E_SECRETS_ROOT_POLICY_INVALID", label)
     try:
@@ -124,7 +138,7 @@ def read_secret(
     if not relative or any(item in ("", ".", "..") for item in relative):
         fail("OBS_E2E_SECRET_PATH_INVALID", label)
 
-    directory_fd = open_root(root, user_id, label)
+    directory_fd = open_root(root, user_id, group_id, label)
     try:
         for component in relative[:-1]:
             next_fd, metadata = checked_dir(directory_fd, component, label)
@@ -132,7 +146,7 @@ def read_secret(
             directory_fd = next_fd
             if (
                 metadata.st_uid != user_id
-                or metadata.st_gid != EXPECTED_GROUP_ID
+                or metadata.st_gid != group_id
                 or stat.S_IMODE(metadata.st_mode) != 0o700
             ):
                 fail("OBS_E2E_SECRET_ANCESTOR_INVALID", label)
@@ -147,7 +161,7 @@ def read_secret(
                 not stat.S_ISREG(before.st_mode)
                 or before.st_uid != user_id
                 or stat.S_IMODE(before.st_mode) != 0o600
-                or before.st_gid != EXPECTED_GROUP_ID
+                or before.st_gid != group_id
                 or before.st_nlink != 1
                 or not 1 <= before.st_size <= 8192
             ):
