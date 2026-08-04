@@ -107,6 +107,9 @@ async def test_run_event_sequences_are_allocated_from_the_run_row(tmp_path, monk
         )
     events = await service.list_run_events(run.id, limit=20)
     assert [event.sequence for event in events] == [1, 2, 3, 4]
+    assert all(event.tenant_id == "event-tenant" for event in events)
+    assert all(event.user_id == "event-user" for event in events)
+    assert all(event.service_name == "ai-contract" for event in events)
 
 
 @pytest.mark.asyncio

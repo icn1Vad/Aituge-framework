@@ -990,6 +990,10 @@ class TaskManagerService:
             if run_id != lease.run_id:
                 raise RunLeaseLost(f"Execution lease for Run '{lease.run_id}' cannot write an event without its run id.")
         async with create_db_session() as session:
+            task = await session.get(TaskEntity, task_id)
+            if task is None:
+                raise ValueError(f"Task '{task_id}' not found.")
+
             if run_id is not None:
                 run_statement = (
                     select(TaskRunEntity)
@@ -1030,6 +1034,9 @@ class TaskManagerService:
                 visible=visible,
                 message=message,
                 payload_json=_bounded_event_payload(payload or {}),
+                tenant_id=task.tenant_id,
+                user_id=task.user_id,
+                service_name=task.service,
             )
             session.add(event)
             await session.commit()
