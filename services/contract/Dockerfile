@@ -20,6 +20,7 @@ ENV CONTRACT_MOCK_MODE=false
 
 COPY services/contract/src/ ./src/
 COPY services/contract/capabilities/revision_drafts.py ./services/contract/capabilities/revision_drafts.py
+COPY services/contract/capabilities/model_observation.py ./services/contract/capabilities/model_observation.py
 RUN pip install --no-cache-dir --no-deps --no-build-isolation .
 
 RUN mkdir -p /app/data/contract
@@ -33,6 +34,7 @@ FROM dependencies AS test
 RUN python -c "import subprocess, sys, tomllib; data = tomllib.load(open('pyproject.toml', 'rb')); subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', *data['project']['optional-dependencies']['test']])"
 COPY services/contract/src/ ./src/
 COPY services/contract/capabilities/revision_drafts.py ./services/contract/capabilities/revision_drafts.py
+COPY services/contract/capabilities/model_observation.py ./services/contract/capabilities/model_observation.py
 COPY services/contract/capabilities/grounded_answer.py ./services/contract/capabilities/grounded_answer.py
 COPY services/contract/tests/ ./tests/
 COPY services/contract/openapi/ ./openapi/
