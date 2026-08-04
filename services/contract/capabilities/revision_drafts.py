@@ -32,7 +32,7 @@ MAX_BATCH_FINDINGS = 6
 MAX_INSERTION_CANDIDATES = 24
 # Bump whenever deterministic draft-planning semantics change.  A cached
 # failure must not outlive the validation rule that produced it.
-REVISION_DRAFT_CACHE_VERSION = "evidence-exact-anchor-v3"
+REVISION_DRAFT_CACHE_VERSION = "numbering-domain-plan-v4"
 _PLACEHOLDER_RE = re.compile(r"(?:TODO|TBD|XXX|待补充|待定|请填写)", re.IGNORECASE)
 _DATE_RE = re.compile(
     r"(?:\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}[-/.]\d{1,2}[-/.]\d{1,2})"
@@ -47,6 +47,12 @@ _COMPANY_RE = re.compile(r"[\u4e00-\u9fffA-Za-z0-9（）()·]{4,80}(?:有限责�
 _SECTION_HEADING_RE = re.compile(
     r"^\s*(?:\u7b2c[\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e0-9]+\s*[\u7ae0\u8282\u6761]|[\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e]+\u3001)"
 )
+_LITERAL_NUMBER_MARKER_RE = re.compile(
+    r"^(?P<marker>\s*(?:\d+(?:[.．]\d+){0,6}[、.．]?|"
+    r"[（(][一二三四五六七八九十百千万〇零0-9A-Za-z]+[）)]|"
+    r"[一二三四五六七八九十百千万〇零]+、))\s*"
+)
+_REVISION_PLAN_VERSION = "numbering-domain-plan-v1"
 
 
 class StrictModel(BaseModel):
@@ -77,6 +83,7 @@ class RevisionDocumentBlock(StrictModel):
     char_end: int = Field(gt=0)
     text: str = Field(min_length=1)
     heading_path: list[str] = Field(default_factory=list, max_length=30)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_range(self) -> "RevisionDocumentBlock":
@@ -132,6 +139,9 @@ class RevisionTarget(StrictModel):
     char_start: int = Field(ge=0)
     char_end: int = Field(gt=0)
     quoted_text_hash: str
+    # A source-version-scoped immutable clause identity. It deliberately is
+    # not the visible list number: native list insertion may change numbers.
+    item_id: str | None = None
 
 
 class RevisionInsertionTarget(StrictModel):
@@ -157,6 +167,22 @@ class RevisionDraft(StrictModel):
     revision_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     validation_status: Literal["VALID"]
     draft_note: str | None = None
+    # The group identity is scoped to review run + document generation +
+    # result hash + numbering domain + plan version. It is never a global
+    # document-wide ID and therefore cannot mix old review results.
+    revision_group_id: str | None = None
+    numbering_domain_id: str | None = None
+    numbering_policy: Literal[
+        "INHERIT_NATIVE",
+        "APPEND_LITERAL",
+        "INSERT_LITERAL_SUBLEVEL",
+        "RENUMBER_LITERAL",
+        "NO_NUMBERING",
+    ] = "NO_NUMBERING"
+    source_finding_ids: list[str] = Field(default_factory=list)
+    group_owner_finding_id: str | None = None
+    group_operation_owner: bool = True
+    operation_order: int = Field(default=1, ge=1)
 
     @model_validator(mode="after")
     def validate_operation_shape(self) -> "RevisionDraft":
@@ -183,6 +209,8 @@ class RevisionDraft(StrictModel):
                 )
         elif not self.unsupported_reason:
             raise ValueError("UNSUPPORTED requires unsupported_reason")
+        if self.source_finding_ids and self.finding_id not in self.source_finding_ids:
+            raise ValueError("source_finding_ids must include finding_id")
         return self
 
 
@@ -271,6 +299,18 @@ class RevisionInsertionCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class RevisionNumberingDomain:
+    domain_id: str
+    numbering_policy: Literal[
+        "INHERIT_NATIVE",
+        "APPEND_LITERAL",
+        "INSERT_LITERAL_SUBLEVEL",
+        "RENUMBER_LITERAL",
+        "NO_NUMBERING",
+    ]
+
+
+@dataclass(frozen=True, slots=True)
 class SupplementRequest:
     revision_key: str
     finding: RevisionFindingSource
@@ -280,7 +320,25 @@ class SupplementRequest:
     insertion_candidates: tuple[RevisionInsertionCandidate, ...]
 
 
-RevisionGenerationRequest = ReplacementRequest | SupplementRequest
+@dataclass(frozen=True, slots=True)
+class BundledRevisionRequest:
+    """A second, narrow model pass for multiple findings at one Word anchor.
+
+    The normal drafting pass decides the concrete anchor first. Only then can
+    we safely ask the model to combine *same-anchor* proposals. This prevents
+    broad semantic grouping from silently joining unrelated clauses.
+    """
+
+    revision_key: str
+    operation: Literal["REPLACE", "SUPPLEMENT"]
+    owner_finding: RevisionFindingSource
+    source_findings: tuple[RevisionFindingSource, ...]
+    original_text: str | None
+    proposed_texts: tuple[str, ...]
+    adjacent_context: str
+
+
+RevisionGenerationRequest = ReplacementRequest | SupplementRequest | BundledRevisionRequest
 
 
 @dataclass(frozen=True, slots=True)
@@ -573,6 +631,8 @@ class LlmRevisionTextGenerator:
                 "SUPPLEMENT may choose anchor_block_id only from insertion_candidates; omit it when uncertain",
                 "REPLACE must not return anchor_block_id",
                 "SUPPLEMENT replacement_text must contain only new text and must not repeat anchor_excerpt",
+                "COMBINE_SAME_ANCHOR必须把同一位置的多个风险合成一条不重复、可直接执行的修改文本",
+                "COMBINE_SAME_ANCHOR不得改变原定位；不得为它返回anchor_block_id",
             ],
             "draft_requests": [
                 _model_request_payload(item, source)
@@ -735,11 +795,12 @@ def _model_request_payload(
     item: RevisionGenerationRequest,
     source: RevisionReviewSource,
 ) -> dict[str, Any]:
+    finding = item.owner_finding if isinstance(item, BundledRevisionRequest) else item.finding
     payload: dict[str, Any] = {
         "revision_key": item.revision_key,
-        "risk_root": item.finding.issue,
-        "formal_suggestion": item.finding.suggestion,
-        "control_codes": item.finding.control_codes,
+        "risk_root": finding.issue,
+        "formal_suggestion": finding.suggestion,
+        "control_codes": finding.control_codes,
         "facts_that_must_not_change": {
             "our_party": source.our_party,
             "counterparty": source.counterparty,
@@ -757,6 +818,31 @@ def _model_request_payload(
                     "dates": sorted(_extract_values(_DATE_RE, item.original_text)),
                 },
             }
+        )
+        return payload
+    if isinstance(item, BundledRevisionRequest):
+        payload.update(
+            {
+                "request_type": "COMBINE_SAME_ANCHOR",
+                "operation": item.operation,
+                "original_clause": item.original_text,
+                "adjacent_context": item.adjacent_context,
+                "source_findings": [
+                    {
+                        "finding_id": finding.finding_id,
+                        "risk_root": finding.issue,
+                        "formal_suggestion": finding.suggestion,
+                        "control_codes": finding.control_codes,
+                    }
+                    for finding in item.source_findings
+                ],
+                "proposed_texts": list(item.proposed_texts),
+                "constraints": [
+                    "这些建议已经定位到同一个原文位置；必须合成为一条可执行修改，不能并列重复条款",
+                    "只能解决列出的风险，不能引入新的主体、金额、日期或商业事实",
+                    "REPLACE输出用于整体替换给定原条款；SUPPLEMENT输出为一个独立新增条款",
+                ],
+            },
         )
         return payload
     payload.update(
@@ -941,7 +1027,68 @@ class RevisionDraftService:
                     )
                 raise
 
-        drafts.sort(key=lambda item: item.finding_id)
+        # Planning happens only after each proposal has a final, validated Word
+        # anchor. A broad semantic match is never enough to put edits into one
+        # operation: grouping is based on the resolved numbering domain and
+        # duplicate-anchor synthesis is based on the exact item/boundary.
+        drafts, bundle_requests = _plan_revision_groups(source, drafts)
+        for batch in _build_batches(
+            bundle_requests,
+            max_items=self.max_batch_findings,
+            target_tokens=self.target_prompt_tokens,
+        ):
+            model_calls += 1
+            result: ReplacementBatchResult | None = None
+            try:
+                result = await self.generator.generate(batch, source=source)
+                generated_by_key = {item.revision_key: item for item in result.items}
+                updated_by_key = {item.revision_key: item for item in drafts}
+                for request in batch:
+                    generated = generated_by_key[request.revision_key]
+                    owner = updated_by_key[request.revision_key]
+                    if request.operation == "REPLACE":
+                        replacement = _validate_replacement(
+                            generated.replacement_text,
+                            request.original_text or "",
+                            source,
+                        )
+                    else:
+                        replacement = _validate_supplement(generated.replacement_text, source)
+                    updated = owner.model_copy(
+                        update={
+                            "replacement_text": replacement,
+                            "draft_note": generated.draft_note,
+                        }
+                    )
+                    updated = updated.model_copy(
+                        update={"revision_hash": _revision_hash_for_draft(updated)}
+                    )
+                    updated_by_key[request.revision_key] = updated
+                drafts = list(updated_by_key.values())
+                await _finalize_revision_observation(result, decision="SUCCESS")
+            except RevisionDraftError as exc:
+                if result is not None:
+                    await _reject_revision_completion(
+                        result,
+                        "REVISION_BUNDLE_OUTPUT_CONSTRAINT_FAILED",
+                    )
+                drafts = _mark_bundle_unsupported(drafts, batch, str(exc))
+            except asyncio.CancelledError:
+                if result is not None:
+                    await _reject_revision_completion(
+                        result,
+                        "MODEL_OUTPUT_PROCESSING_CANCELLED",
+                    )
+                raise
+            except Exception:
+                if result is not None:
+                    await _reject_revision_completion(
+                        result,
+                        "MODEL_OUTPUT_PROCESSING_FAILED",
+                    )
+                raise
+
+        drafts.sort(key=lambda item: (item.revision_group_id or "", item.operation_order, item.finding_id))
         failures.sort(key=lambda item: item.finding_id)
         if failures and drafts:
             status = "PARTIAL_FAILED"
@@ -960,6 +1107,299 @@ class RevisionDraftService:
         )
 
 
+def _literal_marker_signature(block: RevisionDocumentBlock) -> tuple[str, str] | None:
+    marker = str(block.metadata.get("literal_marker") or "")
+    if not marker:
+        matched = _LITERAL_NUMBER_MARKER_RE.match(block.text)
+        marker = matched.group("marker") if matched else ""
+    marker = marker.strip()
+    if not marker:
+        return None
+    if marker[0].isdigit():
+        return ("decimal", "")
+    if marker[0] in "（(":
+        return ("parenthetical", "")
+    return ("chinese", "")
+
+
+def _block_container_path(block: RevisionDocumentBlock) -> str:
+    value = block.metadata.get("container_path")
+    return str(value).strip() if isinstance(value, str) and value.strip() else "document/body"
+
+
+def _literal_domain_start(
+    blocks: Sequence[RevisionDocumentBlock],
+    block: RevisionDocumentBlock,
+    signature: tuple[str, str],
+) -> RevisionDocumentBlock:
+    ordered = sorted(blocks, key=lambda item: item.block_no)
+    try:
+        index = next(index for index, item in enumerate(ordered) if item.block_id == block.block_id)
+    except StopIteration:
+        return block
+    start = block
+    for position in range(index - 1, -1, -1):
+        candidate = ordered[position]
+        if (
+            _literal_marker_signature(candidate) != signature
+            or candidate.heading_path != block.heading_path
+            or _block_container_path(candidate) != _block_container_path(block)
+            or candidate.block_no != start.block_no - 1
+        ):
+            break
+        start = candidate
+    return start
+
+
+def _numbering_domain_for_block(
+    source: RevisionReviewSource,
+    block_id: str,
+    *,
+    operation: str,
+) -> RevisionNumberingDomain:
+    block = next((item for item in source.document_blocks if item.block_id == block_id), None)
+    if block is None:
+        # A missing persisted source block is not a safe basis for sharing an
+        # edit. Keep it isolated instead of guessing from generated text.
+        return RevisionNumberingDomain(
+            domain_id=f"isolated:{block_id}",
+            numbering_policy="NO_NUMBERING",
+        )
+    metadata = block.metadata
+    native = metadata.get("native_numbering") or metadata.get("numbering")
+    if isinstance(native, dict) and str(native.get("mode", "")).upper() == "NATIVE":
+        num_id = native.get("effective_num_id")
+        level = native.get("list_level")
+        if num_id is not None and level is not None:
+            return RevisionNumberingDomain(
+                domain_id=(
+                    f"native:{_block_container_path(block)}:{num_id}:{level}"
+                ),
+                numbering_policy=(
+                    "INHERIT_NATIVE" if operation == "SUPPLEMENT" else "NO_NUMBERING"
+                ),
+            )
+    signature = _literal_marker_signature(block)
+    if signature is not None:
+        start = _literal_domain_start(source.document_blocks, block, signature)
+        return RevisionNumberingDomain(
+            domain_id=(
+                f"literal:{_block_container_path(block)}:{start.block_id}:{signature[0]}"
+            ),
+            # Current insertion candidates are section/list ends. Never
+            # silently renumber later literal list text in phase one.
+            numbering_policy=(
+                "APPEND_LITERAL" if operation == "SUPPLEMENT" else "NO_NUMBERING"
+            ),
+        )
+    return RevisionNumberingDomain(
+        domain_id=f"isolated:{block.block_id}",
+        numbering_policy="NO_NUMBERING",
+    )
+
+
+def _draft_domain(
+    source: RevisionReviewSource,
+    draft: RevisionDraft,
+) -> RevisionNumberingDomain | None:
+    if draft.operation in {"UNSUPPORTED", "DELETE"} and draft.target is None:
+        return None
+    if draft.target is not None:
+        return _numbering_domain_for_block(
+            source,
+            draft.target.block_id,
+            operation=draft.operation,
+        )
+    if draft.insertion_target is not None:
+        return _numbering_domain_for_block(
+            source,
+            draft.insertion_target.block_id,
+            operation=draft.operation,
+        )
+    return None
+
+
+def _draft_location_key(draft: RevisionDraft) -> tuple[str, str, int, int]:
+    if draft.target is not None:
+        return (
+            "item",
+            draft.target.item_id or draft.target.block_id,
+            draft.target.char_start,
+            draft.target.char_end,
+        )
+    if draft.insertion_target is not None:
+        return ("after", draft.insertion_target.block_id, 0, 0)
+    return ("none", draft.finding_id, 0, 0)
+
+
+def _draft_sort_key(draft: RevisionDraft) -> tuple[int, int, str]:
+    if draft.target is not None:
+        return (draft.target.char_start, draft.target.char_end, draft.finding_id)
+    if draft.insertion_target is not None:
+        return (draft.insertion_target.block_no, 2**31 - 1, draft.finding_id)
+    return (2**31 - 1, 2**31 - 1, draft.finding_id)
+
+
+def _with_draft_metadata(draft: RevisionDraft, **update: Any) -> RevisionDraft:
+    updated = draft.model_copy(update=update)
+    return updated.model_copy(update={"revision_hash": _revision_hash_for_draft(updated)})
+
+
+def _plan_revision_groups(
+    source: RevisionReviewSource,
+    drafts: Sequence[RevisionDraft],
+) -> tuple[list[RevisionDraft], list[BundledRevisionRequest]]:
+    """Attach deterministic domains and prepare narrow same-anchor merges.
+
+    A domain groups all edits for UI/accept-reject purposes. A model merge is
+    requested only when two generated edits address exactly the same source
+    item or the same insertion boundary.
+    """
+
+    finding_by_id = {item.finding_id: item for item in source.findings}
+    by_domain: dict[str, list[tuple[RevisionDraft, RevisionNumberingDomain]]] = {}
+    isolated: list[RevisionDraft] = []
+    for draft in drafts:
+        domain = _draft_domain(source, draft)
+        if domain is None or draft.operation == "UNSUPPORTED":
+            isolated.append(draft)
+            continue
+        by_domain.setdefault(domain.domain_id, []).append((draft, domain))
+
+    planned: list[RevisionDraft] = list(isolated)
+    bundles: list[BundledRevisionRequest] = []
+    for domain_id, entries in by_domain.items():
+        source_ids = sorted(draft.finding_id for draft, _ in entries)
+        group_id = _sha256(
+            "\0".join(
+                (
+                    source.review_id,
+                    source.generation_id,
+                    source.result_hash,
+                    domain_id,
+                    _REVISION_PLAN_VERSION,
+                )
+            )
+        )
+        ordered = sorted(entries, key=lambda entry: _draft_sort_key(entry[0]))
+        current: list[RevisionDraft] = []
+        for order, (draft, domain) in enumerate(ordered, start=1):
+            current.append(
+                _with_draft_metadata(
+                    draft,
+                    revision_group_id=group_id,
+                    numbering_domain_id=domain.domain_id,
+                    numbering_policy=domain.numbering_policy,
+                    source_finding_ids=source_ids,
+                    group_owner_finding_id=draft.finding_id,
+                    group_operation_owner=True,
+                    operation_order=order,
+                )
+            )
+
+        by_location: dict[tuple[str, str, int, int], list[RevisionDraft]] = {}
+        for draft in current:
+            by_location.setdefault(_draft_location_key(draft), []).append(draft)
+        replacement: dict[str, RevisionDraft] = {draft.revision_key: draft for draft in current}
+        for same_location in by_location.values():
+            if len(same_location) == 1:
+                continue
+            operations = {draft.operation for draft in same_location}
+            owner = min(same_location, key=lambda item: item.finding_id)
+            member_ids = sorted(item.finding_id for item in same_location)
+            if operations == {"DELETE"}:
+                # Deleting the same exact source range twice is redundant; one
+                # physical revision safely represents all linked findings.
+                for draft in same_location:
+                    replacement[draft.revision_key] = _with_draft_metadata(
+                        draft,
+                        source_finding_ids=member_ids,
+                        group_owner_finding_id=owner.finding_id,
+                        group_operation_owner=draft.finding_id == owner.finding_id,
+                    )
+                continue
+            if len(operations) != 1 or owner.operation not in {"REPLACE", "SUPPLEMENT"}:
+                for draft in same_location:
+                    replacement[draft.revision_key] = _with_draft_metadata(
+                        draft,
+                        operation="UNSUPPORTED",
+                        replacement_text=None,
+                        unsupported_reason="同一条款存在互相冲突的修改类型，未自动写入。",
+                        group_operation_owner=False,
+                    )
+                continue
+            for draft in same_location:
+                replacement[draft.revision_key] = _with_draft_metadata(
+                    draft,
+                    source_finding_ids=member_ids,
+                    group_owner_finding_id=owner.finding_id,
+                    group_operation_owner=draft.finding_id == owner.finding_id,
+                )
+            owner = replacement[owner.revision_key]
+            related = tuple(finding_by_id[item] for item in member_ids)
+            bundles.append(
+                BundledRevisionRequest(
+                    revision_key=owner.revision_key,
+                    operation=owner.operation,
+                    owner_finding=finding_by_id[owner.finding_id],
+                    source_findings=related,
+                    original_text=owner.original_text,
+                    proposed_texts=tuple(
+                        item.replacement_text or "" for item in same_location
+                    ),
+                    adjacent_context="\n".join(
+                        item.change_reason for item in same_location
+                    ),
+                )
+            )
+        planned.extend(replacement.values())
+    return planned, bundles
+
+
+def _mark_bundle_unsupported(
+    drafts: Sequence[RevisionDraft],
+    requests: Sequence[BundledRevisionRequest],
+    reason: str,
+) -> list[RevisionDraft]:
+    affected = {
+        finding.finding_id
+        for request in requests
+        for finding in request.source_findings
+    }
+    return [
+        _with_draft_metadata(
+            draft,
+            operation="UNSUPPORTED",
+            replacement_text=None,
+            unsupported_reason=(
+                "同一位置的多项风险修改未能生成一致的联合建议，未自动写入。"
+            ),
+            group_operation_owner=False,
+        )
+        if draft.finding_id in affected
+        else draft
+        for draft in drafts
+    ]
+
+
+def _revision_hash_for_draft(draft: RevisionDraft) -> str:
+    return compute_revision_hash(
+        draft.revision_key,
+        draft.operation,
+        draft.original_text,
+        draft.replacement_text,
+        draft.target,
+        draft.insertion_target,
+        revision_group_id=draft.revision_group_id,
+        numbering_domain_id=draft.numbering_domain_id,
+        numbering_policy=draft.numbering_policy,
+        source_finding_ids=draft.source_finding_ids,
+        group_owner_finding_id=draft.group_owner_finding_id,
+        group_operation_owner=draft.group_operation_owner,
+        operation_order=draft.operation_order,
+    )
+
+
 def compute_revision_key(
     review_id: str,
     generation_id: str,
@@ -976,6 +1416,14 @@ def compute_revision_hash(
     replacement_text: str | None,
     target: RevisionTarget | None,
     insertion_target: RevisionInsertionTarget | None = None,
+    *,
+    revision_group_id: str | None = None,
+    numbering_domain_id: str | None = None,
+    numbering_policy: str = "NO_NUMBERING",
+    source_finding_ids: Sequence[str] = (),
+    group_owner_finding_id: str | None = None,
+    group_operation_owner: bool = True,
+    operation_order: int = 1,
 ) -> str:
     payload: dict[str, Any] = {
         "revision_key": revision_key,
@@ -983,6 +1431,13 @@ def compute_revision_hash(
         "original_text": original_text,
         "replacement_text": replacement_text,
         "target": target.model_dump(mode="json") if target is not None else None,
+        "revision_group_id": revision_group_id,
+        "numbering_domain_id": numbering_domain_id,
+        "numbering_policy": numbering_policy,
+        "source_finding_ids": list(source_finding_ids),
+        "group_owner_finding_id": group_owner_finding_id,
+        "group_operation_owner": group_operation_owner,
+        "operation_order": operation_order,
     }
     if insertion_target is not None:
         payload["insertion_target"] = insertion_target.model_dump(mode="json")
@@ -1037,6 +1492,7 @@ def source_from_formal_payload(
             char_end=item["char_end"],
             text=item["text"],
             heading_path=list(item.get("heading_path") or []),
+            metadata=dict(item.get("metadata_json") or item.get("metadata") or {}),
         )
         for item in document_blocks
         if item.get("text") and item.get("block_type") not in {"header", "footer"}
@@ -1480,6 +1936,7 @@ def _resolve_target(
             char_start=evidence.char_start,
             char_end=evidence.char_end,
             quoted_text_hash=evidence.quoted_text_hash,
+            item_id=evidence.block_id,
         ),
         item.context_text,
     )
@@ -1571,6 +2028,15 @@ def _request_budget_text(item: RevisionGenerationRequest) -> str:
             + item.finding.issue
             + item.finding.suggestion
             + item.adjacent_context
+        )
+    if isinstance(item, BundledRevisionRequest):
+        return "\n".join(
+            (
+                item.original_text or "",
+                item.adjacent_context,
+                *item.proposed_texts,
+                *(finding.issue + finding.suggestion for finding in item.source_findings),
+            )
         )
     return "\n".join(
         (

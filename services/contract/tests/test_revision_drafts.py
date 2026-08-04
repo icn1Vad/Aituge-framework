@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 
 from services.contract.capabilities.revision_drafts import (
     GeneratedReplacement,
+    BundledRevisionRequest,
     InMemoryRevisionDraftCache,
     InMemoryRevisionSourceProvider,
     ReplacementBatchResult,
@@ -22,7 +23,9 @@ from services.contract.capabilities.revision_drafts import (
     RevisionReviewSource,
     SupplementRequest,
     _cache_key,
+    compute_revision_hash,
     _find_contract_ir_list,
+    _model_request_payload,
     source_from_formal_payload,
 )
 
@@ -329,22 +332,87 @@ def test_text_quote_continues_to_generate_a_replace_draft() -> None:
     assert response.drafts[0].target is not None
     assert response.drafts[0].insertion_target is None
     draft = response.drafts[0]
-    legacy_payload = {
-        "revision_key": draft.revision_key,
-        "operation": draft.operation,
-        "original_text": draft.original_text,
-        "replacement_text": draft.replacement_text,
-        "target": draft.target.model_dump(mode="json"),
-    }
-    expected_hash = "sha256:" + hashlib.sha256(
-        json.dumps(
-            legacy_payload,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
+    expected_hash = compute_revision_hash(
+        draft.revision_key,
+        draft.operation,
+        draft.original_text,
+        draft.replacement_text,
+        draft.target,
+        draft.insertion_target,
+        revision_group_id=draft.revision_group_id,
+        numbering_domain_id=draft.numbering_domain_id,
+        numbering_policy=draft.numbering_policy,
+        source_finding_ids=draft.source_finding_ids,
+        group_owner_finding_id=draft.group_owner_finding_id,
+        group_operation_owner=draft.group_operation_owner,
+        operation_order=draft.operation_order,
+    )
     assert draft.revision_hash == expected_hash
+
+
+def test_same_anchor_findings_are_combined_into_one_group_operation() -> None:
+    source = _replace_source()
+    second = source.findings[0].model_copy(
+        update={
+            "finding_id": "finding-replace-2",
+            "title": "验收标准不完整",
+            "issue": "服务验收标准不完整。",
+            "suggestion": "补充明确、可验证的验收标准。",
+        }
+    )
+    source = source.model_copy(update={"findings": [source.findings[0], second]})
+
+    response, generator = _generate(source, "乙方应按约完成服务并提交验收材料。")
+
+    assert response.status == "COMPLETED"
+    assert response.model_call_count == 2
+    assert len(generator.calls) == 2
+    assert len(generator.calls[0]) == 2
+    assert len(generator.calls[1]) == 1
+    bundled_request = generator.calls[1][0]
+    assert isinstance(bundled_request, BundledRevisionRequest)
+    assert _model_request_payload(bundled_request, source)["request_type"] == "COMBINE_SAME_ANCHOR"
+    assert response.drafts[0].revision_group_id == response.drafts[1].revision_group_id
+    assert response.drafts[0].source_finding_ids == ["finding-replace-1", "finding-replace-2"]
+    assert sum(item.group_operation_owner for item in response.drafts) == 1
+
+
+def test_literal_list_supplement_uses_append_policy_without_renumbering() -> None:
+    source = _absence_source().model_copy(
+        update={
+            "document_blocks": [
+                RevisionDocumentBlock(
+                    block_id="block-list-1",
+                    block_no=1,
+                    block_type="paragraph",
+                    char_start=0,
+                    char_end=len("1. 乙方应承担违约责任。"),
+                    text="1. 乙方应承担违约责任。",
+                    heading_path=["违约责任"],
+                    metadata={"literal_marker": "1.", "container_path": "document/body"},
+                ),
+                RevisionDocumentBlock(
+                    block_id="block-list-2",
+                    block_no=2,
+                    block_type="paragraph",
+                    char_start=20,
+                    char_end=20 + len("2. 甲方有权要求赔偿。"),
+                    text="2. 甲方有权要求赔偿。",
+                    heading_path=["违约责任"],
+                    metadata={"literal_marker": "2.", "container_path": "document/body"},
+                ),
+            ]
+        }
+    )
+
+    response, _ = _generate(
+        source,
+        "乙方违约后应在某个工作日内采取补救措施。",
+        anchor_block_id="block-list-2",
+    )
+
+    assert response.drafts[0].numbering_policy == "APPEND_LITERAL"
+    assert response.drafts[0].numbering_domain_id is not None
 
 
 def test_same_physical_anchor_across_semantic_ir_items_generates_replace_draft() -> None:
