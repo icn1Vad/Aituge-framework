@@ -7,17 +7,35 @@ from .contract_loader import repository_root
 
 
 SCRIPTS = repository_root() / "scripts" / "observability-contracts"
+LOADER_OVERRIDE_VARIABLES = (
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "LD_AUDIT",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONSTARTUP",
+    "PYTHONINSPECT",
+    "PYTHONUSERBASE",
+)
+
+
+def _script_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    for variable in LOADER_OVERRIDE_VARIABLES:
+        env.pop(variable, None)
+    return env
 
 
 def _run(
     script: str, *args: str, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
+    effective_env = _script_environment() if env is None else env
     return subprocess.run(
         [str(SCRIPTS / script), *args],
         check=False,
         capture_output=True,
         text=True,
-        env=env,
+        env=effective_env,
     )
 
 
@@ -28,7 +46,7 @@ def test_target_guard_uses_authoritative_synthetic_safety_matrix() -> None:
 
 
 def test_e2e_probe_refuses_by_default_without_network_access() -> None:
-    env = os.environ.copy()
+    env = _script_environment()
     env.pop("OBS_E2E_RUN", None)
     result = _run("e2e-observability-probe.sh", env=env)
     assert result.returncode != 0
