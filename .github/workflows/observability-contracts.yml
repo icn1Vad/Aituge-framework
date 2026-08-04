@@ -53,13 +53,26 @@ jobs:
       - name: Run no-Docker safety guards
         shell: bash
         run: |
-          scripts/observability-contracts/verify-frozen-contract-source.sh
-          scripts/observability-contracts/test-frozen-contract-source-safety.sh
-          scripts/observability-contracts/test-runner-resource-safety.sh
-          scripts/observability-contracts/test-e2e-guard-safety.sh
-          scripts/observability-contracts/test-e2e-probe-safety.sh
-          scripts/observability-contracts/test-e2e-secret-safety.sh
-          scripts/observability-contracts/test-capability-leak-scanner.sh
+          run_sanitized() {
+            /usr/bin/env \
+              -u LD_PRELOAD \
+              -u LD_LIBRARY_PATH \
+              -u LD_AUDIT \
+              -u PYTHONPATH \
+              -u PYTHONHOME \
+              -u PYTHONSTARTUP \
+              -u PYTHONINSPECT \
+              -u PYTHONUSERBASE \
+              "$@"
+          }
+
+          run_sanitized scripts/observability-contracts/verify-frozen-contract-source.sh
+          run_sanitized scripts/observability-contracts/test-frozen-contract-source-safety.sh
+          run_sanitized scripts/observability-contracts/test-runner-resource-safety.sh
+          run_sanitized scripts/observability-contracts/test-e2e-guard-safety.sh
+          run_sanitized scripts/observability-contracts/test-e2e-probe-safety.sh
+          run_sanitized scripts/observability-contracts/test-e2e-secret-safety.sh
+          run_sanitized scripts/observability-contracts/test-capability-leak-scanner.sh
 
       - name: Run Python lint and format checks
         shell: bash
