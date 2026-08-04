@@ -3685,6 +3685,22 @@ def _po_decision_summary_perspective_warning_count(
     return int(any(word and word in summary for word in role_words))
 
 
+_TEMPLATE_TRAILING_PUNCTUATION_RE = re.compile(r"[。．.!！?？；;，,、:：]+$")
+
+
+def _template_fragment(value: str) -> str:
+    """Make template-owned punctuation deterministic at interpolation boundaries."""
+    return _TEMPLATE_TRAILING_PUNCTUATION_RE.sub("", str(value or "").strip())
+
+
+def _join_template_fragments(values: list[str] | tuple[str, ...]) -> str:
+    return "；".join(
+        fragment
+        for fragment in (_template_fragment(value) for value in values)
+        if fragment
+    )
+
+
 def _po_formal_finding_text(
     request: GenericReviewRequest,
     candidate: DeterministicRiskCandidate,
@@ -3707,27 +3723,29 @@ def _po_formal_finding_text(
         for source_id in candidate.primary_evidence_source_ids
         if source_id in catalog.evidence_sources
     ]
-    evidence_summary = "；".join(primary_quotes[:2])
+    evidence_summary = _join_template_fragments(primary_quotes[:2])
     if not evidence_summary:
-        evidence_summary = candidate.trigger_reason
+        evidence_summary = _template_fragment(candidate.trigger_reason)
     issue = template["issue"].format(
         our_party=request.our_party,
         counterparty=request.counterparty,
-        fact=candidate.trigger_reason,
+        fact=_template_fragment(candidate.trigger_reason),
         evidence=evidence_summary,
     )
     impact = template["impact"].format(
         our_party=request.our_party,
         counterparty=request.counterparty,
-        fact=candidate.trigger_reason,
+        fact=_template_fragment(candidate.trigger_reason),
         severity=_po_factor_summary(severity_factors),
     )
-    suggestion = "；".join(
-        control_templates[code].format(
-            our_party=request.our_party,
-            counterparty=request.counterparty,
-        )
-        for code in control_codes
+    suggestion = _join_template_fragments(
+        [
+            control_templates[code].format(
+                our_party=request.our_party,
+                counterparty=request.counterparty,
+            )
+            for code in control_codes
+        ]
     )
     return template["title"], issue, impact, suggestion
 
@@ -4164,16 +4182,18 @@ def _po_root_formal_finding_text(
                 for source_id in candidate.core_primary_evidence_source_ids
             )
         )
-        evidence_summary = "；".join(
-            dict.fromkeys(
-                catalog.evidence_sources[source_id].quoted_text
-                for source_id in primary_ids
-                if source_id in catalog.evidence_sources
+        evidence_summary = _join_template_fragments(
+            list(
+                dict.fromkeys(
+                    catalog.evidence_sources[source_id].quoted_text
+                    for source_id in primary_ids
+                    if source_id in catalog.evidence_sources
+                )
             )
         )
         if not evidence_summary:
-            evidence_summary = "；".join(
-                dict.fromkeys(candidate.trigger_reason for candidate in candidates)
+            evidence_summary = _join_template_fragments(
+                list(dict.fromkeys(candidate.trigger_reason for candidate in candidates))
             )
         return (
             "赔偿范围开放且累计责任缺少有效上限",
@@ -4185,12 +4205,14 @@ def _po_root_formal_finding_text(
                 f"{request.our_party}可能承担缺少金额边界的直接、间接或第三方责任；"
                 f"风险因素为：{_po_factor_summary(severity_factors)}。"
             ),
-            "；".join(
-                _LRE_CONTROL_CODE_TEMPLATES[code].format(
-                    our_party=request.our_party,
-                    counterparty=request.counterparty,
-                )
-                for code in control_codes
+            _join_template_fragments(
+                [
+                    _LRE_CONTROL_CODE_TEMPLATES[code].format(
+                        our_party=request.our_party,
+                        counterparty=request.counterparty,
+                    )
+                    for code in control_codes
+                ]
             ),
         )
     if first.canonical_root_type != "CORE_SCOPE_AND_DELIVERY_IMBALANCE":
@@ -4205,16 +4227,18 @@ def _po_root_formal_finding_text(
             for source_id in candidate.core_primary_evidence_source_ids
         )
     )
-    evidence_summary = "；".join(
-        dict.fromkeys(
-            catalog.evidence_sources[source_id].quoted_text
-            for source_id in primary_ids
-            if source_id in catalog.evidence_sources
+    evidence_summary = _join_template_fragments(
+        list(
+            dict.fromkeys(
+                catalog.evidence_sources[source_id].quoted_text
+                for source_id in primary_ids
+                if source_id in catalog.evidence_sources
+            )
         )
     )
     if not evidence_summary:
-        evidence_summary = "；".join(
-            dict.fromkeys(candidate.trigger_reason for candidate in candidates)
+        evidence_summary = _join_template_fragments(
+            list(dict.fromkeys(candidate.trigger_reason for candidate in candidates))
         )
     title = "履行范围、交付边界及进度责任存在同源失衡风险"
     issue = (
@@ -4226,12 +4250,14 @@ def _po_root_formal_finding_text(
         f"{request.our_party}可能在工作范围被扩大时仍承担原有交付期限和"
         f"进度责任；风险因素为：{_po_factor_summary(severity_factors)}。"
     )
-    suggestion = "；".join(
-        _PO_CONTROL_CODE_TEMPLATES[code].format(
-            our_party=request.our_party,
-            counterparty=request.counterparty,
-        )
-        for code in control_codes
+    suggestion = _join_template_fragments(
+        [
+            _PO_CONTROL_CODE_TEMPLATES[code].format(
+                our_party=request.our_party,
+                counterparty=request.counterparty,
+            )
+            for code in control_codes
+        ]
     )
     return title, issue, impact, suggestion
 

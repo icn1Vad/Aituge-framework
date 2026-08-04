@@ -19,6 +19,7 @@ from services.contract.capabilities.revision_drafts import (
     RevisionFindingSource,
     RevisionIrSource,
     RevisionReviewSource,
+    _validate_replacement,
     compute_revision_hash,
     compute_revision_key,
 )
@@ -369,6 +370,16 @@ async def test_named_party_cannot_be_removed_from_replacement():
     ).get_or_generate("review-1", "generation-1", _hash("result-1"))
     assert result.failed_findings[0].error_code == "REVISION_GENERATION_FAILED"
     assert "named contract party" in result.failed_findings[0].message
+
+
+def test_replacement_validation_preserves_child_item_line_breaks():
+    source = _source()
+    original = "8.2 双方应按下列要求履行：\nA. 第一项；\nB. 第二项。"
+    replacement = "8.2 双方应按下列要求履行：\r\nA. 第一项调整后；  \r\nB. 第二项调整后。  "
+
+    assert _validate_replacement(replacement, original, source) == (
+        "8.2 双方应按下列要求履行：\nA. 第一项调整后；\nB. 第二项调整后。"
+    )
 
 
 @pytest.mark.asyncio

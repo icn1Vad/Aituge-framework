@@ -32,7 +32,7 @@ MAX_BATCH_FINDINGS = 6
 MAX_INSERTION_CANDIDATES = 24
 # Bump whenever deterministic draft-planning semantics change.  A cached
 # failure must not outlive the validation rule that produced it.
-REVISION_DRAFT_CACHE_VERSION = "evidence-exact-anchor-v3"
+REVISION_DRAFT_CACHE_VERSION = "evidence-exact-anchor-v4-layout"
 _PLACEHOLDER_RE = re.compile(r"(?:TODO|TBD|XXX|待补充|待定|请填写)", re.IGNORECASE)
 _DATE_RE = re.compile(
     r"(?:\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}[-/.]\d{1,2}[-/.]\d{1,2})"
@@ -567,6 +567,8 @@ class LlmRevisionTextGenerator:
                 "不得返回finding_id、operation、Evidence位置或风险等级",
                 "不得使用XXX、TODO、待补充、待定等占位符",
                 "REPLACE请求必须直接处理给定风险根因并保持可直接替换原条款",
+                "REPLACE必须保留原条款开头已有的条款编号或层级标识（例如8.2、A.、（一））；不得删除、合并或另起不一致的编号",
+                "原条款或替换条款含有A/B/（一）等子项时，必须逐项单独换行输出，保留原有层级和换行；不得把多个子项拼成一段文字",
                 "SUPPLEMENT请求只生成供人工确认的补充条款，不得伪造原文或定位信息",
                 "SUPPLEMENT不得写入真实金额、日期或期限；确需商业参数时使用“某”",
                 "SUPPLEMENT不得引入未知公司或改变合同主体",
@@ -1345,7 +1347,8 @@ def _strip_leading_anchor_echo(
     value: str,
     target: RevisionInsertionTarget | None,
 ) -> str:
-    normalized = value.strip()
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    normalized = "\n".join(line.rstrip() for line in normalized.split("\n"))
     if target is None or not normalized.startswith(target.anchor_excerpt):
         return normalized
     remainder = normalized[len(target.anchor_excerpt) :].lstrip()
@@ -1490,7 +1493,8 @@ def _validate_replacement(
     original_text: str,
     source: RevisionReviewSource,
 ) -> str:
-    normalized = value.strip()
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    normalized = "\n".join(line.rstrip() for line in normalized.split("\n"))
     if not normalized:
         raise RevisionDraftError("REVISION_GENERATION_FAILED", "replacement_text is empty")
     if normalized == original_text.strip():

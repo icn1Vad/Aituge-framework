@@ -72,6 +72,7 @@ from services.contract.capabilities.risk_review_bundle import (
     _parse_po_candidate_output,
     _po_evidence_catalog,
     _po_factor_has_required_evidence,
+    _join_template_fragments,
     _icd_factor_has_required_evidence,
     _icd_scene_relevant,
     _lre_factor_has_required_evidence,
@@ -132,6 +133,12 @@ def test_po007_source_policy_excludes_termination_cure_language() -> None:
     )
 
     assert not po_item_matches_check(item, [excerpt], check)
+
+
+def test_template_fragments_do_not_duplicate_terminal_punctuation() -> None:
+    assert _join_template_fragments(["证据已完整。", "第二段；", "第三段"]) == (
+        "证据已完整；第二段；第三段"
+    )
 
 
 def _request() -> GenericReviewRequest:
