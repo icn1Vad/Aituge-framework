@@ -827,7 +827,7 @@ def _revision_draft_service(
                     request.app.state.settings.framework_connect_timeout_seconds
                 ),
                 read_timeout_seconds=(
-                    request.app.state.settings.framework_read_timeout_seconds
+                    request.app.state.settings.revision_draft_read_timeout_seconds
                 ),
             ),
         ),

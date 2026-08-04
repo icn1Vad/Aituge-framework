@@ -53,6 +53,11 @@ class Settings(BaseSettings):
         gt=0,
         validation_alias="FRAMEWORK_READ_TIMEOUT_SECONDS",
     )
+    revision_draft_read_timeout_seconds: float = Field(
+        default=120,
+        gt=0,
+        validation_alias="REVISION_DRAFT_READ_TIMEOUT_SECONDS",
+    )
     framework_cancel_wait_seconds: float = Field(
         default=5,
         ge=0,

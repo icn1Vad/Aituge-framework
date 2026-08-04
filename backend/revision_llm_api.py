@@ -39,7 +39,10 @@ class RevisionCompletionRequest(BaseModel):
     user_prompt: str = Field(min_length=1, max_length=100_000)
     defer_terminal: Literal[True]
     logical_call_id: str | None = Field(default=None, min_length=1, max_length=80)
-    model_attempt_no: int | None = Field(default=None, ge=1)
+    # Older contract services do not send the observability retry fields. An
+    # omitted attempt is therefore the first provider attempt; explicit null
+    # is kept accepted for wire compatibility and normalized at the boundary.
+    model_attempt_no: int | None = Field(default=1, ge=1)
     fallback_from_invocation_id: str | None = Field(
         default=None,
         min_length=1,
@@ -147,6 +150,7 @@ def create_revision_llm_router() -> APIRouter:
         request_id: Annotated[str | None, Header(alias="X-Request-Id")] = None,
     ) -> RevisionCompletionResponse:
         tenant = _authenticate(internal_token, tenant_id)
+        model_attempt_no = payload.model_attempt_no or 1
         completion = await LlmRuntime(tenant).complete_with_usage(
             messages=[{"role": "user", "content": payload.user_prompt}],
             model_id=payload.model_id,
@@ -159,7 +163,7 @@ def create_revision_llm_router() -> APIRouter:
             trace_id=request_id,
             defer_terminal=True,
             logical_call_id=payload.logical_call_id,
-            model_attempt_no=payload.model_attempt_no,
+            model_attempt_no=model_attempt_no,
             fallback_from_invocation_id=payload.fallback_from_invocation_id,
         )
         finalize_token = None

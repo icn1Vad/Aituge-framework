@@ -10,6 +10,7 @@ def test_framework_environment_variables_use_frozen_names(monkeypatch) -> None:
     monkeypatch.setenv("FRAMEWORK_RECOVERY_GRACE_SECONDS", "45")
     monkeypatch.setenv("FRAMEWORK_CONNECT_TIMEOUT_SECONDS", "2.5")
     monkeypatch.setenv("FRAMEWORK_READ_TIMEOUT_SECONDS", "12")
+    monkeypatch.setenv("REVISION_DRAFT_READ_TIMEOUT_SECONDS", "90")
     monkeypatch.setenv("FRAMEWORK_CANCEL_WAIT_SECONDS", "3")
 
     settings = Settings(_env_file=None)
@@ -20,6 +21,7 @@ def test_framework_environment_variables_use_frozen_names(monkeypatch) -> None:
     assert settings.framework_recovery_grace_seconds == 45
     assert settings.framework_connect_timeout_seconds == 2.5
     assert settings.framework_read_timeout_seconds == 12
+    assert settings.revision_draft_read_timeout_seconds == 90
     assert settings.framework_cancel_wait_seconds == 3
 
 

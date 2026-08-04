@@ -49,6 +49,10 @@ class ErrorChunk(TextChunk):
     exception: str | None = None
     error_type: str = ""
     retryable: bool = True
+    observability_retry_from_invocation_id: str | None = Field(
+        default=None,
+        exclude=True,
+    )
 
 
 class ModelInvocationError(RuntimeError):
@@ -56,10 +60,5 @@ class ModelInvocationError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.retryable = retryable
-
-    observability_retry_from_invocation_id: str | None = Field(
-        default=None,
-        exclude=True,
-    )
 
 ChatResponseGenerator = AsyncGenerator[TextChunk, None]
