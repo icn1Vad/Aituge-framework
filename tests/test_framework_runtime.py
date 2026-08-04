@@ -5,6 +5,7 @@ from backend import framework_runtime
 
 def test_framework_runtime_starts_ten_workers_by_default(monkeypatch) -> None:
     monkeypatch.delenv("TASK_WORKER_COUNT", raising=False)
+    monkeypatch.delenv("OBSERVABILITY_INTERNAL_ENABLED", raising=False)
 
     commands = framework_runtime.runtime_commands()
 
@@ -14,8 +15,22 @@ def test_framework_runtime_starts_ten_workers_by_default(monkeypatch) -> None:
 
 def test_framework_runtime_clamps_configured_worker_count(monkeypatch) -> None:
     monkeypatch.setenv("TASK_WORKER_COUNT", "99")
+    monkeypatch.delenv("OBSERVABILITY_INTERNAL_ENABLED", raising=False)
 
     assert len(framework_runtime.runtime_commands()) == 33
+
+
+def test_framework_runtime_starts_mtls_observability_listener_when_enabled(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TASK_WORKER_COUNT", "1")
+    monkeypatch.setenv("OBSERVABILITY_INTERNAL_ENABLED", "true")
+
+    assert framework_runtime.runtime_commands() == (
+        framework_runtime.API_COMMAND,
+        framework_runtime.OBSERVABILITY_COMMAND,
+        framework_runtime.WORKER_COMMAND,
+    )
 
 
 def test_framework_runtime_supervises_api_and_worker(monkeypatch) -> None:

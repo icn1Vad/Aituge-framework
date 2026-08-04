@@ -27,6 +27,11 @@ WORKER_COMMAND = (
     "-m",
     "task_manager.runtime.worker",
 )
+OBSERVABILITY_COMMAND = (
+    sys.executable,
+    "-m",
+    "backend.observability_uvicorn",
+)
 DEFAULT_WORKER_COUNT = 10
 MAX_WORKER_COUNT = 32
 
@@ -63,7 +68,13 @@ def runtime_commands() -> tuple[tuple[str, ...], ...]:
     except ValueError:
         worker_count = DEFAULT_WORKER_COUNT
     worker_count = max(1, min(worker_count, MAX_WORKER_COUNT))
-    return (API_COMMAND, *(WORKER_COMMAND for _ in range(worker_count)))
+    commands = [API_COMMAND]
+    if os.environ.get("OBSERVABILITY_INTERNAL_ENABLED", "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }:
+        commands.append(OBSERVABILITY_COMMAND)
+    commands.extend(WORKER_COMMAND for _ in range(worker_count))
+    return tuple(commands)
 
 
 def run_processes(
