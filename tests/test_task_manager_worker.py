@@ -76,6 +76,46 @@ def test_worker_claims_renews_and_recovers_a_persisted_run(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_releasing_an_unexecuted_lease_returns_its_quota_slot(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_TYPE", "sqlite")
+    monkeypatch.setenv("SQLITE_URL", f"sqlite+aiosqlite:///{tmp_path / 'lease-release.db'}")
+    reset_engine_for_test()
+    await init_db()
+    options = SchedulingRuntimeOptions(local_python_artifact_dir=tmp_path / "artifacts")
+    service = TaskManagerService(options)
+    task = await service.create_task(
+        TaskCreateRequest(
+            task_type="pipeline.demo",
+            input_payload={"goal": "release a competing lease"},
+            user_id="lease-user",
+            tenant_id="lease-tenant",
+        ),
+        service_name="ai-contract",
+    )
+    created = await service.start_task_run(task.id, TaskRunRequest())
+    worker = TaskWorker(options, worker_id="lease-worker")
+    lease = await worker.claim_one()
+    assert lease is not None
+    assert await worker.release_lease(lease) is True
+
+    async with create_db_session() as session:
+        run = await session.get(TaskRunEntity, created.id)
+        quota = (
+            await session.exec(
+                select(TaskQuotaEntity)
+                .where(TaskQuotaEntity.service == "ai-contract")
+                .where(TaskQuotaEntity.tenant_id == "lease-tenant")
+                .where(TaskQuotaEntity.resource_pool == "default")
+            )
+        ).one()
+    assert run is not None
+    assert run.lease_owner is None
+    assert run.lease_until is None
+    assert run.quota_slot_released is True
+    assert quota.running_count == 0
+
+
+@pytest.mark.asyncio
 async def test_run_event_sequences_are_allocated_from_the_run_row(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_TYPE", "sqlite")
     monkeypatch.setenv(
