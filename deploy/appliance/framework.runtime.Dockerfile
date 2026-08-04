@@ -11,6 +11,7 @@ COPY scripts/ ./scripts/
 COPY services/contract/src/ ./services/contract/src/
 COPY services/contract/capabilities/ ./services/contract/capabilities/
 COPY services/contract/scripts/ ./services/contract/scripts/
+COPY services/proof/capabilities/ ./services/proof/capabilities/
 
 RUN mkdir -p /app/localdata /app/runtime /app/backend/tool/local_runtime/artifacts
 
