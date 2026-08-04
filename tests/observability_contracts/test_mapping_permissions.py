@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from .contract_loader import operations, resolve_local_ref
 from .dto_mapping_matrix import (
     DTO_MAPPING_MATRIX,
@@ -221,6 +219,7 @@ def test_event_detail_mapping_has_exact_internal_lookup(
                 parameter = resolve_local_ref(internal_spec, parameter["$ref"])
             names.add(parameter["name"])
         assert "eventId" in names
+
 
 def _resolved_schema(document: dict, schema: dict) -> dict:
     while "$ref" in schema:
