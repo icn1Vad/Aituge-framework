@@ -4,7 +4,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
-    HOME=/models
+    HOME=/models \
+    PADDLE_HOME=/models/paddle \
+    PADDLE_PDX_CACHE_HOME=/models/paddlex
 
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ENV PIP_INDEX_URL=${PIP_INDEX_URL}
@@ -34,6 +36,14 @@ RUN sed -i 's|http://deb.debian.org/debian|https://mirrors.tuna.tsinghua.edu.cn/
     && DEBIAN_FRONTEND=noninteractive apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libgomp1 libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
+
+# PPStructureV3 normally downloads weights at the first document request.
+# Warm them in the image layer so offline appliance startup is deterministic.
+RUN python - <<'PY'
+from paddleocr import PPStructureV3
+
+PPStructureV3(lang="ch", use_table_recognition=True)
+PY
 
 EXPOSE 18300
 

@@ -25,6 +25,7 @@ be overwritten by the OCR-derived DOCX.
 - `POST /v1/internal/ocr/convert` — multipart field `file`; accepts only scanned or mixed PDFs and returns
   `application/zip` containing `contract.docx` and `manifest.json`.
 
-The service has no host port mapping. It is reachable only on the test Docker `agent_internal` network as
-`http://contract-ocr:18300`. Model weights are lazily downloaded into `/models` only on the first actual
-conversion, never by a health check.
+The service has no host port mapping. It is reachable only on the platform's
+`ai-internal` network as `http://contract-ocr:18300`. The production image
+preloads the fixed PPStructureV3 model set into `/models`, so health checks and
+first conversion do not need outbound model downloads.
