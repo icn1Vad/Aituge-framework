@@ -36,7 +36,7 @@ MAX_BATCH_FINDINGS = 4
 MAX_INSERTION_CANDIDATES = 24
 # Bump whenever deterministic draft-planning semantics change.  A cached
 # failure must not outlive the validation rule that produced it.
-REVISION_DRAFT_CACHE_VERSION = "numbering-domain-plan-v8-chapter-style-layout-v1"
+REVISION_DRAFT_CACHE_VERSION = "numbering-domain-plan-v9-single-chapter-style-layout-v2"
 _PLACEHOLDER_RE = re.compile(r"(?:TODO|TBD|XXX|待补充|待定|请填写)", re.IGNORECASE)
 _STRUCTURAL_PLACEHOLDER_HEADING_RE = re.compile(
     r"^\s*第\s*[XＸ]+\s*条(?:\s+|[：:])(?P<title>\S.*)\s*$",
@@ -340,6 +340,8 @@ class SupplementRequest:
     verification_notes: tuple[str, ...]
     adjacent_context: str
     insertion_candidates: tuple[RevisionInsertionCandidate, ...]
+    chapter_context: tuple[str, ...] = ()
+    style_profile: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -884,6 +886,8 @@ def _model_request_payload(
             "checked_scopes": list(item.checked_scopes),
             "absence_verification": list(item.verification_notes),
             "adjacent_context": item.adjacent_context,
+            "chapter_context": list(item.chapter_context),
+            "style_profile": item.style_profile,
             "insertion_candidates": [
                 {
                     "block_id": candidate.block_id,
@@ -899,6 +903,13 @@ def _model_request_payload(
                 "dates": [],
                 "durations": [],
             },
+            "constraints": [
+                "先比较章节原文，只补充章节中尚不存在的法律事实，不得复述已有句子",
+                "沿用相邻条款的称谓、句长、段落长度和列举方式",
+                "多个独立规则按原章节的短条款风格分段输出，不得挤成一个超长段落",
+                "完整的(a)(b)(c)或（a）（b）（c）列举必须分别换行，作为所属主条款的子项",
+                "按定义、适用条件、履行程序、法律后果的自然顺序组织内容",
+            ],
         }
     )
     return payload
@@ -994,13 +1005,19 @@ class RevisionDraftService:
                                 item,
                                 generated.anchor_block_id,
                             )
-                            replacement = _validate_supplement(
+                            chapter_blocks = _chapter_blocks_for_heading_path(
+                                source,
+                                insertion_target.heading_path if insertion_target else (),
+                            )
+                            replacement = _prepare_supplement(
                                 _strip_leading_anchor_echo(
                                     generated.replacement_text,
                                     insertion_target,
                                 ),
                                 source,
+                                chapter_blocks,
                             )
+                            replacement = _validate_supplement(replacement, source)
                             operation = "SUPPLEMENT"
                             original_text = None
                             target = None
@@ -1086,10 +1103,10 @@ class RevisionDraftService:
                             source,
                         )
                     else:
-                        replacement = _prepare_bundled_supplement(
+                        replacement = _prepare_supplement(
                             generated.replacement_text,
                             source,
-                            owner,
+                            _chapter_blocks_for_draft(source, owner),
                         )
                         replacement = _validate_supplement(replacement, source)
                     updated = owner.model_copy(
@@ -1302,10 +1319,19 @@ def _chapter_blocks_for_draft(
     )
     if not heading_path:
         return []
+    return _chapter_blocks_for_heading_path(source, heading_path)
+
+
+def _chapter_blocks_for_heading_path(
+    source: RevisionReviewSource,
+    heading_path: Sequence[str],
+) -> list[RevisionDocumentBlock]:
+    if not heading_path:
+        return []
     blocks = [
         block
         for block in source.document_blocks
-        if block.heading_path == heading_path
+        if tuple(block.heading_path) == tuple(heading_path)
     ]
     return sorted(blocks, key=lambda item: item.block_no)
 
@@ -1368,14 +1394,16 @@ def _structure_inline_alpha_items(value: str) -> str:
     return structured
 
 
-def _prepare_bundled_supplement(
+def _prepare_supplement(
     value: str,
     source: RevisionReviewSource,
-    owner: RevisionDraft,
+    chapter_blocks: Sequence[RevisionDocumentBlock],
 ) -> str:
-    """Apply code-controlled chapter de-duplication and child-item layout."""
+    """Apply chapter de-duplication, local paragraph rhythm and child layout."""
 
-    chapter_blocks = _chapter_blocks_for_draft(source, owner)
+    style_profile = _chapter_style_profile(chapter_blocks)
+    average_chars = int(style_profile.get("average_paragraph_chars") or 0)
+    split_threshold = max(60, average_chars * 2) if average_chars else 120
     existing_keys = {
         key
         for block in chapter_blocks
@@ -1384,7 +1412,22 @@ def _prepare_bundled_supplement(
     }
     generated_keys: set[str] = set()
     normalized_lines: list[str] = []
-    for raw_line in _structure_inline_alpha_items(value).splitlines():
+    structured_lines = _structure_inline_alpha_items(value).splitlines()
+    expanded_lines: list[str] = []
+    for raw_line in structured_lines:
+        stripped = raw_line.strip()
+        child_item = _INLINE_ALPHA_ITEM_RE.match(stripped) is not None
+        if (
+            stripped
+            and not child_item
+            and style_profile.get("prefer_short_clauses")
+            and len(stripped) > split_threshold
+        ):
+            expanded_lines.extend(_split_sentences(stripped))
+        else:
+            expanded_lines.append(raw_line)
+
+    for raw_line in expanded_lines:
         line = raw_line.strip()
         if not line:
             continue
@@ -1404,7 +1447,7 @@ def _prepare_bundled_supplement(
     if not normalized:
         raise RevisionDraftError(
             "REVISION_GENERATION_FAILED",
-            "combined supplement duplicated the existing chapter",
+            "supplement duplicated the existing chapter",
         )
     return normalized
 
@@ -2052,18 +2095,25 @@ def _plan_supplement(
         and item.quoted_text
         and item.quoted_text.strip()
     )
+    insertion_candidates = _build_insertion_candidates(
+        source,
+        finding,
+        evidences,
+        checked_scopes,
+    )
+    primary_heading_path = (
+        insertion_candidates[0].heading_path if insertion_candidates else ()
+    )
+    chapter_blocks = _chapter_blocks_for_heading_path(source, primary_heading_path)
     return SupplementRequest(
         revision_key=revision_key,
         finding=finding,
         checked_scopes=checked_scopes,
         verification_notes=verification_notes,
         adjacent_context=adjacent_context,
-        insertion_candidates=_build_insertion_candidates(
-            source,
-            finding,
-            evidences,
-            checked_scopes,
-        )
+        insertion_candidates=insertion_candidates,
+        chapter_context=tuple(block.text for block in chapter_blocks),
+        style_profile=_chapter_style_profile(chapter_blocks),
     )
 
 

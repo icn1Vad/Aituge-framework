@@ -229,6 +229,35 @@ def test_absence_keeps_text_when_model_returns_an_unknown_anchor() -> None:
     assert response.drafts[0].numbering_domain_id == "isolated:finding-absence-1"
 
 
+def test_single_supplement_uses_chapter_style_and_splits_long_short_clause_output() -> None:
+    source = _absence_source()
+    generated = (
+        "Party B shall notify Party A after the event;"
+        "Both parties shall mitigate the resulting loss;"
+        "Either party may terminate after the agreed threshold;"
+    )
+
+    response, generator = _generate(
+        source,
+        generated,
+        anchor_block_id="block-remedy-end",
+    )
+
+    request = generator.calls[0][0]
+    assert isinstance(request, SupplementRequest)
+    payload = _model_request_payload(request, source)
+    assert payload["chapter_context"] == [
+        "section-remedy",
+        "Party B bears liability for breach.",
+    ]
+    assert payload["style_profile"]["prefer_short_clauses"] is True
+    assert response.drafts[0].replacement_text == (
+        "Party B shall notify Party A after the event;\n"
+        "Both parties shall mitigate the resulting loss;\n"
+        "Either party may terminate after the agreed threshold;"
+    )
+
+
 def test_absence_without_document_blocks_still_generates_text() -> None:
     source = _absence_source().model_copy(update={"document_blocks": []})
     response, generator = _generate(
