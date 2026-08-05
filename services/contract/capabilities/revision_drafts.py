@@ -28,11 +28,15 @@ from services.contract.capabilities.model_observation import (
 SCHEMA_VERSION = "1.0"
 PROMPT_TARGET_TOKENS = 6_000
 PROMPT_HARD_LIMIT_TOKENS = 7_000
-MAX_BATCH_FINDINGS = 6
+# The model payload also contains a fixed JSON schema, party constraints and
+# output rules.  Six otherwise small requests can therefore exceed the
+# provider's 7k prompt hard limit after serialization.  Four keeps the common
+# multi-finding contract within that limit while preserving batch generation.
+MAX_BATCH_FINDINGS = 4
 MAX_INSERTION_CANDIDATES = 24
 # Bump whenever deterministic draft-planning semantics change.  A cached
 # failure must not outlive the validation rule that produced it.
-REVISION_DRAFT_CACHE_VERSION = "numbering-domain-plan-v4"
+REVISION_DRAFT_CACHE_VERSION = "numbering-domain-plan-v5"
 _PLACEHOLDER_RE = re.compile(r"(?:TODO|TBD|XXX|待补充|待定|请填写)", re.IGNORECASE)
 _DATE_RE = re.compile(
     r"(?:\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}[-/.]\d{1,2}[-/.]\d{1,2})"
