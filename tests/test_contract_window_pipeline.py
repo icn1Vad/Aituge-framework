@@ -135,6 +135,50 @@ class CategoryRetryExtractor(FakePipelineExtractor):
         )
 
 
+class GoverningLawRetryExtractor(FakePipelineExtractor):
+    async def extract(
+        self,
+        request: WindowExtractionRequest,
+        *,
+        tenant_id: str,
+        model_id: str,
+        retry_feedback: str | None = None,
+    ) -> WindowExtractionResult:
+        self.calls.append((request.window_id, retry_feedback))
+        self.call_counts[request.window_id] = self.call_counts.get(request.window_id, 0) + 1
+        classes = (
+            ["DISPUTE"]
+            if self.call_counts[request.window_id] == 1
+            else ["GOVERNING_LAW"]
+        )
+        return WindowExtractionResult(
+            window_id=request.window_id,
+            model_id=model_id,
+            extractions=[
+                _aligned(request, extraction_class=extraction_class)
+                for extraction_class in classes
+            ],
+        )
+
+
+class GoverningLawMissingExtractor(FakePipelineExtractor):
+    async def extract(
+        self,
+        request: WindowExtractionRequest,
+        *,
+        tenant_id: str,
+        model_id: str,
+        retry_feedback: str | None = None,
+    ) -> WindowExtractionResult:
+        self.calls.append((request.window_id, retry_feedback))
+        self.call_counts[request.window_id] = self.call_counts.get(request.window_id, 0) + 1
+        return WindowExtractionResult(
+            window_id=request.window_id,
+            model_id=model_id,
+            extractions=[_aligned(request, extraction_class="DISPUTE")],
+        )
+
+
 class TargetedRetryExtractor(FakePipelineExtractor):
     async def extract(
         self,
@@ -525,23 +569,23 @@ async def test_pipeline_rejects_incomplete_primary_block_coverage_before_model_c
 
 
 @pytest.mark.asyncio
-async def test_pipeline_retries_suspicious_empty_then_fails_without_partial_ir() -> None:
+async def test_pipeline_recovers_suspicious_empty_window_from_exact_source() -> None:
     extractor = FakePipelineExtractor(empty=True)
     request = _pipeline_request(count=1, source="付款义务")
 
-    with pytest.raises(WindowPipelineError) as exc_info:
-        await ContractIrWindowPipeline(extractor=extractor).run(
-            request,
-            tenant_id="tenant-001",
-            model_id="contract-model",
-        )
+    result = await ContractIrWindowPipeline(extractor=extractor).run(
+        request,
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
 
-    assert exc_info.value.code == "WINDOW_EXTRACTION_FAILED"
     assert extractor.call_counts == {"window-001": 2}
-    details = exc_info.value.details
-    assert details["coverage"]["valid"] is False
-    assert details["windows"][0]["attempts"][0]["status"] == "SUSPICIOUS_EMPTY"
-    assert details["windows"][0]["attempts"][1]["status"] == "SUSPICIOUS_EMPTY"
+    assert result.coverage.valid is True
+    assert result.windows[0].attempts[0].status == "SUSPICIOUS_EMPTY"
+    assert result.windows[0].attempts[1].status == "SUCCEEDED"
+    assert result.windows[0].attempts[1].fallback_extraction_count >= 1
+    assert len(result.semantic_ir.payment_terms) == 1
+    assert result.semantic_ir.payment_terms[0].predicate == "原文待模型复核"
 
 
 @pytest.mark.asyncio
@@ -694,3 +738,43 @@ async def test_pipeline_reports_value_canonicalization_without_retrying_window()
     assert attempt.value_canonicalization_count == 1
     assert attempt.ambiguous_value_count == 1
     assert attempt.unbound_value_count == 0
+
+
+@pytest.mark.asyncio
+async def test_pipeline_requires_and_maps_governing_law_separately_from_dispute_path() -> None:
+    extractor = GoverningLawRetryExtractor()
+    result = await ContractIrWindowPipeline(extractor=extractor).run(
+        _single_window_request(
+            "\u7b2c\u5341\u6761 \u4e89\u8bae\u89e3\u51b3\n"
+            "10.1 \u672c\u5408\u540c\u9002\u7528\u4e2d\u534e\u4eba\u6c11\u5171\u548c\u56fd\u6cd5\u5f8b\u3002\n"
+            "10.2 \u534f\u5546\u4e0d\u6210\u7684\uff0c\u4efb\u4f55\u4e00\u65b9\u53ef\u5411\u6709\u7ba1\u8f96\u6743\u7684\u4eba\u6c11\u6cd5\u9662\u8d77\u8bc9\u3002",
+            heading_path=["\u7b2c\u5341\u6761 \u4e89\u8bae\u89e3\u51b3"],
+            clause_nos=["\u7b2c\u5341\u6761"],
+        ),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    assert extractor.call_counts == {"window-001": 2}
+    assert "GOVERNING_LAW" in (extractor.calls[1][1] or "")
+    assert len(result.semantic_ir.dispute_resolution) == 2
+
+
+@pytest.mark.asyncio
+async def test_pipeline_recovers_only_missing_governing_law_from_exact_source() -> None:
+    extractor = GoverningLawMissingExtractor()
+    result = await ContractIrWindowPipeline(extractor=extractor).run(
+        _single_window_request(
+            "第十条 争议解决\n"
+            "10.1 本合同适用中华人民共和国法律。\n"
+            "10.2 协商不成的，任何一方可向有管辖权的人民法院起诉。",
+            heading_path=["第十条 争议解决"],
+            clause_nos=["第十条"],
+        ),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    assert extractor.call_counts == {"window-001": 2}
+    assert result.windows[0].attempts[1].fallback_extraction_count == 1
+    assert len(result.semantic_ir.dispute_resolution) == 2

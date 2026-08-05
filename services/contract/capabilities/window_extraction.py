@@ -34,6 +34,7 @@ ExtractionClass = Literal[
     "TERMINATION",
     "CONFIDENTIALITY",
     "INTELLECTUAL_PROPERTY",
+    "GOVERNING_LAW",
     "DISPUTE",
     "DATE",
     "AMOUNT",
@@ -63,8 +64,9 @@ context_only 只用于理解主体和标题，不得作为 extraction_text。
 PAYMENT 包括价款或费用、支付时间和方式、发票税费、调价、扣款抵销及逾期付款责任；
 它们同时属于义务、权利或责任时仍须分别输出对应类别。
 ACCEPTANCE 只表示正式的验收标准、程序、期限、通过条件或不通过后果；一般服务质量、响应时限、
-履约考核本身不等于验收。DISPUTE 只表示协商、调解、仲裁、诉讼、管辖法院等争议解决机制；
-仅引用适用法律不等于争议解决。DEFINITION 只提取 source_text 中以“是指”“定义为”等方式
+履约考核本身不等于验收。GOVERNING_LAW 只提取合同明确约定的适用或依据法律；适用法律本身
+不等于争议解决路径完整。DISPUTE 只表示协商、调解、仲裁、诉讼、管辖法院等争议解决机制，
+不得用 GOVERNING_LAW 代替 DISPUTE。DEFINITION 只提取 source_text 中以“是指”“定义为”等方式
 明确界定的业务术语；不得把合同当事人及“甲方”“乙方”“双方”“我方”“相对方”“本合同”
 等主体或文书指代作为 DEFINITION，无论 source_text 是否使用“以下简称”“统称”等表述，
 也不得重复 context_only 中的合同主体。term 填被定义的术语，meaning 填定义含义；
@@ -80,7 +82,7 @@ subject 填被该值约束的事项，predicate 填该值与事项的关系，ob
 未知的可选字段使用 null。
 类别只允许：DEFINITION、RIGHT、OBLIGATION、PROHIBITION、PAYMENT、DELIVERY、
 ACCEPTANCE、LIABILITY、TERMINATION、CONFIDENTIALITY、INTELLECTUAL_PROPERTY、
-DISPUTE、DATE、AMOUNT。"""
+GOVERNING_LAW、DISPUTE、DATE、AMOUNT。"""
 
 
 class WindowExtractionError(RuntimeError):
