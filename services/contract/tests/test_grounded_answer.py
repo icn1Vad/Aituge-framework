@@ -112,18 +112,41 @@ def test_materializes_authoritative_reference_for_markdown_marker() -> None:
     assert result.references[0].quoted_text == "付款条款"
 
 
-def test_rejects_dangling_or_unused_citations() -> None:
+def test_backfills_missing_marker_only_for_locatable_evidence() -> None:
     draft = GroundedAnswerDraft(
         mode="REPORT",
         content_markdown="重点检查付款安排。",
         citations=[{"evidence_id": "ev-019", "label": "付款安排"}],
     )
 
-    with pytest.raises(GroundedAnswerMaterializationError, match="differ"):
+    result = materialize_grounded_answer(
+        task_input=_task_input(),
+        draft=draft,
+        review_result=_review_result(),
+    )
+
+    assert result.content_markdown == (
+        "重点检查付款安排。"
+        + chr(10) * 2
+        + "参考依据："
+        + chr(10)
+        + "- [付款安排](#docref-ev-019)"
+    )
+    assert [reference.reference_id for reference in result.references] == ["docref-ev-019"]
+
+
+def test_rejects_missing_marker_for_non_locatable_evidence() -> None:
+    draft = GroundedAnswerDraft(
+        mode="REPORT",
+        content_markdown="未约定争议解决。",
+        citations=[{"evidence_id": "ev-019", "label": "争议解决"}],
+    )
+
+    with pytest.raises(GroundedAnswerMaterializationError, match="non-locatable"):
         materialize_grounded_answer(
             task_input=_task_input(),
             draft=draft,
-            review_result=_review_result(),
+            review_result=_review_result(evidence_type="ABSENCE"),
         )
 
 

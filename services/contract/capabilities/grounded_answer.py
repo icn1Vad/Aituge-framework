@@ -101,6 +101,89 @@ class GroundedAnswerMaterializationError(ValueError):
     """Raised when a model-authored citation cannot be grounded deterministically."""
 
 
+def _can_backfill_docref(
+    *,
+    evidence_id: str,
+    label: str,
+    evidence: dict[str, Any] | None,
+    finding_ids: set[str],
+) -> bool:
+    """Return whether a missing Markdown link can be restored without guessing a location."""
+
+    if (
+        not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}", evidence_id)
+        or not label.strip()
+        or any(character in label for character in ("[", "]", chr(13), chr(10)))
+        or not isinstance(evidence, dict)
+        or evidence.get("evidence_type") not in {"TEXT_QUOTE", "CONTEXT"}
+    ):
+        return False
+    block_id = evidence.get("block_id")
+    finding_id = evidence.get("finding_id")
+    page_number = evidence.get("page_number")
+    char_start = evidence.get("char_start")
+    char_end = evidence.get("char_end")
+    quoted_text = evidence.get("quoted_text")
+    quoted_text_hash = evidence.get("quoted_text_hash")
+    return (
+        isinstance(block_id, str)
+        and bool(block_id.strip())
+        and isinstance(finding_id, str)
+        and finding_id in finding_ids
+        and (page_number is None or isinstance(page_number, int) and page_number >= 1)
+        and isinstance(char_start, int)
+        and isinstance(char_end, int)
+        and char_start >= 0
+        and char_end > char_start
+        and isinstance(quoted_text, str)
+        and len(quoted_text) == char_end - char_start
+        and isinstance(quoted_text_hash, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", quoted_text_hash) is not None
+    )
+
+
+def _backfill_missing_docrefs(
+    *,
+    content_markdown: str,
+    citations: list[GroundedCitationDraft],
+    evidence_by_id: dict[str, dict[str, Any]],
+    finding_ids: set[str],
+) -> str:
+    """Append deterministic docrefs only when the authoritative evidence is locatable."""
+
+    marker_ids = {
+        match.group("evidence_id") for match in DOCREF_PATTERN.finditer(content_markdown)
+    }
+    citation_labels = {citation.evidence_id: citation.label for citation in citations}
+    missing_ids = set(citation_labels) - marker_ids
+    if not missing_ids:
+        return content_markdown
+
+    missing_markers: list[tuple[str, str]] = []
+    for evidence_id in sorted(missing_ids):
+        label = citation_labels[evidence_id]
+        if not _can_backfill_docref(
+            evidence_id=evidence_id,
+            label=label,
+            evidence=evidence_by_id.get(evidence_id),
+            finding_ids=finding_ids,
+        ):
+            raise GroundedAnswerMaterializationError(
+                f"missing Markdown marker for non-locatable evidence '{evidence_id}'"
+            )
+        missing_markers.append((evidence_id, label))
+
+    return "{}{}参考依据：{}{}".format(
+        content_markdown.rstrip(),
+        chr(10) * 2,
+        chr(10),
+        chr(10).join(
+            f"- [{label}](#docref-{evidence_id})"
+            for evidence_id, label in missing_markers
+        ),
+    )
+
+
 def materialize_grounded_answer(
     *,
     task_input: GroundedAnswerTaskInput,
@@ -129,9 +212,15 @@ def materialize_grounded_answer(
         if isinstance(item, dict) and isinstance(item.get("evidence_id"), str)
     }
 
+    content_markdown = _backfill_missing_docrefs(
+        content_markdown=draft.content_markdown,
+        citations=draft.citations,
+        evidence_by_id=evidence_by_id,
+        finding_ids=finding_ids,
+    )
     marker_pairs = [
         (match.group("evidence_id"), match.group("label"))
-        for match in DOCREF_PATTERN.finditer(draft.content_markdown)
+        for match in DOCREF_PATTERN.finditer(content_markdown)
     ]
     marker_ids = {item[0] for item in marker_pairs}
     citation_ids = {item.evidence_id for item in draft.citations}
@@ -148,7 +237,6 @@ def materialize_grounded_answer(
             "review result is missing contract_version_id or result_hash"
         )
 
-    content_markdown = draft.content_markdown
     references: list[GroundedReference] = []
     referenced_ids: set[str] = set()
     for evidence_id, label in marker_pairs:
