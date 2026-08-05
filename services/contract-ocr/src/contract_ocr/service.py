@@ -358,7 +358,7 @@ def _build_docx(pages: list[Mapping[str, Any]]) -> bytes:
 
     document = Document()
     body_count = 0
-    for page_index, page in enumerate(pages):
+    for page in pages:
         raw_blocks = page.get("blocks")
         blocks = [item for item in raw_blocks if isinstance(item, Mapping)] if isinstance(raw_blocks, list) else []
         blocks.sort(key=lambda block: int(block.get("order") or 0))
@@ -383,8 +383,6 @@ def _build_docx(pages: list[Mapping[str, Any]]) -> bytes:
                     if normalized:
                         document.add_paragraph(normalized)
             body_count += 1
-        if page_index + 1 < len(pages):
-            document.add_page_break()
     if body_count == 0:
         raise ContractOcrError("OCR_NO_TEXT", "OCR未识别到可审查文本", status_code=422)
     output = io.BytesIO()
