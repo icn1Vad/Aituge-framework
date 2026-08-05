@@ -10403,17 +10403,8 @@ def _merge_equivalent_same_root_findings(
     if not duplicate_groups:
         return findings, canonical_roots, {}
 
-    duplicate_ids = {
-        finding.finding_local_id
-        for group in duplicate_groups
-        for finding in group
-    }
-    merged_findings = [
-        finding for finding in findings if finding.finding_local_id not in duplicate_ids
-    ]
-    merged_roots = [
-        root for root in canonical_roots if root.finding_local_id not in duplicate_ids
-    ]
+    merged_findings = list(findings)
+    merged_roots = list(canonical_roots)
     replacements: dict[str, str] = {}
     for group in duplicate_groups:
         roots = [
@@ -10426,23 +10417,13 @@ def _merge_equivalent_same_root_findings(
                 "RISK_UNIT_DUPLICATE_MERGE_INVALID",
                 "Duplicate Finding does not map one-to-one to a Canonical Risk Root",
             )
-        root_signatures = {
-            (
-                root.domain,
-                root.check_code,
-                root.risk_type,
-                root.root_type,
-                root.root_severity_rule_id,
-                root.risk_level,
-                json.dumps(root.severity_factors.model_dump(mode="json"), sort_keys=True),
-            )
-            for root in roots
-        }
+        root_signatures = {_root_semantic_key(root) for root in roots}
         if len(root_signatures) != 1:
-            raise DirectReviewError(
-                "RISK_UNIT_DUPLICATE_MERGE_INVALID",
-                "Duplicate Finding maps to distinct Canonical Risk Roots",
-            )
+            # A visible Finding does not contain root_type or the severity
+            # rule. Distinct root causes can therefore cite the same text.
+            # Keep both risks; the revision planner can still combine their
+            # document edit if they resolve to one physical location.
+            continue
         if len(
             {
                 (
@@ -10459,6 +10440,17 @@ def _merge_equivalent_same_root_findings(
                 "Duplicate Finding disagrees on party perspective or domain",
             )
 
+        duplicate_ids = {finding.finding_local_id for finding in group}
+        merged_findings = [
+            finding
+            for finding in merged_findings
+            if finding.finding_local_id not in duplicate_ids
+        ]
+        merged_roots = [
+            root
+            for root in merged_roots
+            if root.finding_local_id not in duplicate_ids
+        ]
         finding_id = group[0].finding_local_id
         representative = group[0]
         root_representative = min(roots, key=lambda item: item.root_id)
@@ -10563,6 +10555,19 @@ def _merge_equivalent_same_root_findings(
     return merged_findings, merged_roots, replacements
 
 
+def _root_semantic_key(root: CanonicalRiskRoot) -> tuple:
+    """Identity used to decide whether two findings truly share one root."""
+    return (
+        root.domain,
+        root.check_code,
+        root.risk_type,
+        root.root_type,
+        root.root_severity_rule_id,
+        root.risk_level,
+        json.dumps(root.severity_factors.model_dump(mode="json"), sort_keys=True),
+    )
+
+
 def _replace_finding_ids(
     values: list[str],
     replacements: dict[str, str],
@@ -10618,7 +10623,22 @@ def _merge_unit_result(unit, by_batch: dict[str, ReviewBatchResult]) -> BaseRevi
             "RISK_UNIT_ROOT_DUPLICATED",
             f"{_value(unit.unit_id)} contains a duplicate Canonical Risk Root",
         )
-    canonical_keys = [_canonical_risk_key(item) for item in findings]
+    roots_by_finding = {item.finding_local_id: item for item in canonical_roots}
+    if (
+        len(roots_by_finding) != len(canonical_roots)
+        or set(roots_by_finding) != {item.finding_local_id for item in findings}
+    ):
+        raise DirectReviewError(
+            "RISK_UNIT_ROOT_FINDING_MAPPING_INVALID",
+            f"{_value(unit.unit_id)} Findings do not map one-to-one to Canonical Risk Roots",
+        )
+    canonical_keys = [
+        (
+            _canonical_risk_key(item),
+            _root_semantic_key(roots_by_finding[item.finding_local_id]),
+        )
+        for item in findings
+    ]
     if len(canonical_keys) != len(set(canonical_keys)):
         raise DirectReviewError(
             "RISK_UNIT_FINDING_DUPLICATED",

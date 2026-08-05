@@ -5452,3 +5452,21 @@ def test_equivalent_same_root_findings_are_merged_without_losing_evidence() -> N
         "risk-candidate-" + "2" * 32,
     ]
     assert len(merged_roots[0].primary_evidence_source_ids) == 2
+
+    retained_findings, retained_roots, retained_replacements = (
+        _merge_equivalent_same_root_findings(
+            [finding(finding_a_id, "a"), finding(finding_b_id, "b")],
+            [
+                root("risk-root-" + "1" * 32, finding_a_id, "1"),
+                root("risk-root-" + "2" * 32, finding_b_id, "2").model_copy(
+                    update={
+                        "root_type": "CONFIDENTIALITY_RETENTION_DEFICIENCY",
+                        "root_severity_rule_id": "ICD_CONFIDENTIALITY_RETENTION_V1",
+                    }
+                ),
+            ],
+        )
+    )
+    assert len(retained_findings) == 2
+    assert len(retained_roots) == 2
+    assert retained_replacements == {}
