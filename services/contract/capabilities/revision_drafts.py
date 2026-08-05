@@ -36,8 +36,24 @@ MAX_BATCH_FINDINGS = 4
 MAX_INSERTION_CANDIDATES = 24
 # Bump whenever deterministic draft-planning semantics change.  A cached
 # failure must not outlive the validation rule that produced it.
-REVISION_DRAFT_CACHE_VERSION = "numbering-domain-plan-v5-evidence-exact-anchor-v4-layout"
+REVISION_DRAFT_CACHE_VERSION = "numbering-domain-plan-v6-runtime-numbering-v1-evidence-exact-anchor-v4-layout"
 _PLACEHOLDER_RE = re.compile(r"(?:TODO|TBD|XXX|待补充|待定|请填写)", re.IGNORECASE)
+_STRUCTURAL_PLACEHOLDER_HEADING_RE = re.compile(
+    r"^\s*第\s*[XＸ]+\s*条(?:\s+|[：:])(?P<title>\S.*)\s*$",
+    re.IGNORECASE,
+)
+_STRUCTURAL_PLACEHOLDER_ITEM_RE = re.compile(
+    r"^\s*[XＸ](?:[.．]\d+)+(?:[、.．])?\s+(?P<body>\S.*)$",
+    re.IGNORECASE,
+)
+_STRUCTURAL_LITERAL_ITEM_RE = re.compile(
+    r"^\s*(?:"
+    r"\d+(?:[.．]\d+)+(?:[、.．])?|"
+    r"\d+[、.．]|"
+    r"[（(][一二三四五六七八九十百千万〇零0-9A-Za-z]+[）)]|"
+    r"[一二三四五六七八九十百千万〇零]+、"
+    r")\s+(?P<body>\S.*)$"
+)
 _DATE_RE = re.compile(
     r"(?:\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}[-/.]\d{1,2}[-/.]\d{1,2})"
 )
@@ -632,6 +648,8 @@ class LlmRevisionTextGenerator:
                 "REPLACE必须保留原条款开头已有的条款编号或层级标识（例如8.2、A.、（一））；不得删除、合并或另起不一致的编号",
                 "原条款或替换条款含有A/B/（一）等子项时，必须逐项单独换行输出，保留原有层级和换行；不得把多个子项拼成一段文字",
                 "SUPPLEMENT请求只生成供人工确认的补充条款，不得伪造原文或定位信息",
+                "SUPPLEMENT只输出不带编号的新增正文；不得输出第X条、X.1、X.2或自行猜测真实条款编号",
+                "SUPPLEMENT包含多个并列新增项时，每项正文单独一行，不得添加编号前缀",
                 "SUPPLEMENT不得写入真实金额、日期或期限；确需商业参数时使用“某”",
                 "SUPPLEMENT不得引入未知公司或改变合同主体",
                 "SUPPLEMENT may choose anchor_block_id only from insertion_candidates; omit it when uncertain",
@@ -1094,6 +1112,19 @@ class RevisionDraftService:
                     )
                 raise
 
+        normalized_drafts: list[RevisionDraft] = []
+        for draft in drafts:
+            try:
+                normalized_drafts.append(_normalize_append_literal_draft(draft))
+            except RevisionDraftError as exc:
+                failures.append(
+                    FailedRevisionFinding(
+                        finding_id=draft.finding_id,
+                        error_code="REVISION_GENERATION_FAILED",
+                        message=str(exc),
+                    )
+                )
+        drafts = normalized_drafts
         drafts.sort(key=lambda item: (item.revision_group_id or "", item.operation_order, item.finding_id))
         failures.sort(key=lambda item: item.finding_id)
         if failures and drafts:
@@ -2009,6 +2040,79 @@ def _validate_supplement(value: str, source: RevisionReviewSource) -> str:
             "supplement introduced an unknown contract party",
         )
     return normalized
+
+
+def _normalized_heading_label(value: str) -> str:
+    return re.sub(r"[\s：:]", "", _SECTION_HEADING_RE.sub("", value, count=1))
+
+
+def _normalize_append_literal_draft(draft: RevisionDraft) -> RevisionDraft:
+    """Remove model-owned structural numbering from a literal append draft.
+
+    The check is deliberately scoped to APPEND_LITERAL and line-leading markers.
+    References such as ``产品型号为X.1版本`` remain ordinary contract text.
+    """
+
+    if draft.numbering_policy != "APPEND_LITERAL" or not draft.replacement_text:
+        return draft
+    lines = [line.rstrip() for line in draft.replacement_text.splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not lines:
+        raise RevisionDraftError(
+            "REVISION_GENERATION_FAILED",
+            "supplement numbering normalization produced empty text",
+        )
+
+    heading = _STRUCTURAL_PLACEHOLDER_HEADING_RE.match(lines[0])
+    if heading is not None:
+        expected_heading = (
+            draft.insertion_target.heading_path[-1]
+            if draft.insertion_target and draft.insertion_target.heading_path
+            else ""
+        )
+        if (
+            not expected_heading
+            or _normalized_heading_label(heading.group("title"))
+            != _normalized_heading_label(expected_heading)
+        ):
+            raise RevisionDraftError(
+                "REVISION_GENERATION_FAILED",
+                "supplement contains an ambiguous placeholder heading",
+            )
+        lines = lines[1:]
+
+    normalized_lines: list[str] = []
+    for line in lines:
+        if not line.strip():
+            normalized_lines.append("")
+            continue
+        placeholder_item = _STRUCTURAL_PLACEHOLDER_ITEM_RE.match(line)
+        literal_item = _STRUCTURAL_LITERAL_ITEM_RE.match(line)
+        match = placeholder_item or literal_item
+        normalized_lines.append(match.group("body").strip() if match else line.strip())
+
+    normalized = "\n".join(normalized_lines).strip()
+    if not normalized:
+        raise RevisionDraftError(
+            "REVISION_GENERATION_FAILED",
+            "supplement numbering normalization produced empty text",
+        )
+    if any(
+        _STRUCTURAL_PLACEHOLDER_HEADING_RE.match(line)
+        or _STRUCTURAL_PLACEHOLDER_ITEM_RE.match(line)
+        for line in normalized.splitlines()
+    ):
+        raise RevisionDraftError(
+            "REVISION_GENERATION_FAILED",
+            "supplement contains an unresolved structural placeholder",
+        )
+    if normalized == draft.replacement_text:
+        return draft
+    updated = draft.model_copy(update={"replacement_text": normalized})
+    return updated.model_copy(update={"revision_hash": _revision_hash_for_draft(updated)})
 
 
 def _build_batches(

@@ -417,6 +417,70 @@ def test_literal_list_supplement_uses_append_policy_without_renumbering() -> Non
     assert response.drafts[0].numbering_domain_id is not None
 
 
+def test_literal_list_supplement_removes_structural_x_placeholders() -> None:
+    source = _absence_source().model_copy(
+        update={
+            "document_blocks": [
+                RevisionDocumentBlock(
+                    block_id="block-list-1",
+                    block_no=1,
+                    block_type="paragraph",
+                    char_start=0,
+                    char_end=len("10.1 Existing term."),
+                    text="10.1 Existing term.",
+                    heading_path=["第十条 争议解决"],
+                    metadata={"literal_marker": "10.1", "container_path": "document/body"},
+                ),
+                RevisionDocumentBlock(
+                    block_id="block-list-2",
+                    block_no=2,
+                    block_type="paragraph",
+                    char_start=20,
+                    char_end=20 + len("10.2 Existing dispute term."),
+                    text="10.2 Existing dispute term.",
+                    heading_path=["第十条 争议解决"],
+                    metadata={"literal_marker": "10.2", "container_path": "document/body"},
+                ),
+            ]
+        }
+    )
+
+    response, _ = _generate(
+        source,
+        "第X条 争议解决\nX.1 First new term.\nX.2 Second new term.",
+        anchor_block_id="block-list-2",
+    )
+
+    assert response.status == "COMPLETED"
+    assert response.drafts[0].replacement_text == "First new term.\nSecond new term."
+    assert response.drafts[0].numbering_policy == "APPEND_LITERAL"
+
+
+def test_literal_list_supplement_preserves_x_references_inside_body_text() -> None:
+    source = _absence_source().model_copy(
+        update={
+            "document_blocks": [
+                RevisionDocumentBlock(
+                    block_id="block-list-2",
+                    block_no=2,
+                    block_type="paragraph",
+                    char_start=0,
+                    char_end=len("10.2 Existing dispute term."),
+                    text="10.2 Existing dispute term.",
+                    heading_path=["第十条 争议解决"],
+                    metadata={"literal_marker": "10.2", "container_path": "document/body"},
+                )
+            ]
+        }
+    )
+    body = "产品型号为X.1版本，具体要求参见附件X.1。"
+
+    response, _ = _generate(source, body, anchor_block_id="block-list-2")
+
+    assert response.status == "COMPLETED"
+    assert response.drafts[0].replacement_text == body
+
+
 def test_same_physical_anchor_across_semantic_ir_items_generates_replace_draft() -> None:
     source = _replace_source()
     primary = source.contract_ir[0]
