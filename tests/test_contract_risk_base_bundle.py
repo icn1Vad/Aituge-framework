@@ -75,6 +75,7 @@ from services.contract.capabilities.risk_review_bundle import (
     _icd_factor_has_required_evidence,
     _icd_scene_relevant,
     _lre_factor_has_required_evidence,
+    _merge_equivalent_same_root_findings,
     _merge_lre_cross_batch_roots,
     _po_risk_level,
     _po_candidate_prompt,
@@ -5374,3 +5375,80 @@ def test_lre_cross_batch_same_root_is_merged_but_independent_roots_are_not() -> 
         item.root_type == "CUMULATIVE_REMEDIES_REVIEW"
         for item in merged_roots
     )
+
+
+def test_equivalent_same_root_findings_are_merged_without_losing_evidence() -> None:
+    finding_a_id = "finding-" + "a" * 32
+    finding_b_id = "finding-" + "b" * 32
+
+    def finding(finding_id: str, suffix: str) -> FindingDraft:
+        text = f"confidential evidence {suffix}"
+        return FindingDraft(
+            finding_local_id=finding_id,
+            source_unit_id="ip_confidentiality_data",
+            domain="ip_confidentiality_data",
+            check_code="ICD-004",
+            category="CONFIDENTIALITY",
+            risk_type="CONFIDENTIALITY_SCOPE_DEFICIENCY",
+            risk_level="HIGH",
+            title="Confidentiality scope is incomplete",
+            issue="The same confidentiality boundary is incomplete.",
+            impact_to_our_party="Our confidential information may be exposed.",
+            suggestion="Define confidential information and exclusions.",
+            perspective="PARTY_A",
+            our_party="Party A",
+            counterparty="Party B",
+            evidence_candidates=[
+                EvidenceCandidate(
+                    evidence_local_id="evidence-" + suffix * 32,
+                    finding_local_id=finding_id,
+                    evidence_type="TEXT_QUOTE",
+                    source_ir_item_id=f"ir-{suffix}",
+                    anchor_id="anchor-shared",
+                    block_id="block-shared",
+                    char_start=0,
+                    char_end=len(text),
+                    quoted_text=text,
+                    quoted_text_hash="sha256:"
+                    + hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                )
+            ],
+        )
+
+    def root(root_id: str, finding_id: str, suffix: str) -> CanonicalRiskRoot:
+        source_id = "risk-es-" + suffix * 32
+        return CanonicalRiskRoot(
+            root_id=root_id,
+            domain="ip_confidentiality_data",
+            check_code="ICD-004",
+            risk_type="CONFIDENTIALITY_SCOPE_DEFICIENCY",
+            root_type="CONFIDENTIALITY_SCOPE_DEFICIENCY",
+            source_candidate_ids=["risk-candidate-" + suffix * 32],
+            primary_evidence_source_ids=[source_id],
+            core_primary_evidence_source_ids=[source_id],
+            severity_factors=CandidateSeverityFactors(missing_core_mechanism=True),
+            recommended_control_codes=["DEFINE_CONFIDENTIAL_INFORMATION"],
+            root_severity_rule_id="ICD_CONFIDENTIALITY_SCOPE_V1",
+            risk_level="HIGH",
+            finding_local_id=finding_id,
+        )
+
+    merged_findings, merged_roots, replacements = (
+        _merge_equivalent_same_root_findings(
+            [finding(finding_a_id, "a"), finding(finding_b_id, "b")],
+            [
+                root("risk-root-" + "1" * 32, finding_a_id, "1"),
+                root("risk-root-" + "2" * 32, finding_b_id, "2"),
+            ],
+        )
+    )
+
+    assert len(merged_findings) == 1
+    assert len(merged_roots) == 1
+    assert replacements == {finding_a_id: finding_a_id, finding_b_id: finding_a_id}
+    assert len(merged_findings[0].evidence_candidates) == 2
+    assert merged_roots[0].source_candidate_ids == [
+        "risk-candidate-" + "1" * 32,
+        "risk-candidate-" + "2" * 32,
+    ]
+    assert len(merged_roots[0].primary_evidence_source_ids) == 2

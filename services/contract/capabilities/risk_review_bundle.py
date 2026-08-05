@@ -10378,6 +10378,191 @@ def _merge_lre_cross_batch_roots(
     return merged_findings, merged_roots, replacement_by_finding_id
 
 
+def _merge_equivalent_same_root_findings(
+    findings: list[FindingDraft],
+    canonical_roots: list[CanonicalRiskRoot],
+) -> tuple[list[FindingDraft], list[CanonicalRiskRoot], dict[str, str]]:
+    """Collapse a duplicated canonical root while preserving all evidence.
+
+    Batches are materialized independently, so a model can occasionally emit
+    the same check/risk/anchor tuple twice. Such a duplicate must not make the
+    entire contract review fail. We only merge roots whose full root semantics
+    agree; anything ambiguous is still rejected as a protocol error.
+    """
+    roots_by_finding: dict[str, list[CanonicalRiskRoot]] = {}
+    for root in canonical_roots:
+        roots_by_finding.setdefault(root.finding_local_id, []).append(root)
+    groups: dict[tuple, list[FindingDraft]] = {}
+    for finding in findings:
+        groups.setdefault(_canonical_risk_key(finding), []).append(finding)
+    duplicate_groups = [
+        sorted(group, key=lambda item: item.finding_local_id)
+        for group in groups.values()
+        if len(group) > 1
+    ]
+    if not duplicate_groups:
+        return findings, canonical_roots, {}
+
+    duplicate_ids = {
+        finding.finding_local_id
+        for group in duplicate_groups
+        for finding in group
+    }
+    merged_findings = [
+        finding for finding in findings if finding.finding_local_id not in duplicate_ids
+    ]
+    merged_roots = [
+        root for root in canonical_roots if root.finding_local_id not in duplicate_ids
+    ]
+    replacements: dict[str, str] = {}
+    for group in duplicate_groups:
+        roots = [
+            root
+            for finding in group
+            for root in roots_by_finding.get(finding.finding_local_id, [])
+        ]
+        if len(roots) != len(group):
+            raise DirectReviewError(
+                "RISK_UNIT_DUPLICATE_MERGE_INVALID",
+                "Duplicate Finding does not map one-to-one to a Canonical Risk Root",
+            )
+        root_signatures = {
+            (
+                root.domain,
+                root.check_code,
+                root.risk_type,
+                root.root_type,
+                root.root_severity_rule_id,
+                root.risk_level,
+                json.dumps(root.severity_factors.model_dump(mode="json"), sort_keys=True),
+            )
+            for root in roots
+        }
+        if len(root_signatures) != 1:
+            raise DirectReviewError(
+                "RISK_UNIT_DUPLICATE_MERGE_INVALID",
+                "Duplicate Finding maps to distinct Canonical Risk Roots",
+            )
+        if len(
+            {
+                (
+                    finding.perspective,
+                    finding.our_party,
+                    finding.counterparty,
+                    finding.source_unit_id,
+                )
+                for finding in group
+            }
+        ) != 1:
+            raise DirectReviewError(
+                "RISK_UNIT_DUPLICATE_MERGE_INVALID",
+                "Duplicate Finding disagrees on party perspective or domain",
+            )
+
+        finding_id = group[0].finding_local_id
+        representative = group[0]
+        root_representative = min(roots, key=lambda item: item.root_id)
+        evidence_by_identity: dict[tuple[object, ...], EvidenceCandidate] = {}
+        for finding in group:
+            for evidence in finding.evidence_candidates:
+                identity = (
+                    evidence.evidence_type,
+                    evidence.source_ir_item_id,
+                    evidence.anchor_id,
+                    evidence.block_id,
+                    evidence.char_start,
+                    evidence.char_end,
+                    evidence.checked_scope,
+                    evidence.verification_note,
+                )
+                evidence_by_identity.setdefault(identity, evidence)
+        evidence_candidates = [
+            evidence.model_copy(
+                update={
+                    "evidence_local_id": _stable_id(
+                        "evidence",
+                        {
+                            "finding_id": finding_id,
+                            "index": index,
+                            "identity": identity,
+                        },
+                    ),
+                    "finding_local_id": finding_id,
+                }
+            )
+            for index, (identity, evidence) in enumerate(
+                sorted(evidence_by_identity.items(), key=lambda item: repr(item[0])),
+                1,
+            )
+        ]
+        core_primary_ids = list(
+            dict.fromkeys(
+                source_id
+                for root in roots
+                for source_id in root.core_primary_evidence_source_ids
+            )
+        )
+        context_primary_ids = [
+            source_id
+            for source_id in dict.fromkeys(
+                source_id
+                for root in roots
+                for source_id in root.context_primary_evidence_source_ids
+            )
+            if source_id not in set(core_primary_ids)
+        ]
+        primary_ids = [*core_primary_ids, *context_primary_ids]
+        supporting_ids = [
+            source_id
+            for source_id in dict.fromkeys(
+                source_id
+                for root in roots
+                for source_id in root.supporting_evidence_source_ids
+            )
+            if source_id not in set(primary_ids)
+        ]
+        merged_findings.append(
+            representative.model_copy(
+                update={
+                    "finding_local_id": finding_id,
+                    "evidence_candidates": evidence_candidates,
+                }
+            )
+        )
+        merged_roots.append(
+            root_representative.model_copy(
+                update={
+                    "finding_local_id": finding_id,
+                    "source_candidate_ids": list(
+                        dict.fromkeys(
+                            candidate_id
+                            for root in roots
+                            for candidate_id in root.source_candidate_ids
+                        )
+                    ),
+                    "primary_evidence_source_ids": primary_ids,
+                    "core_primary_evidence_source_ids": core_primary_ids,
+                    "context_primary_evidence_source_ids": context_primary_ids,
+                    "supporting_evidence_source_ids": supporting_ids,
+                    "recommended_control_codes": list(
+                        dict.fromkeys(
+                            code
+                            for root in roots
+                            for code in root.recommended_control_codes
+                        )
+                    ),
+                }
+            )
+        )
+        replacements.update(
+            {
+                finding.finding_local_id: finding_id
+                for finding in group
+            }
+        )
+    return merged_findings, merged_roots, replacements
+
+
 def _replace_finding_ids(
     values: list[str],
     replacements: dict[str, str],
@@ -10408,6 +10593,13 @@ def _merge_unit_result(unit, by_batch: dict[str, ReviewBatchResult]) -> BaseRevi
         if _value(unit.unit_id) == "liability_remedies_exit"
         else (findings, canonical_roots, {})
     )
+    findings, canonical_roots, same_root_replacements = (
+        _merge_equivalent_same_root_findings(findings, canonical_roots)
+    )
+    finding_id_replacements = {
+        **finding_id_replacements,
+        **same_root_replacements,
+    }
     if finding_id_replacements:
         checks = [
             item.model_copy(
