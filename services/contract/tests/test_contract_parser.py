@@ -5,6 +5,9 @@ from pathlib import Path
 
 import pytest
 from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from pypdf import PdfReader, PdfWriter
 
 from contract.errors import ContractError
@@ -61,6 +64,43 @@ def test_docx_parser_keeps_headings_manual_breaks_and_table_rows(tmp_path: Path)
     assert all(item.char_end - item.char_start == len(item.text) for item in parsed.blocks)
 
 
+def test_docx_parser_preserves_direct_and_style_native_numbering_metadata(tmp_path: Path) -> None:
+    def attach_num_pr(properties, num_id: int, level: int) -> None:
+        number_properties = OxmlElement("w:numPr")
+        level_node = OxmlElement("w:ilvl")
+        level_node.set(qn("w:val"), str(level))
+        number_node = OxmlElement("w:numId")
+        number_node.set(qn("w:val"), str(num_id))
+        number_properties.append(level_node)
+        number_properties.append(number_node)
+        properties.append(number_properties)
+
+    path = tmp_path / "numbered.docx"
+    document = Document()
+    direct = document.add_paragraph("原生直接编号条款")
+    attach_num_pr(direct._p.get_or_add_pPr(), 17, 1)
+    style = document.styles.add_style("ContractNativeList", WD_STYLE_TYPE.PARAGRAPH)
+    attach_num_pr(style._element.get_or_add_pPr(), 23, 2)
+    inherited = document.add_paragraph("原生样式编号条款", style="ContractNativeList")
+    document.save(path)
+
+    parsed = NativeContractParser().parse(path, generation_id="generation-numbering")
+
+    assert parsed.blocks[0].metadata["native_numbering"] == {
+        "mode": "NATIVE",
+        "effective_num_id": 17,
+        "list_level": 1,
+        "source": "direct",
+    }
+    assert parsed.blocks[1].metadata["native_numbering"] == {
+        "mode": "NATIVE",
+        "effective_num_id": 23,
+        "list_level": 2,
+        "source": "style",
+    }
+    assert parsed.blocks[0].metadata["container_path"] == "document/body"
+
+
 def test_scanned_pdf_is_rejected_with_frozen_error(tmp_path: Path) -> None:
     path = tmp_path / "scanned.pdf"
     writer = PdfWriter()
@@ -75,7 +115,7 @@ def test_scanned_pdf_is_rejected_with_frozen_error(tmp_path: Path) -> None:
 
 
 def test_mixed_pdf_requires_ocr_preprocessing(tmp_path: Path) -> None:
-    reader = PdfReader(io.BytesIO(text_pdf_bytes("第一条 甲方应按期付款。")))
+    reader = PdfReader(io.BytesIO(text_pdf_bytes("Article 1: Party A shall pay on time.")))
     writer = PdfWriter()
     writer.add_page(reader.pages[0])
     writer.add_blank_page(width=612, height=792)
