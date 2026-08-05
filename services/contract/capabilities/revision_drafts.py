@@ -36,7 +36,7 @@ MAX_BATCH_FINDINGS = 4
 MAX_INSERTION_CANDIDATES = 24
 # Bump whenever deterministic draft-planning semantics change.  A cached
 # failure must not outlive the validation rule that produced it.
-REVISION_DRAFT_CACHE_VERSION = "numbering-domain-plan-v7-runtime-numbering-v1-major-section-boundary-v1-layout"
+REVISION_DRAFT_CACHE_VERSION = "numbering-domain-plan-v8-chapter-style-layout-v1"
 _PLACEHOLDER_RE = re.compile(r"(?:TODO|TBD|XXX|待补充|待定|请填写)", re.IGNORECASE)
 _STRUCTURAL_PLACEHOLDER_HEADING_RE = re.compile(
     r"^\s*第\s*[XＸ]+\s*条(?:\s+|[：:])(?P<title>\S.*)\s*$",
@@ -72,6 +72,8 @@ _LITERAL_NUMBER_MARKER_RE = re.compile(
     r"[（(][一二三四五六七八九十百千万〇零0-9A-Za-z]+[）)]|"
     r"[一二三四五六七八九十百千万〇零]+、))\s*"
 )
+_INLINE_ALPHA_ITEM_RE = re.compile(r"[（(](?P<label>[A-Za-z])[）)]")
+_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[。！？!?；;])")
 _REVISION_PLAN_VERSION = "numbering-domain-plan-v1"
 
 
@@ -356,6 +358,8 @@ class BundledRevisionRequest:
     original_text: str | None
     proposed_texts: tuple[str, ...]
     adjacent_context: str
+    chapter_context: tuple[str, ...] = ()
+    style_profile: dict[str, Any] = field(default_factory=dict)
 
 
 RevisionGenerationRequest = ReplacementRequest | SupplementRequest | BundledRevisionRequest
@@ -861,8 +865,13 @@ def _model_request_payload(
                     for finding in item.source_findings
                 ],
                 "proposed_texts": list(item.proposed_texts),
+                "chapter_context": list(item.chapter_context),
+                "style_profile": item.style_profile,
                 "constraints": [
                     "这些建议已经定位到同一个原文位置；必须合成为一条可执行修改，不能并列重复条款",
+                    "先比较章节原文与候选建议，只补充章节中尚不存在的法律事实，不得复述已有句子",
+                    "新增条款必须按章节语义顺序排列，并沿用相邻条款的称谓、句长、段落长度和列举方式",
+                    "完整的(a)(b)(c)或（a）（b）（c）列举必须分别换行，作为所属主条款的子项",
                     "只能解决列出的风险，不能引入新的主体、金额、日期或商业事实",
                     "REPLACE输出用于整体替换给定原条款；SUPPLEMENT输出为一个独立新增条款",
                 ],
@@ -1077,7 +1086,12 @@ class RevisionDraftService:
                             source,
                         )
                     else:
-                        replacement = _validate_supplement(generated.replacement_text, source)
+                        replacement = _prepare_bundled_supplement(
+                            generated.replacement_text,
+                            source,
+                            owner,
+                        )
+                        replacement = _validate_supplement(replacement, source)
                     updated = owner.model_copy(
                         update={
                             "replacement_text": replacement,
@@ -1277,6 +1291,124 @@ def _draft_sort_key(draft: RevisionDraft) -> tuple[int, int, str]:
     return (2**31 - 1, 2**31 - 1, draft.finding_id)
 
 
+def _chapter_blocks_for_draft(
+    source: RevisionReviewSource,
+    draft: RevisionDraft,
+) -> list[RevisionDocumentBlock]:
+    heading_path = (
+        draft.insertion_target.heading_path
+        if draft.insertion_target is not None
+        else []
+    )
+    if not heading_path:
+        return []
+    blocks = [
+        block
+        for block in source.document_blocks
+        if block.heading_path == heading_path
+    ]
+    return sorted(blocks, key=lambda item: item.block_no)
+
+
+def _chapter_style_profile(blocks: Sequence[RevisionDocumentBlock]) -> dict[str, Any]:
+    texts = [block.text.strip() for block in blocks if block.text.strip()]
+    lengths = [len(_LITERAL_NUMBER_MARKER_RE.sub("", text, count=1).strip()) for text in texts]
+    markers = [
+        match.group("marker").strip()
+        for text in texts
+        if (match := _LITERAL_NUMBER_MARKER_RE.match(text)) is not None
+    ]
+    return {
+        "paragraph_count": len(texts),
+        "average_paragraph_chars": round(sum(lengths) / len(lengths)) if lengths else 0,
+        "maximum_paragraph_chars": max(lengths, default=0),
+        "numbering_examples": markers[:4],
+        "party_naming": "甲方/乙方" if any("甲方" in text or "乙方" in text for text in texts) else "沿用原文",
+        "prefer_short_clauses": bool(lengths and sum(lengths) / len(lengths) <= 120),
+    }
+
+
+def _sentence_key(value: str) -> str:
+    value = _LITERAL_NUMBER_MARKER_RE.sub("", value.strip(), count=1)
+    return re.sub(r"[\s，,。；;：:（）()“”\"'‘’]", "", value).lower()
+
+
+def _split_sentences(value: str) -> list[str]:
+    return [part.strip() for part in _SENTENCE_BOUNDARY_RE.split(value) if part.strip()]
+
+
+def _structure_inline_alpha_items(value: str) -> str:
+    matches = list(_INLINE_ALPHA_ITEM_RE.finditer(value))
+    if len(matches) < 2:
+        return value
+    labels = [match.group("label").lower() for match in matches]
+    expected = [chr(ord("a") + index) for index in range(len(labels))]
+    first_prefix = value[max(0, matches[0].start() - 80):matches[0].start()]
+    if labels != expected or not re.search(r"[：:]|(?:如下|之一)", first_prefix):
+        return value
+
+    pieces: list[str] = []
+    cursor = 0
+    for match in matches:
+        prefix = value[cursor:match.start()]
+        if pieces:
+            prefix = re.sub(r"(?:或|或者)\s*$", "", prefix)
+        pieces.append(prefix.rstrip())
+        pieces.append("\n" + match.group(0))
+        cursor = match.end()
+    pieces.append(value[cursor:])
+    structured = "".join(pieces).strip()
+    # Text following the final enumerated remedy is a new main sentence, not
+    # part of the final child item.
+    structured = re.sub(
+        r"(?m)^(\s*[（(][A-Za-z][）)].*?[。！？])(?=[甲乙双方本])",
+        r"\1\n",
+        structured,
+    )
+    return structured
+
+
+def _prepare_bundled_supplement(
+    value: str,
+    source: RevisionReviewSource,
+    owner: RevisionDraft,
+) -> str:
+    """Apply code-controlled chapter de-duplication and child-item layout."""
+
+    chapter_blocks = _chapter_blocks_for_draft(source, owner)
+    existing_keys = {
+        key
+        for block in chapter_blocks
+        for sentence in _split_sentences(block.text)
+        if len(key := _sentence_key(sentence)) >= 12
+    }
+    generated_keys: set[str] = set()
+    normalized_lines: list[str] = []
+    for raw_line in _structure_inline_alpha_items(value).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        child_item = _INLINE_ALPHA_ITEM_RE.match(line) is not None
+        kept: list[str] = []
+        for sentence in _split_sentences(line):
+            key = _sentence_key(sentence)
+            if len(key) >= 12 and (key in existing_keys or key in generated_keys):
+                continue
+            if len(key) >= 12:
+                generated_keys.add(key)
+            kept.append(sentence)
+        rendered = "".join(kept).strip()
+        if rendered:
+            normalized_lines.append(rendered if not child_item else rendered)
+    normalized = "\n".join(normalized_lines).strip()
+    if not normalized:
+        raise RevisionDraftError(
+            "REVISION_GENERATION_FAILED",
+            "combined supplement duplicated the existing chapter",
+        )
+    return normalized
+
+
 def _with_draft_metadata(draft: RevisionDraft, **update: Any) -> RevisionDraft:
     updated = draft.model_copy(update=update)
     return updated.model_copy(update={"revision_hash": _revision_hash_for_draft(updated)})
@@ -1378,6 +1510,7 @@ def _plan_revision_groups(
                 )
             owner = replacement[owner.revision_key]
             related = tuple(finding_by_id[item] for item in member_ids)
+            chapter_blocks = _chapter_blocks_for_draft(source, owner)
             bundles.append(
                 BundledRevisionRequest(
                     revision_key=owner.revision_key,
@@ -1391,6 +1524,8 @@ def _plan_revision_groups(
                     adjacent_context="\n".join(
                         item.change_reason for item in same_location
                     ),
+                    chapter_context=tuple(block.text for block in chapter_blocks),
+                    style_profile=_chapter_style_profile(chapter_blocks),
                 )
             )
         planned.extend(replacement.values())
@@ -2107,6 +2242,9 @@ def _normalize_append_literal_draft(draft: RevisionDraft) -> RevisionDraft:
     for line in lines:
         if not line.strip():
             normalized_lines.append("")
+            continue
+        if _INLINE_ALPHA_ITEM_RE.match(line.strip()):
+            normalized_lines.append(line.strip())
             continue
         placeholder_item = _STRUCTURAL_PLACEHOLDER_ITEM_RE.match(line)
         literal_item = _STRUCTURAL_LITERAL_ITEM_RE.match(line)

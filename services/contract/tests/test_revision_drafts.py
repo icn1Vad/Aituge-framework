@@ -510,6 +510,67 @@ def test_literal_list_supplement_uses_append_policy_without_renumbering() -> Non
     assert response.drafts[0].numbering_domain_id is not None
 
 
+def test_same_anchor_bundle_uses_chapter_style_deduplicates_and_structures_children() -> None:
+    source = _absence_source().model_copy(
+        update={
+            "findings": [
+                _absence_source().findings[0],
+                _absence_source().findings[0].model_copy(
+                    update={"finding_id": "finding-absence-2", "title": "第三方侵权救济缺失"}
+                ),
+                _absence_source().findings[0].model_copy(
+                    update={"finding_id": "finding-absence-3", "title": "背景知识产权许可边界缺失"}
+                ),
+            ],
+            "document_blocks": [
+                RevisionDocumentBlock(
+                    block_id="block-5-1",
+                    block_no=1,
+                    block_type="paragraph",
+                    char_start=0,
+                    char_end=35,
+                    text="5.1 双方各自既有的软件、工具和资料的知识产权仍归原权利人所有。",
+                    heading_path=["第五条 知识产权"],
+                    metadata={"literal_marker": "5.1", "container_path": "document/body"},
+                ),
+                RevisionDocumentBlock(
+                    block_id="block-5-2",
+                    block_no=2,
+                    block_type="paragraph",
+                    char_start=36,
+                    char_end=75,
+                    text="5.2 甲方付清费用后，对项目成果享有内部使用权。",
+                    heading_path=["第五条 知识产权"],
+                    metadata={"literal_marker": "5.2", "container_path": "document/body"},
+                ),
+            ],
+        }
+    )
+    generated = (
+        "双方各自在合同签订前已拥有的知识产权仍归原权利人所有。\n"
+        "乙方应采取以下救济措施之一：(a) 取得继续使用的权利；"
+        "(b) 修改或替换为不侵权成果；或 (c) 退还相应款项。\n"
+        "双方各自既有的软件、工具和资料的知识产权仍归原权利人所有。"
+        "为履行本合同之目的，原权利人授予对方非排他的使用许可。"
+    )
+
+    response, generator = _generate(source, generated, anchor_block_id="block-5-2")
+
+    owner = next(item for item in response.drafts if item.group_operation_owner)
+    assert "双方各自既有的软件、工具和资料的知识产权仍归原权利人所有" not in owner.replacement_text
+    assert "\n(a) 取得继续使用的权利；" in owner.replacement_text
+    assert "\n(b) 修改或替换为不侵权成果；" in owner.replacement_text
+    assert "\n(c) 退还相应款项。" in owner.replacement_text
+    bundled = generator.calls[1][0]
+    assert isinstance(bundled, BundledRevisionRequest)
+    payload = _model_request_payload(bundled, source)
+    assert payload["chapter_context"] == [
+        "5.1 双方各自既有的软件、工具和资料的知识产权仍归原权利人所有。",
+        "5.2 甲方付清费用后，对项目成果享有内部使用权。",
+    ]
+    assert payload["style_profile"]["numbering_examples"] == ["5.1", "5.2"]
+
+
 def test_literal_list_supplement_removes_structural_x_placeholders() -> None:
     source = _absence_source().model_copy(
         update={
