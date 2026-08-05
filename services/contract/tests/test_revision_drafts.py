@@ -224,6 +224,8 @@ def test_absence_keeps_text_when_model_returns_an_unknown_anchor() -> None:
     assert response.status == "COMPLETED"
     assert response.drafts[0].replacement_text is not None
     assert response.drafts[0].insertion_target is None
+    assert response.drafts[0].revision_group_id is not None
+    assert response.drafts[0].numbering_domain_id == "isolated:finding-absence-1"
 
 
 def test_absence_without_document_blocks_still_generates_text() -> None:

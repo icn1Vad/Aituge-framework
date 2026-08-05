@@ -53,6 +53,14 @@ class Settings(BaseSettings):
         gt=0,
         validation_alias="FRAMEWORK_READ_TIMEOUT_SECONDS",
     )
+    # Revision drafting asks the model to create a complete replacement or a
+    # combined proposal.  It can legitimately take longer than short control
+    # plane calls such as status polling, so keep its timeout separate.
+    framework_revision_read_timeout_seconds: float = Field(
+        default=120,
+        gt=0,
+        validation_alias="FRAMEWORK_REVISION_READ_TIMEOUT_SECONDS",
+    )
     framework_cancel_wait_seconds: float = Field(
         default=5,
         ge=0,

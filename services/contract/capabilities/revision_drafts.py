@@ -1258,15 +1258,19 @@ def _plan_revision_groups(
 
     finding_by_id = {item.finding_id: item for item in source.findings}
     by_domain: dict[str, list[tuple[RevisionDraft, RevisionNumberingDomain]]] = {}
-    isolated: list[RevisionDraft] = []
     for draft in drafts:
         domain = _draft_domain(source, draft)
         if domain is None or draft.operation == "UNSUPPORTED":
-            isolated.append(draft)
-            continue
+            # Even a non-applicable suggestion must have a stable group for
+            # frontend rendering and auditability.  It is isolated so it can
+            # never be accepted together with an actionable edit.
+            domain = RevisionNumberingDomain(
+                domain_id=f"isolated:{draft.finding_id}",
+                numbering_policy="NO_NUMBERING",
+            )
         by_domain.setdefault(domain.domain_id, []).append((draft, domain))
 
-    planned: list[RevisionDraft] = list(isolated)
+    planned: list[RevisionDraft] = []
     bundles: list[BundledRevisionRequest] = []
     for domain_id, entries in by_domain.items():
         source_ids = sorted(draft.finding_id for draft, _ in entries)
