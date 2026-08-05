@@ -79,6 +79,7 @@ def test_revision_completion_is_hidden_and_authenticated(monkeypatch) -> None:
     assert _Runtime.calls[-1]["tenant_id"] == "tenant-1"
     assert _Runtime.calls[-1]["thinking_override"] is False
     assert _Runtime.calls[-1]["temperature"] == 0
+    assert _Runtime.calls[-1]["model_attempt_no"] == 1
     assert (
         "/v1/internal/contract-revision-drafts:complete"
         not in client.get("/openapi.json").json()["paths"]

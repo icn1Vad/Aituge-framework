@@ -159,7 +159,15 @@ def create_revision_llm_router() -> APIRouter:
             trace_id=request_id,
             defer_terminal=True,
             logical_call_id=payload.logical_call_id,
-            model_attempt_no=payload.model_attempt_no,
+            # The Contract-side gateway intentionally omits the first attempt
+            # number.  Do not forward None here: LlmRuntime uses the number to
+            # allocate an observable provider attempt and requires it to be a
+            # positive integer.
+            model_attempt_no=(
+                payload.model_attempt_no
+                if payload.model_attempt_no is not None
+                else 1
+            ),
             fallback_from_invocation_id=payload.fallback_from_invocation_id,
         )
         finalize_token = None

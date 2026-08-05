@@ -278,11 +278,19 @@ def _core_components(extended: ExtendedRiskReviewBundle) -> list[dict[str, Any]]
     units = {item.unit_id: item for item in extended.base_bundle.units}
     fva = units["formation_validity_authority"]
     fva002 = next(item for item in fva.check_results if item.check_code == "FVA-002")
-    assessment = fva.fva_assessments[0]
+    # Formal execution deliberately allows an individual review unit to be
+    # unavailable while the remaining units still yield a usable result.  The
+    # core signature must represent that absence rather than indexing into an
+    # empty assessment list and turning a partial result into a total failure.
+    assessment = fva.fva_assessments[0] if fva.fva_assessments else None
     core: list[dict[str, Any]] = [
         {
             "check_code": "FVA-002",
-            "assessment_type": assessment.assessment_type,
+            "assessment_type": (
+                assessment.assessment_type
+                if assessment is not None
+                else "UNAVAILABLE"
+            ),
             "reason_code": fva002.reason_code,
             "finding_count": len(fva002.finding_local_ids),
         }
