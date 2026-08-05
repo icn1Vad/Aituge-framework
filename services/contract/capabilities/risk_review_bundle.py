@@ -10832,27 +10832,43 @@ def _merge_unit_result(unit, by_batch: dict[str, ReviewBatchResult]) -> BaseRevi
             "RISK_UNIT_ROOT_DUPLICATED",
             f"{_value(unit.unit_id)} contains a duplicate Canonical Risk Root",
         )
-    roots_by_finding = {item.finding_local_id: item for item in canonical_roots}
-    if (
-        len(roots_by_finding) != len(canonical_roots)
-        or set(roots_by_finding) != {item.finding_local_id for item in findings}
-    ):
-        raise DirectReviewError(
-            "RISK_UNIT_ROOT_FINDING_MAPPING_INVALID",
-            f"{_value(unit.unit_id)} Findings do not map one-to-one to Canonical Risk Roots",
-        )
-    canonical_keys = [
-        (
-            _canonical_risk_key(item),
-            _root_semantic_key(roots_by_finding[item.finding_local_id]),
-        )
-        for item in findings
-    ]
-    if len(canonical_keys) != len(set(canonical_keys)):
-        raise DirectReviewError(
-            "RISK_UNIT_FINDING_DUPLICATED",
-            f"{_value(unit.unit_id)} contains a duplicate same-root Finding",
-        )
+    # Canonical roots are deterministic metadata emitted only by the
+    # root-aware review units. Formation and commercial units can validly
+    # return normal visible Findings without any CanonicalRiskRoot. Preserve
+    # those cards; when roots exist, keep the strict one-to-one invariant.
+    if canonical_roots:
+        roots_by_finding = {
+            item.finding_local_id: item for item in canonical_roots
+        }
+        finding_ids = {item.finding_local_id for item in findings}
+        root_finding_ids = set(roots_by_finding)
+        missing_root_ids = sorted(finding_ids - root_finding_ids)
+        orphan_root_ids = sorted(root_finding_ids - finding_ids)
+        if (
+            len(roots_by_finding) != len(canonical_roots)
+            or root_finding_ids != finding_ids
+        ):
+            raise DirectReviewError(
+                "RISK_UNIT_ROOT_FINDING_MAPPING_INVALID",
+                f"{_value(unit.unit_id)} Findings do not map one-to-one to "
+                "Canonical Risk Roots "
+                f"(findings={len(findings)}, roots={len(canonical_roots)}, "
+                f"missing_roots={len(missing_root_ids)}, "
+                f"orphan_roots={len(orphan_root_ids)}, "
+                f"shared_roots={len(canonical_roots) - len(roots_by_finding)})",
+            )
+        canonical_keys = [
+            (
+                _canonical_risk_key(item),
+                _root_semantic_key(roots_by_finding[item.finding_local_id]),
+            )
+            for item in findings
+        ]
+        if len(canonical_keys) != len(set(canonical_keys)):
+            raise DirectReviewError(
+                "RISK_UNIT_FINDING_DUPLICATED",
+                f"{_value(unit.unit_id)} contains a duplicate same-root Finding",
+            )
     if any(item.source_unit_id != _value(unit.unit_id) for item in findings):
         raise DirectReviewError(
             "RISK_UNIT_FINDING_CONTAMINATED",
