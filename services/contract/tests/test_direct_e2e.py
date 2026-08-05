@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -25,6 +26,9 @@ from services.contract.capabilities.legacy_compatibility import (
     LegacyRiskArtifactAdapter,
     finalize_legacy_compatible_result,
 )
+from services.contract.scripts.contract_risk_stage66_direct_e2e import (
+    _core_components,
+)
 
 
 BLOCK_TEXT = "Party A must prepay the full price. Party B has unlimited liability."
@@ -34,6 +38,46 @@ BLOCK = {
     "page_number": None,
     "text": BLOCK_TEXT,
 }
+
+
+def test_core_signature_records_missing_fva_assessment_without_crashing() -> None:
+    fva = SimpleNamespace(
+        unit_id="formation_validity_authority",
+        check_results=[
+            SimpleNamespace(
+                check_code="FVA-002",
+                reason_code="INSUFFICIENT_EVIDENCE",
+                finding_local_ids=[],
+            )
+        ],
+        fva_assessments=[],
+    )
+    empty_unit = lambda unit_id: SimpleNamespace(
+        unit_id=unit_id,
+        findings=[],
+        canonical_risk_roots=[],
+    )
+    extended = SimpleNamespace(
+        base_bundle=SimpleNamespace(
+            units=[
+                fva,
+                empty_unit("commercial_financial"),
+                empty_unit("performance_obligations"),
+                empty_unit("ip_confidentiality_data"),
+                empty_unit("liability_remedies_exit"),
+            ]
+        ),
+        horizontal_units=[],
+    )
+
+    assert _core_components(extended) == [
+        {
+            "check_code": "FVA-002",
+            "assessment_type": "UNAVAILABLE",
+            "reason_code": "INSUFFICIENT_EVIDENCE",
+            "finding_count": 0,
+        }
+    ]
 
 
 def test_frozen_input_hash_is_stable_and_snapshots_are_isolated() -> None:

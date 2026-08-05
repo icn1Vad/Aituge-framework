@@ -195,7 +195,7 @@ class FrameworkCallbackRepository:
                 blocks = conn.execute(
                     """
                     SELECT block_id, block_no, block_type, char_start, char_end,
-                           text, heading_path
+                           text, heading_path, metadata_json
                     FROM contract_document_block
                     WHERE generation_id = %s AND tenant_id = %s
                     ORDER BY block_no

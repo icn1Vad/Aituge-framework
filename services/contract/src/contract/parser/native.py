@@ -21,6 +21,11 @@ _CHAPTER_RE = re.compile(
 )
 _SECTION_RE = re.compile(rf"^[\s\u3000]*(第[\s\u3000]*{_NUMBER_TOKEN}[\s\u3000]*节)[\s\u3000]*(.*)$")
 _PAGE_FOOTER_RE = re.compile(r"^第?\s*\d+\s*页(?:\s*共\s*\d+\s*页)?$")
+_LITERAL_NUMBER_MARKER_RE = re.compile(
+    r"^(?P<marker>\s*(?:\d+(?:[.．]\d+){0,6}[、.．]?|"
+    r"[（(][一二三四五六七八九十百千万〇零0-9A-Za-z]+[）)]|"
+    r"[一二三四五六七八九十百千万〇零]+、))\s*"
+)
 _MAX_DOCX_MEMBER_COUNT = 10_000
 _MAX_DOCX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
 
@@ -302,7 +307,7 @@ def _iter_docx_body(document) -> Iterable[object]:
             yield Table(child, document)
 
 
-def _docx_paragraph_metadata(paragraph, style_name: str) -> dict[str, int | str | None]:
+def _docx_paragraph_metadata(paragraph, style_name: str) -> dict[str, Any]:
     paragraph_format = paragraph.paragraph_format
     left_indent = paragraph_format.left_indent
     first_line_indent = paragraph_format.first_line_indent
@@ -310,12 +315,72 @@ def _docx_paragraph_metadata(paragraph, style_name: str) -> dict[str, int | str 
     properties = getattr(paragraph._p, "pPr", None)
     if properties is not None and properties.outlineLvl is not None:
         outline_level = int(properties.outlineLvl.val)
-    return {
+    metadata: dict[str, Any] = {
         "style": style_name,
         "left_indent_twips": int(left_indent.twips) if left_indent is not None else None,
         "first_line_indent_twips": int(first_line_indent.twips) if first_line_indent is not None else None,
         "outline_level": outline_level,
+        "container_path": "document/body",
     }
+    native_numbering = _docx_effective_numbering(paragraph)
+    if native_numbering is not None:
+        metadata["native_numbering"] = native_numbering
+    literal_marker = _LITERAL_NUMBER_MARKER_RE.match(str(paragraph.text or ""))
+    if literal_marker is not None:
+        metadata["literal_marker"] = literal_marker.group("marker").strip()
+    return metadata
+
+
+def _docx_effective_numbering(paragraph) -> dict[str, int | str] | None:
+    """Return the effective native Word list relationship when present.
+
+    Native list properties can be direct paragraph formatting or inherited
+    from a paragraph style/base style. We deliberately preserve the effective
+    numId + level rather than turning the displayed number into text.
+    """
+
+    try:
+        from docx.oxml.ns import qn
+    except Exception:  # pragma: no cover - python-docx is already required above
+        return None
+
+    def from_properties(properties, source: str) -> dict[str, int | str] | None:
+        if properties is None:
+            return None
+        num_pr = properties.find(qn("w:numPr"))
+        if num_pr is None:
+            return None
+        num_id = num_pr.find(qn("w:numId"))
+        level = num_pr.find(qn("w:ilvl"))
+        num_id_value = num_id.get(qn("w:val")) if num_id is not None else None
+        level_value = level.get(qn("w:val")) if level is not None else "0"
+        try:
+            if num_id_value is None:
+                return None
+            return {
+                "mode": "NATIVE",
+                "effective_num_id": int(num_id_value),
+                "list_level": int(level_value or "0"),
+                "source": source,
+            }
+        except (TypeError, ValueError):
+            return None
+
+    direct = from_properties(getattr(paragraph._p, "pPr", None), "direct")
+    if direct is not None:
+        return direct
+    style = getattr(paragraph, "style", None)
+    seen: set[str] = set()
+    while style is not None:
+        style_id = str(getattr(style, "style_id", "") or id(style))
+        if style_id in seen:
+            break
+        seen.add(style_id)
+        inherited = from_properties(getattr(getattr(style, "_element", None), "pPr", None), "style")
+        if inherited is not None:
+            return inherited
+        style = getattr(style, "base_style", None)
+    return None
 
 
 def _normalize_table_cell(value: str) -> str:

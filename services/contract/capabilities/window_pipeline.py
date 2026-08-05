@@ -22,6 +22,7 @@ try:
         AlignedExtraction,
         EXPLICIT_AMOUNT_PATTERN,
         EXPLICIT_DATE_PATTERN,
+        SourceSpan,
         ValueCanonicalization,
         WindowExtractionRequest,
         WindowExtractionResult,
@@ -33,6 +34,7 @@ except ModuleNotFoundError as exc:  # standalone capability mount in the runtime
         AlignedExtraction,
         EXPLICIT_AMOUNT_PATTERN,
         EXPLICIT_DATE_PATTERN,
+        SourceSpan,
         ValueCanonicalization,
         WindowExtractionRequest,
         WindowExtractionResult,
@@ -51,6 +53,7 @@ IR_FIELD_BY_CLASS = {
     "TERMINATION": "termination_terms",
     "CONFIDENTIALITY": "confidentiality_terms",
     "INTELLECTUAL_PROPERTY": "intellectual_property_terms",
+    "GOVERNING_LAW": "dispute_resolution",
     "DISPUTE": "dispute_resolution",
     "DATE": "dates",
     "AMOUNT": "amounts",
@@ -64,7 +67,24 @@ _CRITICAL_CONTENT = re.compile(
 _CATEGORY_CUES = {
     "PAYMENT": re.compile(r"付款|支付|价款|费用|结算|发票|税费|扣款|抵扣|抵销|冲抵"),
     "ACCEPTANCE": re.compile(r"验收"),
+    "GOVERNING_LAW": re.compile(r"(?:适用|依据).{0,12}(?:中华人民共和国)?法律"),
     "DISPUTE": re.compile(r"争议|仲裁|诉讼|管辖|人民法院"),
+    "DATE": EXPLICIT_DATE_PATTERN,
+    "AMOUNT": EXPLICIT_AMOUNT_PATTERN,
+}
+_FALLBACK_CLASS_CUES = {
+    "GOVERNING_LAW": _CATEGORY_CUES["GOVERNING_LAW"],
+    "PAYMENT": _CATEGORY_CUES["PAYMENT"],
+    "ACCEPTANCE": _CATEGORY_CUES["ACCEPTANCE"],
+    "DISPUTE": _CATEGORY_CUES["DISPUTE"],
+    "DELIVERY": re.compile(r"交付|交货|移交|交付物"),
+    "LIABILITY": re.compile(r"违约|赔偿|责任|损失|违约金"),
+    "TERMINATION": re.compile(r"解除|终止"),
+    "CONFIDENTIALITY": re.compile(r"保密|秘密信息"),
+    "INTELLECTUAL_PROPERTY": re.compile(r"知识产权|专利|著作权|商标"),
+    "PROHIBITION": re.compile(r"不得|禁止"),
+    "RIGHT": re.compile(r"有权|可以|可"),
+    "OBLIGATION": re.compile(r"应当|应|须|必须|负责|承担|保证"),
     "DATE": EXPLICIT_DATE_PATTERN,
     "AMOUNT": EXPLICIT_AMOUNT_PATTERN,
 }
@@ -219,6 +239,8 @@ class WindowAttempt(StrictModel):
     unbound_value_count: int = Field(default=0, ge=0)
     error_code: str | None = None
     error_message: str | None = None
+    fallback_extraction_count: int = Field(default=0, ge=0)
+    fallback_reason: str | None = Field(default=None, max_length=2_000)
 
 
 class WindowRunResult(StrictModel):
@@ -414,6 +436,17 @@ class ContractIrWindowPipeline:
                         )
                     )
                     retry_feedback = "关键条款 Window 返回空结果"
+                    if attempt_no == self.max_attempts_per_window:
+                        recovered = _recover_with_source_fallback(
+                            request=request,
+                            window=window,
+                            attempts=attempts,
+                            accepted_extractions=accepted_extractions,
+                            accepted_canonicalizations=accepted_canonicalizations,
+                            fallback_reason="模型两次返回空结果，按原文生成保守回退映射",
+                        )
+                        if recovered is not None:
+                            return recovered
                     continue
                 missing_categories = _missing_expected_categories(window, accumulated)
                 if missing_categories:
@@ -444,6 +477,21 @@ class ContractIrWindowPipeline:
                         "类别可以共享同一 extraction_text；本次只返回缺少类别的增量项，"
                         "不要重复已经通过校验的其他抽取项"
                     )
+                    if (
+                        attempt_no == self.max_attempts_per_window
+                        and set(missing_categories) == {"GOVERNING_LAW"}
+                    ):
+                        recovered = _recover_with_source_fallback(
+                            request=request,
+                            window=window,
+                            attempts=attempts,
+                            accepted_extractions=accepted_extractions,
+                            accepted_canonicalizations=accepted_canonicalizations,
+                            required_classes={"GOVERNING_LAW"},
+                            fallback_reason="模型两次未返回适用法律类别，按原文生成保守回退映射",
+                        )
+                        if recovered is not None:
+                            return recovered
                     continue
                 mapped = [
                     _map_extraction(request, window, item)
@@ -516,7 +564,6 @@ class ContractIrWindowPipeline:
                         f"{retry_feedback}；当前没有可保留的已验证项，请重新返回当前 Window "
                         "的完整抽取结果"
                     )
-
         return WindowRunResult(
             window_id=window.window_id,
             sequence_no=window.sequence_no,
@@ -703,6 +750,129 @@ def _is_signature_only_window(window: PipelineWindowInput) -> bool:
         if fragment.strip()
     ]
     return bool(fields) and all(_SIGNATURE_FIELD.fullmatch(field) for field in fields)
+
+
+def _recover_with_source_fallback(
+    *,
+    request: WindowPipelineRequest,
+    window: PipelineWindowInput,
+    attempts: list[WindowAttempt],
+    accepted_extractions: list[AlignedExtraction],
+    accepted_canonicalizations: list[ValueCanonicalization],
+    fallback_reason: str,
+    required_classes: set[str] | None = None,
+) -> WindowRunResult | None:
+    """Recover a failed Window from exact source text without invented facts."""
+    fallback = _source_fallback_extractions(
+        window,
+        required_classes=required_classes,
+    )
+    if not fallback:
+        return None
+    merged_extractions = _merge_aligned_extractions(accepted_extractions, fallback)
+    accumulated = WindowExtractionResult(
+        window_id=window.window_id,
+        model_id="source-fallback",
+        extractions=merged_extractions,
+        value_canonicalizations=accepted_canonicalizations,
+    )
+    if _missing_expected_categories(window, accumulated):
+        return None
+    mapped = [_map_extraction(request, window, item) for item in merged_extractions]
+    previous = attempts[-1]
+    attempts[-1] = previous.model_copy(
+        update={
+            "status": "SUCCEEDED",
+            "extraction_count": len(mapped),
+            "value_canonicalization_count": len(accepted_canonicalizations),
+            "ambiguous_value_count": sum(
+                item.binding_status == "AMBIGUOUS"
+                for item in accepted_canonicalizations
+            ),
+            "unbound_value_count": sum(
+                item.binding_status == "UNBOUND"
+                for item in accepted_canonicalizations
+            ),
+            "error_code": None,
+            "error_message": None,
+            "fallback_extraction_count": len(fallback),
+            "fallback_reason": fallback_reason,
+        }
+    )
+    return WindowRunResult(
+        window_id=window.window_id,
+        sequence_no=window.sequence_no,
+        status="SUCCEEDED",
+        attempts=attempts,
+        mapped_extractions=mapped,
+    )
+
+
+def _source_fallback_extractions(
+    window: PipelineWindowInput,
+    *,
+    required_classes: set[str] | None = None,
+) -> list[AlignedExtraction]:
+    """Map exact source blocks after two failed model attempts.
+
+    The fallback does not infer parties or legal effects. Its predicate marks
+    the result as a source recovery so downstream review sees the actual text.
+    """
+    result: list[AlignedExtraction] = []
+    for offset in window.offset_map:
+        text = window.source_text[offset.rendered_start : offset.rendered_end]
+        candidates = [
+            extraction_class
+            for extraction_class, pattern in _FALLBACK_CLASS_CUES.items()
+            if pattern.search(text)
+            and (required_classes is None or extraction_class in required_classes)
+        ]
+        if (
+            not candidates
+            and required_classes is None
+            and _CRITICAL_CONTENT.search(text)
+        ):
+            candidates = ["OBLIGATION"]
+        for extraction_class in candidates:
+            values = [None]
+            if extraction_class == "DATE":
+                values = [match.group(0) for match in EXPLICIT_DATE_PATTERN.finditer(text)]
+            elif extraction_class == "AMOUNT":
+                values = [match.group(0) for match in EXPLICIT_AMOUNT_PATTERN.finditer(text)]
+            for value in values:
+                result.append(
+                    AlignedExtraction(
+                        extraction_class=extraction_class,
+                        extraction_text=text,
+                        subject=None,
+                        predicate=(
+                            "时间约束为"
+                            if extraction_class == "DATE"
+                            else (
+                                "数值约束为"
+                                if extraction_class == "AMOUNT"
+                                else "原文待模型复核"
+                            )
+                        ),
+                        object=value,
+                        term=None,
+                        meaning=None,
+                        referenced_clause_nos=list(window.clause_nos),
+                        rendered_char_start=offset.rendered_start,
+                        rendered_char_end=offset.rendered_end,
+                        alignment_status="MATCH_EXACT",
+                        source_spans=[
+                            SourceSpan(
+                                block_id=offset.block_id,
+                                block_no=offset.block_no,
+                                block_char_start=offset.block_char_start,
+                                block_char_end=offset.block_char_end,
+                                quoted_text=text,
+                            )
+                        ],
+                    )
+                )
+    return result
 
 
 def _map_extraction(
