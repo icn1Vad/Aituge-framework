@@ -22,6 +22,7 @@ from services.contract.capabilities.revision_drafts import (
     RevisionIrSource,
     RevisionReviewSource,
     SupplementRequest,
+    _build_insertion_candidates,
     _cache_key,
     compute_revision_hash,
     _find_contract_ir_list,
@@ -240,6 +241,98 @@ def test_absence_without_document_blocks_still_generates_text() -> None:
     request = generator.calls[0][0]
     assert isinstance(request, SupplementRequest)
     assert request.insertion_candidates == ()
+
+
+def test_supplement_candidates_exclude_preamble_before_first_major_heading() -> None:
+    source = _absence_source().model_copy(
+        update={
+            "document_blocks": [
+                RevisionDocumentBlock(
+                    block_id="block-cover",
+                    block_no=1,
+                    block_type="paragraph",
+                    char_start=0,
+                    char_end=6,
+                    text="采购合同",
+                    heading_path=["政府采购货物合同"],
+                ),
+                RevisionDocumentBlock(
+                    block_id="block-preamble-end",
+                    block_no=2,
+                    block_type="paragraph",
+                    char_start=7,
+                    char_end=20,
+                    text="双方经协商订立本合同。",
+                    heading_path=["政府采购货物合同"],
+                ),
+                RevisionDocumentBlock(
+                    block_id="block-section-one-heading",
+                    block_no=3,
+                    block_type="paragraph",
+                    char_start=21,
+                    char_end=27,
+                    text="一、项目信息",
+                    heading_path=["一、项目信息"],
+                ),
+                RevisionDocumentBlock(
+                    block_id="block-section-one-end",
+                    block_no=4,
+                    block_type="paragraph",
+                    char_start=28,
+                    char_end=45,
+                    text="本项目采购设备一批。",
+                    heading_path=["一、项目信息"],
+                ),
+                RevisionDocumentBlock(
+                    block_id="block-section-two-end",
+                    block_no=5,
+                    block_type="paragraph",
+                    char_start=46,
+                    char_end=62,
+                    text="二、质量保证",
+                    heading_path=["二、质量保证"],
+                ),
+            ],
+            "evidences": [
+                RevisionEvidenceSource(
+                    evidence_id="evidence-absence-1",
+                    evidence_type="ABSENCE",
+                    block_id="block-preamble-end",
+                    checked_scope="全文知识产权条款",
+                    verification_note="已检查全文，未发现知识产权保证。",
+                )
+            ],
+        }
+    )
+
+    candidates = _build_insertion_candidates(
+        source,
+        source.findings[0],
+        source.evidences,
+        ["全文知识产权条款"],
+    )
+
+    assert candidates
+    assert all(candidate.block_no >= 3 for candidate in candidates)
+    assert {candidate.block_id for candidate in candidates}.isdisjoint(
+        {"block-cover", "block-preamble-end"}
+    )
+
+
+def test_unstructured_contract_keeps_preamble_compatible_candidates() -> None:
+    source = _absence_source()
+
+    candidates = _build_insertion_candidates(
+        source,
+        source.findings[0],
+        source.evidences,
+        ["第六条 违约责任"],
+    )
+
+    assert [candidate.block_id for candidate in candidates][:2] == [
+        "block-remedy-end",
+        "block-dispute-end",
+    ]
 
 
 

@@ -36,7 +36,7 @@ MAX_BATCH_FINDINGS = 4
 MAX_INSERTION_CANDIDATES = 24
 # Bump whenever deterministic draft-planning semantics change.  A cached
 # failure must not outlive the validation rule that produced it.
-REVISION_DRAFT_CACHE_VERSION = "numbering-domain-plan-v6-runtime-numbering-v1-evidence-exact-anchor-v4-layout"
+REVISION_DRAFT_CACHE_VERSION = "numbering-domain-plan-v7-runtime-numbering-v1-major-section-boundary-v1-layout"
 _PLACEHOLDER_RE = re.compile(r"(?:TODO|TBD|XXX|待补充|待定|请填写)", re.IGNORECASE)
 _STRUCTURAL_PLACEHOLDER_HEADING_RE = re.compile(
     r"^\s*第\s*[XＸ]+\s*条(?:\s+|[：:])(?P<title>\S.*)\s*$",
@@ -1751,7 +1751,24 @@ def _build_insertion_candidates(
     if not blocks:
         return ()
 
-    section_ends = _section_end_blocks(blocks)
+    first_major_heading_no = next(
+        (
+            block.block_no
+            for block in blocks
+            if _SECTION_HEADING_RE.match(block.text)
+        ),
+        None,
+    )
+
+    def is_eligible(block: RevisionDocumentBlock) -> bool:
+        # When a contract has explicit major articles, a missing clause must
+        # never be inserted into its cover, party metadata or preamble.  The
+        # first major heading itself is a valid lower bound; unstructured
+        # contracts keep the existing best-effort behaviour.
+        return first_major_heading_no is None or block.block_no >= first_major_heading_no
+
+    eligible_blocks = [block for block in blocks if is_eligible(block)]
+    section_ends = [block for block in _section_end_blocks(blocks) if is_eligible(block)]
 
     by_id = {item.block_id: item for item in blocks}
     adjacent: list[RevisionDocumentBlock] = []
@@ -1759,6 +1776,8 @@ def _build_insertion_candidates(
         if not evidence.block_id or evidence.block_id not in by_id:
             continue
         evidence_block = by_id[evidence.block_id]
+        if not is_eligible(evidence_block):
+            continue
         same_section_end = next(
             (
                 item
@@ -1773,7 +1792,7 @@ def _build_insertion_candidates(
         )
         adjacent.append(same_section_end)
 
-    candidates = section_ends or blocks
+    candidates = section_ends or eligible_blocks
     query = "\n".join(
         (
             finding.title,
