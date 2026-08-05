@@ -10168,7 +10168,11 @@ async def execute_base_risk_review_bundle(
 def _merge_lre_cross_batch_roots(
     findings: list[FindingDraft],
     canonical_roots: list[CanonicalRiskRoot],
-) -> tuple[list[FindingDraft], list[CanonicalRiskRoot], dict[str, str]]:
+) -> tuple[
+    list[FindingDraft],
+    list[CanonicalRiskRoot],
+    dict[str, tuple[str, ...]],
+]:
     """Merge only Registry-approved LRE roots that crossed a Batch boundary."""
     findings_by_id = {item.finding_local_id: item for item in findings}
     grouped: dict[tuple[str, str], list[CanonicalRiskRoot]] = {}
@@ -10373,7 +10377,7 @@ def _merge_lre_cross_batch_roots(
             )
         )
         replacement_by_finding_id.update(
-            {root.finding_local_id: finding_id for root in roots}
+            {root.finding_local_id: (finding_id,) for root in roots}
         )
     return merged_findings, merged_roots, replacement_by_finding_id
 
@@ -10381,13 +10385,19 @@ def _merge_lre_cross_batch_roots(
 def _merge_equivalent_same_root_findings(
     findings: list[FindingDraft],
     canonical_roots: list[CanonicalRiskRoot],
-) -> tuple[list[FindingDraft], list[CanonicalRiskRoot], dict[str, str]]:
+) -> tuple[
+    list[FindingDraft],
+    list[CanonicalRiskRoot],
+    dict[str, tuple[str, ...]],
+]:
     """Collapse a duplicated canonical root while preserving all evidence.
 
     Batches are materialized independently, so a model can occasionally emit
     the same check/risk/anchor tuple twice. Such a duplicate must not make the
     entire contract review fail. We only merge roots whose full root semantics
-    agree; anything ambiguous is still rejected as a protocol error.
+    agree. If distinct canonical roots resolve to the same visible Finding,
+    preserve both roots as separately addressable findings; the revision
+    planner is responsible for grouping their shared document edit.
     """
     roots_by_finding: dict[str, list[CanonicalRiskRoot]] = {}
     for root in canonical_roots:
@@ -10400,12 +10410,15 @@ def _merge_equivalent_same_root_findings(
         for group in groups.values()
         if len(group) > 1
     ]
-    if not duplicate_groups:
+    has_shared_root_mapping = any(
+        len(roots) > 1 for roots in roots_by_finding.values()
+    )
+    if not duplicate_groups and not has_shared_root_mapping:
         return findings, canonical_roots, {}
 
     merged_findings = list(findings)
     merged_roots = list(canonical_roots)
-    replacements: dict[str, str] = {}
+    replacements: dict[str, tuple[str, ...]] = {}
     for group in duplicate_groups:
         roots = [
             root
@@ -10548,11 +10561,201 @@ def _merge_equivalent_same_root_findings(
         )
         replacements.update(
             {
-                finding.finding_local_id: finding_id
+                finding.finding_local_id: (finding_id,)
                 for finding in group
             }
         )
-    return merged_findings, merged_roots, replacements
+    (
+        merged_findings,
+        merged_roots,
+        split_replacements,
+    ) = _separate_distinct_root_findings(
+        merged_findings,
+        merged_roots,
+    )
+    return (
+        merged_findings,
+        merged_roots,
+        _compose_finding_id_replacements(replacements, split_replacements),
+    )
+
+
+def _separate_distinct_root_findings(
+    findings: list[FindingDraft],
+    canonical_roots: list[CanonicalRiskRoot],
+) -> tuple[
+    list[FindingDraft],
+    list[CanonicalRiskRoot],
+    dict[str, tuple[str, ...]],
+]:
+    """Give each distinct canonical root a stable visible Finding identity.
+
+    A root is derived from deterministic candidate semantics, while a Finding
+    is derived from the visible model response. The latter can legitimately
+    collapse two roots to one identical local ID. Keeping that shared ID makes
+    the unit result structurally invalid and, more importantly, hides one
+    risk. Split only that collision; do not change the finding text or its
+    evidence location.
+    """
+    roots_by_finding: dict[str, list[CanonicalRiskRoot]] = {}
+    for root in canonical_roots:
+        roots_by_finding.setdefault(root.finding_local_id, []).append(root)
+    collisions = {
+        finding_id: roots
+        for finding_id, roots in roots_by_finding.items()
+        if len(roots) > 1
+    }
+    if not collisions:
+        return findings, canonical_roots, {}
+
+    findings_by_id: dict[str, list[FindingDraft]] = {}
+    for finding in findings:
+        findings_by_id.setdefault(finding.finding_local_id, []).append(finding)
+    separated_findings = list(findings)
+    separated_roots = list(canonical_roots)
+    replacements: dict[str, tuple[str, ...]] = {}
+
+    for finding_id, roots in sorted(collisions.items()):
+        source_findings = findings_by_id.get(finding_id, [])
+        if not source_findings:
+            raise DirectReviewError(
+                "RISK_UNIT_DUPLICATE_MERGE_INVALID",
+                "Canonical Risk Root references an unknown Finding",
+            )
+        root_signatures = {_root_semantic_key(root) for root in roots}
+        root_ids = {root.root_id for root in roots}
+        if len(root_signatures) == 1:
+            # This is a duplicate of one canonical root that survived because
+            # there was only one visible Finding to begin with. Keep one root
+            # and preserve the union of its deterministic evidence metadata.
+            core_primary_ids = list(
+                dict.fromkeys(
+                    source_id
+                    for root in roots
+                    for source_id in root.core_primary_evidence_source_ids
+                )
+            )
+            context_primary_ids = [
+                source_id
+                for source_id in dict.fromkeys(
+                    source_id
+                    for root in roots
+                    for source_id in root.context_primary_evidence_source_ids
+                )
+                if source_id not in set(core_primary_ids)
+            ]
+            primary_ids = [*core_primary_ids, *context_primary_ids]
+            supporting_ids = [
+                source_id
+                for source_id in dict.fromkeys(
+                    source_id
+                    for root in roots
+                    for source_id in root.supporting_evidence_source_ids
+                )
+                if source_id not in set(primary_ids)
+            ]
+            representative = min(roots, key=lambda item: item.root_id)
+            separated_roots = [
+                root
+                for root in separated_roots
+                if root.root_id not in root_ids
+            ]
+            separated_roots.append(
+                representative.model_copy(
+                    update={
+                        "source_candidate_ids": list(
+                            dict.fromkeys(
+                                candidate_id
+                                for root in roots
+                                for candidate_id in root.source_candidate_ids
+                            )
+                        ),
+                        "primary_evidence_source_ids": primary_ids,
+                        "core_primary_evidence_source_ids": core_primary_ids,
+                        "context_primary_evidence_source_ids": context_primary_ids,
+                        "supporting_evidence_source_ids": supporting_ids,
+                        "recommended_control_codes": list(
+                            dict.fromkeys(
+                                code
+                                for root in roots
+                                for code in root.recommended_control_codes
+                            )
+                        ),
+                    }
+                )
+            )
+            continue
+
+        # Different roots remain distinct risks. Their revision drafts may
+        # still be grouped later by the common target/boundary.
+        separated_findings = [
+            finding
+            for finding in separated_findings
+            if finding.finding_local_id != finding_id
+        ]
+        separated_roots = [
+            root for root in separated_roots if root.root_id not in root_ids
+        ]
+        replacement_ids: list[str] = []
+        for index, root in enumerate(sorted(roots, key=lambda item: item.root_id)):
+            source_finding = source_findings[index % len(source_findings)]
+            replacement_id = _stable_id(
+                "finding",
+                {
+                    "original_finding_id": finding_id,
+                    "root_id": root.root_id,
+                },
+            )
+            replacement_ids.append(replacement_id)
+            evidence_candidates = [
+                evidence.model_copy(
+                    update={
+                        "finding_local_id": replacement_id,
+                        "evidence_local_id": _stable_id(
+                            "evidence",
+                            {
+                                "original_evidence_id": evidence.evidence_local_id,
+                                "root_id": root.root_id,
+                                "index": evidence_index,
+                            },
+                        ),
+                    }
+                )
+                for evidence_index, evidence in enumerate(
+                    source_finding.evidence_candidates,
+                    1,
+                )
+            ]
+            separated_findings.append(
+                source_finding.model_copy(
+                    update={
+                        "finding_local_id": replacement_id,
+                        "evidence_candidates": evidence_candidates,
+                    }
+                )
+            )
+            separated_roots.append(
+                root.model_copy(update={"finding_local_id": replacement_id})
+            )
+        replacements[finding_id] = tuple(replacement_ids)
+    return separated_findings, separated_roots, replacements
+
+
+def _compose_finding_id_replacements(
+    earlier: dict[str, tuple[str, ...]],
+    later: dict[str, tuple[str, ...]],
+) -> dict[str, tuple[str, ...]]:
+    """Resolve a previous merge through a later one-to-many split."""
+    result = {
+        finding_id: tuple(
+            replacement
+            for value in replacement_ids
+            for replacement in later.get(value, (value,))
+        )
+        for finding_id, replacement_ids in earlier.items()
+    }
+    result.update(later)
+    return result
 
 
 def _root_semantic_key(root: CanonicalRiskRoot) -> tuple:
@@ -10570,9 +10773,15 @@ def _root_semantic_key(root: CanonicalRiskRoot) -> tuple:
 
 def _replace_finding_ids(
     values: list[str],
-    replacements: dict[str, str],
+    replacements: dict[str, tuple[str, ...]],
 ) -> list[str]:
-    return list(dict.fromkeys(replacements.get(value, value) for value in values))
+    return list(
+        dict.fromkeys(
+            replacement
+            for value in values
+            for replacement in replacements.get(value, (value,))
+        )
+    )
 
 
 def _merge_unit_result(unit, by_batch: dict[str, ReviewBatchResult]) -> BaseReviewUnitResult:
@@ -10601,10 +10810,10 @@ def _merge_unit_result(unit, by_batch: dict[str, ReviewBatchResult]) -> BaseRevi
     findings, canonical_roots, same_root_replacements = (
         _merge_equivalent_same_root_findings(findings, canonical_roots)
     )
-    finding_id_replacements = {
-        **finding_id_replacements,
-        **same_root_replacements,
-    }
+    finding_id_replacements = _compose_finding_id_replacements(
+        finding_id_replacements,
+        same_root_replacements,
+    )
     if finding_id_replacements:
         checks = [
             item.model_copy(
@@ -10709,14 +10918,15 @@ def _merge_unit_result(unit, by_batch: dict[str, ReviewBatchResult]) -> BaseRevi
         deterministic_enrichments=[
             enrichment.model_copy(
                 update={
-                    "finding_local_id": finding_id_replacements.get(
-                        enrichment.finding_local_id,
-                        enrichment.finding_local_id,
-                    )
+                    "finding_local_id": finding_id,
                 }
             )
             for batch in batches
             for enrichment in batch.deterministic_enrichments
+            for finding_id in finding_id_replacements.get(
+                enrichment.finding_local_id,
+                (enrichment.finding_local_id,),
+            )
         ],
         candidate_decisions=[
             decision

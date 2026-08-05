@@ -5445,7 +5445,10 @@ def test_equivalent_same_root_findings_are_merged_without_losing_evidence() -> N
 
     assert len(merged_findings) == 1
     assert len(merged_roots) == 1
-    assert replacements == {finding_a_id: finding_a_id, finding_b_id: finding_a_id}
+    assert replacements == {
+        finding_a_id: (finding_a_id,),
+        finding_b_id: (finding_a_id,),
+    }
     assert len(merged_findings[0].evidence_candidates) == 2
     assert merged_roots[0].source_candidate_ids == [
         "risk-candidate-" + "1" * 32,
@@ -5470,3 +5473,24 @@ def test_equivalent_same_root_findings_are_merged_without_losing_evidence() -> N
     assert len(retained_findings) == 2
     assert len(retained_roots) == 2
     assert retained_replacements == {}
+
+    shared_findings, shared_roots, shared_replacements = (
+        _merge_equivalent_same_root_findings(
+            [finding(finding_a_id, "a")],
+            [
+                root("risk-root-" + "1" * 32, finding_a_id, "1"),
+                root("risk-root-" + "2" * 32, finding_a_id, "2").model_copy(
+                    update={
+                        "root_type": "CONFIDENTIALITY_RETENTION_DEFICIENCY",
+                        "root_severity_rule_id": "ICD_CONFIDENTIALITY_RETENTION_V1",
+                    }
+                ),
+            ],
+        )
+    )
+    assert len(shared_findings) == 2
+    assert len(shared_roots) == 2
+    assert {
+        item.finding_local_id for item in shared_roots
+    } == {item.finding_local_id for item in shared_findings}
+    assert len(shared_replacements[finding_a_id]) == 2
