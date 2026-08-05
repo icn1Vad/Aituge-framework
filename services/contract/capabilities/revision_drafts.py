@@ -36,7 +36,7 @@ MAX_BATCH_FINDINGS = 4
 MAX_INSERTION_CANDIDATES = 24
 # Bump whenever deterministic draft-planning semantics change.  A cached
 # failure must not outlive the validation rule that produced it.
-REVISION_DRAFT_CACHE_VERSION = "numbering-domain-plan-v9-single-chapter-style-layout-v2"
+REVISION_DRAFT_CACHE_VERSION = "numbering-domain-plan-v9-replace-chapter-style-layout-v3"
 _PLACEHOLDER_RE = re.compile(r"(?:TODO|TBD|XXX|待补充|待定|请填写)", re.IGNORECASE)
 _STRUCTURAL_PLACEHOLDER_HEADING_RE = re.compile(
     r"^\s*第\s*[XＸ]+\s*条(?:\s+|[：:])(?P<title>\S.*)\s*$",
@@ -308,6 +308,8 @@ class ReplacementRequest:
     original_text: str
     target: RevisionTarget
     adjacent_context: str
+    chapter_context: tuple[str, ...] = ()
+    style_profile: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -842,6 +844,14 @@ def _model_request_payload(
                 "request_type": "REPLACE",
                 "original_clause": item.original_text,
                 "adjacent_context": item.adjacent_context,
+                "chapter_context": list(item.chapter_context),
+                "style_profile": item.style_profile,
+                "constraints": [
+                    "只修改给定原条款，但必须结合章节原文避免复述相邻条款已有内容",
+                    "沿用章节原文的称谓、句长、段落长度和列举方式",
+                    "保持原条款在章节中的语义衔接，不得把多个独立主题堆入同一长段",
+                    "条款编号由文档层保留；输出不得猜测或改变原编号",
+                ],
                 "facts_that_must_not_change": {
                     **payload["facts_that_must_not_change"],
                     "amounts": sorted(_extract_values(_AMOUNT_RE, item.original_text)),
@@ -1312,14 +1322,28 @@ def _chapter_blocks_for_draft(
     source: RevisionReviewSource,
     draft: RevisionDraft,
 ) -> list[RevisionDocumentBlock]:
-    heading_path = (
-        draft.insertion_target.heading_path
-        if draft.insertion_target is not None
-        else []
-    )
+    if draft.insertion_target is not None:
+        heading_path = draft.insertion_target.heading_path
+    elif draft.target is not None:
+        return _chapter_blocks_for_block_id(source, draft.target.block_id)
+    else:
+        heading_path = []
     if not heading_path:
         return []
     return _chapter_blocks_for_heading_path(source, heading_path)
+
+
+def _chapter_blocks_for_block_id(
+    source: RevisionReviewSource,
+    block_id: str,
+) -> list[RevisionDocumentBlock]:
+    source_block = next(
+        (block for block in source.document_blocks if block.block_id == block_id),
+        None,
+    )
+    if source_block is None:
+        return []
+    return _chapter_blocks_for_heading_path(source, source_block.heading_path)
 
 
 def _chapter_blocks_for_heading_path(
@@ -1835,12 +1859,15 @@ def _plan_draft(
             replacement_text=None,
             target=target,
         )
+    chapter_blocks = _chapter_blocks_for_block_id(source, target.block_id)
     return ReplacementRequest(
         revision_key=revision_key,
         finding=finding,
         original_text=evidence.quoted_text,
         target=target,
         adjacent_context=adjacent_context,
+        chapter_context=tuple(block.text for block in chapter_blocks),
+        style_profile=_chapter_style_profile(chapter_blocks),
     )
 
 
@@ -2351,6 +2378,7 @@ def _request_budget_text(item: RevisionGenerationRequest) -> str:
             + item.finding.issue
             + item.finding.suggestion
             + item.adjacent_context
+            + "\n".join(item.chapter_context)
         )
     if isinstance(item, BundledRevisionRequest):
         return "\n".join(

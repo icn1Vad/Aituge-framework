@@ -11,6 +11,7 @@ from services.contract.capabilities.revision_drafts import (
     BundledRevisionRequest,
     InMemoryRevisionDraftCache,
     InMemoryRevisionSourceProvider,
+    ReplacementRequest,
     ReplacementBatchResult,
     REVISION_DRAFT_CACHE_VERSION,
     RevisionDraftResponse,
@@ -161,6 +162,28 @@ def _replace_source() -> RevisionReviewSource:
                 char_end=len(original),
                 extraction_text=original,
             )
+        ],
+        document_blocks=[
+            RevisionDocumentBlock(
+                block_id="block-1",
+                block_no=1,
+                block_type="paragraph",
+                char_start=0,
+                char_end=len(original),
+                text="6.1 " + original,
+                heading_path=["第六条 服务要求"],
+                metadata={"literal_marker": "6.1", "container_path": "document/body"},
+            ),
+            RevisionDocumentBlock(
+                block_id="block-2",
+                block_no=2,
+                block_type="paragraph",
+                char_start=0,
+                char_end=len("乙方应提交验收材料。"),
+                text="6.2 乙方应提交验收材料。",
+                heading_path=["第六条 服务要求"],
+                metadata={"literal_marker": "6.2", "container_path": "document/body"},
+            ),
         ],
     )
 
@@ -472,6 +495,22 @@ def test_text_quote_continues_to_generate_a_replace_draft() -> None:
         operation_order=draft.operation_order,
     )
     assert draft.revision_hash == expected_hash
+
+
+def test_single_replace_receives_its_chapter_context_and_style_profile() -> None:
+    source = _replace_source()
+    response, generator = _generate(source, "乙方应按约完成服务并提交验收材料。")
+
+    assert response.status == "COMPLETED"
+    request = generator.calls[0][0]
+    assert isinstance(request, ReplacementRequest)
+    payload = _model_request_payload(request, source)
+    assert payload["chapter_context"] == [
+        "6.1 乙方应按要求完成服务。",
+        "6.2 乙方应提交验收材料。",
+    ]
+    assert payload["style_profile"]["numbering_examples"] == ["6.1", "6.2"]
+    assert payload["style_profile"]["party_naming"] == "甲方/乙方"
 
 
 def test_same_anchor_findings_are_combined_into_one_group_operation() -> None:
