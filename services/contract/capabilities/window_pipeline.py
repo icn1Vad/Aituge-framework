@@ -564,6 +564,20 @@ class ContractIrWindowPipeline:
                         f"{retry_feedback}；当前没有可保留的已验证项，请重新返回当前 Window "
                         "的完整抽取结果"
                     )
+                if (
+                    attempt_no == self.max_attempts_per_window
+                    and code == "WINDOW_ALIGNMENT_FAILED"
+                ):
+                    recovered = _recover_with_source_fallback(
+                        request=request,
+                        window=window,
+                        attempts=attempts,
+                        accepted_extractions=accepted_extractions,
+                        accepted_canonicalizations=accepted_canonicalizations,
+                        fallback_reason="模型两次原文定位失败，按原文生成保守回退映射",
+                    )
+                    if recovered is not None:
+                        return recovered
         return WindowRunResult(
             window_id=window.window_id,
             sequence_no=window.sequence_no,

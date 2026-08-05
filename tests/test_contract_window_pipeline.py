@@ -589,6 +589,38 @@ async def test_pipeline_recovers_suspicious_empty_window_from_exact_source() -> 
 
 
 @pytest.mark.asyncio
+async def test_pipeline_recovers_alignment_failure_from_exact_source() -> None:
+    class AlignmentFailureExtractor(FakePipelineExtractor):
+        async def extract(
+            self,
+            request: WindowExtractionRequest,
+            *,
+            tenant_id: str,
+            model_id: str,
+            retry_feedback: str | None = None,
+        ) -> WindowExtractionResult:
+            self.calls.append((request.window_id, retry_feedback))
+            self.call_counts[request.window_id] = self.call_counts.get(request.window_id, 0) + 1
+            raise WindowExtractionError(
+                "WINDOW_ALIGNMENT_FAILED",
+                "OBLIGATION did not match an exact source span",
+            )
+
+    extractor = AlignmentFailureExtractor()
+    result = await ContractIrWindowPipeline(extractor=extractor).run(
+        _pipeline_request(count=1, source="乙方应履行保密义务"),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    assert extractor.call_counts == {"window-001": 2}
+    assert result.coverage.valid is True
+    assert result.windows[0].attempts[1].status == "SUCCEEDED"
+    assert result.windows[0].attempts[1].fallback_extraction_count >= 1
+    assert result.semantic_ir.obligations[0].predicate == "原文待模型复核"
+
+
+@pytest.mark.asyncio
 async def test_pipeline_accepts_reviewed_empty_non_business_window() -> None:
     extractor = FakePipelineExtractor(empty=True)
     result = await ContractIrWindowPipeline(extractor=extractor).run(
