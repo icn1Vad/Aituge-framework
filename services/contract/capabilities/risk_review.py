@@ -349,6 +349,7 @@ class ModelCheckCoverageResult(StrictModel):
         "RISK_CONFIRMED",
         "RISK_NOT_CONFIRMED",
         "INSUFFICIENT_EVIDENCE",
+        "PERSPECTIVE_REJECTED",
     ] | None = None
     identified_security_mechanisms: list[str] = Field(default_factory=list, max_length=20)
     candidate_evidence: list[ModelEvidenceDraft] = Field(default_factory=list, max_length=20)
@@ -767,7 +768,7 @@ class CommercialFinancialDirectReviewer:
                 "RISK_OUTPUT_BUDGET_EXCEEDED",
                 "Commercial Direct Review exceeded the hard output token limit",
             )
-        warnings = []
+        warnings = list(result[2])
         if final_completion_tokens is not None and final_completion_tokens > 2500:
             warnings.append("RISK_OUTPUT_SOFT_LIMIT_EXCEEDED")
         return ReviewUnitResult(
@@ -868,6 +869,14 @@ _CF005_RELEVANT_TYPES = {
     "termination_terms",
 }
 _CF005_PAYMENT_WORDS = ("支付", "付款", "价款", "费用", "预付")
+_CF005_NON_PRICE_PAYMENT_WORDS = (
+    "违约金",
+    "赔偿",
+    "罚款",
+    "滞纳金",
+    "利息",
+    "损失",
+)
 _CF005_PREPAYMENT_WORDS = ("全额", "全部", "百分之百", "一次性", "绝大部分")
 _CF005_BEFORE_PERFORMANCE_WORDS = (
     "签订后",
@@ -899,6 +908,29 @@ _CF005_SECURITY_KEYWORDS = {
 }
 
 
+def _cf005_is_price_payment(text: str) -> bool:
+    """Keep breach payments out of the advance-payment payer calculation.
+
+    CF-005 protects the party that pays contract consideration before the
+    other side performs. A liquidated-damages payment is not consideration,
+    even when its text happens to include a percentage of the contract price.
+    """
+    return bool(
+        any(word in text for word in _CF005_PAYMENT_WORDS)
+        and not any(word in text for word in _CF005_NON_PRICE_PAYMENT_WORDS)
+    )
+
+
+def _cf005_payer_role_status(
+    statuses: list[str],
+) -> Literal["OUR_PARTY", "COUNTERPARTY", "AMBIGUOUS"]:
+    if "OUR_PARTY" in statuses:
+        return "OUR_PARTY"
+    if statuses and set(statuses) == {"COUNTERPARTY"}:
+        return "COUNTERPARTY"
+    return "AMBIGUOUS"
+
+
 def _build_cf005_candidate(
     request: CommercialReviewRequest,
     ir_refs: dict[str, CommercialIrItem],
@@ -923,9 +955,9 @@ def _build_cf005_candidate(
 
     substantial_refs: list[str] = []
     before_performance_refs: list[str] = []
-    payer_statuses: list[str] = []
+    payer_status_by_ref: dict[str, str] = {}
     for ref, item, text in relevant:
-        has_payment = any(word in text for word in _CF005_PAYMENT_WORDS)
+        has_payment = _cf005_is_price_payment(text)
         payer_subject = item.subject or ""
         our_payer = text_names_role(
             payer_subject, roles.aliases_for_our_party()
@@ -940,7 +972,7 @@ def _build_cf005_candidate(
         else:
             payer_status = "AMBIGUOUS"
         if has_payment:
-            payer_statuses.append(payer_status)
+            payer_status_by_ref[ref] = payer_status
         percentages = [
             float(value)
             for value in re.findall(r"(?<!\d)(\d{1,3}(?:\.\d+)?)\s*%", text)
@@ -965,6 +997,11 @@ def _build_cf005_candidate(
         if any(keyword in all_text for keyword in keywords)
     ]
     candidate_ir_refs = sorted(set(substantial_refs) | set(before_performance_refs))
+    candidate_payer_statuses = [
+        payer_status_by_ref[ref]
+        for ref in candidate_ir_refs
+        if ref in payer_status_by_ref
+    ]
     candidate_evidence_refs = sorted(
         {
             anchor_ref_by_id[anchor.anchor_id]
@@ -975,16 +1012,7 @@ def _build_cf005_candidate(
     return Cf005Candidate(
         substantial_prepayment=bool(substantial_refs),
         payment_before_performance=bool(before_performance_refs),
-        payer_role_status=(
-            "OUR_PARTY"
-            if "OUR_PARTY" in payer_statuses
-            else (
-                "COUNTERPARTY"
-                if payer_statuses
-                and set(payer_statuses) == {"COUNTERPARTY"}
-                else "AMBIGUOUS"
-            )
-        ),
+        payer_role_status=_cf005_payer_role_status(candidate_payer_statuses),
         installment_payment="INSTALLMENT_PAYMENT" in mechanisms,
         milestone_linked="MILESTONE_PAYMENT" in mechanisms,
         acceptance_linked="ACCEPTANCE_LINKAGE" in mechanisms,
@@ -1347,7 +1375,7 @@ def _materialize(
     ir_refs: dict[str, CommercialIrItem],
     anchor_refs: dict[str, CommercialSourceExcerpt],
     cf005_candidate: Cf005Candidate,
-) -> tuple[list[CheckCoverageResult], list[FindingDraft]]:
+) -> tuple[list[CheckCoverageResult], list[FindingDraft], list[str]]:
     by_code: dict[str, ModelCheckCoverageResult] = {}
     for check in response.check_results:
         if check.check_code in by_code:
@@ -1363,8 +1391,13 @@ def _materialize(
             "Commercial Direct Review must cover exactly CF-001 through CF-008",
             repairable=True,
         )
-    _validate_cf005_candidate_decision(
+    cf005_check, cf005_warning = _suppress_cf005_perspective_conflict(
         by_code["CF-005"],
+        cf005_candidate,
+    )
+    by_code["CF-005"] = cf005_check
+    _validate_cf005_candidate_decision(
+        cf005_check,
         cf005_candidate,
         ir_refs,
         anchor_refs,
@@ -1423,7 +1456,47 @@ def _materialize(
             "Commercial Direct Review returned duplicate material Findings or Evidence",
             repairable=True,
         )
-    return coverage, findings
+    return (
+        coverage,
+        findings,
+        [cf005_warning] if cf005_warning is not None else [],
+    )
+
+
+def _suppress_cf005_perspective_conflict(
+    check: ModelCheckCoverageResult,
+    candidate: Cf005Candidate,
+) -> tuple[ModelCheckCoverageResult, str | None]:
+    """Reject only a reversed CF-005 Finding, without failing the review unit.
+
+    A CF-005 advance-payment risk is valid only when the fixed review party is
+    the payer of the identified consideration. If the source says the
+    counterparty pays, or the payer cannot be determined, the model's Finding
+    is excluded before revision-draft generation. Other commercial checks keep
+    running normally.
+    """
+    if not check.findings or candidate.payer_role_status == "OUR_PARTY":
+        return check, None
+    payer_description = (
+        "合同价款付款方是相对方"
+        if candidate.payer_role_status == "COUNTERPARTY"
+        else "合同价款付款方无法由原文确定"
+    )
+    return (
+        check.model_copy(
+            update={
+                "status": "REVIEWED",
+                "reason_code": "NO_RISK_IDENTIFIED",
+                "decision_note": (
+                    "RISK_PERSPECTIVE_CONFLICT："
+                    f"{payer_description}，已排除反向预付款风险，不进入修订草案"
+                ),
+                "findings": [],
+                "candidate_decision": "PERSPECTIVE_REJECTED",
+            }
+        ),
+        "RISK_PERSPECTIVE_CONFLICT",
+    )
 
 
 def _validate_cf005_candidate_decision(
@@ -1432,6 +1505,8 @@ def _validate_cf005_candidate_decision(
     ir_refs: dict[str, CommercialIrItem],
     anchor_refs: dict[str, CommercialSourceExcerpt],
 ) -> None:
+    if check.candidate_decision == "PERSPECTIVE_REJECTED":
+        return
     if check.findings and candidate.payer_role_status != "OUR_PARTY":
         raise DirectReviewError(
             "RISK_CF005_PAYER_PERSPECTIVE_INVALID",

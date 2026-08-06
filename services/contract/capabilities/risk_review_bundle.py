@@ -1896,6 +1896,7 @@ async def _review_po_candidate_batch(
                 check_decisions,
                 supporting_primary_overlap_count,
                 decision_summary_perspective_warning_count,
+                perspective_conflict_count,
             ) = _materialize_po_candidate_decisions(
                 request,
                 response,
@@ -2011,6 +2012,8 @@ async def _review_po_candidate_batch(
             "performance_obligations exceeded the hard output token limit",
         )
     warnings = []
+    if perspective_conflict_count:
+        warnings.append("RISK_PERSPECTIVE_CONFLICT")
     if final_completion_tokens is not None and final_completion_tokens > 2500:
         warnings.append("RISK_OUTPUT_SOFT_LIMIT_EXCEEDED")
     return ReviewBatchResult(
@@ -2209,6 +2212,7 @@ def _materialize_po_candidate_decisions(
     list[CheckDecisionResult],
     int,
     int,
+    int,
 ]:
     specs = {item.check_code: item for item in request.assigned_check_specs}
     candidates_by_id = {item.candidate_id: item for item in candidates}
@@ -2233,6 +2237,8 @@ def _materialize_po_candidate_decisions(
     finding_by_candidate: dict[str, str] = {}
     supporting_primary_overlap_count = 0
     decision_summary_perspective_warning_count = 0
+    perspective_conflict_candidate_ids: set[str] = set()
+    perspective_conflict_count = 0
     for candidate in candidates:
         if not candidate.requires_model_decision:
             po_precondition = candidate.po003_precondition
@@ -2486,7 +2492,12 @@ def _materialize_po_candidate_decisions(
             po_allowed_source_ids=evidence_source_ids,
         )
         _validate_domain_safety(finding)
-        _validate_po_perspective_language(request, finding)
+        if _validate_po_perspective_language(request, finding):
+            # A reversed party narrative is unsafe to turn into a revision draft,
+            # but it is local to this root. Keep the rest of the review batch.
+            perspective_conflict_candidate_ids.update(source_candidate_ids)
+            perspective_conflict_count += 1
+            continue
         findings.append(finding)
         canonical_roots.append(
             CanonicalRiskRoot(
@@ -2573,6 +2584,11 @@ def _materialize_po_candidate_decisions(
                 "未发现满足当前检查成立前置条件的合同场景，"
                 "Python确定性判定不生成风险Candidate"
             )
+        if set(check_candidate_ids) & perspective_conflict_candidate_ids:
+            decision_note = (
+                decision_note[:800]
+                + "；RISK_PERSPECTIVE_CONFLICT：已排除反向表述的单项风险，不进入修订草案"
+            )
         coverage.append(
             CheckCoverageResult(
                 check_code=spec.check_code,
@@ -2599,6 +2615,7 @@ def _materialize_po_candidate_decisions(
         check_decisions,
         supporting_primary_overlap_count,
         decision_summary_perspective_warning_count,
+        perspective_conflict_count,
     )
 
 
@@ -4265,7 +4282,7 @@ def _po_root_formal_finding_text(
 def _validate_po_perspective_language(
     request: GenericReviewRequest,
     finding: FindingDraft,
-) -> None:
+) -> bool:
     combined = "".join(
         (
             finding.title,
@@ -4286,11 +4303,7 @@ def _validate_po_perspective_language(
         f"我方即{opposite}",
         f"我方为{opposite}",
     )
-    if any(pattern in combined for pattern in patterns):
-        raise DirectReviewError(
-            "RISK_PERSPECTIVE_CONFLICT",
-            "Finding narrative reverses the frozen review perspective",
-        )
+    return any(pattern in combined for pattern in patterns)
 
 
 def generic_request_from_context(
