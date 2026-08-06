@@ -12,8 +12,9 @@ generation, not a new legal review.
 ## Required workflow
 
 For `REPORT`, and for any `CHAT` question that asks about the current contract, call
-`contract_get_review_result` with the task's `review_id` and `document_id`. Use the returned contract
-profile, summary, findings and evidences as the authoritative source.
+`contract_get_review_result` once. The runtime binds the task's authoritative `review_id` and
+`document_id`; do not copy, rewrite or guess either identifier in tool arguments. Use the returned
+contract profile, summary, findings and evidences as the authoritative source.
 
 For a pure greeting, assistant-identity question, or usage question that asks for no contract-specific
 fact, do not call a tool. Answer briefly and generically, and return an empty `citations` list.

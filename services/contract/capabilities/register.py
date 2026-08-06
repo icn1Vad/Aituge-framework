@@ -118,6 +118,19 @@ class ContractDocumentToolInput(StrictModel):
     document_id: str = Field(min_length=1, max_length=160)
 
 
+class ContractReviewResultToolInput(StrictModel):
+    """Compatibility-only model arguments for a task-bound review lookup.
+
+    The grounded-answer runtime deliberately ignores these values and resolves
+    both identifiers from the current TaskManager task.  Keeping the optional
+    fields avoids rejecting older model calls while preventing an opaque ID
+    copied incorrectly by the model from escaping into the contract service.
+    """
+
+    review_id: str | None = Field(default=None, min_length=1, max_length=160)
+    document_id: str | None = Field(default=None, min_length=1, max_length=160)
+
+
 class ContractBlocksToolInput(ContractDocumentToolInput):
     block_ids: list[str] = Field(default_factory=list, max_length=200)
     limit: int = Field(default=200, ge=1, le=2000)
@@ -1295,6 +1308,113 @@ def _grounded_answer_finalizer(base_url: str, token: str):
     return finalize
 
 
+async def _load_bound_grounded_answer_input(
+    *,
+    task_id: str,
+    tenant_id: str,
+) -> GroundedAnswerTaskInput:
+    """Load authoritative identifiers for one grounded-answer tool call."""
+
+    from db.db_context import create_db_session
+    from task_manager.models import TaskEntity
+
+    async with create_db_session() as session:
+        task = await session.get(TaskEntity, task_id)
+    if task is None:
+        raise RuntimeError("The current grounded-answer task is unavailable.")
+    if task.tenant_id != tenant_id:
+        raise RuntimeError("The current grounded-answer task belongs to another tenant.")
+    if task.task_type != GROUNDED_ANSWER_TASK_TYPE:
+        raise RuntimeError("The current task is not a grounded-answer task.")
+    try:
+        return GroundedAnswerTaskInput.model_validate(task.input_payload_json or {})
+    except ValueError as exc:
+        raise RuntimeError("The current grounded-answer task input is invalid.") from exc
+
+
+def _grounded_review_result_tool_factory(base_url: str, token: str):
+    """Create a review-result tool bound to its TaskManager task input."""
+
+    def create_bundle(config: Any):
+        from llama_index.core.tools.function_tool import FunctionTool
+        from tool.bundle import ToolBundle
+
+        publisher = config.config.get("artifact_publisher")
+
+        async def get_review_result(
+            review_id: str | None = None,
+            document_id: str | None = None,
+        ) -> str:
+            # Model-supplied identifiers are intentionally ignored.  Opaque
+            # business IDs must always come from the trusted task envelope.
+            del review_id, document_id
+            task_id = str(getattr(publisher, "task_id", "") or "").strip()
+            if not task_id:
+                raise RuntimeError("The current grounded-answer task context is unavailable.")
+            task_input = await _load_bound_grounded_answer_input(
+                task_id=task_id,
+                tenant_id=config.tenant_id,
+            )
+            headers = {
+                "X-Internal-Service": "aituge-framework",
+                "X-Internal-Token": token,
+                "X-Tenant-ID": config.tenant_id,
+                "X-Request-Id": (
+                    f"contract-grounded-tool:{task_id}:"
+                    f"{getattr(publisher, 'stage_run_id', 'unknown')}"
+                ),
+            }
+            try:
+                async with httpx.AsyncClient(base_url=base_url, timeout=30) as client:
+                    response = await client.post(
+                        "/v1/internal/contract-tools/review-result",
+                        headers=headers,
+                        json={
+                            "review_id": task_input.review_id,
+                            "document_id": task_input.document_id,
+                        },
+                    )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = exc.response.text[:500].strip()
+                suffix = f": {detail}" if detail else ""
+                raise RuntimeError(
+                    "contract_get_review_result failed with HTTP "
+                    f"{exc.response.status_code}{suffix}"
+                ) from exc
+            except httpx.RequestError as exc:
+                raise RuntimeError(
+                    "contract_get_review_result service is unavailable "
+                    f"({exc.__class__.__name__})."
+                ) from exc
+            if len(response.text) > 500_000:
+                raise RuntimeError(
+                    "contract_get_review_result response exceeds the configured size limit."
+                )
+            try:
+                result = response.json()
+            except ValueError as exc:
+                raise RuntimeError(
+                    "contract_get_review_result returned an invalid JSON response."
+                ) from exc
+            return json.dumps(result, ensure_ascii=False)
+
+        tool = FunctionTool.from_defaults(
+            async_fn=get_review_result,
+            name="contract_get_review_result",
+            description=(
+                "Read the completed, validated review result for the current grounded-answer "
+                "task. Runtime binds the authoritative review and document identifiers; any "
+                "identifier arguments supplied by the model are ignored."
+            ),
+            fn_schema=ContractReviewResultToolInput,
+            return_direct=False,
+        )
+        return ToolBundle.from_tools([tool])
+
+    return create_bundle
+
+
 async def register(registry, settings) -> None:
     base_url = settings.require("CONTRACT_SERVICE_BASE_URL").rstrip("/")
     callback_token = settings.require("CONTRACT_RESULT_SINK_INTERNAL_TOKEN")
@@ -1319,12 +1439,6 @@ async def register(registry, settings) -> None:
          ContractClauseContextToolInput, "Read one contract block with adjacent clause context."),
         ("contract_get_ir", "/v1/internal/contract-tools/ir", ContractIrToolInput,
          "Read the current typed Contract IR for review."),
-        (
-            "contract_get_review_result",
-            "/v1/internal/contract-tools/review-result",
-            ContractDocumentToolInput,
-            "Read the completed, validated contract review result and source evidences.",
-        ),
     ):
         registry.register_http_tool(
             tool_name=tool_name,
@@ -1339,6 +1453,18 @@ async def register(registry, settings) -> None:
             timeout_seconds=30,
             max_response_chars=500_000,
         )
+
+    registry.register_local_tool(
+        tool_name="contract_get_review_result",
+        provider="contract_task_bound",
+        display_name="Contract Get Review Result",
+        description=(
+            "Read the completed, validated contract review result and source evidences for the "
+            "current grounded-answer task."
+        ),
+        factory=_grounded_review_result_tool_factory(base_url, callback_token),
+        llm_tool_names=["contract_get_review_result"],
+    )
 
     skill_names = [
         "contract-party-resolution",
