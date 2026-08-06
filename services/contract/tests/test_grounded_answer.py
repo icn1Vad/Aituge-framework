@@ -135,19 +135,21 @@ def test_backfills_missing_marker_only_for_locatable_evidence() -> None:
     assert [reference.reference_id for reference in result.references] == ["docref-ev-019"]
 
 
-def test_rejects_missing_marker_for_non_locatable_evidence() -> None:
+def test_downgrades_missing_marker_for_absence_evidence_to_plain_text() -> None:
     draft = GroundedAnswerDraft(
         mode="REPORT",
         content_markdown="未约定争议解决。",
         citations=[{"evidence_id": "ev-019", "label": "争议解决"}],
     )
 
-    with pytest.raises(GroundedAnswerMaterializationError, match="non-locatable"):
-        materialize_grounded_answer(
-            task_input=_task_input(),
-            draft=draft,
-            review_result=_review_result(evidence_type="ABSENCE"),
-        )
+    result = materialize_grounded_answer(
+        task_input=_task_input(),
+        draft=draft,
+        review_result=_review_result(evidence_type="ABSENCE"),
+    )
+
+    assert result.content_markdown == "未约定争议解决。"
+    assert result.references == []
 
 
 def test_downgrades_absence_evidence_to_plain_text() -> None:

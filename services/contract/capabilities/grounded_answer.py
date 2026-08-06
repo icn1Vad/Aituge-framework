@@ -101,6 +101,28 @@ class GroundedAnswerMaterializationError(ValueError):
     """Raised when a model-authored citation cannot be grounded deterministically."""
 
 
+def _is_absence_evidence(evidence: dict[str, Any] | None) -> bool:
+    """Return whether evidence records a verified absence without a source anchor."""
+
+    return isinstance(evidence, dict) and evidence.get("evidence_type") == "ABSENCE"
+
+
+def _strip_declared_absence_docrefs(
+    *,
+    content_markdown: str,
+    absence_citation_ids: set[str],
+) -> str:
+    """Keep absence findings as prose instead of emitting non-locatable docrefs."""
+
+    def replace(match: re.Match[str]) -> str:
+        evidence_id = match.group("evidence_id")
+        if evidence_id in absence_citation_ids:
+            return match.group("label")
+        return match.group(0)
+
+    return DOCREF_PATTERN.sub(replace, content_markdown)
+
+
 def _can_backfill_docref(
     *,
     evidence_id: str,
@@ -212,9 +234,23 @@ def materialize_grounded_answer(
         if isinstance(item, dict) and isinstance(item.get("evidence_id"), str)
     }
 
-    content_markdown = _backfill_missing_docrefs(
+    absence_citation_ids = {
+        citation.evidence_id
+        for citation in draft.citations
+        if _is_absence_evidence(evidence_by_id.get(citation.evidence_id))
+    }
+    locatable_citations = [
+        citation
+        for citation in draft.citations
+        if citation.evidence_id not in absence_citation_ids
+    ]
+    content_markdown = _strip_declared_absence_docrefs(
         content_markdown=draft.content_markdown,
-        citations=draft.citations,
+        absence_citation_ids=absence_citation_ids,
+    )
+    content_markdown = _backfill_missing_docrefs(
+        content_markdown=content_markdown,
+        citations=locatable_citations,
         evidence_by_id=evidence_by_id,
         finding_ids=finding_ids,
     )
@@ -223,7 +259,7 @@ def materialize_grounded_answer(
         for match in DOCREF_PATTERN.finditer(content_markdown)
     ]
     marker_ids = {item[0] for item in marker_pairs}
-    citation_ids = {item.evidence_id for item in draft.citations}
+    citation_ids = {item.evidence_id for item in locatable_citations}
     if marker_ids != citation_ids:
         missing = sorted(citation_ids - marker_ids)
         dangling = sorted(marker_ids - citation_ids)
