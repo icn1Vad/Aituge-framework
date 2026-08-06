@@ -87,6 +87,7 @@ class ContractTaskInput(StrictModel):
     attempt_no: int = Field(ge=1, le=2)
     business_task_id: str = Field(min_length=1, max_length=160)
     contract_version_id: str = Field(min_length=1, max_length=160)
+    party_resolution_id: str | None = Field(default=None, min_length=1, max_length=160)
     document_id: str = Field(min_length=1, max_length=160)
     perspective: Literal["PARTY_A", "PARTY_B"]
     our_party_name: str | None = Field(default=None, max_length=500)
@@ -598,6 +599,32 @@ def _direct_party_resolution_handler(base_url: str, token: str):
                 retryable=False,
             )
         parsed = ParseContractStageResult.model_validate(parse_artifact.content_json)
+        if task_input.confirmed_party_a_name is not None:
+            party_a_name = task_input.confirmed_party_a_name
+            party_b_name = task_input.confirmed_party_b_name
+            assert party_b_name is not None
+            our_party = party_a_name if task_input.perspective == "PARTY_A" else party_b_name
+            counterparty = party_b_name if task_input.perspective == "PARTY_A" else party_a_name
+            result = PartyResolutionStageResult(
+                result_type="PARTY_RESOLUTION_STAGE_V1",
+                contract_type="AUTO",
+                party_a={"name": party_a_name},
+                party_b={"name": party_b_name},
+                perspective=task_input.perspective,
+                our_party=our_party,
+                counterparty=counterparty,
+            )
+            duration_ms = max(0, round((time.perf_counter() - started_at) * 1000))
+            return StageServiceResult(
+                output=result.model_dump(mode="json"),
+                summary=f"Reused confirmed contract parties deterministically in {duration_ms} ms.",
+                metadata={
+                    "party_resolution_engine": "confirmed-party-snapshot-v1",
+                    "party_resolution_id": task_input.party_resolution_id,
+                    "duration_ms": duration_ms,
+                    "model_call_count": 0,
+                },
+            )
         try:
             async with httpx.AsyncClient(base_url=base_url, timeout=2.5) as client:
                 response = await client.post(
@@ -1608,12 +1635,6 @@ async def register(registry, settings) -> None:
         output_model=GroundedAnswerResult,
     )
 
-    review_tools = [
-        "contract_get_document",
-        "contract_get_blocks",
-        "contract_get_clause_context",
-        "contract_get_ir",
-    ]
     review_party_resolution_stages: list[dict[str, Any]] = [
         {
             "stage_id": "parse_contract",
@@ -1629,22 +1650,15 @@ async def register(registry, settings) -> None:
         },
         {
             "stage_id": "resolve_parties",
-            "name": "Resolve contract parties and selected perspective",
-            "stage_type": "agent",
+            "name": "Reuse confirmed contract parties and selected perspective",
+            "stage_type": "finalizer",
             "depends_on": ["parse_contract"],
             "input_model": PipelineContextInput,
             "output_model": PartyResolutionStageResult,
             "artifact_type": "contract_party_resolution",
-            "agent_id": AGENT_ID,
-            "skill_package": "contract-party-resolution-package",
-            "primary_skill": "contract-party-resolution",
-            "tools": review_tools,
-            "output_policy": "repair_once",
-            "timeout_seconds": 180,
-            "retry_policy": {
-                "max_attempts": 2,
-                "retry_on": ["invalid_output", "timeout", "required_result_sink_failed"],
-            },
+            "service_handler": "contract_party_resolution_direct_v1",
+            "timeout_seconds": 3,
+            "retry_policy": {"max_attempts": 1, "retry_on": []},
         },
     ]
     party_resolution_stages: list[dict[str, Any]] = [

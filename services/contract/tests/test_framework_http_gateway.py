@@ -72,6 +72,7 @@ def test_create_execution_uses_scoped_headers_and_frozen_idempotency_keys() -> N
                 "attempt_no": 2,
                 "business_task_id": "business-1",
                 "contract_version_id": "version-1",
+                "party_resolution_id": None,
                 "document_id": "document-1",
                 "perspective": "PARTY_B",
                 "our_party_name": "乙方单位",

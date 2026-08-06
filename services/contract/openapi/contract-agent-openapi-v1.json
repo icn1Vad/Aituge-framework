@@ -1665,6 +1665,19 @@
             ],
             "title": "Our Party Name"
           },
+          "party_resolution_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Party Resolution Id"
+          },
           "perspective": {
             "enum": [
               "PARTY_A",

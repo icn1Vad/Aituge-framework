@@ -366,6 +366,7 @@ class FrameworkCallbackRepository:
             task.schema_version == review["schema_version"]
             and task.business_task_id == review["business_task_id"]
             and task.contract_version_id == review["contract_version_id"]
+            and task.party_resolution_id == review["party_resolution_id"]
             and task.document_id == review["document_id"]
             and task.perspective == review["perspective"]
             and normalize_party_name(task.our_party_name) == review["our_party_name"]

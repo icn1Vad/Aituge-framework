@@ -111,6 +111,7 @@ class HealthData(StrictModel):
 class CreateReviewRequest(StrictModel):
     business_task_id: Identifier
     contract_version_id: Identifier
+    party_resolution_id: Identifier | None = None
     model_pack_id: Identifier | None = None
     perspective: Perspective
     our_party_name: Annotated[str, StringConstraints(max_length=500)] | None = None

@@ -294,6 +294,7 @@ class FrameworkTaskInput(StrictModel):
     attempt_no: int = Field(ge=1, le=2)
     business_task_id: str = Field(min_length=1, max_length=160)
     contract_version_id: str = Field(min_length=1, max_length=160)
+    party_resolution_id: str | None = Field(default=None, min_length=1, max_length=160)
     document_id: str = Field(min_length=1, max_length=160)
     perspective: Literal["PARTY_A", "PARTY_B"]
     our_party_name: str | None = Field(default=None, max_length=500)

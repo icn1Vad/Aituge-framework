@@ -43,12 +43,13 @@ def test_request_fingerprint_matches_golden_vector() -> None:
         '"contract_type":"AUTO",'
         '"contract_version_id":"20001",'
         '"file_sha256":"sha256:0000000000000000000000000000000000000000000000000000000000000000",'
-        '"model_pack_id":"api-rerank",'
-        '"our_party_name":"某某 单位","perspective":"PARTY_B",'
+            '"model_pack_id":"api-rerank",'
+            '"our_party_name":"某某 单位","party_resolution_id":null,'
+            '"perspective":"PARTY_B",'
         '"review_attitude":"NEUTRAL","schema_version":"1.0",'
         '"tenant_id":"1","user_id":"1"}'
     )
-    assert fingerprint == "sha256:45975e05fbdfc0d2a18d9e1bd154b62fae199525d0aafbb4c75044e9d5ba8a8e"
+    assert fingerprint == "sha256:d1bbf16b695873d9a641706503febde8723bff83ba3fee8eed5114518ffca3dc"
 
 
 def test_party_resolution_fingerprint_has_no_perspective() -> None:

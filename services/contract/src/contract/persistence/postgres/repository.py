@@ -117,12 +117,12 @@ class ContractRepository:
                 """
                 INSERT INTO contract_review_run (
                   id, tenant_id, user_id, business_task_id, contract_version_id,
-                  model_pack_id, document_id, idempotency_key, request_id, request_fingerprint,
+                  party_resolution_id, model_pack_id, document_id, idempotency_key, request_id, request_fingerprint,
                   file_sha256, perspective, our_party_name, contract_type,
                   review_attitude, execution_mode, confirmed_party_a_name,
                   confirmed_party_b_name, status, schema_version
                 ) VALUES (
-                  %s, %s, %s, %s, %s, %s,
+                  %s, %s, %s, %s, %s, %s, %s,
                   %s, %s, %s, %s,
                   %s, %s, %s, %s,
                   %s, %s, %s, %s, 'CREATED', %s
@@ -136,6 +136,7 @@ class ContractRepository:
                     value.user_id,
                     value.business_task_id,
                     value.contract_version_id,
+                    value.party_resolution_id,
                     value.model_pack_id,
                     value.document_id,
                     value.idempotency_key,

@@ -115,6 +115,7 @@ class FrameworkHttpGateway(FrameworkGateway):
                 "attempt_no": request.attempt_no,
                 "business_task_id": request.business_task_id,
                 "contract_version_id": request.contract_version_id,
+                "party_resolution_id": request.party_resolution_id,
                 "document_id": request.document_id,
                 "perspective": request.perspective,
                 "our_party_name": request.our_party_name,

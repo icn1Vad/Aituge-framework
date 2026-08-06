@@ -26,6 +26,7 @@ class FrameworkExecutionRequest:
     schema_version: str
     model_pack_id: str = "api-rerank"
     execution_mode: str = "FULL_REVIEW"
+    party_resolution_id: str | None = None
     confirmed_party_a_name: str | None = None
     confirmed_party_b_name: str | None = None
 
@@ -47,6 +48,7 @@ class FrameworkExecutionRequest:
             attempt_no=self.attempt_no,
             business_task_id=self.business_task_id,
             contract_version_id=self.contract_version_id,
+            party_resolution_id=self.party_resolution_id,
             document_id=self.document_id,
             perspective=self.perspective,
             our_party_name=self.our_party_name,

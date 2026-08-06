@@ -40,6 +40,7 @@ class AttemptReservation:
     expected_version: int
     business_task_id: str
     contract_version_id: str
+    party_resolution_id: str | None
     model_pack_id: str
     document_id: str
     perspective: str
@@ -262,6 +263,7 @@ class ReviewStateRepository:
                   review.active_attempt_no,
                   review.business_task_id,
                   review.contract_version_id,
+                  review.party_resolution_id,
                   review.model_pack_id,
                   review.document_id,
                   review.perspective,
@@ -330,6 +332,7 @@ class ReviewStateRepository:
                             "version": row["review_version"],
                             "business_task_id": row["business_task_id"],
                             "contract_version_id": row["contract_version_id"],
+                            "party_resolution_id": row["party_resolution_id"],
                             "model_pack_id": row["model_pack_id"],
                             "document_id": row["document_id"],
                             "perspective": row["perspective"],
@@ -1215,6 +1218,7 @@ class ReviewStateRepository:
             expected_version=review["version"],
             business_task_id=review["business_task_id"],
             contract_version_id=review["contract_version_id"],
+            party_resolution_id=review["party_resolution_id"],
             model_pack_id=review["model_pack_id"],
             document_id=review["document_id"],
             perspective=review["perspective"],
@@ -1242,6 +1246,7 @@ class ReviewStateRepository:
             attempt_no=attempt_no,
             business_task_id=review["business_task_id"],
             contract_version_id=review["contract_version_id"],
+            party_resolution_id=review["party_resolution_id"],
             document_id=review["document_id"],
             perspective=review["perspective"],
             our_party_name=review["our_party_name"],

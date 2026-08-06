@@ -148,8 +148,11 @@ def test_contract_capability_registers_frozen_pipeline_and_internal_tools() -> N
         "contract_party_resolution_direct_v1"
     )
     assert party_stages["resolve_parties"]["timeout_seconds"] == 3
-    assert stages["resolve_parties"]["stage_type"] == "agent"
-    assert stages["resolve_parties"]["timeout_seconds"] == 180
+    assert stages["resolve_parties"]["stage_type"] == "finalizer"
+    assert stages["resolve_parties"]["service_handler"] == (
+        "contract_party_resolution_direct_v1"
+    )
+    assert stages["resolve_parties"]["timeout_seconds"] == 3
 
 
 def test_legacy_ir_execution_path_is_removed() -> None:
@@ -602,6 +605,61 @@ def test_direct_party_resolution_uses_explicit_labels_without_model(monkeypatch)
     assert result.metadata["party_resolution_engine"] == (
         "deterministic-explicit-labels-v1"
     )
+
+
+def test_formal_review_reuses_confirmed_parties_without_http_or_model(monkeypatch) -> None:
+    class ForbiddenClient:
+        def __init__(self, **_kwargs):
+            raise AssertionError("confirmed party reuse must not call contract tools")
+
+    monkeypatch.setattr(capability.httpx, "AsyncClient", ForbiddenClient)
+    context = SimpleNamespace(
+        task=SimpleNamespace(
+            input_payload_json={
+                "schema_version": "1.0",
+                "review_id": "review-1",
+                "attempt_no": 1,
+                "business_task_id": "task-1",
+                "contract_version_id": "version-1",
+                "party_resolution_id": "resolution-1",
+                "document_id": "document-1",
+                "perspective": "PARTY_B",
+                "our_party_name": "Party B Ltd.",
+                "execution_mode": "FULL_REVIEW",
+                "confirmed_party_a_name": "Party A Ltd.",
+                "confirmed_party_b_name": "Party B Ltd.",
+                "contract_type": "AUTO",
+                "review_attitude": "NEUTRAL",
+            }
+        ),
+        run=SimpleNamespace(id="run-1"),
+        stage=SimpleNamespace(stage_id="resolve_parties"),
+        artifacts={
+            "parse_contract": SimpleNamespace(
+                content_json={
+                    "result_type": "PARSE_CONTRACT_STAGE_V1",
+                    "document_id": "document-1",
+                    "generation_id": "generation-1",
+                    "block_count": 1,
+                    "ir_hash": "sha256:" + "0" * 64,
+                }
+            )
+        },
+    )
+
+    result = asyncio.run(
+        capability._direct_party_resolution_handler(
+            "http://ai-contract:18200", "secret"
+        )(context)
+    )
+
+    assert result.output["party_a"] == {"name": "Party A Ltd."}
+    assert result.output["party_b"] == {"name": "Party B Ltd."}
+    assert result.output["our_party"] == "Party B Ltd."
+    assert result.output["counterparty"] == "Party A Ltd."
+    assert result.metadata["party_resolution_id"] == "resolution-1"
+    assert result.metadata["party_resolution_engine"] == "confirmed-party-snapshot-v1"
+    assert result.metadata["model_call_count"] == 0
 
 
 def test_unique_party_name_removes_trailing_table_separator() -> None:
