@@ -907,7 +907,7 @@ class FrameworkCallbackRepository:
         missing = [
             name
             for name in (party_a, party_b)
-            if not any(name in row["text"] for row in rows)
+            if not any(FrameworkCallbackRepository._party_source_span(name, row["text"]) for row in rows)
         ]
         if missing:
             raise FrameworkCallbackRepository._party_unresolved(
@@ -1085,10 +1085,10 @@ class FrameworkCallbackRepository:
         generation_id: str,
     ) -> dict[str, Any]:
         for row in rows:
-            start = row["text"].find(name)
-            if start < 0:
+            span = FrameworkCallbackRepository._party_source_span(name, row["text"])
+            if span is None:
                 continue
-            end = start + len(name)
+            start, end = span
             digest = hashlib.sha256(
                 f"{generation_id}\0{role}\0{row['block_id']}\0{start}\0{end}".encode("utf-8")
             ).hexdigest()[:32]
@@ -1171,6 +1171,30 @@ class FrameworkCallbackRepository:
         elif isinstance(value, list):
             for item in value:
                 yield from FrameworkCallbackRepository._iter_source_anchors(item)
+
+    @staticmethod
+    def _party_source_span(name: str, source_text: str) -> tuple[int, int] | None:
+        """Locate a party name while preserving offsets into the original contract text."""
+        direct_start = source_text.find(name)
+        if direct_start >= 0:
+            return direct_start, direct_start + len(name)
+
+        normalized_name = unicodedata.normalize("NFKC", name)
+        normalized_parts: list[str] = []
+        source_starts: list[int] = []
+        source_ends: list[int] = []
+        for index, character in enumerate(source_text):
+            normalized_character = unicodedata.normalize("NFKC", character)
+            normalized_parts.append(normalized_character)
+            source_starts.extend(index for _ in normalized_character)
+            source_ends.extend(index + 1 for _ in normalized_character)
+
+        normalized_source = "".join(normalized_parts)
+        normalized_start = normalized_source.find(normalized_name)
+        if normalized_start < 0 or not normalized_name:
+            return None
+        normalized_end = normalized_start + len(normalized_name)
+        return source_starts[normalized_start], source_ends[normalized_end - 1]
 
     @staticmethod
     def _normalized_text(value: str) -> str:
