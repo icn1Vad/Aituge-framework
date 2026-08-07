@@ -364,15 +364,23 @@ class SnapshotStore:
     def watermark(row: QuerySnapshotEntity) -> SourceWatermark:
         return SourceWatermark(
             query_snapshot_id=row.query_snapshot_id,
-            snapshot_to=row.snapshot_to,
-            expires_at=row.expires_at,
+            snapshot_to=_aware_utc(row.snapshot_to),
+            expires_at=_aware_utc(row.expires_at),
             snapshot_mode=row.snapshot_mode,
             high_watermark_handle=row.handle,
-            max_ingested_at=row.max_ingested_at,
+            max_ingested_at=(
+                _aware_utc(row.max_ingested_at) if row.max_ingested_at else None
+            ),
             max_sequence=row.max_sequence,
             max_event_id=row.max_event_id,
-            data_through=row.max_ingested_at,
+            data_through=(
+                _aware_utc(row.max_ingested_at) if row.max_ingested_at else None
+            ),
         )
+
+
+def _aware_utc(value: datetime) -> datetime:
+    return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 def _validate_snapshot_input(

@@ -484,14 +484,16 @@ def _watermark(page: SnapshotPage[Any]) -> SourceWatermark:
     snapshot = page.snapshot
     return SourceWatermark(
         query_snapshot_id=snapshot.query_snapshot_id,
-        snapshot_to=snapshot.snapshot_to,
-        expires_at=snapshot.expires_at,
+        snapshot_to=_aware(snapshot.snapshot_to),
+        expires_at=_aware(snapshot.expires_at),
         snapshot_mode=snapshot.snapshot_mode,
-        max_ingested_at=snapshot.max_ingested_at,
+        max_ingested_at=(
+            _aware(snapshot.max_ingested_at) if snapshot.max_ingested_at else None
+        ),
         max_event_id=snapshot.max_event_id,
         max_sequence=snapshot.max_sequence,
         high_watermark_handle=snapshot.high_watermark_handle,
-        data_through=snapshot.data_through,
+        data_through=_aware(snapshot.data_through) if snapshot.data_through else None,
     )
 
 
