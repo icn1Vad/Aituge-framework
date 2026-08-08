@@ -21,13 +21,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._:@-]{1,128}$")
 _CORRELATION_HEADERS = {
-    "x-tenant-id": "tenant.id",
-    "x-task-id": "task.id",
-    "x-run-id": "run.id",
-    "x-review-id": "review.id",
-    "x-contract-review-id": "review.id",
-    "x-business-task-id": "task.id",
-    "x-request-id": "request.id",
+    "x-tenant-id": "tenant_id",
+    "x-task-id": "task_id",
+    "x-run-id": "run_id",
+    "x-review-id": "review_id",
+    "x-contract-review-id": "review_id",
+    "x-business-task-id": "task_id",
+    "x-request-id": "request_id",
 }
 _TRACER = trace.get_tracer("aituge.contract")
 _CONFIGURED = False

@@ -17,13 +17,13 @@ from extensions.trace.context import AGENTSCOPE_REQUEST_ID_KEY, get_request_id, 
 ENABLE_TRACE_CONTEXT_DEBUG = os.getenv("ENABLE_TRACE_CONTEXT_DEBUG", "false").lower() in {"true", "1", "yes", "y"}
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._:@-]{1,128}$")
 _CORRELATION_HEADERS = {
-    "x-tenant-id": "tenant.id",
-    "x-task-id": "task.id",
-    "x-run-id": "run.id",
-    "x-review-id": "review.id",
-    "x-contract-review-id": "review.id",
-    "x-business-task-id": "task.id",
-    "x-request-id": "request.id",
+    "x-tenant-id": "tenant_id",
+    "x-task-id": "task_id",
+    "x-run-id": "run_id",
+    "x-review-id": "review_id",
+    "x-contract-review-id": "review_id",
+    "x-business-task-id": "task_id",
+    "x-request-id": "request_id",
 }
 
 
@@ -67,7 +67,7 @@ class TraceContextMiddleware(BaseHTTPMiddleware):
         span.set_attribute("http.request.method", request.method)
         request_id = get_request_id()
         if request_id and _SAFE_ID.fullmatch(request_id):
-            span.set_attribute("request.id", request_id)
+            span.set_attribute("request_id", request_id)
         for header, attribute in _CORRELATION_HEADERS.items():
             value = request.headers.get(header)
             if value and _SAFE_ID.fullmatch(value):
