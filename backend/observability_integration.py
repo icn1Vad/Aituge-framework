@@ -171,10 +171,14 @@ class SharedModelObservabilityAuthorizer:
             scope_key=context.scope_fingerprint,
             environment=context.environment,
             permission_claims=tuple(sorted(context.permissions)),
-            scope_claims=(
-                context.tenant_scope,
-                context.audit_action_id or "",
-                context.access_session_id or "",
+            scope_claims=tuple(
+                value
+                for value in (
+                    context.tenant_scope,
+                    context.audit_action_id,
+                    context.access_session_id,
+                )
+                if value
             ),
             all_tenants=all_tenants,
         )
