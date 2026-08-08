@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from xml.etree import ElementTree
 
 from pypdf import PdfWriter
 
+import contract_ocr.service as service_module
 from contract_ocr.service import ContractOcrService, OcrSettings
 
 
@@ -106,3 +109,38 @@ def test_docx_does_not_force_source_pdf_page_breaks() -> None:
         for node in document_xml.findall(".//w:body/w:p", namespaces)
     ]
     assert paragraph_text == ["Section nine", "The parties shall negotiate to resolve disputes."]
+
+
+class NativeTextEngine:
+    initialized = False
+
+    def parse_page(self, _: Path):
+        raise AssertionError("native text PDF must not initialize or invoke PaddleOCR")
+
+
+class NativeTextPage:
+    mediabox = SimpleNamespace(width=595, height=842)
+
+    def extract_text(self) -> str:
+        return """甲方：测试甲公司
+乙方：测试乙公司
+合同金额：100元"""
+
+
+def test_native_text_pdf_becomes_docx_without_paddle(monkeypatch) -> None:
+    reader = SimpleNamespace(pages=[NativeTextPage()])
+    monkeypatch.setattr(service_module, "_open_pdf", lambda _: reader)
+    service = ContractOcrService(OcrSettings(min_text_chars_per_page=4), engine=NativeTextEngine())
+
+    result = service.convert_pdf("native.pdf", b"%PDF-native-test")
+
+    assert result.inspection.classification == "NATIVE_TEXT"
+    with zipfile.ZipFile(io.BytesIO(result.archive)) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        contract_docx = archive.read("contract.docx")
+    assert manifest["engine"]["name"] == "PDF_TEXT_LAYER"
+    assert manifest["pages_requiring_ocr"] == []
+    with zipfile.ZipFile(io.BytesIO(contract_docx)) as document_archive:
+        document_xml = document_archive.read("word/document.xml")
+    assert "测试甲公司".encode("utf-8") in document_xml
+    assert "测试乙公司".encode("utf-8") in document_xml

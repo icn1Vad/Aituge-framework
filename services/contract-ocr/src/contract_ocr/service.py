@@ -203,26 +203,28 @@ class ContractOcrService:
     def convert_pdf(self, file_name: str, content: bytes) -> OcrConversion:
         inspection = self.inspect_pdf(content)
         if inspection.classification == "NATIVE_TEXT":
-            raise ContractOcrError(
-                "OCR_NOT_REQUIRED", "该PDF具有完整文字层，无需OCR转换", status_code=409
-            )
-        with tempfile.TemporaryDirectory(prefix="contract-ocr-") as directory:
-            workdir = Path(directory)
-            source_path = workdir / "source.pdf"
-            source_path.write_bytes(content)
-            pages = self._recognize_pages(source_path, inspection)
-            docx = _build_docx(pages)
-            manifest = {
-                "schema_version": "1.0",
-                "source_file_name": file_name,
-                "source_sha256": inspection.source_sha256,
-                "classification": inspection.classification,
-                "page_count": inspection.page_count,
-                "pages_requiring_ocr": list(inspection.pages_requiring_ocr),
-                "engine": {"name": "PP-StructureV3", "paddleocr": _package_version("paddleocr")},
-                "pages": pages,
-            }
-            archive = _build_archive(docx, manifest)
+            pages = _extract_text_layer_pages(content, inspection)
+            engine = {"name": "PDF_TEXT_LAYER", "pypdf": _package_version("pypdf")}
+        else:
+            with tempfile.TemporaryDirectory(prefix="contract-ocr-") as directory:
+                workdir = Path(directory)
+                source_path = workdir / "source.pdf"
+                source_path.write_bytes(content)
+                pages = self._recognize_pages(source_path, inspection)
+            engine = {"name": "PP-StructureV3", "paddleocr": _package_version("paddleocr")}
+
+        docx = _build_docx(pages)
+        manifest = {
+            "schema_version": "1.0",
+            "source_file_name": file_name,
+            "source_sha256": inspection.source_sha256,
+            "classification": inspection.classification,
+            "page_count": inspection.page_count,
+            "pages_requiring_ocr": list(inspection.pages_requiring_ocr),
+            "engine": engine,
+            "pages": pages,
+        }
+        archive = _build_archive(docx, manifest)
         if len(archive) > self.settings.max_output_bytes:
             raise ContractOcrError("OCR_OUTPUT_TOO_LARGE", "OCR转换结果超过大小限制", status_code=413)
         return OcrConversion(inspection=inspection, archive=archive)
@@ -325,6 +327,51 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return str(value)
+
+
+def _extract_text_layer_pages(
+    content: bytes,
+    inspection: PdfInspection,
+) -> list[dict[str, Any]]:
+    reader = _open_pdf(content)
+    pages: list[dict[str, Any]] = []
+    for page_number, page in enumerate(reader.pages, start=1):
+        try:
+            extracted = page.extract_text() or ""
+        except Exception as exc:
+            raise ContractOcrError(
+                "PDF_TEXT_EXTRACTION_FAILED",
+                f"PDF第{page_number}页文本层读取失败",
+                status_code=422,
+            ) from exc
+        lines = [_clean_text(line) for line in extracted.splitlines()]
+        blocks = [
+            {
+                "id": f"text-{page_number}-{index}",
+                "order": index,
+                "label": "text",
+                "text": line,
+                "bbox": [],
+            }
+            for index, line in enumerate((line for line in lines if line), start=1)
+        ]
+        if not blocks:
+            raise ContractOcrError(
+                "PDF_TEXT_EXTRACTION_FAILED",
+                f"PDF第{page_number}页没有可转换的文字层",
+                status_code=422,
+            )
+        pages.append(
+            {
+                "page_number": page_number,
+                "page_count": inspection.page_count,
+                "width": float(page.mediabox.width),
+                "height": float(page.mediabox.height),
+                "blocks": blocks,
+                "tables": [],
+            }
+        )
+    return pages
 
 
 def _manifest_page(payload: Mapping[str, Any], page_number: int, page_count: int) -> dict[str, Any]:
