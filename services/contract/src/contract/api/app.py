@@ -80,6 +80,7 @@ from services.contract.capabilities.revision_drafts import (
     default_cache,
 )
 from contract.revision_llm_gateway import FrameworkRevisionLlmRuntime
+from contract.observability import configure_tracing_from_env
 
 
 ALLOWED_FILE_TYPES = {
@@ -141,6 +142,7 @@ def create_app(
                 await dispatcher_task
 
     app = FastAPI(title="Contract Agent", version="1.0.0", lifespan=lifespan)
+    configure_tracing_from_env(app, default_service_name="carpertest-contract")
     app.state.settings = app_settings
     app.state.contract_service = service
     app.state.contract_internal_service = internal_service

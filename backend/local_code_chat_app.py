@@ -25,6 +25,7 @@ from backend.observability_integration import (
     install_observability_openapi_contract,
 )
 from capability_mount import mount_capabilities_from_env
+from extensions.trace.runtime import configure_tracing_from_env
 from scheduling.agent_registry import ensure_default_agent_profiles
 from scheduling.api import create_scheduling_router
 from scheduling.scheduler import SchedulingRuntimeOptions
@@ -171,6 +172,7 @@ def create_app() -> FastAPI:
             await observability_runtime.stop()
 
     app = create_simple_chat_app(tool_provider=tool_provider, lifespan=lifespan)
+    configure_tracing_from_env(app, default_service_name="carpertest-framework")
     scheduling_options = SchedulingRuntimeOptions(
         local_python_artifact_dir=LOCAL_PYTHON_ARTIFACT_DIR,
         local_python_work_dir=LOCAL_PYTHON_WORK_DIR,

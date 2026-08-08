@@ -16,6 +16,7 @@ from contract.application.framework_gateway import (
     FrameworkUnavailableError,
 )
 from contract.config import Settings
+from contract.observability import contract_span, inject_trace_headers
 
 
 TASK_TYPE = "contract.review.run"
@@ -98,7 +99,7 @@ class FrameworkHttpGateway(FrameworkGateway):
         self.transport = transport
 
     def create_execution(self, request: FrameworkExecutionRequest) -> FrameworkRunSnapshot:
-        headers = self._headers(request.tenant_id, request.user_id)
+        headers = self._headers(request.tenant_id, request.user_id, review_id=request.review_id, task_id=request.business_task_id)
         task_type = self._task_type(request)
         title = (
             f"Contract party resolution {request.contract_version_id}"
@@ -170,7 +171,7 @@ class FrameworkHttpGateway(FrameworkGateway):
         data = self._request_json(
             "GET",
             f"/task-manager/runs/{run_id}",
-            headers=self._headers(tenant_id, user_id),
+            headers=self._headers(tenant_id, user_id, task_id=task_id, run_id=run_id),
         )
         record = self._validate(_RunEnvelope, data, "run status response").run
         if record.task_id != task_id or record.id != run_id:
@@ -185,7 +186,7 @@ class FrameworkHttpGateway(FrameworkGateway):
         tenant_id: str,
         user_id: str,
     ) -> FrameworkRunSnapshot:
-        headers = self._headers(tenant_id, user_id)
+        headers = self._headers(tenant_id, user_id, task_id=task_id, run_id=run_id)
         data = self._request_json(
             "POST",
             f"/task-manager/runs/{run_id}/cancel",
@@ -221,12 +222,14 @@ class FrameworkHttpGateway(FrameworkGateway):
             pool=self.connect_timeout,
         )
         try:
-            with httpx.Client(
-                base_url=self.base_url,
-                timeout=timeout,
-                transport=self.transport,
-            ) as client:
-                response = client.request(method, path, headers=headers, json=json)
+            with contract_span("contract.framework.request", {"http.request.method": method, "peer.service": "carpertest-framework"}):
+                inject_trace_headers(headers)
+                with httpx.Client(
+                    base_url=self.base_url,
+                    timeout=timeout,
+                    transport=self.transport,
+                ) as client:
+                    response = client.request(method, path, headers=headers, json=json)
         except httpx.TimeoutException as exc:
             raise FrameworkTimeoutError() from exc
         except httpx.RequestError as exc:
@@ -310,10 +313,26 @@ class FrameworkHttpGateway(FrameworkGateway):
         )
 
     @staticmethod
-    def _headers(tenant_id: str, user_id: str) -> dict[str, str]:
-        return {
+    def _headers(
+        tenant_id: str,
+        user_id: str,
+        *,
+        review_id: str | None = None,
+        task_id: str | None = None,
+        run_id: str | None = None,
+    ) -> dict[str, str]:
+        headers = {
             "X-Internal-Service": "ai-contract",
             "X-Tenant-Id": tenant_id,
             "X-User-Id": user_id,
             "X-Roles": "service",
         }
+        if review_id:
+            headers["X-Contract-Review-Id"] = review_id
+            headers["X-Review-Id"] = review_id
+        if task_id:
+            headers["X-Business-Task-Id"] = task_id
+            headers["X-Task-Id"] = task_id
+        if run_id:
+            headers["X-Run-Id"] = run_id
+        return headers

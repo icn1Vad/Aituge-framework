@@ -70,6 +70,7 @@ def init_instrument(config: TraceConfig):
 
     trace_endpoint = config.endpoint
     token = config.token
+    headers = {"Authentication": token} if token else None
     service_name = config.service_name
     service_app_name = config.service_name
 
@@ -91,17 +92,17 @@ def init_instrument(config: TraceConfig):
         if config.exporter_type == "grpc":
             logger.info(f"Use grpc exporter: {trace_endpoint}")
             exporter = ReloadableGrpcOTLPSpanExporter(
-                endpoint=trace_endpoint, headers=(f"Authentication={token}")
+                endpoint=trace_endpoint, headers=headers
             )
         elif config.exporter_type == "http":
             logger.info(f"Use http exporter: {trace_endpoint}")
             exporter = ReloadableHttpOTLPSpanExporter(
-                endpoint=trace_endpoint, headers=(f"Authentication={token}")
+                endpoint=trace_endpoint, headers=headers
             )
         else:
             raise ValueError(f"Invalid exporter type: {config.exporter_type}")
     else:
-        exporter.reload(endpoint=trace_endpoint, headers=(f"Authentication={token}"))
+        exporter.reload(endpoint=trace_endpoint, headers=headers)
 
     global trace_provider
     if trace_provider is None:

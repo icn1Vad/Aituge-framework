@@ -9,11 +9,13 @@ from datetime import timedelta
 from pathlib import Path
 
 import psycopg
+from opentelemetry import trace
 from loguru import logger
 from sqlalchemy import update
 from sqlmodel import select
 
 from capability_mount import mount_capabilities_from_env
+from extensions.trace.runtime import configure_tracing_from_env
 from db.db_context import (
     create_db_session,
     get_database_pool_metrics,
@@ -269,10 +271,7 @@ class TaskWorker:
                     name=f"task-manager-heartbeat:{lease.run_id}",
                 )
             try:
-                await service._drain_prepared_task(
-                    lease.task_id,
-                    run_id=lease.run_id,
-                )
+                await self._execute_run_with_trace(service, lease)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -297,6 +296,13 @@ class TaskWorker:
                         pool_metrics,
                     )
         return True
+
+    async def _execute_run_with_trace(self, service: TaskManagerService, lease: RunLease) -> None:
+        tracer = trace.get_tracer("aituge.task-worker")
+        with tracer.start_as_current_span("task.run") as span:
+            span.set_attribute("task.id", lease.task_id)
+            span.set_attribute("run.id", lease.run_id)
+            await service._drain_prepared_task(lease.task_id, run_id=lease.run_id)
 
     async def run_forever(self, stop_event: asyncio.Event | None = None) -> None:
         stop_event = stop_event or asyncio.Event()
@@ -353,6 +359,7 @@ def build_worker_options() -> SchedulingRuntimeOptions:
 
 
 async def main() -> None:
+    configure_tracing_from_env(default_service_name="carpertest-framework-worker")
     await init_db()
     await assert_observability_schema_if_required()
     # Registries are process-local. A standalone Worker must load the same
