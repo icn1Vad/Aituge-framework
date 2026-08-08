@@ -222,7 +222,7 @@ class FrameworkHttpGateway(FrameworkGateway):
             pool=self.connect_timeout,
         )
         try:
-            with contract_span("contract.framework.request", {"http.request.method": method, "peer.service": "carpertest-framework"}):
+            with contract_span("contract.framework.request", {"http.request.method": method, "peer.service": "contract-review-framework"}):
                 inject_trace_headers(headers)
                 with httpx.Client(
                     base_url=self.base_url,

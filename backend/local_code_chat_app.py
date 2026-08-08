@@ -172,7 +172,7 @@ def create_app() -> FastAPI:
             await observability_runtime.stop()
 
     app = create_simple_chat_app(tool_provider=tool_provider, lifespan=lifespan)
-    configure_tracing_from_env(app, default_service_name="carpertest-framework")
+    configure_tracing_from_env(app, default_service_name="contract-review-framework")
     scheduling_options = SchedulingRuntimeOptions(
         local_python_artifact_dir=LOCAL_PYTHON_ARTIFACT_DIR,
         local_python_work_dir=LOCAL_PYTHON_WORK_DIR,

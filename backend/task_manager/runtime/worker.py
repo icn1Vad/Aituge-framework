@@ -359,7 +359,7 @@ def build_worker_options() -> SchedulingRuntimeOptions:
 
 
 async def main() -> None:
-    configure_tracing_from_env(default_service_name="carpertest-framework-worker")
+    configure_tracing_from_env(default_service_name="contract-review-framework-worker")
     await init_db()
     await assert_observability_schema_if_required()
     # Registries are process-local. A standalone Worker must load the same

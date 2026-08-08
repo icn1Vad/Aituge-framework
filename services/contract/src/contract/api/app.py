@@ -142,7 +142,7 @@ def create_app(
                 await dispatcher_task
 
     app = FastAPI(title="Contract Agent", version="1.0.0", lifespan=lifespan)
-    configure_tracing_from_env(app, default_service_name="carpertest-contract")
+    configure_tracing_from_env(app, default_service_name="contract-review-contract")
     app.state.settings = app_settings
     app.state.contract_service = service
     app.state.contract_internal_service = internal_service

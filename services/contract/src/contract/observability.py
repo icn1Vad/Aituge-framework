@@ -37,7 +37,7 @@ def _truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def configure_tracing_from_env(app: FastAPI, *, default_service_name: str = "carpertest-contract") -> bool:
+def configure_tracing_from_env(app: FastAPI, *, default_service_name: str = "contract-review-contract") -> bool:
     """Install propagation and server spans only when the deployment opts in."""
 
     global _CONFIGURED, _TRACER
