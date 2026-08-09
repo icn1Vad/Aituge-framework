@@ -58,6 +58,15 @@ class FakeGenerator:
 
 
 @dataclass
+class FailSecondBatchGenerator(FakeGenerator):
+    async def generate(self, items, *, source):
+        if self.calls:
+            self.calls.append([item.revision_key for item in items])
+            raise TimeoutError("provider timed out")
+        return await super().generate(items, source=source)
+
+
+@dataclass
 class FakeRevisionSnapshotRepository:
     snapshot: dict
     calls: list[tuple[str, str, str]] = field(default_factory=list)
@@ -111,7 +120,7 @@ def _source(*findings: RevisionFindingSource, evidences=None, ir=None, result_ha
     )
 
 
-def _service(source=None, generator=None, cache=None):
+def _service(source=None, generator=None, cache=None, *, max_batch_findings=6):
     value = source or _source()
     provider = InMemoryRevisionSourceProvider(
         {(value.review_id, value.generation_id, value.result_hash): value}
@@ -120,6 +129,7 @@ def _service(source=None, generator=None, cache=None):
         source_provider=provider,
         generator=generator or FakeGenerator(),
         cache=cache or InMemoryRevisionDraftCache(),
+        max_batch_findings=max_batch_findings,
     )
 
 
@@ -325,27 +335,39 @@ async def test_hash_mismatch_is_a_per_finding_source_failure():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("replacement", "reason"),
-    [
-        ("", "empty"),
-        ("甲方提出新增要求的，乙方应予执行。", "did not change"),
-        ("双方应在TODO后确认。", "placeholder"),
-        ("双方应于2028年1月1日书面确认。", "new date"),
-        ("双方应支付100万元并书面确认。", "new amount"),
-    ],
-)
-async def test_invalid_replacement_only_fails_its_finding(replacement, reason):
+async def test_empty_replacement_still_fails_as_a_structural_error():
+    replacement = ""
     generator = FakeGenerator(replacements={"finding-1": replacement})
     result = await _service(generator=generator).get_or_generate(
         "review-1", "generation-1", _hash("result-1")
     )
     assert result.status == "FAILED"
-    assert reason in result.failed_findings[0].message
+    assert "empty" in result.failed_findings[0].message
 
 
 @pytest.mark.asyncio
-async def test_named_party_cannot_be_removed_from_replacement():
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "甲方提出新增要求的，乙方应予执行。",
+        "双方应在TODO后确认。",
+        "双方应于2028年1月1日书面确认。",
+        "双方应支付100万元并书面确认。",
+    ],
+)
+async def test_business_constraint_violation_accepts_first_structural_output(replacement):
+    generator = FakeGenerator(replacements={"finding-1": replacement})
+    result = await _service(generator=generator).get_or_generate(
+        "review-1", "generation-1", _hash("result-1")
+    )
+    assert result.status == "COMPLETED"
+    assert result.failed_findings == []
+    assert result.drafts[0].replacement_text == replacement
+    assert len(generator.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_named_party_removal_is_recorded_but_first_output_is_emitted(caplog):
     text = "杭州戎一教育科技有限公司应在收到通知后处理。"
     evidence = RevisionEvidenceSource(
         evidence_id="evidence-1",
@@ -368,8 +390,11 @@ async def test_named_party_cannot_be_removed_from_replacement():
     result = await _service(
         _source(evidences=[evidence], ir=[ir]), generator
     ).get_or_generate("review-1", "generation-1", _hash("result-1"))
-    assert result.failed_findings[0].error_code == "REVISION_GENERATION_FAILED"
-    assert "named contract party" in result.failed_findings[0].message
+    assert result.status == "COMPLETED"
+    assert result.failed_findings == []
+    assert result.drafts[0].replacement_text == "我方应在收到通知后处理。"
+    assert "revision_business_constraint_bypassed" in caplog.text
+    assert "named contract party" in caplog.text
 
 
 def test_replacement_validation_preserves_child_item_line_breaks():
@@ -419,6 +444,47 @@ async def test_one_failed_item_does_not_discard_other_drafts():
     assert result.status == "PARTIAL_FAILED"
     assert [item.finding_id for item in result.drafts] == ["finding-2"]
     assert [item.finding_id for item in result.failed_findings] == ["finding-1"]
+
+
+@pytest.mark.asyncio
+async def test_later_batch_timeout_returns_first_batch_without_retrying():
+    source = _source()
+    second_text = "甲方提出额外任务的，乙方应完成。"
+    second_evidence = RevisionEvidenceSource(
+        evidence_id="evidence-2",
+        evidence_type="TEXT_QUOTE",
+        block_id="block-2",
+        char_start=0,
+        char_end=len(second_text),
+        quoted_text=second_text,
+        quoted_text_hash=_hash(second_text),
+    )
+    second_finding = source.findings[0].model_copy(
+        update={"finding_id": "finding-2", "evidence_ids": ["evidence-2"]}
+    )
+    second_ir = RevisionIrSource(
+        ir_id="I002",
+        anchor_id="A002",
+        block_id="block-2",
+        char_start=0,
+        char_end=len(second_text),
+        extraction_text=second_text,
+    )
+    generator = FailSecondBatchGenerator()
+    result = await _service(
+        _source(
+            source.findings[0],
+            second_finding,
+            evidences=[source.evidences[0], second_evidence],
+            ir=[source.contract_ir[0], second_ir],
+        ),
+        generator,
+        max_batch_findings=1,
+    ).get_or_generate("review-1", "generation-1", _hash("result-1"))
+    assert result.status == "PARTIAL_FAILED"
+    assert [item.finding_id for item in result.drafts] == ["finding-1"]
+    assert [item.finding_id for item in result.failed_findings] == ["finding-2"]
+    assert len(generator.calls) == 2
 
 
 @pytest.mark.asyncio

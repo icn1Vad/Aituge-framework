@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -25,6 +26,8 @@ from services.contract.capabilities.model_observation import (
     finalize_completion_validation_failed,
 )
 
+logger = logging.getLogger(__name__)
+
 SCHEMA_VERSION = "1.0"
 PROMPT_TARGET_TOKENS = 6_000
 PROMPT_HARD_LIMIT_TOKENS = 7_000
@@ -36,7 +39,9 @@ MAX_BATCH_FINDINGS = 4
 MAX_INSERTION_CANDIDATES = 24
 # Bump whenever deterministic draft-planning semantics change.  A cached
 # failure must not outlive the validation rule that produced it.
-REVISION_DRAFT_CACHE_VERSION = "numbering-domain-plan-v9-replace-chapter-style-layout-v3"
+REVISION_DRAFT_CACHE_VERSION = (
+    "numbering-domain-plan-v10-first-structural-output-chapter-style-layout-v3"
+)
 _PLACEHOLDER_RE = re.compile(r"(?:TODO|TBD|XXX|待补充|待定|请填写)", re.IGNORECASE)
 _STRUCTURAL_PLACEHOLDER_HEADING_RE = re.compile(
     r"^\s*第\s*[XＸ]+\s*条(?:\s+|[：:])(?P<title>\S.*)\s*$",
@@ -1001,11 +1006,17 @@ class RevisionDraftService:
                     generated = generated_by_key[item.revision_key]
                     try:
                         if isinstance(item, ReplacementRequest):
-                            replacement = _validate_replacement(
-                                generated.replacement_text,
-                                item.original_text,
-                                source,
+                            replacement = _normalize_structural_revision_text(
+                                generated.replacement_text
                             )
+                            try:
+                                replacement = _validate_replacement(
+                                    replacement,
+                                    item.original_text,
+                                    source,
+                                )
+                            except RevisionDraftError as exc:
+                                _record_bypassed_business_constraint(item, exc)
                             operation: Literal["REPLACE", "SUPPLEMENT"] = "REPLACE"
                             original_text: str | None = item.original_text
                             target: RevisionTarget | None = item.target
@@ -1015,19 +1026,26 @@ class RevisionDraftService:
                                 item,
                                 generated.anchor_block_id,
                             )
+                            raw_replacement = _normalize_structural_revision_text(
+                                _strip_leading_anchor_echo(
+                                    generated.replacement_text,
+                                    insertion_target,
+                                )
+                            )
                             chapter_blocks = _chapter_blocks_for_heading_path(
                                 source,
                                 insertion_target.heading_path if insertion_target else (),
                             )
-                            replacement = _prepare_supplement(
-                                _strip_leading_anchor_echo(
-                                    generated.replacement_text,
-                                    insertion_target,
-                                ),
-                                source,
-                                chapter_blocks,
-                            )
-                            replacement = _validate_supplement(replacement, source)
+                            try:
+                                replacement = _prepare_supplement(
+                                    raw_replacement,
+                                    source,
+                                    chapter_blocks,
+                                )
+                                replacement = _validate_supplement(replacement, source)
+                            except RevisionDraftError as exc:
+                                replacement = raw_replacement
+                                _record_bypassed_business_constraint(item, exc)
                             operation = "SUPPLEMENT"
                             original_text = None
                             target = None
@@ -1079,13 +1097,26 @@ class RevisionDraftService:
                         "MODEL_OUTPUT_PROCESSING_CANCELLED",
                     )
                 raise
-            except Exception:
+            except Exception as exc:
                 if result is not None:
                     await _reject_revision_completion(
                         result,
                         "MODEL_OUTPUT_PROCESSING_FAILED",
                     )
-                raise
+                logger.exception(
+                    "revision_generation_batch_failed_no_retry batch_size=%d error_type=%s",
+                    len(batch),
+                    type(exc).__name__,
+                )
+                failures.extend(
+                    FailedRevisionFinding(
+                        finding_id=item.finding.finding_id,
+                        error_code="REVISION_GENERATION_FAILED",
+                        message="revision generation batch failed; no retry was attempted",
+                    )
+                    for item in batch
+                )
+                break
 
         # Planning happens only after each proposal has a final, validated Word
         # anchor. A broad semantic match is never enough to put edits into one
@@ -1107,18 +1138,31 @@ class RevisionDraftService:
                     generated = generated_by_key[request.revision_key]
                     owner = updated_by_key[request.revision_key]
                     if request.operation == "REPLACE":
-                        replacement = _validate_replacement(
-                            generated.replacement_text,
-                            request.original_text or "",
-                            source,
+                        replacement = _normalize_structural_revision_text(
+                            generated.replacement_text
                         )
+                        try:
+                            replacement = _validate_replacement(
+                                replacement,
+                                request.original_text or "",
+                                source,
+                            )
+                        except RevisionDraftError as exc:
+                            _record_bypassed_business_constraint(request, exc)
                     else:
-                        replacement = _prepare_supplement(
+                        raw_replacement = _normalize_structural_revision_text(
                             generated.replacement_text,
-                            source,
-                            _chapter_blocks_for_draft(source, owner),
                         )
-                        replacement = _validate_supplement(replacement, source)
+                        try:
+                            replacement = _prepare_supplement(
+                                raw_replacement,
+                                source,
+                                _chapter_blocks_for_draft(source, owner),
+                            )
+                            replacement = _validate_supplement(replacement, source)
+                        except RevisionDraftError as exc:
+                            replacement = raw_replacement
+                            _record_bypassed_business_constraint(request, exc)
                     updated = owner.model_copy(
                         update={
                             "replacement_text": replacement,
@@ -1145,13 +1189,19 @@ class RevisionDraftService:
                         "MODEL_OUTPUT_PROCESSING_CANCELLED",
                     )
                 raise
-            except Exception:
+            except Exception as exc:
                 if result is not None:
                     await _reject_revision_completion(
                         result,
                         "MODEL_OUTPUT_PROCESSING_FAILED",
                     )
-                raise
+                logger.exception(
+                    "revision_bundle_batch_failed_no_retry batch_size=%d error_type=%s",
+                    len(batch),
+                    type(exc).__name__,
+                )
+                drafts = _mark_bundle_unsupported(drafts, batch, str(exc))
+                break
 
         normalized_drafts: list[RevisionDraft] = []
         for draft in drafts:
@@ -2253,6 +2303,50 @@ def _validate_replacement(
             "replacement_text introduced an unknown contract party",
         )
     return normalized
+
+
+def _normalize_structural_revision_text(value: str) -> str:
+    """Keep only the shape requirement needed to emit an applicable draft.
+
+    Business-policy checks remain available as diagnostics, but a structurally
+    valid first model response is not discarded merely for violating one of
+    those advisory policies.
+    """
+
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    normalized = "\n".join(line.rstrip() for line in normalized.split("\n"))
+    if not normalized:
+        raise RevisionDraftError(
+            "REVISION_GENERATION_FAILED",
+            "replacement_text is empty",
+        )
+    return normalized
+
+
+def _record_bypassed_business_constraint(
+    request: RevisionGenerationRequest,
+    error: RevisionDraftError,
+) -> None:
+    """Record the bypass without logging contract or generated text."""
+
+    finding = (
+        request.owner_finding
+        if isinstance(request, BundledRevisionRequest)
+        else request.finding
+    )
+    operation = (
+        request.operation
+        if isinstance(request, BundledRevisionRequest)
+        else "REPLACE" if isinstance(request, ReplacementRequest) else "SUPPLEMENT"
+    )
+    logger.warning(
+        "revision_business_constraint_bypassed finding_id=%s operation=%s "
+        "constraint_code=%s constraint_message=%s",
+        finding.finding_id,
+        operation,
+        error.code,
+        str(error),
+    )
 
 
 def _validate_supplement(value: str, source: RevisionReviewSource) -> str:
