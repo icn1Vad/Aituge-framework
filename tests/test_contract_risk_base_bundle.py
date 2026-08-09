@@ -1223,6 +1223,7 @@ def test_icd_absence_risk_materializes_one_python_finding() -> None:
         _check_decisions,
         _overlap,
         _perspective_warnings,
+        _perspective_conflicts,
     ) = _materialize_po_candidate_decisions(
         request,
         CandidateDecisionResponseRaw(candidate_decisions=decisions),

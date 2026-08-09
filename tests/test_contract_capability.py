@@ -14,6 +14,7 @@ class CapturingRegistry:
     def __init__(self) -> None:
         self.skill_roots = []
         self.tools = []
+        self.local_tools = []
         self.skill_packages = []
         self.agents = []
         self.stage_handlers = []
@@ -26,6 +27,9 @@ class CapturingRegistry:
 
     def register_http_tool(self, **value):
         self.tools.append(value)
+
+    def register_local_tool(self, **value):
+        self.local_tools.append(value)
 
     def register_skill_package(self, **value):
         self.skill_packages.append(value)
@@ -65,7 +69,10 @@ def _registered():
 def test_contract_capability_registers_frozen_pipeline_and_internal_tools() -> None:
     registry = _registered()
 
-    assert [item["tool_name"] for item in registry.tools] == [
+    assert [
+        item["tool_name"]
+        for item in [*registry.tools, *registry.local_tools]
+    ] == [
         "contract_get_document",
         "contract_get_blocks",
         "contract_get_clause_context",
