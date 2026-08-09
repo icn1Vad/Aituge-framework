@@ -197,12 +197,12 @@ class ReviewStateRepository:
             conn.execute(
                 """
                 INSERT INTO contract_framework_attempt (
-                  review_id, attempt_no, tenant_id, status, execution_status,
+                  review_id, attempt_no, tenant_id, model_pack_id, status, execution_status,
                   dispatch_status, request_fingerprint, next_dispatch_at, is_active
-                ) VALUES (%s, 1, %s, 'PENDING', 'PENDING',
+                ) VALUES (%s, 1, %s, %s, 'PENDING', 'PENDING',
                           'PENDING_DISPATCH', %s, now(), false)
                 """,
-                (review_id, tenant_id, fingerprint),
+                (review_id, tenant_id, review["model_pack_id"], fingerprint),
             )
             conn.commit()
         return True
