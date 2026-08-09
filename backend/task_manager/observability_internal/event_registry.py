@@ -192,6 +192,11 @@ TASK_METADATA_RULES: dict[str, MetadataRule] = {
     "parser": _rule(MetadataType.STRING, max_length=4000, sensitivity=Sensitivity.DROP),
     "synced_items": _rule(MetadataType.OBJECT, sensitivity=Sensitivity.DROP),
     "result": _rule(MetadataType.OBJECT, sensitivity=Sensitivity.DROP),
+    "original_chars": _rule(MetadataType.INTEGER, sensitivity=Sensitivity.DROP),
+    "preview": _rule(
+        MetadataType.STRING, max_length=200_000, sensitivity=Sensitivity.DROP
+    ),
+    "truncated": _rule(MetadataType.BOOLEAN, sensitivity=Sensitivity.DROP),
     "delta": _rule(
         MetadataType.STRING, max_length=200_000, sensitivity=Sensitivity.DROP
     ),
@@ -384,8 +389,11 @@ TASK_EVENT_REGISTRY: dict[tuple[str, int], TaskEventDefinition] = {
         ("artifact_id", "artifact_type", "artifact_version", "checksum"),
         required=("artifact_id", "artifact_type", "artifact_version", "checksum"),
     ),
+    # Schema v1 exists in two producer shapes. Both carry result content that must
+    # never be projected; accepting the legacy envelope keeps one historical row
+    # from making the complete event page unavailable.
     ("result_snapshot", 1): _event_definition(
-        ("artifact_id", "result"), required=("artifact_id", "result")
+        ("artifact_id", "result", "original_chars", "preview", "truncated")
     ),
     ("direct_model_started", 1): _event_definition(
         ("model_id", "skill_package"), required=("model_id", "skill_package")
@@ -747,6 +755,13 @@ def _validate_for_storage(value: Any, rule: MetadataRule) -> Any:
 
 def _validate_and_render(value: Any, rule: MetadataRule) -> str:
     value_type = rule.value_type
+    if rule.sensitivity == Sensitivity.DROP and value_type == MetadataType.STRING:
+        # Dropped producer content is never returned to Java. Validate only its
+        # outer type and storage bound; whitespace and line breaks are normal in
+        # streaming deltas and must not invalidate the complete event page.
+        if not isinstance(value, str) or len(value) > rule.max_length:
+            raise RegistryValidationError("metadata string is invalid")
+        return ""
     if value_type in {MetadataType.STRING, MetadataType.IDENTIFIER}:
         if not isinstance(value, str):
             raise RegistryValidationError("metadata value type is invalid")
