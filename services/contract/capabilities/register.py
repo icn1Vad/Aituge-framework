@@ -812,13 +812,18 @@ def _window_contract_ir_handler(base_url: str, token: str, model_id: str):
         return StageServiceResult(
             output=result.model_dump(mode="json"),
             summary=(
-                f"Extracted Contract IR from {len(request.windows)} windows in "
+                f"Extracted Contract IR from {pipeline_result.coverage.processed_window_count}/"
+                f"{len(request.windows)} windows in "
                 f"{pipeline_result.duration_ms} ms; model calls={pipeline_result.model_call_count}, "
-                f"retries={pipeline_result.retry_count}."
+                f"retries={pipeline_result.retry_count}; failed windows="
+                f"{len(pipeline_result.coverage.failed_window_ids)}."
             ),
             metadata={
                 "ir_engine": "window",
                 "window_count": len(request.windows),
+                "processed_window_count": pipeline_result.coverage.processed_window_count,
+                "coverage_valid": pipeline_result.coverage.valid,
+                "failed_window_ids": pipeline_result.coverage.failed_window_ids,
                 "duration_ms": pipeline_result.duration_ms,
                 "model_call_count": pipeline_result.model_call_count,
                 "retry_count": pipeline_result.retry_count,

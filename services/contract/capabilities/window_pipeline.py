@@ -362,10 +362,14 @@ class ContractIrWindowPipeline:
                 "failed_window_ids": failed_ids,
             }
         )
-        if failed_ids:
+        # A single failed Window must not discard the validated IR produced by
+        # every other Window. Still fail closed when nothing was extracted or
+        # when failures are no longer isolated.
+        all_windows_failed = len(failed_ids) == len(window_results)
+        if len(failed_ids) > 1 or all_windows_failed:
             raise WindowPipelineError(
                 "WINDOW_EXTRACTION_FAILED",
-                "至少一个 Window 在两次局部执行后仍失败，IR Stage 不返回残缺结果",
+                "多个或全部 Window 在两次局部执行后仍失败，IR Stage 不返回残缺结果",
                 {
                     "coverage": final_coverage.model_dump(mode="json"),
                     "windows": [item.model_dump(mode="json") for item in window_results],

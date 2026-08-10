@@ -462,6 +462,11 @@ def test_window_ir_handler_injects_party_context_without_changing_source(monkeyp
                 model_call_count=1,
                 retry_count=0,
                 semantic_ir_hash="sha256:" + "1" * 64,
+                coverage=SimpleNamespace(
+                    valid=True,
+                    processed_window_count=1,
+                    failed_window_ids=[],
+                ),
             )
 
     monkeypatch.setattr(capability.httpx, "AsyncClient", Client)

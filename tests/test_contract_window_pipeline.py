@@ -78,6 +78,36 @@ class FakePipelineExtractor:
             self.active -= 1
 
 
+class OneWindowAlwaysFailsExtractor(FakePipelineExtractor):
+    def __init__(self, failed_window_id: str) -> None:
+        super().__init__()
+        self.failed_window_id = failed_window_id
+
+    async def extract(
+        self,
+        request: WindowExtractionRequest,
+        *,
+        tenant_id: str,
+        model_id: str,
+        retry_feedback: str | None = None,
+    ) -> WindowExtractionResult:
+        if request.window_id == self.failed_window_id:
+            self.calls.append((request.window_id, retry_feedback))
+            self.call_counts[request.window_id] = (
+                self.call_counts.get(request.window_id, 0) + 1
+            )
+            raise WindowExtractionError(
+                "WINDOW_OUTPUT_INVALID",
+                "window remains invalid after retry",
+            )
+        return await super().extract(
+            request,
+            tenant_id=tenant_id,
+            model_id=model_id,
+            retry_feedback=retry_feedback,
+        )
+
+
 def _aligned(
     request: WindowExtractionRequest,
     *,
@@ -632,6 +662,27 @@ async def test_pipeline_accepts_reviewed_empty_non_business_window() -> None:
     assert result.retry_count == 0
     assert result.semantic_ir.obligations == []
     assert result.coverage.valid is True
+
+
+@pytest.mark.asyncio
+async def test_pipeline_keeps_other_ir_when_exactly_one_window_fails() -> None:
+    extractor = OneWindowAlwaysFailsExtractor("window-001")
+
+    result = await ContractIrWindowPipeline(extractor=extractor).run(
+        _pipeline_request(count=2),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    assert extractor.call_counts == {"window-001": 2, "window-002": 1}
+    assert result.coverage.valid is False
+    assert result.coverage.processed_window_count == 1
+    assert result.coverage.failed_window_ids == ["window-001"]
+    assert result.retry_count == 1
+    assert result.model_call_count == 3
+    assert [item.status for item in result.windows] == ["FAILED", "SUCCEEDED"]
+    assert len(result.semantic_ir.obligations) == 1
+    assert result.semantic_ir.obligations[0].object == "履行事项2"
 
 
 @pytest.mark.asyncio
