@@ -98,6 +98,9 @@ class PlaybookRegistry:
             )
         return value
 
+    def has_manifest(self, playbook_id: str) -> bool:
+        return playbook_id in self._manifests
+
     def check(self, check_code: str) -> CheckSpec:
         value = self._checks.get(check_code)
         if value is None:

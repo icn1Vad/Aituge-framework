@@ -38,11 +38,7 @@ class ContractWindowPlanToolRequest(ContractDocumentToolRequest):
 
 
 class ContractRiskPlanRequest(ContractDocumentToolRequest):
-    selected_playbook_ids: list[str] = Field(
-        default_factory=lambda: ["base_neutral"],
-        min_length=1,
-        max_length=20,
-    )
+    """Build the immutable plan from selection frozen on the persisted review."""
 
 
 class ContractDocumentToolData(StrictModel):

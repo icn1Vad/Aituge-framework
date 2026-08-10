@@ -47,6 +47,10 @@ class AttemptReservation:
     our_party_name: str | None
     contract_type: str
     review_attitude: str
+    primary_playbook_id: str | None
+    selected_playbook_ids: tuple[str, ...]
+    roles_by_playbook: dict[str, str]
+    rule_release_id: str | None
     schema_version: str
     execution_mode: str
     confirmed_party_a_name: str | None
@@ -273,6 +277,10 @@ class ReviewStateRepository:
                   review.confirmed_party_b_name,
                   review.contract_type,
                   review.review_attitude,
+                  review.primary_playbook_id,
+                  review.selected_playbook_ids_json,
+                  review.roles_by_playbook_json,
+                  review.rule_release_id,
                   review.schema_version,
                   attempt.attempt_no,
                   attempt.framework_task_id,
@@ -342,6 +350,10 @@ class ReviewStateRepository:
                             "confirmed_party_b_name": row["confirmed_party_b_name"],
                             "contract_type": row["contract_type"],
                             "review_attitude": row["review_attitude"],
+                            "primary_playbook_id": row["primary_playbook_id"],
+                            "selected_playbook_ids_json": row["selected_playbook_ids_json"],
+                            "roles_by_playbook_json": row["roles_by_playbook_json"],
+                            "rule_release_id": row["rule_release_id"],
                             "schema_version": row["schema_version"],
                         },
                         row["attempt_no"],
@@ -1228,6 +1240,10 @@ class ReviewStateRepository:
             confirmed_party_b_name=review["confirmed_party_b_name"],
             contract_type=review["contract_type"],
             review_attitude=review["review_attitude"],
+            primary_playbook_id=review.get("primary_playbook_id"),
+            selected_playbook_ids=tuple(review.get("selected_playbook_ids_json") or ("base_neutral",)),
+            roles_by_playbook=dict(review.get("roles_by_playbook_json") or {}),
+            rule_release_id=review.get("rule_release_id"),
             schema_version=review["schema_version"],
             request_fingerprint=attempt.get("request_fingerprint")
             or ReviewStateRepository._framework_request_fingerprint(review, attempt_no),
@@ -1255,6 +1271,10 @@ class ReviewStateRepository:
             confirmed_party_b_name=review["confirmed_party_b_name"],
             contract_type=review["contract_type"],
             review_attitude=review["review_attitude"],
+            primary_playbook_id=review.get("primary_playbook_id"),
+            selected_playbook_ids=tuple(review.get("selected_playbook_ids_json") or ("base_neutral",)),
+            roles_by_playbook=dict(review.get("roles_by_playbook_json") or {}),
+            rule_release_id=review.get("rule_release_id"),
             schema_version=review["schema_version"],
         )
 

@@ -6,6 +6,8 @@ from contract.risk.models import (
     RiskReviewContext,
     RiskReviewPlan,
     RiskReviewPlanInput,
+    ReviewAtomSnapshot,
+    RuleReleaseSnapshot,
     ReviewUnitSpec,
 )
 from contract.risk.plan_builder import RiskReviewPlanBuilder
@@ -22,6 +24,8 @@ __all__ = [
     "RiskReviewPlan",
     "RiskReviewPlanBuilder",
     "RiskReviewPlanInput",
+    "ReviewAtomSnapshot",
+    "RuleReleaseSnapshot",
     "ReviewUnitSpec",
     "build_default_registry",
 ]

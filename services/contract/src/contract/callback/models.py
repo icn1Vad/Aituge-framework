@@ -301,8 +301,12 @@ class FrameworkTaskInput(StrictModel):
     execution_mode: Literal["FULL_REVIEW", "PARTY_RESOLUTION"] = "FULL_REVIEW"
     confirmed_party_a_name: str | None = Field(default=None, min_length=1, max_length=500)
     confirmed_party_b_name: str | None = Field(default=None, min_length=1, max_length=500)
-    contract_type: Literal["AUTO"]
-    review_attitude: Literal["NEUTRAL"]
+    contract_type: str = Field(default="AUTO", pattern=r"^[A-Z][A-Z0-9_]{0,79}$", max_length=80)
+    review_attitude: Literal["STRONG", "NEUTRAL", "WEAK"] = "NEUTRAL"
+    primary_playbook_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]{0,79}$", max_length=80)
+    selected_playbook_ids: list[str] = Field(default_factory=lambda: ["base_neutral"], min_length=1, max_length=20)
+    roles_by_playbook: dict[str, str] = Field(default_factory=dict, max_length=20)
+    rule_release_id: str | None = Field(default=None, max_length=160)
 
     @model_validator(mode="after")
     def validate_confirmed_parties(self) -> "FrameworkTaskInput":
@@ -313,6 +317,20 @@ class FrameworkTaskInput(StrictModel):
             and self.confirmed_party_a_name == self.confirmed_party_b_name
         ):
             raise ValueError("confirmed contract parties must be distinct")
+        selected = list(dict.fromkeys(self.selected_playbook_ids))
+        if "base_neutral" not in selected:
+            selected.insert(0, "base_neutral")
+        if self.primary_playbook_id is not None:
+            if self.primary_playbook_id == "base_neutral":
+                raise ValueError("primary_playbook_id cannot be base_neutral")
+            if self.primary_playbook_id not in selected:
+                selected.append(self.primary_playbook_id)
+        if len(selected) > 20:
+            raise ValueError("selected_playbook_ids cannot contain more than 20 values")
+        if any(playbook_id not in selected for playbook_id in self.roles_by_playbook):
+            raise ValueError("roles_by_playbook keys must be enabled selected_playbook_ids")
+        self.selected_playbook_ids = selected
+        self.roles_by_playbook = dict(sorted(self.roles_by_playbook.items()))
         return self
 
 

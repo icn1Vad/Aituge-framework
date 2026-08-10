@@ -73,7 +73,7 @@ def build_request_fingerprint(
     user_id: str,
     request: CreateReviewRequest,
     file_sha256: str,
-) -> tuple[str, dict[str, str | None]]:
+) -> tuple[str, dict[str, Any]]:
     payload: dict[str, str | None] = {
         "tenant_id": tenant_id,
         "user_id": user_id,
@@ -88,6 +88,10 @@ def build_request_fingerprint(
         "confirmed_party_b_name": normalize_party_name(request.confirmed_party_b_name),
         "contract_type": request.contract_type,
         "review_attitude": request.review_attitude,
+        "primary_playbook_id": request.primary_playbook_id,
+        "selected_playbook_ids": list(request.selected_playbook_ids),
+        "roles_by_playbook": dict(sorted(request.roles_by_playbook.items())),
+        "rule_release_id": request.rule_release_id,
         "schema_version": request.schema_version,
     }
     digest = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
@@ -132,6 +136,10 @@ def build_framework_request_fingerprint(
     execution_mode: str = FULL_REVIEW_EXECUTION_MODE,
     confirmed_party_a_name: str | None = None,
     confirmed_party_b_name: str | None = None,
+    primary_playbook_id: str | None = None,
+    selected_playbook_ids: tuple[str, ...] = ("base_neutral",),
+    roles_by_playbook: dict[str, str] | None = None,
+    rule_release_id: str | None = None,
 ) -> str:
     if execution_mode == PARTY_RESOLUTION_EXECUTION_MODE:
         task_type = PARTY_RESOLUTION_FRAMEWORK_TASK_TYPE
@@ -159,6 +167,10 @@ def build_framework_request_fingerprint(
             "confirmed_party_b_name": normalize_party_name(confirmed_party_b_name),
             "contract_type": contract_type,
             "review_attitude": review_attitude,
+            "primary_playbook_id": primary_playbook_id,
+            "selected_playbook_ids": list(selected_playbook_ids),
+            "roles_by_playbook": dict(sorted((roles_by_playbook or {}).items())),
+            "rule_release_id": rule_release_id,
             "schema_version": schema_version,
         },
     }

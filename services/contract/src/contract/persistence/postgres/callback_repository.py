@@ -377,6 +377,11 @@ class FrameworkCallbackRepository:
             == review["confirmed_party_b_name"]
             and task.contract_type == review["contract_type"]
             and task.review_attitude == review["review_attitude"]
+            and task.primary_playbook_id == review.get("primary_playbook_id")
+            and task.selected_playbook_ids
+            == list(review.get("selected_playbook_ids_json") or ["base_neutral"])
+            and task.roles_by_playbook == dict(review.get("roles_by_playbook_json") or {})
+            and task.rule_release_id == review.get("rule_release_id")
         )
 
     def get_attempt_parse_generation(

@@ -46,10 +46,12 @@ def test_request_fingerprint_matches_golden_vector() -> None:
             '"model_pack_id":"api-rerank",'
             '"our_party_name":"某某 单位","party_resolution_id":null,'
             '"perspective":"PARTY_B",'
-        '"review_attitude":"NEUTRAL","schema_version":"1.0",'
+        '"primary_playbook_id":null,"review_attitude":"NEUTRAL",'
+        '"roles_by_playbook":{},"rule_release_id":null,"schema_version":"1.0",'
+        '"selected_playbook_ids":["base_neutral"],'
         '"tenant_id":"1","user_id":"1"}'
     )
-    assert fingerprint == "sha256:d1bbf16b695873d9a641706503febde8723bff83ba3fee8eed5114518ffca3dc"
+    assert fingerprint == "sha256:c7681874a9cae545b0464d878b79f6e70ce664ad0cfe286d4330e3d301c4b157"
 
 
 def test_party_resolution_fingerprint_has_no_perspective() -> None:

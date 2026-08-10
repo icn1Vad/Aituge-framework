@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from contract.api.models import FindingCategory, Perspective, StrictModel
+from contract.api.models import FindingCategory, Perspective, ReviewAttitude, StrictModel
 from contract.callback.models import ExtractContractIrStageResult
 from contract.ir.models import SourceAnchor
 
@@ -69,7 +69,7 @@ class ApplicabilitySpec(StrictModel):
         default_factory=lambda: [Perspective.PARTY_A, Perspective.PARTY_B],
         min_length=1,
     )
-    review_attitudes: list[Literal["NEUTRAL"]] = Field(default_factory=lambda: ["NEUTRAL"])
+    review_attitudes: list[ReviewAttitude] = Field(default_factory=lambda: ["NEUTRAL"])
 
     def matches(self, *, contract_type: str, perspective: Perspective, review_attitude: str) -> bool:
         return (
@@ -365,7 +365,7 @@ class RiskReviewContext(StrictModel):
     our_party: str = Field(min_length=1, max_length=500)
     counterparty: str = Field(min_length=1, max_length=500)
     contract_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=80)
-    review_attitude: Literal["NEUTRAL"] = "NEUTRAL"
+    review_attitude: ReviewAttitude = "NEUTRAL"
     check_specs: list[CheckSpec] = Field(min_length=1)
     definitions: list[RiskProjectedIrItem] = Field(default_factory=list)
     projected_ir_items: list[RiskProjectedIrItem] = Field(default_factory=list)
@@ -403,6 +403,48 @@ class DeterministicCheckResult(StrictModel):
     reason_code: str = Field(min_length=1, max_length=160)
 
 
+ReviewAtomMappingStatus = Literal["BASE_MAPPED", "SPECIAL_UNMAPPED"]
+ReviewAtomExecutionDomain = RiskDomain | Literal["special_unmapped"]
+
+
+class RuleReleaseSnapshot(StrictModel):
+    """Immutable release metadata that binds all executable ReviewAtoms."""
+
+    rule_release_id: str = Field(min_length=1, max_length=160)
+    source_rule_pack_version: str = Field(min_length=1, max_length=160)
+    taxonomy_version: str = Field(min_length=1, max_length=160)
+    compiler_version: str = Field(min_length=1, max_length=160)
+    semantic_projection_version: str = Field(min_length=1, max_length=160)
+
+
+class ReviewAtomSnapshot(StrictModel):
+    """Frozen execution routing for one semantic atom, never for a raw rule."""
+
+    source_rule_id: str = Field(min_length=1, max_length=160)
+    atom_id: str = Field(min_length=1, max_length=160)
+    issue_key: str = Field(min_length=1, max_length=200)
+    mapping_status: ReviewAtomMappingStatus
+    primary_base_check_code: str | None = Field(
+        default=None, pattern=r"^[A-Z]{2,3}-[0-9]{3}$"
+    )
+    execution_domain: ReviewAtomExecutionDomain
+    compiler_version: str = Field(min_length=1, max_length=160)
+    projection_version: str = Field(min_length=1, max_length=160)
+
+    @model_validator(mode="after")
+    def validate_execution_route(self) -> "ReviewAtomSnapshot":
+        if self.mapping_status == "BASE_MAPPED":
+            if (
+                self.primary_base_check_code is None
+                or self.execution_domain == "special_unmapped"
+            ):
+                raise ValueError("BASE_MAPPED atoms require one base check and a seven-domain route")
+        elif self.primary_base_check_code is not None or self.execution_domain != "special_unmapped":
+            raise ValueError("SPECIAL_UNMAPPED atoms must use the special execution pool")
+        return self
+
+
+
 class RiskReviewPlanInput(StrictModel):
     review_id: str = Field(min_length=1, max_length=160)
     document_id: str = Field(min_length=1, max_length=160)
@@ -412,11 +454,37 @@ class RiskReviewPlanInput(StrictModel):
     our_party: str = Field(min_length=1, max_length=500)
     counterparty: str = Field(min_length=1, max_length=500)
     contract_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=80)
-    review_attitude: Literal["NEUTRAL"] = "NEUTRAL"
+    review_attitude: ReviewAttitude = "NEUTRAL"
+    primary_playbook_id: str | None = Field(default=None, max_length=80)
+    selected_playbook_ids: list[str] = Field(
+        default_factory=lambda: ["base_neutral"], min_length=1, max_length=20
+    )
+    roles_by_playbook: dict[str, str] = Field(default_factory=dict, max_length=20)
+    rule_release_id: str | None = Field(default=None, max_length=160)
+    rule_release: RuleReleaseSnapshot | None = None
+    review_atoms: list[ReviewAtomSnapshot] = Field(default_factory=list)
     stage_result: ExtractContractIrStageResult
     source_blocks: list[RiskSourceBlock] = Field(min_length=1)
-    selected_playbook_ids: list[str] = Field(default_factory=lambda: ["base_neutral"])
     horizontal_candidates: list[RiskHorizontalCandidate] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_release_snapshot(self) -> "RiskReviewPlanInput":
+        if self.rule_release is not None:
+            if (
+                self.rule_release_id is not None
+                and self.rule_release_id != self.rule_release.rule_release_id
+            ):
+                raise ValueError("rule_release_id must match rule_release")
+            self.rule_release_id = self.rule_release.rule_release_id
+        if self.review_atoms and self.rule_release is None:
+            raise ValueError("Review atoms require a frozen rule_release snapshot")
+        if self.rule_release is not None:
+            for atom in self.review_atoms:
+                if atom.compiler_version != self.rule_release.compiler_version:
+                    raise ValueError("ReviewAtom compiler_version must match rule_release")
+                if atom.projection_version != self.rule_release.semantic_projection_version:
+                    raise ValueError("ReviewAtom projection_version must match rule_release")
+        return self
 
 
 class RiskReviewPlan(StrictModel):
@@ -429,8 +497,15 @@ class RiskReviewPlan(StrictModel):
     attempt_no: int = Field(ge=1, le=2)
     perspective: Perspective
     contract_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=80)
-    review_attitude: Literal["NEUTRAL"] = "NEUTRAL"
-    selected_playbook_ids: list[str] = Field(min_length=1)
+    review_attitude: ReviewAttitude = "NEUTRAL"
+    primary_playbook_id: str | None = Field(default=None, max_length=80)
+    selected_playbook_ids: list[str] = Field(min_length=1, max_length=20)
+    roles_by_playbook: dict[str, str] = Field(default_factory=dict, max_length=20)
+    rule_release_id: str | None = Field(default=None, max_length=160)
+    rule_release: RuleReleaseSnapshot | None = None
+    source_rule_ids: list[str] = Field(default_factory=list)
+    review_atoms: list[ReviewAtomSnapshot] = Field(default_factory=list)
+    special_atoms: list[ReviewAtomSnapshot] = Field(default_factory=list)
     review_units: list[ReviewUnitSpec] = Field(min_length=7)
     contexts: list[RiskReviewContext] = Field(default_factory=list)
     deterministic_checks: list[DeterministicCheckResult] = Field(default_factory=list)
@@ -450,4 +525,25 @@ class RiskReviewPlan(StrictModel):
             raise ValueError("context batch IDs must be unique")
         if {batch_id for unit in self.review_units for batch_id in unit.batch_ids} != set(context_ids):
             raise ValueError("every executable batch must have exactly one context")
+        if self.review_atoms or self.special_atoms:
+            if self.rule_release is None:
+                raise ValueError("Review atoms require a frozen rule_release snapshot")
+            if self.rule_release_id != self.rule_release.rule_release_id:
+                raise ValueError("rule_release_id must match rule_release")
+            for atom in (*self.review_atoms, *self.special_atoms):
+                if atom.compiler_version != self.rule_release.compiler_version:
+                    raise ValueError("ReviewAtom compiler_version must match rule_release")
+                if atom.projection_version != self.rule_release.semantic_projection_version:
+                    raise ValueError("ReviewAtom projection_version must match rule_release")
+        elif self.rule_release is not None and self.rule_release_id != self.rule_release.rule_release_id:
+            raise ValueError("rule_release_id must match rule_release")
+        if any(item.mapping_status != "BASE_MAPPED" for item in self.review_atoms):
+            raise ValueError("review_atoms must only contain BASE_MAPPED atoms")
+        if any(item.mapping_status != "SPECIAL_UNMAPPED" for item in self.special_atoms):
+            raise ValueError("special_atoms must only contain SPECIAL_UNMAPPED atoms")
+        source_rule_ids = sorted(
+            {item.source_rule_id for item in (*self.review_atoms, *self.special_atoms)}
+        )
+        if self.source_rule_ids != source_rule_ids:
+            raise ValueError("source_rule_ids must match the frozen atom snapshot")
         return self

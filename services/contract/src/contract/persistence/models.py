@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -40,6 +40,10 @@ class ReviewCreate:
     party_resolution_id: str | None = None
     confirmed_party_a_name: str | None = None
     confirmed_party_b_name: str | None = None
+    primary_playbook_id: str | None = None
+    selected_playbook_ids: tuple[str, ...] = ("base_neutral",)
+    roles_by_playbook: dict[str, str] = field(default_factory=dict)
+    rule_release_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

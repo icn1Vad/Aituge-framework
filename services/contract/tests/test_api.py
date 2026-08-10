@@ -398,7 +398,6 @@ def test_framework_tool_endpoint_uses_callback_credential_and_typed_response() -
         def get_risk_plan(self, payload):
             assert payload.review_id == "review-1"
             assert payload.document_id == "document-1"
-            assert payload.selected_playbook_ids == ["base_neutral"]
             return RiskReviewPlanBuilder().build(risk_plan_input())
 
     client = TestClient(
@@ -438,7 +437,7 @@ def test_framework_tool_endpoint_uses_callback_credential_and_typed_response() -
     risk_plan = client.post(
         "/v1/internal/contract-reviews/review-1/risk-plan",
         headers=headers,
-        json={**payload, "selected_playbook_ids": ["base_neutral"]},
+        json=payload,
     )
 
     assert accepted.status_code == 200

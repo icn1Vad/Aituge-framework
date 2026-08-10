@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 from collections import Counter
 from typing import Any
 
@@ -60,6 +61,8 @@ REVIEW_ARTIFACT_MODELS = {
     "missing_ambiguous_clauses_result": MissingAmbiguityStageResult,
     "relation_extraction_result": RelationExtractionStageResult,
 }
+
+logger = logging.getLogger(__name__)
 
 
 class ContractInternalService:
@@ -337,7 +340,7 @@ class ContractInternalService:
             },
         )
         rows = self.repository.list_blocks(generation["id"], tenant_id=review["tenant_id"])
-        return self.risk_plan_builder.build(
+        plan = self.risk_plan_builder.build(
             RiskReviewPlanInput(
                 review_id=review["id"],
                 document_id=review["document_id"],
@@ -346,8 +349,18 @@ class ContractInternalService:
                 perspective=party.perspective,
                 our_party=party.our_party,
                 counterparty=party.counterparty,
-                contract_type=party.contract_type,
-                review_attitude="NEUTRAL",
+                contract_type=(
+                    review["contract_type"]
+                    if review.get("contract_type") not in (None, "AUTO")
+                    else party.contract_type
+                ),
+                review_attitude=review.get("review_attitude") or "NEUTRAL",
+                primary_playbook_id=review.get("primary_playbook_id"),
+                selected_playbook_ids=list(
+                    review.get("selected_playbook_ids_json") or ["base_neutral"]
+                ),
+                roles_by_playbook=dict(review.get("roles_by_playbook_json") or {}),
+                rule_release_id=review.get("rule_release_id"),
                 stage_result=stage_result,
                 source_blocks=[
                     RiskSourceBlock(
@@ -360,9 +373,21 @@ class ContractInternalService:
                     for row in rows
                     if row["block_type"] != "footer" and row["text"]
                 ],
-                selected_playbook_ids=request.selected_playbook_ids,
             )
         )
+        logger.info(
+            "contract_risk_plan_frozen review_id=%s rule_release_id=%s "
+            "source_rule_count=%s base_atom_count=%s special_atom_count=%s "
+            "selected_playbook_count=%s plan_id=%s",
+            plan.review_id,
+            plan.rule_release_id or "BASE_ONLY",
+            len(plan.source_rule_ids),
+            len(plan.review_atoms),
+            len(plan.special_atoms),
+            len(plan.selected_playbook_ids),
+            plan.plan_id,
+        )
+        return plan
 
     def validate_final_result(self, value: FinalizeReviewStageResult) -> ReviewResultData:
         review = self.callback_repository.get_review_context(value.review_id)

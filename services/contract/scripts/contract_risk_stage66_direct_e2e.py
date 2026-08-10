@@ -28,6 +28,7 @@ for path in (
 from common.system_constants import DEFAULT_TENANT_ID
 from contract.api.models import ContractProfile, ReviewResultData
 from contract.callback.models import FindingConsolidationArtifact
+from contract.risk.models import RiskReviewPlan
 from contract.risk.plan_builder import RiskReviewPlanBuilder
 from services.contract.capabilities.direct_e2e import (
     DirectE2EError,
@@ -360,10 +361,11 @@ async def _execute_one(
     run_id_prefix: str = "stage66-direct-e2e",
     allow_dynamic_base_batch_count: bool = False,
     diagnostic_allow_oracle_drift: bool = False,
+    plan: RiskReviewPlan | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], ReviewResultData, Any, Any]:
     run_id = f"{run_id_prefix}-{run_index}"
     started = time.perf_counter()
-    plan = RiskReviewPlanBuilder().build(value)
+    plan = plan or RiskReviewPlanBuilder().build(value)
 
     base_started = time.perf_counter()
     base = await execute_base_risk_review_bundle(

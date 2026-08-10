@@ -121,8 +121,31 @@ class RiskReviewPlanBuilder:
         self.router = router or PlaybookRouter(self.registry)
 
     def build(self, value: RiskReviewPlanInput) -> RiskReviewPlan:
+        selected_playbook_ids = list(value.selected_playbook_ids)
+        selected_playbook_id_set = set(selected_playbook_ids)
+        # Data-backed contract packs are resolved into ReviewAtoms by the
+        # active PostgreSQL rule release. The built-in registry only owns the
+        # frozen base checks, so it must not reject data pack IDs.
+        static_playbook_ids = [
+            playbook_id
+            for playbook_id in selected_playbook_ids
+            if self.registry.has_manifest(playbook_id)
+        ]
+        data_backed_playbook_ids = [
+            playbook_id
+            for playbook_id in selected_playbook_ids
+            if not self.registry.has_manifest(playbook_id)
+        ]
+        if value.rule_release is None and (
+            value.rule_release_id is not None or data_backed_playbook_ids
+        ):
+            raise ContractError(
+                "RULE_RELEASE_NOT_RESOLVED",
+                "Data-backed rule packs require a frozen rule release before execution",
+                status_code=422,
+            )
         route = self.router.route(
-            value.selected_playbook_ids,
+            static_playbook_ids,
             contract_type=value.contract_type,
             perspective=value.perspective,
             review_attitude=value.review_attitude,
@@ -192,7 +215,7 @@ class RiskReviewPlanBuilder:
 
         plan_hash = self._plan_hash(
             value=value,
-            selected_playbook_ids=[item.playbook_id for item in route.selected],
+            selected_playbook_ids=selected_playbook_ids,
             units=units,
             contexts=contexts,
             deterministic_checks=deterministic_checks,
@@ -210,7 +233,34 @@ class RiskReviewPlanBuilder:
             perspective=value.perspective,
             contract_type=value.contract_type,
             review_attitude=value.review_attitude,
-            selected_playbook_ids=[item.playbook_id for item in route.selected],
+            primary_playbook_id=(
+                value.primary_playbook_id if value.primary_playbook_id in selected_playbook_id_set else None
+            ),
+            selected_playbook_ids=selected_playbook_ids,
+            roles_by_playbook={
+                playbook_id: role
+                for playbook_id, role in sorted(value.roles_by_playbook.items())
+                if playbook_id in selected_playbook_id_set
+            },
+            rule_release_id=value.rule_release_id,
+            rule_release=value.rule_release,
+            source_rule_ids=sorted({item.source_rule_id for item in value.review_atoms}),
+            review_atoms=sorted(
+                (
+                    item
+                    for item in value.review_atoms
+                    if item.mapping_status == "BASE_MAPPED"
+                ),
+                key=lambda item: item.atom_id,
+            ),
+            special_atoms=sorted(
+                (
+                    item
+                    for item in value.review_atoms
+                    if item.mapping_status == "SPECIAL_UNMAPPED"
+                ),
+                key=lambda item: item.atom_id,
+            ),
             review_units=units,
             contexts=final_contexts,
             deterministic_checks=sorted(
@@ -1063,7 +1113,19 @@ class RiskReviewPlanBuilder:
             "perspective": value.perspective.value,
             "contract_type": value.contract_type,
             "review_attitude": value.review_attitude,
+            "primary_playbook_id": value.primary_playbook_id,
             "selected_playbook_ids": selected_playbook_ids,
+            "roles_by_playbook": dict(sorted(value.roles_by_playbook.items())),
+            "rule_release_id": value.rule_release_id,
+            "rule_release": (
+                value.rule_release.model_dump(mode="json")
+                if value.rule_release is not None
+                else None
+            ),
+            "review_atoms": [
+                item.model_dump(mode="json")
+                for item in sorted(value.review_atoms, key=lambda item: item.atom_id)
+            ],
             "review_units": [item.model_dump(mode="json") for item in units],
             "contexts": [
                 item.model_dump(mode="json", exclude={"plan_id", "context_hash"})

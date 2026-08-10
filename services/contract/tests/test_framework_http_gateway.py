@@ -81,6 +81,10 @@ def test_create_execution_uses_scoped_headers_and_frozen_idempotency_keys() -> N
                 "confirmed_party_b_name": None,
                 "contract_type": "AUTO",
                 "review_attitude": "NEUTRAL",
+                "primary_playbook_id": None,
+                "selected_playbook_ids": ["base_neutral"],
+                "roles_by_playbook": {},
+                "rule_release_id": None,
             }
             return httpx.Response(
                 200,

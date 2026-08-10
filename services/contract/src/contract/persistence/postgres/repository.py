@@ -119,10 +119,12 @@ class ContractRepository:
                   id, tenant_id, user_id, business_task_id, contract_version_id,
                   party_resolution_id, model_pack_id, document_id, idempotency_key, request_id, request_fingerprint,
                   file_sha256, perspective, our_party_name, contract_type,
-                  review_attitude, execution_mode, confirmed_party_a_name,
+                  review_attitude, primary_playbook_id, selected_playbook_ids_json, roles_by_playbook_json,
+                  rule_release_id, execution_mode, confirmed_party_a_name,
                   confirmed_party_b_name, status, schema_version
                 ) VALUES (
                   %s, %s, %s, %s, %s, %s, %s,
+                  %s, %s, %s, %s,
                   %s, %s, %s, %s,
                   %s, %s, %s, %s,
                   %s, %s, %s, %s, 'CREATED', %s
@@ -147,6 +149,10 @@ class ContractRepository:
                     value.our_party_name,
                     value.contract_type,
                     value.review_attitude,
+                    value.primary_playbook_id,
+                    Jsonb(list(value.selected_playbook_ids)),
+                    Jsonb(dict(value.roles_by_playbook)),
+                    value.rule_release_id,
                     value.execution_mode,
                     value.confirmed_party_a_name,
                     value.confirmed_party_b_name,

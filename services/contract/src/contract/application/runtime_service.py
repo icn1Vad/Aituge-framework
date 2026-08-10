@@ -252,6 +252,10 @@ class RuntimeContractReviewService:
                     our_party_name=normalized["our_party_name"],
                     contract_type=request.contract_type,
                     review_attitude=request.review_attitude,
+                    primary_playbook_id=request.primary_playbook_id,
+                    selected_playbook_ids=tuple(request.selected_playbook_ids),
+                    roles_by_playbook=dict(request.roles_by_playbook),
+                    rule_release_id=request.rule_release_id,
                     schema_version=request.schema_version,
                     confirmed_party_a_name=normalized["confirmed_party_a_name"],
                     confirmed_party_b_name=normalized["confirmed_party_b_name"],
@@ -260,6 +264,20 @@ class RuntimeContractReviewService:
             review_id = review["id"]
         else:
             review_id = existing["id"]
+
+        logger.info(
+            "contract_rule_selection_bound review_id=%s contract_type=%s review_attitude=%s "
+            "primary_playbook_id=%s selected_playbook_count=%s has_role_bindings=%s "
+            "rule_release_id=%s reused=%s",
+            review_id,
+            request.contract_type,
+            request.review_attitude,
+            request.primary_playbook_id or "NONE",
+            len(request.selected_playbook_ids),
+            bool(request.roles_by_playbook),
+            request.rule_release_id or "UNSPECIFIED",
+            reused,
+        )
 
         self.state_repository.ensure_initial_attempt(
             review_id,
@@ -507,6 +525,10 @@ class RuntimeContractReviewService:
             our_party_name=reservation.our_party_name,
             contract_type=reservation.contract_type,
             review_attitude=reservation.review_attitude,
+            primary_playbook_id=reservation.primary_playbook_id,
+            selected_playbook_ids=reservation.selected_playbook_ids,
+            roles_by_playbook=reservation.roles_by_playbook,
+            rule_release_id=reservation.rule_release_id,
             schema_version=reservation.schema_version,
             execution_mode=reservation.execution_mode,
             confirmed_party_a_name=reservation.confirmed_party_a_name,
@@ -576,6 +598,7 @@ class RuntimeContractReviewService:
             return CreateReviewData(
                 review_id=state["id"],
                 document_id=state["document_id"],
+                rule_release_id=state.get("rule_release_id"),
                 model_pack_id=state["model_pack_id"],
                 status=ReviewStatus.RUNNING,
                 current_stage=state["current_stage"] or ReviewStage.PARSING,
@@ -587,6 +610,7 @@ class RuntimeContractReviewService:
         return CreateReviewData(
             review_id=state["id"],
             document_id=state["document_id"],
+            rule_release_id=state.get("rule_release_id"),
             model_pack_id=state["model_pack_id"],
             status=ReviewStatus.CREATED,
             current_stage=None,

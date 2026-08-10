@@ -94,8 +94,12 @@ class ContractTaskInput(StrictModel):
     execution_mode: Literal["FULL_REVIEW", "PARTY_RESOLUTION"] = "FULL_REVIEW"
     confirmed_party_a_name: str | None = Field(default=None, min_length=1, max_length=500)
     confirmed_party_b_name: str | None = Field(default=None, min_length=1, max_length=500)
-    contract_type: Literal["AUTO"]
-    review_attitude: Literal["NEUTRAL"]
+    contract_type: str = Field(default="AUTO", pattern=r"^[A-Z][A-Z0-9_]{0,79}$", max_length=80)
+    review_attitude: Literal["STRONG", "NEUTRAL", "WEAK"] = "NEUTRAL"
+    primary_playbook_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]{0,79}$", max_length=80)
+    selected_playbook_ids: list[str] = Field(default_factory=lambda: ["base_neutral"], min_length=1, max_length=20)
+    roles_by_playbook: dict[str, str] = Field(default_factory=dict, max_length=20)
+    rule_release_id: str | None = Field(default=None, max_length=160)
 
     @model_validator(mode="after")
     def validate_confirmed_parties(self) -> "ContractTaskInput":
@@ -106,6 +110,30 @@ class ContractTaskInput(StrictModel):
             and self.confirmed_party_a_name == self.confirmed_party_b_name
         ):
             raise ValueError("confirmed contract parties must be distinct")
+        selected = list(dict.fromkeys(self.selected_playbook_ids))
+        if "base_neutral" not in selected:
+            selected.insert(0, "base_neutral")
+        if self.primary_playbook_id is not None:
+            if self.primary_playbook_id == "base_neutral":
+                raise ValueError("primary_playbook_id cannot be base_neutral")
+            if self.primary_playbook_id not in selected:
+                selected.append(self.primary_playbook_id)
+        if len(selected) > 20:
+            raise ValueError("selected_playbook_ids cannot contain more than 20 values")
+        if any(
+            re.fullmatch(r"^[a-z][a-z0-9_-]{0,79}$", playbook_id) is None
+            for playbook_id in selected
+        ):
+            raise ValueError("selected_playbook_ids contains an invalid playbook ID")
+        if any(playbook_id not in selected for playbook_id in self.roles_by_playbook):
+            raise ValueError("roles_by_playbook keys must be enabled selected_playbook_ids")
+        if any(
+            re.fullmatch(r"^[A-Z][A-Z0-9_]{0,79}$", role) is None
+            for role in self.roles_by_playbook.values()
+        ):
+            raise ValueError("roles_by_playbook contains an invalid role code")
+        self.selected_playbook_ids = selected
+        self.roles_by_playbook = dict(sorted(self.roles_by_playbook.items()))
         return self
 
 
@@ -515,6 +543,12 @@ class InternalContractBlocksEnvelope(StrictModel):
     request_id: str = Field(min_length=1, max_length=160)
 
 
+class InternalContractRiskPlanEnvelope(StrictModel):
+    success: Literal[True]
+    data: dict[str, Any]
+    request_id: str = Field(min_length=1, max_length=160)
+
+
 class InternalContractWindowPlanData(WindowPipelineRequest):
     review_id: str = Field(min_length=1, max_length=160)
 
@@ -533,7 +567,7 @@ def _callback_identity(delivery: ResultSinkDelivery) -> tuple[str, int, str, str
     return task_input.review_id, task_input.attempt_no, delivery.task.id, run_id
 
 
-def _party_window_context(party: PartyResolutionStageResult) -> str:
+def _party_window_context(party: PartyResolutionStageResult, review_attitude: str) -> str:
     return "\n".join(
         (
             "Validated party context only; never use these values as extraction_text or evidence:",
@@ -543,7 +577,7 @@ def _party_window_context(party: PartyResolutionStageResult) -> str:
             f"OUR_PARTY={party.our_party}",
             f"COUNTERPARTY={party.counterparty}",
             f"CONTRACT_TYPE={party.contract_type}",
-            "REVIEW_ATTITUDE=NEUTRAL",
+            f"REVIEW_ATTITUDE={review_attitude}",
         )
     )
 
@@ -764,7 +798,7 @@ def _window_contract_ir_handler(base_url: str, token: str, model_id: str):
                 code="FRAMEWORK_RUN_FAILED",
                 retryable=False,
             )
-        party_context = _party_window_context(party)
+        party_context = _party_window_context(party, task_input.review_attitude)
         request = WindowPipelineRequest.model_validate(
             plan.model_dump(
                 mode="json",
@@ -838,7 +872,7 @@ def _direct_contract_review_handler(base_url: str, token: str, model_id: str):
 
     async def execute(context: StageExecutionContext) -> StageServiceResult:
         try:
-            from contract.risk.models import RiskReviewPlanInput, RiskSourceBlock
+            from contract.risk.models import RiskReviewPlan, RiskReviewPlanInput, RiskSourceBlock
             from contract.api.models import ContractProfile as DirectContractProfile
             from contract.callback.models import (
                 ExtractContractIrStageResult as DirectExtractContractIrStageResult,
@@ -925,6 +959,74 @@ def _direct_contract_review_handler(base_url: str, token: str, model_id: str):
                 code="FRAMEWORK_RUN_FAILED",
                 retryable=False,
             )
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=60) as client:
+                response = await client.post(
+                    f"/v1/internal/contract-reviews/{task_input.review_id}/risk-plan",
+                    headers={
+                        "X-Internal-Service": "aituge-framework",
+                        "X-Internal-Token": token,
+                        "X-Request-Id": f"contract-direct:{context.run.id}:risk-plan",
+                    },
+                    json={
+                        "review_id": task_input.review_id,
+                        "document_id": task_input.document_id,
+                    },
+                )
+            response.raise_for_status()
+            risk_plan = RiskReviewPlan.model_validate(
+                InternalContractRiskPlanEnvelope.model_validate(response.json()).data
+            )
+        except httpx.HTTPStatusError as exc:
+            raise StageExecutionError(
+                f"Contract risk plan returned HTTP {exc.response.status_code}",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=exc.response.status_code >= 500,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise StageExecutionError(
+                f"Contract risk plan request failed: {exc}",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=True,
+            ) from exc
+        except ValueError as exc:
+            raise StageExecutionError(
+                "Contract risk plan response is invalid.",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=False,
+            ) from exc
+
+        if (
+            risk_plan.review_id != task_input.review_id
+            or risk_plan.document_id != task_input.document_id
+            or risk_plan.generation_id != parsed.generation_id
+        ):
+            raise StageExecutionError(
+                "Contract risk plan identity does not match the frozen Contract IR.",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=False,
+            )
+        if (
+            task_input.rule_release_id is not None
+            and risk_plan.rule_release_id != task_input.rule_release_id
+        ):
+            raise StageExecutionError(
+                "Contract risk plan rule release does not match the frozen task.",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=False,
+            )
+        if (
+            risk_plan.primary_playbook_id != task_input.primary_playbook_id
+            or risk_plan.selected_playbook_ids != task_input.selected_playbook_ids
+            or risk_plan.roles_by_playbook != task_input.roles_by_playbook
+            or risk_plan.review_attitude != task_input.review_attitude
+        ):
+            raise StageExecutionError(
+                "Contract risk plan selection does not match the frozen task.",
+                code="FRAMEWORK_RUN_FAILED",
+                retryable=False,
+            )
+
         value = RiskReviewPlanInput(
             review_id=task_input.review_id,
             document_id=task_input.document_id,
@@ -933,7 +1035,11 @@ def _direct_contract_review_handler(base_url: str, token: str, model_id: str):
             perspective=party.perspective,
             our_party=party.our_party,
             counterparty=party.counterparty,
-            contract_type=party.contract_type,
+            contract_type=(
+                task_input.contract_type
+                if task_input.contract_type != "AUTO"
+                else party.contract_type
+            ),
             review_attitude=task_input.review_attitude,
             stage_result=DirectExtractContractIrStageResult.model_validate(
                 stage_result.model_dump(mode="json")
@@ -949,7 +1055,10 @@ def _direct_contract_review_handler(base_url: str, token: str, model_id: str):
                 for item in blocks.blocks
                 if item.block_type != "footer" and item.text
             ],
-            selected_playbook_ids=["base_neutral"],
+            primary_playbook_id=task_input.primary_playbook_id,
+            selected_playbook_ids=task_input.selected_playbook_ids,
+            roles_by_playbook=task_input.roles_by_playbook,
+            rule_release_id=task_input.rule_release_id,
         )
         roles = contract_party_roles(
             perspective=value.perspective,
@@ -994,6 +1103,7 @@ def _direct_contract_review_handler(base_url: str, token: str, model_id: str):
                 run_id_prefix=f"formal-direct-{context.run.id}",
                 allow_dynamic_base_batch_count=True,
                 diagnostic_allow_oracle_drift=True,
+                plan=risk_plan,
             )
         except Exception as exc:
             code = getattr(exc, "code", "FRAMEWORK_RUN_FAILED")

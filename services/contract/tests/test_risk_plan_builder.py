@@ -8,6 +8,8 @@ from contract.risk.models import (
     Criticality,
     ExecutionMode,
     PlaybookManifest,
+    ReviewAtomSnapshot,
+    RuleReleaseSnapshot,
     RiskHorizontalCandidate,
     SpecialistReviewerSpec,
 )
@@ -233,3 +235,121 @@ def test_strict_models_reject_invalid_enum_values() -> None:
         Criticality("MUST")
     with pytest.raises(ValueError):
         ExecutionMode("AGENT")
+
+
+
+def test_plan_freezes_review_atoms_by_release_without_reclassifying_raw_rules() -> None:
+    value = risk_plan_input().model_copy(
+        update={
+            "rule_release_id": "release-20260810-v3",
+            "rule_release": RuleReleaseSnapshot(
+                rule_release_id="release-20260810-v3",
+                source_rule_pack_version="xingfa-source-20260810",
+                taxonomy_version="taxonomy-v3",
+                compiler_version="compiler-3",
+                semantic_projection_version="projection-3",
+            ),
+            "review_atoms": [
+                ReviewAtomSnapshot(
+                    source_rule_id="xingfa-rule-001",
+                    atom_id="atom-xingfa-rule-001-01",
+                    issue_key="delivery.scope",
+                    mapping_status="BASE_MAPPED",
+                    primary_base_check_code="PO-001",
+                    execution_domain="performance_obligations",
+                    compiler_version="compiler-3",
+                    projection_version="projection-3",
+                ),
+                ReviewAtomSnapshot(
+                    source_rule_id="xingfa-rule-001",
+                    atom_id="atom-xingfa-rule-001-02",
+                    issue_key="delivery.special",
+                    mapping_status="SPECIAL_UNMAPPED",
+                    primary_base_check_code=None,
+                    execution_domain="special_unmapped",
+                    compiler_version="compiler-3",
+                    projection_version="projection-3",
+                ),
+            ],
+        }
+    )
+
+    plan = RiskReviewPlanBuilder().build(value)
+
+    assert plan.rule_release_id == "release-20260810-v3"
+    assert plan.rule_release is not None
+    assert plan.rule_release.source_rule_pack_version == "xingfa-source-20260810"
+    assert plan.source_rule_ids == ["xingfa-rule-001"]
+    assert [item.atom_id for item in plan.review_atoms] == ["atom-xingfa-rule-001-01"]
+    assert [item.atom_id for item in plan.special_atoms] == ["atom-xingfa-rule-001-02"]
+    assert plan.review_atoms[0].execution_domain == "performance_obligations"
+    assert plan.plan_hash != RiskReviewPlanBuilder().build(risk_plan_input()).plan_hash
+
+
+def test_plan_preserves_data_backed_pack_selection_without_static_registry_registration() -> None:
+    plan = RiskReviewPlanBuilder().build(
+        risk_plan_input().model_copy(
+            update={
+                "primary_playbook_id": "software-development",
+                "rule_release_id": "release-20260810-v3",
+                "rule_release": RuleReleaseSnapshot(
+                    rule_release_id="release-20260810-v3",
+                    source_rule_pack_version="xingfa-source-20260810",
+                    taxonomy_version="taxonomy-v3",
+                    compiler_version="compiler-3",
+                    semantic_projection_version="projection-3",
+                ),
+                "selected_playbook_ids": [
+                    "base_neutral",
+                    "software-development",
+                    "technical-service",
+                ],
+                "roles_by_playbook": {
+                    "software-development": "SUPPLIER",
+                    "technical-service": "SUPPLIER",
+                },
+            }
+        )
+    )
+
+    assert plan.primary_playbook_id == "software-development"
+    assert plan.selected_playbook_ids == [
+        "base_neutral",
+        "software-development",
+        "technical-service",
+    ]
+    assert plan.roles_by_playbook == {
+        "software-development": "SUPPLIER",
+        "technical-service": "SUPPLIER",
+    }
+    assert len(plan.review_units) == 7
+
+
+def test_data_backed_pack_cannot_silently_fall_back_to_base_checks() -> None:
+    with pytest.raises(ContractError) as error:
+        RiskReviewPlanBuilder().build(
+            risk_plan_input().model_copy(
+                update={
+                    "primary_playbook_id": "software-development",
+                    "selected_playbook_ids": ["base_neutral", "software-development"],
+                }
+            )
+        )
+    assert error.value.code == "RULE_RELEASE_NOT_RESOLVED"
+
+
+def test_plan_rejects_unfrozen_review_atoms() -> None:
+    atom = ReviewAtomSnapshot(
+        source_rule_id="xingfa-rule-001",
+        atom_id="atom-xingfa-rule-001-01",
+        issue_key="delivery.scope",
+        mapping_status="BASE_MAPPED",
+        primary_base_check_code="PO-001",
+        execution_domain="performance_obligations",
+        compiler_version="compiler-3",
+        projection_version="projection-3",
+    )
+    with pytest.raises(ValueError, match="frozen rule_release snapshot"):
+        RiskReviewPlanBuilder().build(
+            risk_plan_input().model_copy(update={"review_atoms": [atom]})
+        )

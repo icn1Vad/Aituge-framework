@@ -125,6 +125,10 @@ class FrameworkHttpGateway(FrameworkGateway):
                 "confirmed_party_b_name": request.confirmed_party_b_name,
                 "contract_type": request.contract_type,
                 "review_attitude": request.review_attitude,
+                "primary_playbook_id": request.primary_playbook_id,
+                "selected_playbook_ids": list(request.selected_playbook_ids),
+                "roles_by_playbook": dict(sorted((request.roles_by_playbook or {}).items())),
+                "rule_release_id": request.rule_release_id,
             },
             "stream": False,
             "metadata": {

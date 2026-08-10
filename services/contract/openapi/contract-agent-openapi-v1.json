@@ -4,12 +4,12 @@
       "Body_create_party_resolution_v1_contract_party_resolutions_post": {
         "properties": {
           "file": {
-            "contentMediaType": "application/octet-stream",
+            "format": "binary",
             "title": "File",
             "type": "string"
           },
           "request": {
-            "title": "Request",
+            "title": "Request Payload",
             "type": "string"
           }
         },
@@ -23,12 +23,12 @@
       "Body_create_review_v1_contract_reviews_post": {
         "properties": {
           "file": {
-            "contentMediaType": "application/octet-stream",
+            "format": "binary",
             "title": "File",
             "type": "string"
           },
           "request": {
-            "title": "Request",
+            "title": "Request Payload",
             "type": "string"
           }
         },
@@ -767,7 +767,8 @@
         "properties": {
           "contract_type": {
             "maxLength": 80,
-            "pattern": "^[A-Z][A-Z0-9_]*$",
+            "minLength": 1,
+            "pattern": "^[A-Z][A-Z0-9_]{0,79}$",
             "title": "Contract Type",
             "type": "string"
           },
@@ -793,8 +794,12 @@
             "$ref": "#/components/schemas/Perspective"
           },
           "review_attitude": {
-            "const": "NEUTRAL",
             "default": "NEUTRAL",
+            "enum": [
+              "STRONG",
+              "NEUTRAL",
+              "WEAK"
+            ],
             "title": "Review Attitude",
             "type": "string"
           }
@@ -940,6 +945,18 @@
             "minLength": 1,
             "title": "Review Id",
             "type": "string"
+          },
+          "rule_release_id": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9._:-]{1,160}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule Release Id"
           },
           "schema_version": {
             "const": "1.0",
@@ -1628,7 +1645,9 @@
             "title": "Confirmed Party B Name"
           },
           "contract_type": {
-            "const": "AUTO",
+            "default": "AUTO",
+            "maxLength": 80,
+            "pattern": "^[A-Z][A-Z0-9_]{0,79}$",
             "title": "Contract Type",
             "type": "string"
           },
@@ -1686,8 +1705,26 @@
             "title": "Perspective",
             "type": "string"
           },
+          "primary_playbook_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "pattern": "^[a-z][a-z0-9_-]{0,79}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Playbook Id"
+          },
           "review_attitude": {
-            "const": "NEUTRAL",
+            "default": "NEUTRAL",
+            "enum": [
+              "STRONG",
+              "NEUTRAL",
+              "WEAK"
+            ],
             "title": "Review Attitude",
             "type": "string"
           },
@@ -1697,10 +1734,39 @@
             "title": "Review Id",
             "type": "string"
           },
+          "roles_by_playbook": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 20,
+            "title": "Roles By Playbook",
+            "type": "object"
+          },
+          "rule_release_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule Release Id"
+          },
           "schema_version": {
             "const": "1.0",
             "title": "Schema Version",
             "type": "string"
+          },
+          "selected_playbook_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Selected Playbook Ids",
+            "type": "array"
           }
         },
         "required": [
@@ -1710,9 +1776,7 @@
           "business_task_id",
           "contract_version_id",
           "document_id",
-          "perspective",
-          "contract_type",
-          "review_attitude"
+          "perspective"
         ],
         "title": "FrameworkTaskInput",
         "type": "object"

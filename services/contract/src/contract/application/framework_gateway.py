@@ -29,6 +29,10 @@ class FrameworkExecutionRequest:
     party_resolution_id: str | None = None
     confirmed_party_a_name: str | None = None
     confirmed_party_b_name: str | None = None
+    primary_playbook_id: str | None = None
+    selected_playbook_ids: tuple[str, ...] = ("base_neutral",)
+    roles_by_playbook: dict[str, str] | None = None
+    rule_release_id: str | None = None
 
     @property
     def task_idempotency_key(self) -> str:
@@ -58,6 +62,10 @@ class FrameworkExecutionRequest:
             execution_mode=self.execution_mode,
             confirmed_party_a_name=self.confirmed_party_a_name,
             confirmed_party_b_name=self.confirmed_party_b_name,
+            primary_playbook_id=self.primary_playbook_id,
+            selected_playbook_ids=self.selected_playbook_ids,
+            roles_by_playbook=self.roles_by_playbook,
+            rule_release_id=self.rule_release_id,
         )
 
 @dataclass(frozen=True, slots=True)

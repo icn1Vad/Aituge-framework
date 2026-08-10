@@ -18,6 +18,18 @@ from pydantic import (
 SCHEMA_VERSION = "1.0"
 Identifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
 HashValue = Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
+ContractTypeCode = Annotated[
+    str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Z][A-Z0-9_]{0,79}$", min_length=1, max_length=80)
+]
+PlaybookId = Annotated[
+    str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z][a-z0-9_-]{0,79}$", min_length=1, max_length=80)
+]
+RoleCode = Annotated[
+    str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Z][A-Z0-9_]{0,79}$", min_length=1, max_length=80)
+]
+RuleReleaseId = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z0-9._:-]{1,160}$")]
+ReviewAttitude = Literal["STRONG", "NEUTRAL", "WEAK"]
+BASE_PLAYBOOK_ID = "base_neutral"
 
 
 class StrictModel(BaseModel):
@@ -121,12 +133,32 @@ class CreateReviewRequest(StrictModel):
     confirmed_party_b_name: Annotated[
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)
     ] | None = None
-    contract_type: Literal["AUTO"]
-    review_attitude: Literal["NEUTRAL"]
+    contract_type: ContractTypeCode = "AUTO"
+    review_attitude: ReviewAttitude = "NEUTRAL"
+    primary_playbook_id: PlaybookId | None = None
+    selected_playbook_ids: list[PlaybookId] = Field(
+        default_factory=lambda: [BASE_PLAYBOOK_ID], min_length=1, max_length=20
+    )
+    roles_by_playbook: dict[PlaybookId, RoleCode] = Field(default_factory=dict, max_length=20)
+    rule_release_id: RuleReleaseId | None = None
     schema_version: Literal["1.0"]
 
     @model_validator(mode="after")
     def validate_confirmed_parties(self) -> "CreateReviewRequest":
+        selected = list(dict.fromkeys(self.selected_playbook_ids))
+        if BASE_PLAYBOOK_ID not in selected:
+            selected.insert(0, BASE_PLAYBOOK_ID)
+        if self.primary_playbook_id is not None:
+            if self.primary_playbook_id == BASE_PLAYBOOK_ID:
+                raise ValueError("primary_playbook_id cannot be base_neutral")
+            if self.primary_playbook_id not in selected:
+                selected.append(self.primary_playbook_id)
+        if len(selected) > 20:
+            raise ValueError("selected_playbook_ids cannot contain more than 20 values")
+        if any(playbook_id not in selected for playbook_id in self.roles_by_playbook):
+            raise ValueError("roles_by_playbook keys must be enabled selected_playbook_ids")
+        self.selected_playbook_ids = selected
+        self.roles_by_playbook = dict(sorted(self.roles_by_playbook.items()))
         if (self.confirmed_party_a_name is None) != (self.confirmed_party_b_name is None):
             raise ValueError("confirmed_party_a_name and confirmed_party_b_name must be supplied together")
         if (
@@ -172,6 +204,7 @@ class FrameworkMappingModel(StrictModel):
 class CreateReviewData(FrameworkMappingModel):
     review_id: Identifier
     document_id: Identifier
+    rule_release_id: RuleReleaseId | None = None
     status: Literal[ReviewStatus.CREATED, ReviewStatus.RUNNING]
     reused: bool
     schema_version: Literal["1.0"] = "1.0"
@@ -287,13 +320,13 @@ class CancelReviewData(StrictModel):
 
 
 class ContractProfile(StrictModel):
-    contract_type: Annotated[str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=80)]
+    contract_type: ContractTypeCode
     party_a: PartyProfile
     party_b: PartyProfile
     perspective: Perspective
     our_party: Annotated[str, StringConstraints(min_length=1, max_length=500)]
     counterparty: Annotated[str, StringConstraints(min_length=1, max_length=500)]
-    review_attitude: Literal["NEUTRAL"] = "NEUTRAL"
+    review_attitude: ReviewAttitude = "NEUTRAL"
 
     @model_validator(mode="after")
     def validate_perspective(self) -> "ContractProfile":
