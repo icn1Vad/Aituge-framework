@@ -40,7 +40,21 @@ class IRDocument(StrictIRModel):
 class IRParty(StrictIRModel):
     role: Literal["PARTY_A", "PARTY_B", "OTHER"]
     name: NonEmptyText
-    source_anchors: list[SourceAnchor] = Field(min_length=1)
+    name_resolved: bool = True
+    source_anchors: list[SourceAnchor] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_identity_source(self) -> "IRParty":
+        if self.name_resolved and not self.source_anchors:
+            raise ValueError("Resolved party names require at least one source anchor")
+        placeholder_by_role = {"PARTY_A": "甲方", "PARTY_B": "乙方"}
+        if not self.name_resolved:
+            expected = placeholder_by_role.get(self.role)
+            if expected is None or self.name != expected:
+                raise ValueError(
+                    "Unresolved party names must use the canonical role placeholder"
+                )
+        return self
 
 
 class IRDefinition(StrictIRModel):
