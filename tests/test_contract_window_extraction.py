@@ -3,6 +3,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from service.conversation.llm_runner import LlmCompletionResult
 from services.contract.capabilities.window_extraction import (
     WindowExtractionEngine,
     WindowExtractionError,
@@ -17,9 +18,25 @@ class FakeRuntime:
         self.response = response
         self.calls: list[dict] = []
 
-    async def complete(self, messages, **kwargs):
+    async def complete_with_usage(self, messages, **kwargs):
         self.calls.append({"messages": messages, **kwargs})
-        return self.response
+        return LlmCompletionResult(
+            content=self.response,
+            prompt_tokens=100,
+            cached_tokens=0,
+            completion_tokens=20,
+            total_tokens=120,
+            time_to_first_token_ms=1,
+            model_duration_ms=2,
+            trace_id="trace-window-test",
+            provider_request_id="request-window-test",
+            finish_reason="stop",
+            review_unit_id="window_extraction",
+            review_id=None,
+            framework_run_id=None,
+            attempt_no=None,
+            repair_no=kwargs["repair_no"],
+        )
 
 
 class FakeEngine:
@@ -174,7 +191,8 @@ async def test_window_extractor_uses_framework_runtime_and_exact_block_alignment
     assert "OBLIGATION 和 PAYMENT" in call["system_prompt"]
     assert "发票税费、调价、扣款抵销" in call["system_prompt"]
     assert "一般服务质量、响应时限" in call["system_prompt"]
-    assert "仅引用适用法律不等于争议解决" in call["system_prompt"]
+    assert "适用法律本身" in call["system_prompt"]
+    assert "不等于争议解决路径完整" in call["system_prompt"]
     assert "context_only 中的合同主体" in call["system_prompt"]
     assert "不得把合同当事人" in call["system_prompt"]
     assert "同时包含 term 和 meaning 的完整定义性原文句段" in call["system_prompt"]
@@ -502,6 +520,50 @@ async def test_window_extractor_rejects_ambiguous_normalized_location() -> None:
         )
 
     assert exc_info.value.code == "ALIGNMENT_AMBIGUOUS"
+
+
+@pytest.mark.asyncio
+async def test_window_extractor_grounds_every_repeated_date_occurrence() -> None:
+    date_text = "2025年4月9日"
+    source = f"签订日期：{date_text}。\n生效日期：{date_text}。"
+    runtime = FakeRuntime(
+        json.dumps(
+            {
+                "extractions": [
+                    {
+                        "extraction_class": "DATE",
+                        "extraction_text": date_text,
+                        "subject": None,
+                        "predicate": None,
+                        "object": date_text,
+                        "term": None,
+                        "meaning": None,
+                        "referenced_clause_nos": [],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    result = await WindowExtractionEngine(runtime_factory=lambda _: runtime).extract(
+        _single_block_request(source),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    dates = [item for item in result.extractions if item.extraction_class == "DATE"]
+    expected_starts = [
+        index
+        for index in range(len(source))
+        if source.startswith(date_text, index)
+    ]
+    assert [item.rendered_char_start for item in dates] == expected_starts
+    assert [item.extraction_text for item in dates] == [date_text, date_text]
+    assert [item.predicate for item in dates] == ["时间约束为", "时间约束为"]
+    assert [item.object for item in dates] == [date_text, date_text]
+    assert [item.source_spans[0].quoted_text for item in dates] == [date_text, date_text]
+    assert len(result.value_canonicalizations) == 2
 
 
 @pytest.mark.asyncio
