@@ -11,7 +11,6 @@ from contract.api.models import (
     Evidence,
     EvidenceType,
     Finding,
-    PartyProfile,
     ReviewSummary,
     StrictModel,
 )
@@ -53,12 +52,17 @@ class ParseContractStageResult(StrictModel):
     ir_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
+class StagePartyProfile(StrictModel):
+    name: str = Field(min_length=1, max_length=500)
+    name_resolved: bool = True
+
+
 class PartyResolutionStageResult(StrictModel):
     result_type: Literal["PARTY_RESOLUTION_STAGE_V1"]
     resolution_status: Literal["RESOLVED", "PARTIAL"] = "RESOLVED"
     contract_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=80)
-    party_a: PartyProfile | None = None
-    party_b: PartyProfile | None = None
+    party_a: StagePartyProfile | None = None
+    party_b: StagePartyProfile | None = None
     perspective: Literal["PARTY_A", "PARTY_B"]
     our_party: str | None = Field(default=None, min_length=1, max_length=500)
     counterparty: str | None = Field(default=None, min_length=1, max_length=500)

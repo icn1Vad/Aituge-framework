@@ -725,6 +725,15 @@ class FrameworkCallbackRepository:
                 )
             return
         if stage_id == "resolve_parties":
+            if result.get("resolution_status", "RESOLVED") != "RESOLVED":
+                raise FrameworkCallbackRepository._party_unresolved(
+                    review,
+                    result,
+                    "Contract party names could not be fully resolved",
+                    extra_details={
+                        "resolution_status": result.get("resolution_status"),
+                    },
+                )
             if result["perspective"] != review["perspective"]:
                 raise FrameworkCallbackRepository._party_unresolved(
                     review,
@@ -825,10 +834,18 @@ class FrameworkCallbackRepository:
 
         parties = [
             FrameworkCallbackRepository._materialize_party(
-                "PARTY_A", party["party_a"]["name"], blocks, generation["id"]
+                "PARTY_A",
+                party["party_a"]["name"],
+                blocks,
+                generation["id"],
+                name_resolved=party["party_a"].get("name_resolved", True),
             ),
             FrameworkCallbackRepository._materialize_party(
-                "PARTY_B", party["party_b"]["name"], blocks, generation["id"]
+                "PARTY_B",
+                party["party_b"]["name"],
+                blocks,
+                generation["id"],
+                name_resolved=party["party_b"].get("name_resolved", True),
             ),
         ]
         contract_ir = copy.deepcopy(structural_ir)
@@ -894,8 +911,19 @@ class FrameworkCallbackRepository:
             """,
             (generation["generation_id"], review["tenant_id"]),
         ).fetchall()
-        party_a = result["party_a"]["name"]
-        party_b = result["party_b"]["name"]
+        party_a_value = result.get("party_a")
+        party_b_value = result.get("party_b")
+        if not isinstance(party_a_value, dict) or not isinstance(party_b_value, dict):
+            raise FrameworkCallbackRepository._party_unresolved(
+                review,
+                result,
+                "Contract party names could not be fully resolved",
+                extra_details={
+                    "resolution_status": result.get("resolution_status"),
+                },
+            )
+        party_a = party_a_value["name"]
+        party_b = party_b_value["name"]
         if FrameworkCallbackRepository._normalized_text(party_a) == FrameworkCallbackRepository._normalized_text(
             party_b
         ):
@@ -905,9 +933,13 @@ class FrameworkCallbackRepository:
                 "Resolved contract parties must be distinct",
             )
         missing = [
-            name
-            for name in (party_a, party_b)
-            if not any(FrameworkCallbackRepository._party_source_span(name, row["text"]) for row in rows)
+            value["name"]
+            for value in (party_a_value, party_b_value)
+            if value.get("name_resolved", True)
+            and not any(
+                FrameworkCallbackRepository._party_source_span(value["name"], row["text"])
+                for row in rows
+            )
         ]
         if missing:
             raise FrameworkCallbackRepository._party_unresolved(
@@ -917,8 +949,13 @@ class FrameworkCallbackRepository:
                 extra_details={"missing_party_names": missing},
             )
         requested_our_party = normalize_party_name(review["our_party_name"])
-        resolved_our_party = party_a if review["perspective"] == "PARTY_A" else party_b
-        if requested_our_party is not None and FrameworkCallbackRepository._normalized_text(
+        resolved_our_party_value = (
+            party_a_value if review["perspective"] == "PARTY_A" else party_b_value
+        )
+        resolved_our_party = resolved_our_party_value["name"]
+        if requested_our_party is not None and resolved_our_party_value.get(
+            "name_resolved", True
+        ) and FrameworkCallbackRepository._normalized_text(
             requested_our_party
         ) != FrameworkCallbackRepository._normalized_text(resolved_our_party):
             raise FrameworkCallbackRepository._party_unresolved(
@@ -1083,6 +1120,8 @@ class FrameworkCallbackRepository:
         name: str,
         rows: list[dict[str, Any]],
         generation_id: str,
+        *,
+        name_resolved: bool = True,
     ) -> dict[str, Any]:
         for row in rows:
             span = FrameworkCallbackRepository._party_source_span(name, row["text"])
@@ -1095,6 +1134,7 @@ class FrameworkCallbackRepository:
             return {
                 "role": role,
                 "name": name,
+                "name_resolved": name_resolved,
                 "source_anchors": [
                     {
                         "anchor_id": f"anchor-{digest}",
@@ -1104,6 +1144,13 @@ class FrameworkCallbackRepository:
                         "char_end": end,
                     }
                 ],
+            }
+        if not name_resolved:
+            return {
+                "role": role,
+                "name": name,
+                "name_resolved": False,
+                "source_anchors": [],
             }
         raise ContractError(
             "RESULT_INVALID",
@@ -1147,6 +1194,8 @@ class FrameworkCallbackRepository:
                 status_code=422,
             )
         for party in contract_ir["parties"]:
+            if not party.get("name_resolved", True) and not party["source_anchors"]:
+                continue
             anchored_text = "\n".join(
                 blocks[anchor["block_id"]]["text"][anchor["char_start"] : anchor["char_end"]]
                 for anchor in party["source_anchors"]
@@ -1327,9 +1376,16 @@ class FrameworkCallbackRepository:
         *,
         extra_details: dict[str, Any] | None = None,
     ) -> ContractError:
+        candidate_parties = []
+        for key in ("party_a", "party_b"):
+            party = result.get(key)
+            if isinstance(party, dict):
+                name = party.get("name")
+                if isinstance(name, str) and name:
+                    candidate_parties.append(name)
         details = {
             "perspective": review["perspective"],
-            "candidate_parties": [result["party_a"]["name"], result["party_b"]["name"]],
+            "candidate_parties": candidate_parties,
         }
         if extra_details:
             details.update(extra_details)

@@ -149,6 +149,7 @@ class ContractIrToolInput(ContractDocumentToolInput):
 
 class PartyValue(StrictModel):
     name: str = Field(min_length=1, max_length=500)
+    name_resolved: bool = True
 
 
 class SourceAnchor(StrictModel):
@@ -552,6 +553,8 @@ def _party_window_context(party: PartyResolutionStageResult) -> str:
             "Validated party context only; never use these values as extraction_text or evidence:",
             f"PARTY_A_NAME={party.party_a.name}",
             f"PARTY_B_NAME={party.party_b.name}",
+            f"PARTY_A_NAME_RESOLVED={party.party_a.name_resolved}",
+            f"PARTY_B_NAME_RESOLVED={party.party_b.name_resolved}",
             f"PERSPECTIVE={party.perspective}",
             f"OUR_PARTY={party.our_party}",
             f"COUNTERPARTY={party.counterparty}",
@@ -733,28 +736,28 @@ def _direct_party_resolution_handler(base_url: str, token: str):
         ):
             party_a_name = None
             party_b_name = None
-        if party_a_name is not None and party_b_name is not None:
-            our_party = party_a_name if task_input.perspective == "PARTY_A" else party_b_name
-            counterparty = party_b_name if task_input.perspective == "PARTY_A" else party_a_name
-            result = PartyResolutionStageResult(
-                result_type="PARTY_RESOLUTION_STAGE_V1",
-                resolution_status="RESOLVED",
-                contract_type="AUTO",
-                party_a={"name": party_a_name},
-                party_b={"name": party_b_name},
-                perspective=task_input.perspective,
-                our_party=our_party,
-                counterparty=counterparty,
-            )
-        else:
-            result = PartyResolutionStageResult(
-                result_type="PARTY_RESOLUTION_STAGE_V1",
-                resolution_status="PARTIAL",
-                contract_type="AUTO",
-                party_a={"name": party_a_name} if party_a_name is not None else None,
-                party_b={"name": party_b_name} if party_b_name is not None else None,
-                perspective=task_input.perspective,
-            )
+        party_a_name_resolved = party_a_name is not None
+        party_b_name_resolved = party_b_name is not None
+        party_a_name = party_a_name or "甲方"
+        party_b_name = party_b_name or "乙方"
+        our_party = party_a_name if task_input.perspective == "PARTY_A" else party_b_name
+        counterparty = party_b_name if task_input.perspective == "PARTY_A" else party_a_name
+        result = PartyResolutionStageResult(
+            result_type="PARTY_RESOLUTION_STAGE_V1",
+            resolution_status="RESOLVED",
+            contract_type="AUTO",
+            party_a={
+                "name": party_a_name,
+                "name_resolved": party_a_name_resolved,
+            },
+            party_b={
+                "name": party_b_name,
+                "name_resolved": party_b_name_resolved,
+            },
+            perspective=task_input.perspective,
+            our_party=our_party,
+            counterparty=counterparty,
+        )
         duration_ms = max(0, round((time.perf_counter() - started_at) * 1000))
         return StageServiceResult(
             output=result.model_dump(mode="json"),
@@ -767,6 +770,8 @@ def _direct_party_resolution_handler(base_url: str, token: str):
                 "duration_ms": duration_ms,
                 "candidate_count": len(candidates),
                 "model_call_count": 0,
+                "party_a_name_resolved": party_a_name_resolved,
+                "party_b_name_resolved": party_b_name_resolved,
             },
         )
 
