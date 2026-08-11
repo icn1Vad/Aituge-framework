@@ -63,15 +63,17 @@ def test_confirmed_parties_must_be_a_complete_distinct_pair_for_the_selected_per
         )
 
 
-def test_succeeded_party_resolution_must_expose_both_party_names() -> None:
-    with pytest.raises(ValidationError):
-        PartyResolutionStatusData(
-            resolution_id="resolution-1",
-            contract_version_id="20001",
-            document_id="document-1",
-            status="SUCCEEDED",
-            updated_at="2026-07-30T00:00:00Z",
-        )
+def test_succeeded_party_resolution_can_leave_names_for_user_input() -> None:
+    value = PartyResolutionStatusData(
+        resolution_id="resolution-1",
+        contract_version_id="20001",
+        document_id="document-1",
+        status="SUCCEEDED",
+        party_a_name="Party A",
+        updated_at="2026-07-30T00:00:00Z",
+    )
+    assert value.party_a_name == "Party A"
+    assert value.party_b_name is None
 
 
 def test_text_evidence_hash_is_validated() -> None:

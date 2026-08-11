@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import pytest
-
 from contract.ir.models import IRParty, SourceAnchor
 from contract.party import extract_party_candidates
 from contract.parser.models import ParsedContractBlock
 from services.contract.capabilities.register import _unique_party_name
-from task_manager.pipeline.errors import StageExecutionError
 
 
 def _block(block_no: int, text: str, *, page_number: int | None = 1) -> ParsedContractBlock:
@@ -37,6 +34,22 @@ def _party(role: str, name: str, *pages: int) -> IRParty:
                 char_end=len(name),
             )
             for page in pages
+        ],
+    )
+
+
+def _party_without_page(role: str, name: str, anchor_no: int) -> IRParty:
+    return IRParty(
+        role=role,
+        name=name,
+        source_anchors=[
+            SourceAnchor(
+                anchor_id=f"anchor-{role}-{anchor_no}",
+                block_id=f"block-{anchor_no}",
+                page_number=None,
+                char_start=0,
+                char_end=len(name),
+            )
         ],
     )
 
@@ -128,25 +141,25 @@ def test_reconciles_repeated_full_name_with_late_ocr_truncation() -> None:
     assert _unique_party_name(candidates, "PARTY_B") == "西安帝融商业运营管理有限公司"
 
 
-def test_keeps_distinct_complete_legal_entities_ambiguous() -> None:
+def test_keeps_distinct_complete_legal_entities_unresolved() -> None:
     candidates = [
         _party("PARTY_B", "西安帝融商业运营管理有限公司", 1, 2),
         _party("PARTY_B", "西安帝融商业运营管理有限责任公司", 6),
     ]
-
-    with pytest.raises(StageExecutionError) as caught:
-        _unique_party_name(candidates, "PARTY_B")
-
-    assert caught.value.code == "PARTY_UNRESOLVED"
+    assert _unique_party_name(candidates, "PARTY_B") is None
 
 
-def test_does_not_reconcile_truncation_without_repeated_full_name_evidence() -> None:
+def test_reconciles_truncation_with_single_full_name_evidence() -> None:
     candidates = [
-        _party("PARTY_B", "西安帝融商业运营管理有限公司", 1),
-        _party("PARTY_B", "西安帝融商业运营管", 6),
+        _party_without_page("PARTY_B", "西安帝融商业运营管理有限公司", 1),
+        _party_without_page("PARTY_B", "西安帝融商业运营管", 2),
     ]
+    assert _unique_party_name(candidates, "PARTY_B") == "西安帝融商业运营管理有限公司"
 
-    with pytest.raises(StageExecutionError) as caught:
-        _unique_party_name(candidates, "PARTY_B")
 
-    assert caught.value.code == "PARTY_UNRESOLVED"
+def test_does_not_apply_enterprise_prefix_rule_to_natural_people() -> None:
+    candidates = [
+        _party("PARTY_A", "张三", 1),
+        _party("PARTY_A", "张三丰", 2),
+    ]
+    assert _unique_party_name(candidates, "PARTY_A") is None

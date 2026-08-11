@@ -343,15 +343,28 @@ class ParseContractStageResult(StrictModel):
 
 class PartyResolutionStageResult(StrictModel):
     result_type: Literal["PARTY_RESOLUTION_STAGE_V1"]
+    resolution_status: Literal["RESOLVED", "PARTIAL"] = "RESOLVED"
     contract_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=80)
-    party_a: PartyValue
-    party_b: PartyValue
+    party_a: PartyValue | None = None
+    party_b: PartyValue | None = None
     perspective: Literal["PARTY_A", "PARTY_B"]
-    our_party: str = Field(min_length=1, max_length=500)
-    counterparty: str = Field(min_length=1, max_length=500)
+    our_party: str | None = Field(default=None, min_length=1, max_length=500)
+    counterparty: str | None = Field(default=None, min_length=1, max_length=500)
 
     @model_validator(mode="after")
     def validate_perspective(self) -> "PartyResolutionStageResult":
+        if self.resolution_status == "PARTIAL":
+            if self.party_a is not None and self.party_b is not None:
+                raise ValueError("PARTIAL party resolution cannot contain both parties")
+            if self.our_party is not None or self.counterparty is not None:
+                raise ValueError("PARTIAL party resolution cannot map review perspective")
+            return self
+        if self.party_a is None or self.party_b is None:
+            raise ValueError("RESOLVED party resolution requires both parties")
+        if self.our_party is None or self.counterparty is None:
+            raise ValueError("RESOLVED party resolution requires perspective mapping")
+        if self.party_a.name.casefold() == self.party_b.name.casefold():
+            raise ValueError("resolved contract parties must be distinct")
         expected_our = self.party_a.name if self.perspective == "PARTY_A" else self.party_b.name
         expected_other = self.party_b.name if self.perspective == "PARTY_A" else self.party_a.name
         if self.our_party != expected_our or self.counterparty != expected_other:
@@ -569,46 +582,18 @@ def _normalized_party_name(value: str) -> str:
     return " ".join(value.split()).strip().rstrip("|｜").rstrip()
 
 
-def _candidate_pages(candidate: Any) -> list[int]:
-    return sorted(
-        {
-            anchor.page_number
-            for anchor in (getattr(candidate, "source_anchors", None) or [])
-            if isinstance(anchor.page_number, int)
-        }
+def _is_likely_ocr_truncation(shorter_key: str, longer_key: str) -> bool:
+    """Discard an incomplete enterprise-name prefix when a complete name exists."""
+    return (
+        len(shorter_key) >= 4
+        and longer_key.startswith(shorter_key)
+        and len(longer_key) - len(shorter_key) <= 12
+        and not shorter_key.endswith(_LEGAL_ENTITY_SUFFIXES)
+        and longer_key.endswith(_LEGAL_ENTITY_SUFFIXES)
     )
 
 
-def _is_likely_late_ocr_truncation(
-    shorter_key: str,
-    shorter_candidate: Any,
-    longer_key: str,
-    longer_candidate: Any,
-) -> bool:
-    """Reconcile only strongly evidenced late-page OCR truncations.
-
-    The complete legal name must have repeated evidence earlier in the contract.
-    A single later occurrence may be ignored only when it is a strict prefix of
-    that complete name and the missing tail completes a legal-entity suffix.
-    """
-    if (
-        len(shorter_key) < 4
-        or not longer_key.startswith(shorter_key)
-        or len(longer_key) - len(shorter_key) > 12
-        or shorter_key.endswith(_LEGAL_ENTITY_SUFFIXES)
-        or not longer_key.endswith(_LEGAL_ENTITY_SUFFIXES)
-    ):
-        return False
-    shorter_anchors = getattr(shorter_candidate, "source_anchors", None) or []
-    longer_anchors = getattr(longer_candidate, "source_anchors", None) or []
-    if len(shorter_anchors) != 1 or len(longer_anchors) < 2:
-        return False
-    shorter_pages = _candidate_pages(shorter_candidate)
-    longer_pages = _candidate_pages(longer_candidate)
-    return bool(shorter_pages and longer_pages and min(shorter_pages) > min(longer_pages))
-
-
-def _unique_party_name(candidates: list[Any], role: str) -> str:
+def _unique_party_name(candidates: list[Any], role: str) -> str | None:
     names: dict[str, tuple[str, Any]] = {}
     for candidate in candidates:
         if candidate.role != role:
@@ -630,11 +615,9 @@ def _unique_party_name(candidates: list[Any], role: str) -> str:
         for longer_key, (_longer_name, longer_candidate) in canonical_names.items():
             if shorter_key == longer_key:
                 continue
-            if _is_likely_late_ocr_truncation(
+            if _is_likely_ocr_truncation(
                 shorter_key,
-                shorter_candidate,
                 longer_key,
-                longer_candidate,
             ):
                 ignored_truncations.add(shorter_key)
                 break
@@ -643,11 +626,7 @@ def _unique_party_name(candidates: list[Any], role: str) -> str:
         value for key, value in canonical_names.items() if key not in ignored_truncations
     ]
     if len(resolved_names) != 1:
-        raise StageExecutionError(
-            f"Contract has {len(resolved_names)} unambiguous {role} candidates; manual input is required.",
-            code="PARTY_UNRESOLVED",
-            retryable=False,
-        )
+        return None
     return resolved_names[0][0]
 
 
@@ -747,27 +726,42 @@ def _direct_party_resolution_handler(base_url: str, token: str):
         candidates = extract_party_candidates(blocks.blocks)
         party_a_name = _unique_party_name(candidates, "PARTY_A")
         party_b_name = _unique_party_name(candidates, "PARTY_B")
-        if party_a_name.casefold() == party_b_name.casefold():
-            raise StageExecutionError(
-                "Resolved contract parties are identical; manual input is required.",
-                code="PARTY_UNRESOLVED",
-                retryable=False,
+        if (
+            party_a_name is not None
+            and party_b_name is not None
+            and party_a_name.casefold() == party_b_name.casefold()
+        ):
+            party_a_name = None
+            party_b_name = None
+        if party_a_name is not None and party_b_name is not None:
+            our_party = party_a_name if task_input.perspective == "PARTY_A" else party_b_name
+            counterparty = party_b_name if task_input.perspective == "PARTY_A" else party_a_name
+            result = PartyResolutionStageResult(
+                result_type="PARTY_RESOLUTION_STAGE_V1",
+                resolution_status="RESOLVED",
+                contract_type="AUTO",
+                party_a={"name": party_a_name},
+                party_b={"name": party_b_name},
+                perspective=task_input.perspective,
+                our_party=our_party,
+                counterparty=counterparty,
             )
-        our_party = party_a_name if task_input.perspective == "PARTY_A" else party_b_name
-        counterparty = party_b_name if task_input.perspective == "PARTY_A" else party_a_name
-        result = PartyResolutionStageResult(
-            result_type="PARTY_RESOLUTION_STAGE_V1",
-            contract_type="AUTO",
-            party_a={"name": party_a_name},
-            party_b={"name": party_b_name},
-            perspective=task_input.perspective,
-            our_party=our_party,
-            counterparty=counterparty,
-        )
+        else:
+            result = PartyResolutionStageResult(
+                result_type="PARTY_RESOLUTION_STAGE_V1",
+                resolution_status="PARTIAL",
+                contract_type="AUTO",
+                party_a={"name": party_a_name} if party_a_name is not None else None,
+                party_b={"name": party_b_name} if party_b_name is not None else None,
+                perspective=task_input.perspective,
+            )
         duration_ms = max(0, round((time.perf_counter() - started_at) * 1000))
         return StageServiceResult(
             output=result.model_dump(mode="json"),
-            summary=f"Resolved explicit contract parties deterministically in {duration_ms} ms.",
+            summary=(
+                "Resolved explicit contract parties with status "
+                f"{result.resolution_status} in {duration_ms} ms."
+            ),
             metadata={
                 "party_resolution_engine": "deterministic-explicit-labels-v1",
                 "duration_ms": duration_ms,

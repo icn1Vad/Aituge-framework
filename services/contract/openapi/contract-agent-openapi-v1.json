@@ -4,12 +4,12 @@
       "Body_create_party_resolution_v1_contract_party_resolutions_post": {
         "properties": {
           "file": {
-            "contentMediaType": "application/octet-stream",
+            "format": "binary",
             "title": "File",
             "type": "string"
           },
           "request": {
-            "title": "Request",
+            "title": "Request Payload",
             "type": "string"
           }
         },
@@ -23,12 +23,12 @@
       "Body_create_review_v1_contract_reviews_post": {
         "properties": {
           "file": {
-            "contentMediaType": "application/octet-stream",
+            "format": "binary",
             "title": "File",
             "type": "string"
           },
           "request": {
-            "title": "Request",
+            "title": "Request Payload",
             "type": "string"
           }
         },
@@ -2559,22 +2559,50 @@
             "type": "string"
           },
           "counterparty": {
-            "maxLength": 500,
-            "minLength": 1,
-            "title": "Counterparty",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counterparty"
           },
           "our_party": {
-            "maxLength": 500,
-            "minLength": 1,
-            "title": "Our Party",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Our Party"
           },
           "party_a": {
-            "$ref": "#/components/schemas/PartyProfile"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PartyProfile"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "party_b": {
-            "$ref": "#/components/schemas/PartyProfile"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PartyProfile"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "perspective": {
             "enum": [
@@ -2582,6 +2610,15 @@
               "PARTY_B"
             ],
             "title": "Perspective",
+            "type": "string"
+          },
+          "resolution_status": {
+            "default": "RESOLVED",
+            "enum": [
+              "RESOLVED",
+              "PARTIAL"
+            ],
+            "title": "Resolution Status",
             "type": "string"
           },
           "result_type": {
@@ -2593,11 +2630,7 @@
         "required": [
           "result_type",
           "contract_type",
-          "party_a",
-          "party_b",
-          "perspective",
-          "our_party",
-          "counterparty"
+          "perspective"
         ],
         "title": "PartyResolutionStageResult",
         "type": "object"

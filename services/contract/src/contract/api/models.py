@@ -271,12 +271,8 @@ class PartyResolutionStatusData(FrameworkMappingModel):
             raise ValueError("FAILED party resolutions require error details")
         if self.status != ReviewStatus.FAILED and self.error is not None:
             raise ValueError("Only FAILED party resolutions can expose an error")
-        if (self.party_a_name is None) != (self.party_b_name is None):
-            raise ValueError("party_a_name and party_b_name must be returned together")
         if self.party_a_name is not None and self.party_a_name == self.party_b_name:
             raise ValueError("resolved contract parties must be distinct")
-        if self.status == ReviewStatus.SUCCEEDED and self.party_a_name is None:
-            raise ValueError("SUCCEEDED party resolutions require both contract parties")
         return self
 
 
