@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from contract.api.models import (
+    ContractProfile,
     CreateReviewData,
     CreateReviewRequest,
     Evidence,
@@ -119,6 +120,26 @@ def test_absence_evidence_rejects_fake_quote() -> None:
             checked_scope="ENTIRE_CONTRACT",
             verification_note="未发现责任上限",
         )
+
+
+def test_contract_profile_discards_internal_party_resolution_marker() -> None:
+    profile = ContractProfile.model_validate(
+        {
+            "contract_type": "SERVICE",
+            "party_a": {"name": "Company A", "name_resolved": True},
+            "party_b": {"name": "Company B", "name_resolved": False},
+            "perspective": "PARTY_A",
+            "our_party": "Company A",
+            "counterparty": "Company B",
+            "review_attitude": "NEUTRAL",
+        }
+    )
+
+    payload = profile.model_dump(mode="json")
+    assert payload["party_a"] == {"name": "Company A"}
+    assert payload["party_b"] == {"name": "Company B"}
+    schema = ContractProfile.model_json_schema()
+    assert "name_resolved" not in schema["$defs"]["PartyProfile"]["properties"]
 
 
 def test_result_summary_must_match_findings() -> None:

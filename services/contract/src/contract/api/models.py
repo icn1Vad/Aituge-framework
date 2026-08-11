@@ -207,6 +207,18 @@ class PartyResolutionCreateData(FrameworkMappingModel):
 class PartyProfile(StrictModel):
     name: Annotated[str, StringConstraints(min_length=1, max_length=500)]
 
+    @model_validator(mode="before")
+    @classmethod
+    def discard_internal_resolution_marker(cls, value: object) -> object:
+        """Accept Framework-only party metadata without exposing it publicly."""
+        if not isinstance(value, dict) or "name_resolved" not in value:
+            return value
+        normalized = dict(value)
+        marker = normalized.pop("name_resolved")
+        if not isinstance(marker, bool):
+            raise ValueError("name_resolved must be a boolean")
+        return normalized
+
 
 class PartyResolutionData(StrictModel):
     party_a: PartyProfile
