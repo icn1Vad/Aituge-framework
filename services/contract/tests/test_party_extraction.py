@@ -57,6 +57,29 @@ def test_extracts_chinese_aliases_and_exact_source_anchors() -> None:
         assert block.text[anchor.char_start : anchor.char_end] == candidate.name
 
 
+def test_extracts_paired_role_labels_without_colons() -> None:
+    block = _block(
+        1,
+        "甲方（出租方）苏杨，乙方（承租方）西安市雁塔区丈八街道办事处",
+    )
+
+    candidates = extract_party_candidates([block])
+
+    assert [(item.role, item.name) for item in candidates] == [
+        ("PARTY_A", "苏杨"),
+        ("PARTY_B", "西安市雁塔区丈八街道办事处"),
+    ]
+    for candidate in candidates:
+        anchor = candidate.source_anchors[0]
+        assert block.text[anchor.char_start : anchor.char_end] == candidate.name
+
+
+def test_does_not_treat_unqualified_party_prose_as_paired_declaration() -> None:
+    block = _block(1, "甲方应按时交付，乙方应按时付款。")
+
+    assert extract_party_candidates([block]) == []
+
+
 def test_extracts_english_party_labels_from_one_block() -> None:
     block = _block(1, "Party A: Acme Holdings Ltd.; Party B: Beta Services LLC")
 
