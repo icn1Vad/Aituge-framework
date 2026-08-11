@@ -183,6 +183,11 @@ class _BlockBuilder:
                 outline_level = _outline_level(metadata)
                 self.outline_headings = self.outline_headings[:outline_level]
                 self.outline_headings.append(value)
+        elif actual_type == "article":
+            # An explicit article boundary starts a peer contract article. Word
+            # outline styles from a preceding article must not remain active as
+            # semantic parents for every later article.
+            self.outline_headings = []
         self.paragraph_no += 1
         block_no = len(self.blocks) + 1
         start = self.cursor
@@ -233,10 +238,10 @@ def _classify_block(text: str, preferred: str | None) -> tuple[str, str]:
     section = _SECTION_RE.match(text)
     if section:
         return "heading", " ".join(item for item in section.groups() if item).strip()
-    if preferred == "heading":
-        return "heading", text
     if _ARTICLE_RE.match(text):
         return "article", ""
+    if preferred == "heading":
+        return "heading", text
     return preferred or "paragraph", ""
 
 

@@ -744,9 +744,11 @@ def _validation_text(window: PipelineWindowInput) -> str:
                 f"{normalized_anchor} "
             ):
                 return source_text[match.start() :]
-    # Preserve the prior behavior when the planner does not expose a usable
-    # heading anchor; only verified clause starts are allowed to trim text.
-    return "\n".join([*window.heading_path, *window.clause_nos, source_text])
+    # heading_path is contextual metadata and can be stale when a DOCX mixes
+    # Word outline styles with literal article boundaries. A heading that is
+    # absent from this Window's source cannot impose a hard semantic category;
+    # otherwise the retry asks for text that strict alignment forbids inventing.
+    return source_text
 
 
 def _is_signature_only_window(window: PipelineWindowInput) -> bool:

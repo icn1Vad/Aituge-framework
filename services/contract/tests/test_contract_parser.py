@@ -64,6 +64,27 @@ def test_docx_parser_keeps_headings_manual_breaks_and_table_rows(tmp_path: Path)
     assert all(item.char_end - item.char_start == len(item.text) for item in parsed.blocks)
 
 
+def test_docx_article_text_overrides_word_heading_style_and_ends_outline_scope(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "mixed-contract-styles.docx"
+    document = Document()
+    chapter = "第一章 合作条款"
+    fourth = "第四条 甲方按约定支付研究开发经费。"
+    fifth = "第五条 未经同意不得转让研究开发工作。"
+    document.add_heading(chapter, level=1)
+    document.add_paragraph(fourth, style="Heading 2")
+    document.add_paragraph(fifth)
+    document.save(path)
+
+    parsed = NativeContractParser().parse(path, generation_id="generation-mixed-styles")
+
+    assert [item.block_type for item in parsed.blocks] == ["heading", "article", "article"]
+    assert parsed.blocks[1].heading_path == [chapter]
+    assert parsed.blocks[2].heading_path == [chapter]
+    assert fourth not in parsed.blocks[2].heading_path
+
+
 def test_docx_parser_preserves_direct_and_style_native_numbering_metadata(tmp_path: Path) -> None:
     def attach_num_pr(properties, num_id: int, level: int) -> None:
         number_properties = OxmlElement("w:numPr")
