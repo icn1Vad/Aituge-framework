@@ -552,14 +552,64 @@ _TRAILING_PARENTHETICAL_SUFFIX = re.compile(
     r"^(?P<base>.*\S)\s*[（(][^（）()]+[）)]$"
 )
 
+_LEGAL_ENTITY_SUFFIXES = tuple(
+    value.casefold()
+    for value in (
+        "有限责任公司",
+        "股份有限公司",
+        "有限公司",
+        "合伙企业",
+        "个人独资企业",
+    )
+)
+
 
 def _normalized_party_name(value: str) -> str:
     """Normalize parser formatting without altering legal-entity punctuation."""
     return " ".join(value.split()).strip().rstrip("|｜").rstrip()
 
 
+def _candidate_pages(candidate: Any) -> list[int]:
+    return sorted(
+        {
+            anchor.page_number
+            for anchor in (getattr(candidate, "source_anchors", None) or [])
+            if isinstance(anchor.page_number, int)
+        }
+    )
+
+
+def _is_likely_late_ocr_truncation(
+    shorter_key: str,
+    shorter_candidate: Any,
+    longer_key: str,
+    longer_candidate: Any,
+) -> bool:
+    """Reconcile only strongly evidenced late-page OCR truncations.
+
+    The complete legal name must have repeated evidence earlier in the contract.
+    A single later occurrence may be ignored only when it is a strict prefix of
+    that complete name and the missing tail completes a legal-entity suffix.
+    """
+    if (
+        len(shorter_key) < 4
+        or not longer_key.startswith(shorter_key)
+        or len(longer_key) - len(shorter_key) > 12
+        or shorter_key.endswith(_LEGAL_ENTITY_SUFFIXES)
+        or not longer_key.endswith(_LEGAL_ENTITY_SUFFIXES)
+    ):
+        return False
+    shorter_anchors = getattr(shorter_candidate, "source_anchors", None) or []
+    longer_anchors = getattr(longer_candidate, "source_anchors", None) or []
+    if len(shorter_anchors) != 1 or len(longer_anchors) < 2:
+        return False
+    shorter_pages = _candidate_pages(shorter_candidate)
+    longer_pages = _candidate_pages(longer_candidate)
+    return bool(shorter_pages and longer_pages and min(shorter_pages) > min(longer_pages))
+
+
 def _unique_party_name(candidates: list[Any], role: str) -> str:
-    names: dict[str, str] = {}
+    names: dict[str, tuple[str, Any]] = {}
     for candidate in candidates:
         if candidate.role != role:
             continue
@@ -567,20 +617,38 @@ def _unique_party_name(candidates: list[Any], role: str) -> str:
         # structural markup, not part of the legal entity name.
         name = _normalized_party_name(candidate.name)
         if name:
-            names.setdefault(name.casefold(), name)
-    canonical_names: dict[str, str] = {}
-    for key, name in names.items():
+            names.setdefault(name.casefold(), (name, candidate))
+    canonical_names: dict[str, tuple[str, Any]] = {}
+    for key, (name, candidate) in names.items():
         suffix = _TRAILING_PARENTHETICAL_SUFFIX.match(name)
         base = _normalized_party_name(suffix.group("base")) if suffix else ""
         canonical_key = base.casefold() if base and base.casefold() in names else key
-        canonical_names.setdefault(canonical_key, names.get(canonical_key, name))
-    if len(canonical_names) != 1:
+        canonical_names.setdefault(canonical_key, names.get(canonical_key, (name, candidate)))
+
+    ignored_truncations: set[str] = set()
+    for shorter_key, (_shorter_name, shorter_candidate) in canonical_names.items():
+        for longer_key, (_longer_name, longer_candidate) in canonical_names.items():
+            if shorter_key == longer_key:
+                continue
+            if _is_likely_late_ocr_truncation(
+                shorter_key,
+                shorter_candidate,
+                longer_key,
+                longer_candidate,
+            ):
+                ignored_truncations.add(shorter_key)
+                break
+
+    resolved_names = [
+        value for key, value in canonical_names.items() if key not in ignored_truncations
+    ]
+    if len(resolved_names) != 1:
         raise StageExecutionError(
-            f"Contract has {len(canonical_names)} unambiguous {role} candidates; manual input is required.",
+            f"Contract has {len(resolved_names)} unambiguous {role} candidates; manual input is required.",
             code="PARTY_UNRESOLVED",
             retryable=False,
         )
-    return next(iter(canonical_names.values()))
+    return resolved_names[0][0]
 
 
 def _direct_party_resolution_handler(base_url: str, token: str):

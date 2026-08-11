@@ -71,9 +71,19 @@ _FIELD_PATTERN = "|".join(
         "邮箱",
     )
 )
+_ENTITY_NAME_FIELD_PATTERN = "|".join(
+    re.escape(value)
+    for value in (
+        "单位名称",
+        "公司名称",
+        "企业名称",
+        "单位全称",
+    )
+)
 _PARTY_DECLARATION = re.compile(
     rf"(?P<label>{_LABEL_PATTERN})"
     rf"\s*(?:[（(][^）)]{{0,24}}[）)])?\s*(?:名称\s*)?[：:]\s*"
+    rf"(?:(?:{_ENTITY_NAME_FIELD_PATTERN})\s*[：:]\s*)?"
     rf"(?P<name>.*?)"
     rf"(?=(?:\s*(?:{_LABEL_PATTERN})\s*(?:[（(][^）)]{{0,24}}[）)])?\s*(?:名称\s*)?[：:])"
     rf"|(?:\s+(?:{_FIELD_PATTERN})\s*[：:])|[；;]|$)",

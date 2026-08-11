@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import pytest
+
+from contract.ir.models import IRParty, SourceAnchor
 from contract.party import extract_party_candidates
 from contract.parser.models import ParsedContractBlock
+from services.contract.capabilities.register import _unique_party_name
+from task_manager.pipeline.errors import StageExecutionError
 
 
 def _block(block_no: int, text: str, *, page_number: int | None = 1) -> ParsedContractBlock:
@@ -16,6 +21,23 @@ def _block(block_no: int, text: str, *, page_number: int | None = 1) -> ParsedCo
         char_end=len(text),
         heading_path=[],
         metadata={},
+    )
+
+
+def _party(role: str, name: str, *pages: int) -> IRParty:
+    return IRParty(
+        role=role,
+        name=name,
+        source_anchors=[
+            SourceAnchor(
+                anchor_id=f"anchor-{role}-{page}",
+                block_id=f"block-{page}",
+                page_number=page,
+                char_start=0,
+                char_end=len(name),
+            )
+            for page in pages
+        ],
     )
 
 
@@ -60,3 +82,48 @@ def test_deduplicates_repeated_signature_names_and_keeps_all_anchors() -> None:
     assert candidates[0].role == "PARTY_A"
     assert candidates[0].name == "某某有限公司"
     assert [anchor.page_number for anchor in candidates[0].source_anchors] == [1, 3]
+
+
+def test_strips_nested_entity_name_field_from_signature_party() -> None:
+    block = _block(1, "乙方：单位名称：西安帝融商业运营管理有限公司", page_number=6)
+
+    candidates = extract_party_candidates([block])
+
+    assert [(item.role, item.name) for item in candidates] == [
+        ("PARTY_B", "西安帝融商业运营管理有限公司"),
+    ]
+    anchor = candidates[0].source_anchors[0]
+    assert block.text[anchor.char_start : anchor.char_end] == candidates[0].name
+
+
+def test_reconciles_repeated_full_name_with_late_ocr_truncation() -> None:
+    candidates = [
+        _party("PARTY_B", "西安帝融商业运营管理有限公司", 1, 2),
+        _party("PARTY_B", "西安帝融商业运营管", 6),
+    ]
+
+    assert _unique_party_name(candidates, "PARTY_B") == "西安帝融商业运营管理有限公司"
+
+
+def test_keeps_distinct_complete_legal_entities_ambiguous() -> None:
+    candidates = [
+        _party("PARTY_B", "西安帝融商业运营管理有限公司", 1, 2),
+        _party("PARTY_B", "西安帝融商业运营管理有限责任公司", 6),
+    ]
+
+    with pytest.raises(StageExecutionError) as caught:
+        _unique_party_name(candidates, "PARTY_B")
+
+    assert caught.value.code == "PARTY_UNRESOLVED"
+
+
+def test_does_not_reconcile_truncation_without_repeated_full_name_evidence() -> None:
+    candidates = [
+        _party("PARTY_B", "西安帝融商业运营管理有限公司", 1),
+        _party("PARTY_B", "西安帝融商业运营管", 6),
+    ]
+
+    with pytest.raises(StageExecutionError) as caught:
+        _unique_party_name(candidates, "PARTY_B")
+
+    assert caught.value.code == "PARTY_UNRESOLVED"
