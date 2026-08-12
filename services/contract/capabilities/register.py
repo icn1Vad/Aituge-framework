@@ -1426,6 +1426,31 @@ async def _load_bound_grounded_answer_input(
         raise RuntimeError("The current grounded-answer task input is invalid.") from exc
 
 
+_GROUNDED_CLASSIFICATION_FIELDS = frozenset(
+    {
+        "risk_level",
+        "high_count",
+        "medium_count",
+        "low_count",
+        "info_count",
+    }
+)
+
+
+def _project_grounded_review_result(value: Any) -> Any:
+    """Remove internal classification fields from report and chat context."""
+
+    if isinstance(value, dict):
+        return {
+            key: _project_grounded_review_result(item)
+            for key, item in value.items()
+            if key not in _GROUNDED_CLASSIFICATION_FIELDS
+        }
+    if isinstance(value, list):
+        return [_project_grounded_review_result(item) for item in value]
+    return value
+
+
 def _grounded_review_result_tool_factory(base_url: str, token: str):
     """Create a review-result tool bound to its TaskManager task input."""
 
@@ -1491,7 +1516,10 @@ def _grounded_review_result_tool_factory(base_url: str, token: str):
                 raise RuntimeError(
                     "contract_get_review_result returned an invalid JSON response."
                 ) from exc
-            return json.dumps(result, ensure_ascii=False)
+            return json.dumps(
+                _project_grounded_review_result(result),
+                ensure_ascii=False,
+            )
 
         tool = FunctionTool.from_defaults(
             async_fn=get_review_result,

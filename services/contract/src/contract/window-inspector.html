@@ -111,6 +111,8 @@
   let inspection = null;
   let latestWindowResult = null;
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const classificationKeys = new Set(['risk_level', 'risk_counts', 'high_count', 'medium_count', 'low_count', 'info_count']);
+  const publicJson = value => JSON.stringify(value, (key, item) => classificationKeys.has(key) ? undefined : item, 2);
 
   stage5Button.addEventListener('click', async () => {
     const stateBox = document.querySelector('#stage5-state');
@@ -123,15 +125,14 @@
       const summary = body.summary || {};
       const result = body.result || {};
       const findings = result.findings || [];
-      const rows = findings.map((item, index) => `<tr><td>${index + 1}</td><td>${escapeHtml(item.risk_level)}</td><td>${escapeHtml(item.category)}</td><td style="white-space:normal">${escapeHtml(item.title)}</td><td>${(item.evidence_ids || []).length}</td></tr>`).join('');
+      const rows = findings.map((item, index) => `<tr><td>${index + 1}</td><td>${escapeHtml(item.category)}</td><td style="white-space:normal">${escapeHtml(item.title)}</td><td>${(item.evidence_ids || []).length}</td></tr>`).join('');
       outputBox.innerHTML = `<div class="metrics">` +
         `<div class="metric"><span>状态</span><b class="good">${escapeHtml(summary.status)}</b></div>` +
         `<div class="metric"><span>Finding</span>${escapeHtml(summary.finding_count)}</div>` +
         `<div class="metric"><span>Evidence</span>${escapeHtml(summary.evidence_count)}</div>` +
-        `<div class="metric"><span>高/中/低</span>${escapeHtml(summary.risk_counts?.high_count || 0)} / ${escapeHtml(summary.risk_counts?.medium_count || 0)} / ${escapeHtml(summary.risk_counts?.low_count || 0)}</div>` +
         `</div><div class="meta">Review ${escapeHtml(summary.review_id)}<br>Result Hash ${escapeHtml(summary.result_hash)}<br>主体：${escapeHtml(result.contract_profile?.our_party)}（我方） / ${escapeHtml(result.contract_profile?.counterparty)}（相对方）</div>` +
-        `<div style="overflow:auto"><table><thead><tr><th>#</th><th>风险</th><th>类别</th><th>标题</th><th>证据</th></tr></thead><tbody>${rows}</tbody></table></div>` +
-        `<details><summary>完整 Finding/Evidence JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
+        `<div style="overflow:auto"><table><thead><tr><th>#</th><th>类别</th><th>标题</th><th>证据</th></tr></thead><tbody>${rows}</tbody></table></div>` +
+        `<details><summary>完整 Finding/Evidence JSON</summary><pre>${escapeHtml(publicJson(body))}</pre></details>`;
       outputBox.hidden = false; stateBox.textContent = ' 完成';
     } catch (error) {
       outputBox.innerHTML = `<span class="error">${escapeHtml(error.message)}</span>`;
@@ -151,7 +152,7 @@
       const classification = body.classification || {};
       const relationCounts = classification.relation_counts || {};
       const rows = (merge.surviving_findings || []).map((item, index) =>
-        `<tr><td>${index + 1}</td><td>${escapeHtml(item.risk_level)}</td><td>${escapeHtml(item.category)}</td><td style="white-space:normal">${escapeHtml(item.title)}</td><td>${escapeHtml(item.evidence_count)}</td></tr>`
+        `<tr><td>${index + 1}</td><td>${escapeHtml(item.category)}</td><td style="white-space:normal">${escapeHtml(item.title)}</td><td>${escapeHtml(item.evidence_count)}</td></tr>`
       ).join('');
       outputBox.innerHTML = `<div class="metrics">` +
         `<div class="metric"><span>Finding</span>${escapeHtml(merge.exact_merge_finding_count)} → <b class="good">${escapeHtml(merge.semantic_merge_finding_count)}</b></div>` +
@@ -160,8 +161,8 @@
         `<div class="metric"><span>Evidence完整性</span><b class="good">${merge.evidence_integrity_ok ? '通过' : '失败'}</b></div>` +
         `</div><div class="meta">候选对 ${escapeHtml(classification.candidate_count)}；模型调用 ${escapeHtml(classification.model_call_count)} 次；` +
         `SAME_RISK ${escapeHtml(relationCounts.SAME_RISK || 0)} / RELATED_DISTINCT ${escapeHtml(relationCounts.RELATED_DISTINCT || 0)} / DISTINCT ${escapeHtml(relationCounts.DISTINCT || 0)}</div>` +
-        `<div style="overflow:auto"><table><thead><tr><th>#</th><th>风险</th><th>类别</th><th>合并后保留标题</th><th>证据</th></tr></thead><tbody>${rows}</tbody></table></div>` +
-        `<details><summary>完整阶段 5.1 对比 JSON</summary><pre>${escapeHtml(JSON.stringify(body, null, 2))}</pre></details>`;
+        `<div style="overflow:auto"><table><thead><tr><th>#</th><th>类别</th><th>合并后保留标题</th><th>证据</th></tr></thead><tbody>${rows}</tbody></table></div>` +
+        `<details><summary>完整阶段 5.1 对比 JSON</summary><pre>${escapeHtml(publicJson(body))}</pre></details>`;
       outputBox.hidden = false; stateBox.textContent = ' 完成';
     } catch (error) {
       outputBox.innerHTML = `<span class="error">${escapeHtml(error.message)}</span>`;

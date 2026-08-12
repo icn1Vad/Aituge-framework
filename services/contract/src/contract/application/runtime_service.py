@@ -15,6 +15,7 @@ from contract.api.models import (
     PartyResolutionCreateRequest,
     PartyResolutionStatusData,
     ReviewResultData,
+    PublicReviewResultData,
     ReviewStage,
     PartyResolutionData,
     ReviewStatus,
@@ -282,7 +283,7 @@ class RuntimeContractReviewService:
         self._require_execution_mode(state, "FULL_REVIEW")
         return self._status_data(state, self._party_resolution(state))
 
-    def get_result(self, review_id: str, *, context: InternalRequestContext) -> ReviewResultData:
+    def get_result(self, review_id: str, *, context: InternalRequestContext) -> PublicReviewResultData:
         status = self.get_status(review_id, context=context)
         if status.status != ReviewStatus.SUCCEEDED:
             raise ContractError(
@@ -300,7 +301,8 @@ class RuntimeContractReviewService:
         if value is None:
             raise ContractError("RESULT_INVALID", "合同审查结果记录不存在", status_code=500)
         try:
-            return ReviewResultData.model_validate(value)
+            internal = ReviewResultData.model_validate(value)
+            return PublicReviewResultData.from_internal(internal)
         except ValidationError as exc:
             raise ContractError("RESULT_INVALID", "合同审查结果不符合冻结协议", status_code=500) from exc
 

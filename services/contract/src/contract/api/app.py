@@ -27,7 +27,7 @@ from contract.api.models import (
     PartyResolutionCreateData,
     PartyResolutionCreateRequest,
     PartyResolutionStatusData,
-    ReviewResultData,
+    PublicReviewResultData,
     ReviewStatus,
     ReviewStatusData,
     SuccessResponse,
@@ -529,14 +529,14 @@ def create_app(
 
     @app.get(
         "/v1/contract-reviews/{review_id}/result",
-        response_model=SuccessResponse[ReviewResultData],
+        response_model=SuccessResponse[PublicReviewResultData],
         responses=ERROR_RESPONSES,
     )
     async def get_review_result(
         review_id: str,
         http_request: Request,
         context: Annotated[InternalRequestContext, Depends(_internal_context)],
-    ) -> SuccessResponse[ReviewResultData]:
+    ) -> SuccessResponse[PublicReviewResultData]:
         data = await asyncio.to_thread(
             _service(http_request).get_result,
             review_id,

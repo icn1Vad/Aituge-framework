@@ -506,7 +506,8 @@ def test_callback_flow_is_atomic_idempotent_and_terminal_safe(tmp_path: Path) ->
         assert result.evidences[0].evidence_id.startswith("evidence-")
         assert result.findings[0].evidence_ids == [result.evidences[0].evidence_id]
         assert result.evidences[0].finding_id == result.findings[0].finding_id
-        assert result.summary.medium_count == 1
+        assert result.summary.finding_count == 1
+        assert "risk_level" not in result.findings[0].model_dump(mode="json")
 
         conflict = callbacks.accept(
             created.review_id,

@@ -6,10 +6,12 @@ import pytest
 from pydantic import ValidationError
 
 from contract.api.models import (
+    ContractProfile,
     CreateReviewData,
     CreateReviewRequest,
     Evidence,
     PartyResolutionStatusData,
+    PublicReviewResultData,
     ReviewResultData,
 )
 
@@ -120,6 +122,26 @@ def test_absence_evidence_rejects_fake_quote() -> None:
         )
 
 
+def test_contract_profile_discards_internal_party_resolution_marker() -> None:
+    profile = ContractProfile.model_validate(
+        {
+            "contract_type": "SERVICE",
+            "party_a": {"name": "Company A", "name_resolved": True},
+            "party_b": {"name": "Company B", "name_resolved": False},
+            "perspective": "PARTY_A",
+            "our_party": "Company A",
+            "counterparty": "Company B",
+            "review_attitude": "NEUTRAL",
+        }
+    )
+
+    payload = profile.model_dump(mode="json")
+    assert payload["party_a"] == {"name": "Company A"}
+    assert payload["party_b"] == {"name": "Company B"}
+    schema = ContractProfile.model_json_schema()
+    assert "name_resolved" not in schema["$defs"]["PartyProfile"]["properties"]
+
+
 def test_result_summary_must_match_findings() -> None:
     with pytest.raises(ValidationError):
         ReviewResultData(
@@ -148,6 +170,72 @@ def test_result_summary_must_match_findings() -> None:
             relationships=[],
             result_hash="sha256:" + "0" * 64,
         )
+
+
+def test_public_result_projection_removes_risk_classification() -> None:
+    quoted_text = "乙方承担责任。"
+    internal = ReviewResultData(
+        schema_version="1.0",
+        review_id="review-1",
+        business_task_id="10001",
+        contract_version_id="20001",
+        contract_profile={
+            "contract_type": "SERVICE",
+            "party_a": {"name": "甲方"},
+            "party_b": {"name": "乙方"},
+            "perspective": "PARTY_B",
+            "our_party": "乙方",
+            "counterparty": "甲方",
+            "review_attitude": "NEUTRAL",
+        },
+        summary={
+            "overview": "发现一项合同问题",
+            "high_count": 0,
+            "medium_count": 1,
+            "low_count": 0,
+            "info_count": 0,
+        },
+        findings=[
+            {
+                "finding_id": "finding-1",
+                "risk_level": "MEDIUM",
+                "category": "DELIVERY",
+                "title": "责任约定不完整",
+                "perspective": "PARTY_B",
+                "our_party": "乙方",
+                "counterparty": "甲方",
+                "issue": "责任范围不明确",
+                "impact_to_our_party": "可能扩大乙方责任",
+                "suggestion": "明确责任边界",
+                "evidence_ids": ["evidence-1"],
+            }
+        ],
+        evidences=[
+            {
+                "evidence_id": "evidence-1",
+                "finding_id": "finding-1",
+                "evidence_type": "TEXT_QUOTE",
+                "block_id": "block-1",
+                "char_start": 0,
+                "char_end": len(quoted_text),
+                "quoted_text": quoted_text,
+                "quoted_text_hash": "sha256:"
+                + hashlib.sha256(quoted_text.encode("utf-8")).hexdigest(),
+            }
+        ],
+        relationships=[],
+        result_hash="sha256:" + "1" * 64,
+    )
+
+    public = PublicReviewResultData.from_internal(internal)
+    payload = public.model_dump(mode="json")
+
+    assert payload["summary"] == {
+        "overview": "发现一项合同问题",
+        "finding_count": 1,
+    }
+    assert "risk_level" not in payload["findings"][0]
+    assert payload["result_hash"] == internal.result_hash
 
 
 def test_protocol_v1_reserved_arrays_must_be_empty() -> None:

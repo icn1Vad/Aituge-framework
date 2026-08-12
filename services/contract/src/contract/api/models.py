@@ -207,6 +207,18 @@ class PartyResolutionCreateData(FrameworkMappingModel):
 class PartyProfile(StrictModel):
     name: Annotated[str, StringConstraints(min_length=1, max_length=500)]
 
+    @model_validator(mode="before")
+    @classmethod
+    def discard_internal_resolution_marker(cls, value: object) -> object:
+        """Accept Framework-only party metadata without exposing it publicly."""
+        if not isinstance(value, dict) or "name_resolved" not in value:
+            return value
+        normalized = dict(value)
+        marker = normalized.pop("name_resolved")
+        if not isinstance(marker, bool):
+            raise ValueError("name_resolved must be a boolean")
+        return normalized
+
 
 class PartyResolutionData(StrictModel):
     party_a: PartyProfile
@@ -420,3 +432,58 @@ class ReviewResultData(StrictModel):
         if actual_counts != expected_counts:
             raise ValueError("Summary counts must match findings")
         return self
+
+
+class PublicReviewSummary(StrictModel):
+    overview: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
+    finding_count: int = Field(ge=0)
+
+
+class PublicFinding(StrictModel):
+    finding_id: Identifier
+    category: FindingCategory
+    title: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    perspective: Perspective
+    our_party: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    counterparty: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    issue: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
+    impact_to_our_party: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
+    suggestion: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
+    evidence_ids: list[Identifier] = Field(min_length=1)
+
+
+class PublicReviewResultData(StrictModel):
+    """Result projection exposed to Java and browsers without risk classification."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    review_id: Identifier
+    business_task_id: Identifier
+    contract_version_id: Identifier
+    contract_profile: ContractProfile
+    summary: PublicReviewSummary
+    findings: list[PublicFinding]
+    evidences: list[Evidence]
+    relationships: list[None] = Field(default_factory=list, max_length=0)
+    result_hash: HashValue
+
+    @classmethod
+    def from_internal(cls, value: ReviewResultData) -> "PublicReviewResultData":
+        return cls(
+            schema_version=value.schema_version,
+            review_id=value.review_id,
+            business_task_id=value.business_task_id,
+            contract_version_id=value.contract_version_id,
+            contract_profile=value.contract_profile,
+            summary=PublicReviewSummary(
+                overview=value.summary.overview,
+                finding_count=len(value.findings),
+            ),
+            findings=[
+                PublicFinding.model_validate(finding.model_dump(mode="json", exclude={"risk_level"}))
+                for finding in value.findings
+            ],
+            evidences=value.evidences,
+            relationships=value.relationships,
+            # Keep the durable internal hash so revision-draft and report lookups remain compatible.
+            result_hash=value.result_hash,
+        )

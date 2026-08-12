@@ -10,7 +10,7 @@ from contract.api.models import (
     PartyResolutionCreateData,
     PartyResolutionCreateRequest,
     PartyResolutionStatusData,
-    ReviewResultData,
+    PublicReviewResultData,
     ReviewStatusData,
 )
 
@@ -59,6 +59,6 @@ class ContractReviewService(Protocol):
 
     def get_status(self, review_id: str, *, context: InternalRequestContext) -> ReviewStatusData: ...
 
-    def get_result(self, review_id: str, *, context: InternalRequestContext) -> ReviewResultData: ...
+    def get_result(self, review_id: str, *, context: InternalRequestContext) -> PublicReviewResultData: ...
 
     def cancel_review(self, review_id: str, *, context: InternalRequestContext) -> CancelReviewData: ...

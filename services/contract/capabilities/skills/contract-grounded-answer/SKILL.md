@@ -30,9 +30,13 @@ Generate a concise report. Use Markdown headings and compact prose. Cover:
 
 - transaction and party overview;
 - important rights and obligations;
-- high and medium risks, ordered by materiality;
-- actionable revision priorities;
+- review findings, organized by review domain or contract section;
+- actionable revision suggestions;
 - a short conclusion.
+
+Do not classify findings as high, medium, low or informational risk. Do not organize sections by risk
+level, assign an overall risk grade, or describe the contract as having a high, medium or low overall
+risk. Present the concrete issue, contract impact, supporting evidence and revision suggestion directly.
 
 Do not cite every sentence. Cite the most useful source phrase for claims that should support document
 navigation.

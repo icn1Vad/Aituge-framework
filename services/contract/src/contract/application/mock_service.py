@@ -12,7 +12,7 @@ from contract.api.models import (
     PartyResolutionCreateData,
     PartyResolutionCreateRequest,
     PartyResolutionStatusData,
-    ReviewResultData,
+    PublicReviewResultData,
     ReviewStatus,
     ReviewStatusData,
 )
@@ -236,7 +236,7 @@ class InMemoryContractReviewService:
                 updated_at=record.updated_at,
             )
 
-    def get_result(self, review_id: str, *, context: InternalRequestContext) -> ReviewResultData:
+    def get_result(self, review_id: str, *, context: InternalRequestContext) -> PublicReviewResultData:
         with self._lock:
             record = self._get_owned_record(review_id, context)
             if record.status != ReviewStatus.SUCCEEDED:

@@ -2174,6 +2174,11 @@
             "title": "Name",
             "type": "string"
           },
+          "name_resolved": {
+            "default": true,
+            "title": "Name Resolved",
+            "type": "boolean"
+          },
           "role": {
             "enum": [
               "PARTY_A",
@@ -2187,15 +2192,13 @@
             "items": {
               "$ref": "#/components/schemas/SourceAnchor"
             },
-            "minItems": 1,
             "title": "Source Anchors",
             "type": "array"
           }
         },
         "required": [
           "role",
-          "name",
-          "source_anchors"
+          "name"
         ],
         "title": "IRParty",
         "type": "object"
@@ -2587,7 +2590,7 @@
           "party_a": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/PartyProfile"
+                "$ref": "#/components/schemas/StagePartyProfile"
               },
               {
                 "type": "null"
@@ -2597,7 +2600,7 @@
           "party_b": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/PartyProfile"
+                "$ref": "#/components/schemas/StagePartyProfile"
               },
               {
                 "type": "null"
@@ -2779,6 +2782,180 @@
         ],
         "title": "Perspective",
         "type": "string"
+      },
+      "PublicFinding": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "$ref": "#/components/schemas/FindingCategory"
+          },
+          "counterparty": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Counterparty",
+            "type": "string"
+          },
+          "evidence_ids": {
+            "items": {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "finding_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "impact_to_our_party": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Impact To Our Party",
+            "type": "string"
+          },
+          "issue": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Issue",
+            "type": "string"
+          },
+          "our_party": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Our Party",
+            "type": "string"
+          },
+          "perspective": {
+            "$ref": "#/components/schemas/Perspective"
+          },
+          "suggestion": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Suggestion",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding_id",
+          "category",
+          "title",
+          "perspective",
+          "our_party",
+          "counterparty",
+          "issue",
+          "impact_to_our_party",
+          "suggestion",
+          "evidence_ids"
+        ],
+        "title": "PublicFinding",
+        "type": "object"
+      },
+      "PublicReviewResultData": {
+        "additionalProperties": false,
+        "description": "Result projection exposed to Java and browsers without risk classification.",
+        "properties": {
+          "business_task_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Business Task Id",
+            "type": "string"
+          },
+          "contract_profile": {
+            "$ref": "#/components/schemas/ContractProfile"
+          },
+          "contract_version_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Contract Version Id",
+            "type": "string"
+          },
+          "evidences": {
+            "items": {
+              "$ref": "#/components/schemas/Evidence"
+            },
+            "title": "Evidences",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/PublicFinding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "relationships": {
+            "items": {
+              "type": "null"
+            },
+            "maxItems": 0,
+            "title": "Relationships",
+            "type": "array"
+          },
+          "result_hash": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Result Hash",
+            "type": "string"
+          },
+          "review_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Review Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/PublicReviewSummary"
+          }
+        },
+        "required": [
+          "review_id",
+          "business_task_id",
+          "contract_version_id",
+          "contract_profile",
+          "summary",
+          "findings",
+          "evidences",
+          "result_hash"
+        ],
+        "title": "PublicReviewResultData",
+        "type": "object"
+      },
+      "PublicReviewSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "finding_count": {
+            "minimum": 0.0,
+            "title": "Finding Count",
+            "type": "integer"
+          },
+          "overview": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Overview",
+            "type": "string"
+          }
+        },
+        "required": [
+          "overview",
+          "finding_count"
+        ],
+        "title": "PublicReviewSummary",
+        "type": "object"
       },
       "RelationExtractionStageResult": {
         "additionalProperties": false,
@@ -3417,6 +3594,27 @@
         "title": "StageExecuteRequest",
         "type": "object"
       },
+      "StagePartyProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "name_resolved": {
+            "default": true,
+            "title": "Name Resolved",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "StagePartyProfile",
+        "type": "object"
+      },
       "StageResultCallback": {
         "additionalProperties": false,
         "properties": {
@@ -3915,11 +4113,11 @@
         "title": "SuccessResponse[PartyResolutionStatusData]",
         "type": "object"
       },
-      "SuccessResponse_ReviewResultData_": {
+      "SuccessResponse_PublicReviewResultData_": {
         "additionalProperties": false,
         "properties": {
           "data": {
-            "$ref": "#/components/schemas/ReviewResultData"
+            "$ref": "#/components/schemas/PublicReviewResultData"
           },
           "request_id": {
             "maxLength": 160,
@@ -3938,7 +4136,7 @@
           "data",
           "request_id"
         ],
-        "title": "SuccessResponse[ReviewResultData]",
+        "title": "SuccessResponse[PublicReviewResultData]",
         "type": "object"
       },
       "SuccessResponse_ReviewStatusData_": {
@@ -5850,7 +6048,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse_ReviewResultData_"
+                  "$ref": "#/components/schemas/SuccessResponse_PublicReviewResultData_"
                 }
               }
             },
