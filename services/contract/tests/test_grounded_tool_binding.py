@@ -20,6 +20,49 @@ class _Response:
         return self._body
 
 
+def test_grounded_review_projection_removes_internal_classification_fields() -> None:
+    source = {
+        "success": True,
+        "data": {
+            "result": {
+                "summary": {
+                    "finding_count": 2,
+                    "high_count": 1,
+                    "medium_count": 1,
+                    "low_count": 0,
+                    "info_count": 0,
+                },
+                "findings": [
+                    {
+                        "finding_id": "finding-1",
+                        "risk_level": "HIGH",
+                        "title": "付款条件不明确",
+                        "evidences": [{"evidence_id": "evidence-1"}],
+                    }
+                ],
+            }
+        },
+    }
+
+    projected = contract_capability._project_grounded_review_result(source)
+
+    assert projected == {
+        "success": True,
+        "data": {
+            "result": {
+                "summary": {"finding_count": 2},
+                "findings": [
+                    {
+                        "finding_id": "finding-1",
+                        "title": "付款条件不明确",
+                        "evidences": [{"evidence_id": "evidence-1"}],
+                    }
+                ],
+            }
+        },
+    }
+
+
 def test_review_result_tool_uses_task_ids_when_model_supplies_wrong_ids(monkeypatch) -> None:
     expected = GroundedAnswerTaskInput(
         schema_version="1.0",
