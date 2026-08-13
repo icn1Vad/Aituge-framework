@@ -40,7 +40,7 @@ MAX_INSERTION_CANDIDATES = 24
 # Bump whenever deterministic draft-planning semantics change.  A cached
 # failure must not outlive the validation rule that produced it.
 REVISION_DRAFT_CACHE_VERSION = (
-    "numbering-domain-plan-v10-first-structural-output-chapter-style-layout-v3"
+    "numbering-domain-plan-v11-native-structured-numbering"
 )
 _PLACEHOLDER_RE = re.compile(r"(?:TODO|TBD|XXX|待补充|待定|请填写)", re.IGNORECASE)
 _STRUCTURAL_PLACEHOLDER_HEADING_RE = re.compile(
@@ -79,7 +79,7 @@ _LITERAL_NUMBER_MARKER_RE = re.compile(
 )
 _INLINE_ALPHA_ITEM_RE = re.compile(r"[（(](?P<label>[A-Za-z])[）)]")
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[。！？!?；;])")
-_REVISION_PLAN_VERSION = "numbering-domain-plan-v1"
+_REVISION_PLAN_VERSION = "numbering-domain-plan-v2-structured-numbering"
 
 
 class StrictModel(BaseModel):
@@ -181,6 +181,16 @@ class RevisionInsertionTarget(StrictModel):
     display_position: str = Field(min_length=1, max_length=500)
 
 
+class RevisionNumberingPlanItem(StrictModel):
+    item_id: str = Field(min_length=1, max_length=100)
+    parent_item_id: str | None = Field(default=None, max_length=100)
+    level: int = Field(ge=0, le=8)
+    marker_type: Literal["DECIMAL", "PAREN_ALPHA", "PAREN_DECIMAL", "PAREN_CHINESE"]
+    text: str = Field(min_length=1, max_length=1_200)
+
+    marker: str | None = Field(default=None, max_length=32)
+
+
 class RevisionDraft(StrictModel):
     revision_key: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     finding_id: str
@@ -206,6 +216,7 @@ class RevisionDraft(StrictModel):
         "RENUMBER_LITERAL",
         "NO_NUMBERING",
     ] = "NO_NUMBERING"
+    numbering_plan: list[RevisionNumberingPlanItem] = Field(default_factory=list)
     source_finding_ids: list[str] = Field(default_factory=list)
     group_owner_finding_id: str | None = None
     group_operation_owner: bool = True
@@ -1686,6 +1697,7 @@ def _revision_hash_for_draft(draft: RevisionDraft) -> str:
         revision_group_id=draft.revision_group_id,
         numbering_domain_id=draft.numbering_domain_id,
         numbering_policy=draft.numbering_policy,
+        numbering_plan=draft.numbering_plan,
         source_finding_ids=draft.source_finding_ids,
         group_owner_finding_id=draft.group_owner_finding_id,
         group_operation_owner=draft.group_operation_owner,
@@ -1713,6 +1725,7 @@ def compute_revision_hash(
     revision_group_id: str | None = None,
     numbering_domain_id: str | None = None,
     numbering_policy: str = "NO_NUMBERING",
+    numbering_plan: Sequence[RevisionNumberingPlanItem] = (),
     source_finding_ids: Sequence[str] = (),
     group_owner_finding_id: str | None = None,
     group_operation_owner: bool = True,
@@ -1727,6 +1740,7 @@ def compute_revision_hash(
         "revision_group_id": revision_group_id,
         "numbering_domain_id": numbering_domain_id,
         "numbering_policy": numbering_policy,
+        "numbering_plan": [item.model_dump(mode="json") for item in numbering_plan],
         "source_finding_ids": list(source_finding_ids),
         "group_owner_finding_id": group_owner_finding_id,
         "group_operation_owner": group_operation_owner,
@@ -2410,17 +2424,49 @@ def _normalize_append_literal_draft(draft: RevisionDraft) -> RevisionDraft:
         lines = lines[1:]
 
     normalized_lines: list[str] = []
+    numbering_plan: list[RevisionNumberingPlanItem] = []
+    last_by_level: dict[int, str] = {}
     for line in lines:
         if not line.strip():
-            normalized_lines.append("")
-            continue
-        if _INLINE_ALPHA_ITEM_RE.match(line.strip()):
-            normalized_lines.append(line.strip())
             continue
         placeholder_item = _STRUCTURAL_PLACEHOLDER_ITEM_RE.match(line)
-        literal_item = _STRUCTURAL_LITERAL_ITEM_RE.match(line)
-        match = placeholder_item or literal_item
-        normalized_lines.append(match.group("body").strip() if match else line.strip())
+        marker_match = _LITERAL_NUMBER_MARKER_RE.match(line.strip())
+        body = (
+            placeholder_item.group("body").strip()
+            if placeholder_item
+            else line.strip()[marker_match.end() :].strip()
+            if marker_match
+            else line.strip()
+        )
+        marker = marker_match.group("marker").strip() if marker_match else ""
+        if re.fullmatch(r"[\uFF08(][A-Za-z][\uFF09)]", marker):
+            level = 1
+            marker_type = "PAREN_ALPHA"
+        elif re.fullmatch(r"[\uFF08(]\d+[\uFF09)]", marker):
+            level = 2 if 1 in last_by_level else 1
+            marker_type = "PAREN_DECIMAL"
+        elif re.fullmatch(r"[\uFF08(][\u4e00-\u9fff]+[\uFF09)]", marker):
+            level = 1
+            marker_type = "PAREN_CHINESE"
+        else:
+            level = 0
+            marker_type = "DECIMAL"
+        item_id = f"item-{len(numbering_plan) + 1}"
+        parent_item_id = last_by_level.get(level - 1) if level > 0 else None
+        numbering_plan.append(
+            RevisionNumberingPlanItem(
+                item_id=item_id,
+                parent_item_id=parent_item_id,
+                marker=marker or None,
+                level=level,
+                marker_type=marker_type,
+                text=body,
+            )
+        )
+        normalized_lines.append(body)
+        last_by_level[level] = item_id
+        for stale_level in [key for key in last_by_level if key > level]:
+            last_by_level.pop(stale_level, None)
 
     normalized = "\n".join(normalized_lines).strip()
     if not normalized:
@@ -2437,9 +2483,11 @@ def _normalize_append_literal_draft(draft: RevisionDraft) -> RevisionDraft:
             "REVISION_GENERATION_FAILED",
             "supplement contains an unresolved structural placeholder",
         )
-    if normalized == draft.replacement_text:
+    if normalized == draft.replacement_text and numbering_plan == draft.numbering_plan:
         return draft
-    updated = draft.model_copy(update={"replacement_text": normalized})
+    updated = draft.model_copy(
+        update={"replacement_text": normalized, "numbering_plan": numbering_plan}
+    )
     return updated.model_copy(update={"revision_hash": _revision_hash_for_draft(updated)})
 
 

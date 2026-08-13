@@ -13,12 +13,15 @@ from services.contract.capabilities.revision_drafts import (
     InMemoryRevisionSourceProvider,
     PostgresRevisionSourceProvider,
     ReplacementBatchResult,
+    RevisionDraft,
     RevisionDraftError,
     RevisionDraftService,
     RevisionEvidenceSource,
     RevisionFindingSource,
+    RevisionInsertionTarget,
     RevisionIrSource,
     RevisionReviewSource,
+    _normalize_append_literal_draft,
     _validate_replacement,
     compute_revision_hash,
     compute_revision_key,
@@ -27,6 +30,47 @@ from services.contract.capabilities.revision_drafts import (
 
 def _hash(value: str) -> str:
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def test_append_literal_draft_compiles_a_structured_numbering_plan() -> None:
+    draft = RevisionDraft(
+        revision_key=_hash("revision-key"),
+        finding_id="finding-1",
+        operation="SUPPLEMENT",
+        replacement_text="6. 第一项\n7. 第二项\n（a）子项\n（1）更深子项",
+        change_reason="补充完整条款",
+        insertion_target=RevisionInsertionTarget(
+            block_id="block-1",
+            block_no=1,
+            heading_path=["第一条"],
+            anchor_excerpt="5. 原条款",
+            anchor_text_hash=_hash("5. 原条款"),
+            display_position="第一条之后",
+        ),
+        revision_hash=_hash("initial-revision"),
+        validation_status="VALID",
+        numbering_policy="APPEND_LITERAL",
+    )
+
+    normalized = _normalize_append_literal_draft(draft)
+
+    assert normalized.replacement_text == "第一项\n第二项\n子项\n更深子项"
+    assert [item.marker_type for item in normalized.numbering_plan] == [
+        "DECIMAL",
+        "DECIMAL",
+        "PAREN_ALPHA",
+        "PAREN_DECIMAL",
+    ]
+    assert [item.level for item in normalized.numbering_plan] == [0, 0, 1, 2]
+    assert [item.marker for item in normalized.numbering_plan] == [
+        "6.",
+        "7.",
+        "（a）",
+        "（1）",
+    ]
+    assert normalized.numbering_plan[2].parent_item_id == normalized.numbering_plan[1].item_id
+    assert normalized.numbering_plan[3].parent_item_id == normalized.numbering_plan[2].item_id
+    assert normalized.revision_hash != draft.revision_hash
 
 
 _INTERNAL_HEADERS = {
