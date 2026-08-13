@@ -831,12 +831,17 @@ def _parse_generated_replacements(
         ) from None
     expected = [item.revision_key for item in items]
     actual = [item.revision_key for item in generated]
-    if actual != expected or len(actual) != len(set(actual)):
+    if (
+        len(actual) != len(expected)
+        or len(actual) != len(set(actual))
+        or set(actual) != set(expected)
+    ):
         raise _RevisionOutputValidation(
             "REVISION_OUTPUT_KEY_MISMATCH",
-            "Revision model did not return every revision key exactly once.",
+            "AI 未能完整返回全部修改建议。",
         )
-    return generated
+    generated_by_key = {item.revision_key: item for item in generated}
+    return tuple(generated_by_key[key] for key in expected)
 
 
 def _model_request_payload(
