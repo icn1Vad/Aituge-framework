@@ -13,6 +13,7 @@ from scheduling.scheduler import (
     SchedulingRuntimeOptions,
     SchedulingService,
 )
+from service.structured_form import match_explicit_form_change
 
 from task_manager.handlers.base import TaskExecutionContext, TaskHandlerEvent
 from task_manager.artifact_service import TaskArtifactPublisher
@@ -91,6 +92,72 @@ class SchedulerTaskHandler:
             stage_run_id=stage_run.id,
         )
         started = time.perf_counter()
+
+        fast_change = match_explicit_form_change(
+            dict(task.input_payload_json or {}),
+            task_message,
+        )
+        if fast_change is not None:
+            tool_call_id = f"fast-form-change:{task.id}"
+            arguments = json.dumps(fast_change.arguments(), ensure_ascii=False)
+            yield TaskHandlerEvent(
+                event_type="tool_started",
+                stage="tool_execution",
+                message="Tool 'apply_form_changes' started.",
+                step_id=f"tool_started:{tool_call_id}",
+                step_index=25,
+                payload={
+                    "tool_name": "apply_form_changes",
+                    "tool_call_id": tool_call_id,
+                    "arguments": arguments,
+                    "status": "started",
+                },
+                thread_id=task.thread_id,
+                session_id=task.session_id,
+                stage_run_id=stage_run.id,
+                agent_id=profile.agent_id,
+            )
+            yield TaskHandlerEvent(
+                event_type="tool_completed",
+                stage="tool_execution",
+                message="Tool 'apply_form_changes' completed.",
+                step_id=f"tool_completed:{tool_call_id}",
+                step_index=35,
+                payload={
+                    "tool_name": "apply_form_changes",
+                    "tool_call_id": tool_call_id,
+                    "arguments": arguments,
+                    "status": "completed",
+                    "result_chars": 0,
+                    "artifacts": [],
+                    "error": "",
+                },
+                thread_id=task.thread_id,
+                session_id=task.session_id,
+                stage_run_id=stage_run.id,
+                agent_id=profile.agent_id,
+            )
+            content = f"已将{fast_change.field_label}修改为{fast_change.value}。"
+            yield TaskHandlerEvent(
+                event_type="agent_final",
+                stage="agent_stream",
+                message="Deterministic form edit completed.",
+                step_id="agent_final",
+                step_index=40,
+                payload={"source_event": "fast_form_change", "content_chars": len(content)},
+                thread_id=task.thread_id,
+                session_id=task.session_id,
+                final_content=content,
+                stage_run_id=stage_run.id,
+                agent_id=profile.agent_id,
+            )
+            await update_stage_run(
+                stage_run.id,
+                status="completed",
+                finished_at=utc_now(),
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+            return
 
         yield TaskHandlerEvent(
             event_type="scheduler_request_built",
@@ -356,6 +423,7 @@ def _translate_chunk_event(event) -> list[TaskHandlerEvent]:
                 payload={
                     "tool_name": tool_name,
                     "tool_call_id": tool_call_id,
+                    "arguments": _bounded_tool_arguments(tool),
                     "status": "failed" if error else "completed",
                     "result_chars": len(result) if isinstance(result, str) else 0,
                     "artifacts": extract_artifacts(result),
