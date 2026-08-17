@@ -9,7 +9,7 @@ from service.structured_form.registry import (
     clear_workflow_definitions,
     register_workflow_definition,
 )
-from service.structured_form.tool import ApplyFormChangesInput
+from service.structured_form.tool import ApplyFormChangesInput, StartWorkflowInput
 
 
 @pytest.fixture(autouse=True)
@@ -97,6 +97,30 @@ def test_ambiguous_complex_or_disallowed_edits_do_not_use_fast_path(message: str
 def test_missing_or_stale_draft_context_does_not_use_fast_path() -> None:
     assert match_explicit_form_change(payload(draft_version=None), "把出发日期改成8月20日") is None
     assert match_explicit_form_change(payload(active_resource_id=""), "把出发日期改成8月20日") is None
+
+def test_start_workflow_accepts_initial_trip_fields() -> None:
+    command = StartWorkflowInput.model_validate(
+        {
+            "workflow_type": "TRAVEL_APPLICATION",
+            "changes": [
+                {"field_key": "arrivalCity", "value": "北京", "source": "ai"},
+                {"field_key": "notes", "value": "去北京出趟差", "source": "ai"},
+            ],
+        }
+    )
+
+    assert command.workflow_type == "TRAVEL_APPLICATION"
+    assert [change.field_key for change in command.changes] == ["arrivalCity", "notes"]
+
+
+def test_start_workflow_rejects_unknown_business_flow() -> None:
+    with pytest.raises(ValidationError):
+        StartWorkflowInput.model_validate(
+            {
+                "workflow_type": "PURCHASE_APPLICATION",
+                "changes": [],
+            }
+        )
 
 
 def test_apply_command_requires_version_and_at_least_one_change() -> None:

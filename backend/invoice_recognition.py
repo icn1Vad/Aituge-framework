@@ -1,6 +1,7 @@
 """Typed invoice recognition for the travel reimbursement workflow."""
 from __future__ import annotations
 
+import hashlib
 import hmac
 import io
 import os
@@ -35,7 +36,9 @@ _COMPANY_SUFFIXES = (
 
 class InvoiceItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    invoice_id: str
     file_name: str
+    expense_category: str
     recognition_method: str
     invoice_type: str
     invoice_number: str | None = None
@@ -172,6 +175,22 @@ def _amounts(text: str) -> tuple[Decimal | None, Decimal | None, Decimal | None]
     return None, None, total
 
 
+def _expense_category(file_name: str, text: str) -> str:
+    searchable = re.sub(r"\s+", "", f"{file_name}\n{text}").lower()
+    category_keywords = (
+        ("ACCOMMODATION", ("住宿", "酒店", "宾馆", "旅馆", "客房", "房费")),
+        ("MEAL", ("餐饮", "餐费", "饭店", "餐厅", "食品", "酒楼", "小吃", "用餐")),
+        ("TRANSPORT", (
+            "打车", "出租车", "出租汽车", "网约车", "滴滴", "高德打车", "曹操出行",
+            "机票", "航空", "火车票", "铁路", "高铁", "客运", "交通费", "过路费", "燃油费",
+        )),
+    )
+    for category, keywords in category_keywords:
+        if any(keyword in searchable for keyword in keywords):
+            return category
+    return "OTHER"
+
+
 def _invoice_type(text: str) -> str:
     compact = re.sub(r"\s+", "", text)
     if "增值税专用发票" in compact:
@@ -181,8 +200,16 @@ def _invoice_type(text: str) -> str:
     return "UNKNOWN"
 
 
-def parse_invoice(file_name: str, text: str, method: str = "PDF_TEXT") -> InvoiceItem:
+def parse_invoice(
+    file_name: str,
+    text: str,
+    method: str = "PDF_TEXT",
+    invoice_id: str | None = None,
+) -> InvoiceItem:
     normalized = text.replace("\u3000", " ").replace("\xa0", " ")
+    resolved_invoice_id = invoice_id or hashlib.sha256(
+        f"{file_name}\n{normalized}".encode("utf-8")
+    ).hexdigest()
     numbers = _INVOICE_NO.findall(normalized)
     names = _company_names(normalized)
     tax_ids = _tax_ids(normalized)
@@ -198,7 +225,9 @@ def parse_invoice(file_name: str, text: str, method: str = "PDF_TEXT") -> Invoic
         f"MISSING_{key.upper()}" for key, value in values.items() if value is None
     ]
     return InvoiceItem(
+        invoice_id=resolved_invoice_id,
         file_name=file_name,
+        expense_category=_expense_category(file_name, normalized),
         recognition_method=method,
         invoice_type=_invoice_type(normalized),
         invoice_number=values["invoice_number"],
@@ -247,7 +276,12 @@ def create_invoice_recognition_router() -> APIRouter:
             if len(re.sub(r"\s+", "", text)) < MIN_NATIVE_TEXT_LENGTH:
                 text = await _ocr_text(file_name, content)
                 method = "PADDLE_OCR"
-            invoices.append(parse_invoice(file_name, text, method))
+            invoices.append(parse_invoice(
+                file_name,
+                text,
+                method,
+                hashlib.sha256(content).hexdigest(),
+            ))
 
         def summed(field: str) -> Decimal:
             return sum(

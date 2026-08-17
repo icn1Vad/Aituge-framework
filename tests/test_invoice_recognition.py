@@ -19,6 +19,8 @@ def test_parse_vat_ordinary_invoice_fields() -> None:
 
     invoice = parse_invoice("meal.pdf", text)
 
+    assert len(invoice.invoice_id) == 64
+    assert invoice.expense_category == "MEAL"
     assert invoice.invoice_type == "VAT_ORDINARY"
     assert invoice.invoice_number == "26112000002169164236"
     assert invoice.issue_date.isoformat() == "2026-05-29"
@@ -49,6 +51,7 @@ def test_parse_vat_special_invoice_fields() -> None:
 
     invoice = parse_invoice("special.pdf", text)
 
+    assert invoice.expense_category == "OTHER"
     assert invoice.invoice_type == "VAT_SPECIAL"
     assert invoice.invoice_number == "26112000002169164237"
     assert invoice.amount_excluding_tax == Decimal("100.00")
@@ -71,6 +74,12 @@ def test_parse_incomplete_invoice_requires_confirmation() -> None:
     assert invoice.total_amount == Decimal("438.60")
     assert invoice.confidence < 1
     assert "MISSING_INVOICE_NUMBER" in invoice.warnings
+
+
+def test_expense_category_uses_invoice_content_and_file_name() -> None:
+    assert parse_invoice("打车行程单.pdf", "价税合计 20.00").expense_category == "TRANSPORT"
+    assert parse_invoice("invoice.pdf", "某某酒店 客房费 299.00").expense_category == "ACCOMMODATION"
+    assert parse_invoice("invoice.pdf", "某某餐饮有限公司 299.00").expense_category == "MEAL"
 
 
 def test_unknown_document_does_not_fabricate_invoice_data() -> None:

@@ -12,6 +12,7 @@ from service.structured_form import (
     FormFieldDefinition,
     FormWorkflowDefinition,
     create_apply_form_changes_bundle,
+    create_start_workflow_bundle,
     register_workflow_definition,
 )
 
@@ -22,11 +23,11 @@ class WorkflowAssistantInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     question: str = Field(min_length=1, max_length=4000)
-    active_workflow: str = Field(min_length=1, max_length=64)
-    active_resource_type: str = Field(min_length=1, max_length=64)
-    active_resource_id: str = Field(min_length=1, max_length=64)
-    draft_version: int = Field(ge=1)
-    form: dict[str, Any]
+    active_workflow: str | None = Field(default=None, min_length=1, max_length=64)
+    active_resource_type: str | None = Field(default=None, min_length=1, max_length=64)
+    active_resource_id: str | None = Field(default=None, min_length=1, max_length=64)
+    draft_version: int | None = Field(default=None, ge=1)
+    form: dict[str, Any] = Field(default_factory=dict)
     field_sources: dict[str, str] = Field(default_factory=dict)
     model_id: str | None = Field(default=None, min_length=1, max_length=64)
 
@@ -114,6 +115,13 @@ async def register(registry, settings) -> None:
         description="Validate and emit one or more changes for the Java form boundary.",
         factory=create_apply_form_changes_bundle,
     )
+    registry.register_local_tool(
+        tool_name="start_workflow",
+        provider="structured-form-command",
+        display_name="Start Workflow",
+        description="Start a supported transaction and emit initial field changes.",
+        factory=create_start_workflow_bundle,
+    )
     registry.register_agent(
         agent_id="workflow-assistant-agent",
         name="Structured Workflow Assistant",
@@ -121,6 +129,12 @@ async def register(registry, settings) -> None:
         model_id=model_id,
         system_prompt=(
             "你是企业事务办理助手。当前表单、字段来源、草稿编号和版本均在任务上下文中。"
+            "如果 active_workflow=TRAVEL_ASSISTANT 且尚无草稿：用户明确要发起出差时必须调用 "
+            "start_workflow(workflow_type=TRAVEL_APPLICATION)，用户明确要报销时调用 "
+            "start_workflow(workflow_type=TRAVEL_REIMBURSEMENT)；制度咨询不得启动表单。"
+            "启动出差时，把用户已明确提供的信息放进 changes。可用字段为 departureCity、arrivalCity、"
+            "departureDate、tripDays、travelMode、cabin、passenger、activityType、notes、applicationAmount。"
+            "像‘去北京出趟差’、‘去上海开会’、‘申请下周出差’都属于明确的出差办理意图。"
             "明确的字段修改必须调用 apply_form_changes，不得只用文字声称已经修改。"
             "一次可提交一个或多个 changes；field_key 只能使用上下文提供的字段键。"
             "如果用户没有说清楚要改哪个字段，先追问，禁止猜测。"
@@ -133,7 +147,7 @@ async def register(registry, settings) -> None:
             "活动名称必须原样保留在 notes 中，供后续业务材料校验使用。"
             "不要提交正式业务单据，最终提交仍由用户确认和 Java 业务服务完成。"
         ),
-        default_tools=["apply_form_changes"],
+        default_tools=["start_workflow", "apply_form_changes"],
         default_datasets=[],
     )
     registry.register_resource_task(
@@ -144,7 +158,7 @@ async def register(registry, settings) -> None:
         description="Continue a business form conversation and emit validated field changes.",
         handler="scheduler",
         default_agent_id="workflow-assistant-agent",
-        default_tools=["apply_form_changes"],
+        default_tools=["start_workflow", "apply_form_changes"],
         default_datasets=[],
         conversation_message_field="question",
         input_model=WorkflowAssistantInput,

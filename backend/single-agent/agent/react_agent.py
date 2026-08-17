@@ -200,6 +200,9 @@ _INTENT_PHRASES = (
 
 # 一个"行动预告"必然是短消息;超过这个长度就当作正常正文,不再扣留/纠正。
 _INTENT_MAX_LEN = 200
+# 流式输出只扣留极短前缀，避免为了最终校验让用户等待整段回答。
+_INTENT_STREAM_BUFFER_LEN = 48
+
 
 
 def _looks_like_unfinished_intent(text: str) -> bool:
@@ -442,7 +445,7 @@ class ReactAgent:
                                 pending += chunk.delta
                                 if chunk.usage is not None:
                                     pending_usage = chunk.usage
-                                if len(step_content) >= _INTENT_MAX_LEN:
+                                if len(step_content) >= _INTENT_STREAM_BUFFER_LEN:
                                     yield TextChunk(
                                         delta=pending,
                                         usage=(
