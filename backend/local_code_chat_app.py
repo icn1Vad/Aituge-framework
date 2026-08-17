@@ -36,6 +36,7 @@ from tool.registry import ToolManager, remove_retired_framework_tool_configs
 from backend.revision_llm_api import create_revision_llm_router
 from backend.chat_title_llm_api import create_chat_title_llm_router
 from backend.invoice_recognition import create_invoice_recognition_router
+from backend.attendance_recognition import create_attendance_recognition_router
 from contract.api.app import create_app as create_contract_app
 from contract.persistence.postgres.migrate import run_migrations as run_contract_migrations
 
@@ -210,6 +211,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     app.include_router(create_invoice_recognition_router())
+    app.include_router(create_attendance_recognition_router())
     if embedded_contract_app is not None:
         app.mount("/", embedded_contract_app, name="contract")
 
