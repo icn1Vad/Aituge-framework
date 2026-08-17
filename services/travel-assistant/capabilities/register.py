@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from aituge_model.config import ModelRuntimeProvider
@@ -62,6 +63,8 @@ TRIP_WORKFLOW = FormWorkflowDefinition(
         _field("travelMode", "出行方式", "交通方式", field_type="enum", enum_values=("机票", "高铁", "汽车")),
         _field("cabin", "舱位", "座席", field_type="enum", enum_values=("经济舱", "商务舱", "一等座", "二等座")),
         _field("departureDate", "出发日期", "启程日期", field_type="date"),
+        _field("tripDays", "出差天数", "行程天数", "为期", field_type="number"),
+        _field("activityType", "活动类型", field_type="enum", enum_values=("MEETING", "TRAINING", "VISIT", "OTHER")),
         _field("departureCity", "出发城市", "出发地"),
         _field("arrivalCity", "到达城市", "目的地"),
         _field("passenger", "乘机人", "出差人"),
@@ -121,6 +124,13 @@ async def register(registry, settings) -> None:
             "明确的字段修改必须调用 apply_form_changes，不得只用文字声称已经修改。"
             "一次可提交一个或多个 changes；field_key 只能使用上下文提供的字段键。"
             "如果用户没有说清楚要改哪个字段，先追问，禁止猜测。"
+            "用户描述一整段出差安排时，要把日期、出发城市、到达城市、出差天数和出差事由拆成对应字段后一次调用工具。"
+            "还必须理解活动性质并写入 activityType：会议、启动会、评审会、研讨会、论坛、峰会等为 MEETING，"
+            "培训为 TRAINING，客户拜访或调研为 VISIT，其余为 OTHER。"
+            "例如‘从北京到上海为期三天的会议研讨会’应写入 departureCity、arrivalCity、tripDays、activityType=MEETING 和 notes。"
+            "没有年份的日期按当前年度处理；当前日期为"
+            f"{date.today().isoformat()}。"
+            "活动名称必须原样保留在 notes 中，供后续业务材料校验使用。"
             "不要提交正式业务单据，最终提交仍由用户确认和 Java 业务服务完成。"
         ),
         default_tools=["apply_form_changes"],
