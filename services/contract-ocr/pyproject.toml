@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "contract-ocr"
-version = "0.2.0"
+version = "0.3.0"
 description = "Isolated PaddleOCR runtime for contract scan preprocessing."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
@@ -15,6 +15,7 @@ dependencies = [
   # 3.3.x has a known CPU oneDNN/PIR regression in PP-StructureV3 inference.
   "paddlepaddle==3.2.2",
   "pypdf>=5,<7",
+  "pypdfium2>=5,<6",
   "python-docx>=1.1,<2",
   "python-multipart>=0.0.9,<1",
 ]

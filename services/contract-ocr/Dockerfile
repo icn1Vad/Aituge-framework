@@ -22,6 +22,7 @@ RUN python -m pip install \
         "paddleocr[doc-parser]==3.7.0" \
         "paddlepaddle==3.2.2" \
         "pypdf>=5,<7" \
+        "pypdfium2>=5,<6" \
         "python-docx>=1.1,<2" \
         "python-multipart>=0.0.9,<1"
 

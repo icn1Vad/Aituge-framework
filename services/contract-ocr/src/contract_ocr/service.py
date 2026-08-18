@@ -20,7 +20,7 @@ from pypdf import PdfReader, PdfWriter
 
 
 SERVICE_NAME = "contract-ocr"
-SERVICE_VERSION = "0.2.0"
+SERVICE_VERSION = "0.3.0"
 _PDF_CONTENT_TYPE = "application/pdf"
 _WORD_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _HTML_TAG = re.compile(r"<[^>]+>")
@@ -43,6 +43,10 @@ class OcrSettings:
     max_pages: int = 200
     min_text_chars_per_page: int = 24
     max_output_bytes: int = 50 * 1024 * 1024
+    structure_dpi: int = 300
+    structure_max_width: int = 3800
+    structure_tile_height: int = 3200
+    structure_tile_overlap: int = 320
 
     @classmethod
     def from_environment(cls) -> "OcrSettings":
@@ -54,6 +58,16 @@ class OcrSettings:
                 "CONTRACT_OCR_MIN_TEXT_CHARS_PER_PAGE", defaults.min_text_chars_per_page
             ),
             max_output_bytes=_positive_int("CONTRACT_OCR_MAX_OUTPUT_BYTES", defaults.max_output_bytes),
+            structure_dpi=_positive_int("CONTRACT_OCR_STRUCTURE_DPI", defaults.structure_dpi),
+            structure_max_width=_positive_int(
+                "CONTRACT_OCR_STRUCTURE_MAX_WIDTH", defaults.structure_max_width
+            ),
+            structure_tile_height=_positive_int(
+                "CONTRACT_OCR_STRUCTURE_TILE_HEIGHT", defaults.structure_tile_height
+            ),
+            structure_tile_overlap=_positive_int(
+                "CONTRACT_OCR_STRUCTURE_TILE_OVERLAP", defaults.structure_tile_overlap
+            ),
         )
 
 
@@ -70,6 +84,28 @@ class PdfInspection:
 class OcrConversion:
     inspection: PdfInspection
     archive: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class OcrStructure:
+    inspection: PdfInspection
+    pages: list[dict[str, Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class RenderedTile:
+    page_number: int
+    page_count: int
+    tile_index: int
+    y_offset: int
+    full_width: int
+    full_height: int
+    path: Path
+
+
+class PdfPageRenderer(Protocol):
+    def render_tiles(self, source_path: Path, workdir: Path) -> list[RenderedTile]:
+        ...
 
 
 class StructureEngine(Protocol):
@@ -122,13 +158,100 @@ class PaddleStructureEngine:
         return self._pipeline
 
 
+class PdfiumPageRenderer:
+    """Renders high-resolution page images and vertically tiles oversized pages."""
+
+    def __init__(self, settings: OcrSettings) -> None:
+        self.settings = settings
+
+    def render_tiles(self, source_path: Path, workdir: Path) -> list[RenderedTile]:
+        import pypdfium2 as pdfium
+
+        document = pdfium.PdfDocument(str(source_path))
+        rendered: list[RenderedTile] = []
+        try:
+            page_count = len(document)
+            for page_index in range(page_count):
+                page = document[page_index]
+                try:
+                    page_width, _ = page.get_size()
+                    requested_scale = self.settings.structure_dpi / 72.0
+                    width_scale = self.settings.structure_max_width / max(float(page_width), 1.0)
+                    scale = min(requested_scale, width_scale)
+                    bitmap = page.render(scale=scale)
+                    try:
+                        image = bitmap.to_pil().convert("RGB")
+                    finally:
+                        bitmap.close()
+                    try:
+                        rendered.extend(
+                            self._save_tiles(
+                                image,
+                                workdir,
+                                page_number=page_index + 1,
+                                page_count=page_count,
+                            )
+                        )
+                    finally:
+                        image.close()
+                finally:
+                    page.close()
+        finally:
+            document.close()
+        return rendered
+
+    def _save_tiles(
+        self,
+        image: Any,
+        workdir: Path,
+        *,
+        page_number: int,
+        page_count: int,
+    ) -> list[RenderedTile]:
+        width, height = image.size
+        tile_height = min(self.settings.structure_tile_height, height)
+        overlap = min(self.settings.structure_tile_overlap, max(0, tile_height // 3))
+        step = max(1, tile_height - overlap)
+        offsets = [0] if height <= tile_height else list(range(0, height, step))
+        if offsets[-1] + tile_height < height:
+            offsets.append(height - tile_height)
+        offsets = sorted(set(min(offset, max(0, height - tile_height)) for offset in offsets))
+        tiles: list[RenderedTile] = []
+        for tile_index, y_offset in enumerate(offsets):
+            bottom = min(height, y_offset + tile_height)
+            tile_image = image.crop((0, y_offset, width, bottom))
+            tile_path = workdir / f"page-{page_number}-tile-{tile_index}.png"
+            try:
+                tile_image.save(tile_path, format="PNG")
+            finally:
+                tile_image.close()
+            tiles.append(
+                RenderedTile(
+                    page_number=page_number,
+                    page_count=page_count,
+                    tile_index=tile_index,
+                    y_offset=y_offset,
+                    full_width=width,
+                    full_height=height,
+                    path=tile_path,
+                )
+            )
+        return tiles
+
+
 class ContractOcrService:
     service_name = SERVICE_NAME
     service_version = SERVICE_VERSION
 
-    def __init__(self, settings: OcrSettings, engine: StructureEngine | None = None) -> None:
+    def __init__(
+        self,
+        settings: OcrSettings,
+        engine: StructureEngine | None = None,
+        renderer: PdfPageRenderer | None = None,
+    ) -> None:
         self.settings = settings
         self.engine = engine or PaddleStructureEngine()
+        self.renderer = renderer or PdfiumPageRenderer(settings)
 
     @classmethod
     def from_environment(cls) -> "ContractOcrService":
@@ -228,6 +351,62 @@ class ContractOcrService:
         if len(archive) > self.settings.max_output_bytes:
             raise ContractOcrError("OCR_OUTPUT_TOO_LARGE", "OCR转换结果超过大小限制", status_code=413)
         return OcrConversion(inspection=inspection, archive=archive)
+
+    def structure_pdf(self, content: bytes) -> OcrStructure:
+        inspection = self.inspect_pdf(content)
+        with tempfile.TemporaryDirectory(prefix="contract-ocr-structure-") as directory:
+            workdir = Path(directory)
+            source_path = workdir / "source.pdf"
+            source_path.write_bytes(content)
+            tiles = self.renderer.render_tiles(source_path, workdir)
+            pages_by_number: dict[int, dict[str, Any]] = {}
+            for tile in tiles:
+                try:
+                    results = list(self.engine.parse_page(tile.path))
+                except ContractOcrError:
+                    raise
+                except Exception as exc:
+                    logger.exception(
+                        "Structured OCR inference failed for page %s tile %s",
+                        tile.page_number,
+                        tile.tile_index,
+                    )
+                    raise ContractOcrError(
+                        "OCR_INFERENCE_FAILED",
+                        f"PDF第{tile.page_number}页结构识别失败",
+                        status_code=503,
+                        retryable=True,
+                    ) from exc
+                if not results:
+                    raise ContractOcrError(
+                        "OCR_NO_RESULT",
+                        f"PDF第{tile.page_number}页没有结构识别结果",
+                        status_code=422,
+                    )
+                page = pages_by_number.setdefault(
+                    tile.page_number,
+                    {
+                        "page_number": tile.page_number,
+                        "page_count": tile.page_count,
+                        "width": tile.full_width,
+                        "height": tile.full_height,
+                        "blocks": [],
+                        "tables": [],
+                    },
+                )
+                for payload in results:
+                    segment = _manifest_page(payload, tile.page_number, tile.page_count)
+                    for block in segment["blocks"]:
+                        translated = dict(block)
+                        translated["bbox"] = _offset_boxes(translated.get("bbox"), tile.y_offset)
+                        translated["tile_index"] = tile.tile_index
+                        page["blocks"].append(translated)
+                    for table in segment["tables"]:
+                        translated_table = _offset_table(table, tile.y_offset)
+                        translated_table["tile_index"] = tile.tile_index
+                        page["tables"].append(translated_table)
+            pages = [pages_by_number[number] for number in sorted(pages_by_number)]
+        return OcrStructure(inspection=inspection, pages=pages)
 
     def _recognize_pages(self, source_path: Path, inspection: PdfInspection) -> list[dict[str, Any]]:
         reader = _open_pdf(source_path.read_bytes())
@@ -456,6 +635,38 @@ def _append_html_table(document: Any, value: str) -> bool:
 
 def _clean_text(value: str) -> str:
     return html.unescape(_HTML_TAG.sub("", value)).replace("\u00a0", " ").strip()
+
+
+def _offset_boxes(value: Any, y_offset: int) -> Any:
+    converted = _json_value(value)
+    if (
+        isinstance(converted, list)
+        and len(converted) >= 4
+        and all(isinstance(item, (int, float)) for item in converted[:4])
+    ):
+        result = list(converted)
+        result[1] += y_offset
+        result[3] += y_offset
+        return result
+    if isinstance(converted, list):
+        return [_offset_boxes(item, y_offset) for item in converted]
+    return converted
+
+
+def _offset_table(value: Any, y_offset: int) -> dict[str, Any]:
+    table = dict(_json_value(value)) if isinstance(value, Mapping) else {}
+    for key in ("cell_box_list", "table_box", "bbox"):
+        if key in table:
+            table[key] = _offset_boxes(table[key], y_offset)
+    prediction = table.get("table_ocr_pred")
+    if isinstance(prediction, Mapping):
+        translated_prediction = dict(prediction)
+        if "rec_boxes" in translated_prediction:
+            translated_prediction["rec_boxes"] = _offset_boxes(
+                translated_prediction["rec_boxes"], y_offset
+            )
+        table["table_ocr_pred"] = translated_prediction
+    return table
 
 
 def _build_archive(docx: bytes, manifest: Mapping[str, Any]) -> bytes:

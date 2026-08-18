@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse, Response
@@ -31,6 +31,15 @@ class PdfInspectionResponse(BaseModel):
     text_page_count: int
     pages_requiring_ocr: list[int]
     source_sha256: str
+
+class OcrStructureResponse(BaseModel):
+    schema_version: str
+    classification: str
+    page_count: int
+    pages_requiring_ocr: list[int]
+    source_sha256: str
+    pages: list[dict[str, Any]]
+
 
 
 def _runtime_info(service: ContractOcrService, *, verify_import: bool) -> RuntimeInfo:
@@ -78,6 +87,21 @@ def create_app(service: ContractOcrService | None = None) -> FastAPI:
     async def inspect_pdf(file: Annotated[UploadFile, File(...)]) -> PdfInspectionResponse:
         content = await ocr_service.read_pdf_upload(file)
         return _inspection_response(ocr_service.inspect_pdf(content))
+
+    @app.post("/v1/internal/ocr/table-structure", response_model=OcrStructureResponse)
+    async def recognize_table_structure(
+        file: Annotated[UploadFile, File(...)],
+    ) -> OcrStructureResponse:
+        content = await ocr_service.read_pdf_upload(file)
+        structured = ocr_service.structure_pdf(content)
+        return OcrStructureResponse(
+            schema_version="1.0",
+            classification=structured.inspection.classification,
+            page_count=structured.inspection.page_count,
+            pages_requiring_ocr=list(structured.inspection.pages_requiring_ocr),
+            source_sha256=structured.inspection.source_sha256,
+            pages=structured.pages,
+        )
 
     @app.post("/v1/internal/ocr/convert")
     async def convert_pdf(file: Annotated[UploadFile, File(...)]) -> Response:
