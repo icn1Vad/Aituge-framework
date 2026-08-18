@@ -419,8 +419,8 @@ class ContractInternalService:
         findings, evidence_candidates = self._merge_review_artifacts(request.artifacts)
         profile = ContractProfile(
             contract_type=party.contract_type,
-            party_a=party.party_a,
-            party_b=party.party_b,
+            party_a={"name": party.party_a.name},
+            party_b={"name": party.party_b.name},
             perspective=party.perspective,
             our_party=party.our_party,
             counterparty=party.counterparty,

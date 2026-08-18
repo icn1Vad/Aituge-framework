@@ -806,6 +806,28 @@ async def test_pipeline_retries_strong_category_cue_missing_from_first_result() 
 
 
 @pytest.mark.asyncio
+async def test_pipeline_ignores_category_cue_from_stale_heading_not_in_window_source() -> None:
+    extractor = FakePipelineExtractor()
+    source = "第七条 未经合作方同意，不得将研究开发工作转让。"
+    stale_heading = "第四条 甲方按如下方式提供或支付研究开发经费及其他投资"
+
+    result = await ContractIrWindowPipeline(extractor=extractor).run(
+        _single_window_request(
+            source,
+            heading_path=[stale_heading],
+            clause_nos=["第七条"],
+        ),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
+
+    assert extractor.call_counts == {"window-001": 1}
+    assert result.retry_count == 0
+    assert result.coverage.valid is True
+    assert result.semantic_ir.payment_terms == []
+
+
+@pytest.mark.asyncio
 async def test_pipeline_reports_value_canonicalization_without_retrying_window() -> None:
     extractor = FakePipelineExtractor(with_value_canonicalization=True)
     result = await ContractIrWindowPipeline(extractor=extractor).run(

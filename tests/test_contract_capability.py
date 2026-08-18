@@ -606,9 +606,10 @@ def test_direct_party_resolution_uses_explicit_labels_without_model(monkeypatch)
 
     assert result.output == {
         "result_type": "PARTY_RESOLUTION_STAGE_V1",
+        "resolution_status": "RESOLVED",
         "contract_type": "AUTO",
-        "party_a": {"name": "星河智造有限公司"},
-        "party_b": {"name": "云岚数科有限公司"},
+        "party_a": {"name": "星河智造有限公司", "name_resolved": True},
+        "party_b": {"name": "云岚数科有限公司", "name_resolved": True},
         "perspective": "PARTY_A",
         "our_party": "星河智造有限公司",
         "counterparty": "云岚数科有限公司",
@@ -665,8 +666,8 @@ def test_formal_review_reuses_confirmed_parties_without_http_or_model(monkeypatc
         )(context)
     )
 
-    assert result.output["party_a"] == {"name": "Party A Ltd."}
-    assert result.output["party_b"] == {"name": "Party B Ltd."}
+    assert result.output["party_a"] == {"name": "Party A Ltd.", "name_resolved": True}
+    assert result.output["party_b"] == {"name": "Party B Ltd.", "name_resolved": True}
     assert result.output["our_party"] == "Party B Ltd."
     assert result.output["counterparty"] == "Party A Ltd."
     assert result.metadata["party_resolution_id"] == "resolution-1"
@@ -695,13 +696,10 @@ def test_unique_party_name_keeps_distinct_parenthetical_candidate_without_bare_n
         SimpleNamespace(role="PARTY_A", name="华东星河科技有限公司（签章）"),
     ]
 
-    with pytest.raises(StageExecutionError) as captured:
-        capability._unique_party_name(candidates, "PARTY_A")
-
-    assert captured.value.code == "PARTY_UNRESOLVED"
+    assert capability._unique_party_name(candidates, "PARTY_A") is None
 
 
-def test_direct_party_resolution_requires_manual_input_when_ambiguous(monkeypatch) -> None:
+def test_direct_party_resolution_uses_role_placeholders_when_ambiguous(monkeypatch) -> None:
     class Response:
         def raise_for_status(self):
             return None
@@ -775,14 +773,19 @@ def test_direct_party_resolution_requires_manual_input_when_ambiguous(monkeypatc
         },
     )
 
-    with pytest.raises(StageExecutionError) as captured:
-        asyncio.run(
-            capability._direct_party_resolution_handler(
-                "http://ai-contract:18200", "secret"
-            )(context)
-        )
-    assert captured.value.code == "PARTY_UNRESOLVED"
-    assert captured.value.retryable is False
+    result = asyncio.run(
+        capability._direct_party_resolution_handler(
+            "http://ai-contract:18200", "secret"
+        )(context)
+    )
+
+    assert result.output["resolution_status"] == "RESOLVED"
+    assert result.output["party_a"] == {"name": "甲方", "name_resolved": False}
+    assert result.output["party_b"] == {"name": "乙方", "name_resolved": False}
+    assert result.output["our_party"] == "甲方"
+    assert result.output["counterparty"] == "乙方"
+    assert result.metadata["party_a_name_resolved"] is False
+    assert result.metadata["party_b_name_resolved"] is False
 
 
 def test_contract_result_sink_emits_three_frozen_callback_shapes(monkeypatch) -> None:

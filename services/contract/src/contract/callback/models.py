@@ -11,7 +11,6 @@ from contract.api.models import (
     Evidence,
     EvidenceType,
     Finding,
-    PartyProfile,
     ReviewSummary,
     StrictModel,
 )
@@ -53,17 +52,35 @@ class ParseContractStageResult(StrictModel):
     ir_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
+class StagePartyProfile(StrictModel):
+    name: str = Field(min_length=1, max_length=500)
+    name_resolved: bool = True
+
+
 class PartyResolutionStageResult(StrictModel):
     result_type: Literal["PARTY_RESOLUTION_STAGE_V1"]
+    resolution_status: Literal["RESOLVED", "PARTIAL"] = "RESOLVED"
     contract_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=80)
-    party_a: PartyProfile
-    party_b: PartyProfile
+    party_a: StagePartyProfile | None = None
+    party_b: StagePartyProfile | None = None
     perspective: Literal["PARTY_A", "PARTY_B"]
-    our_party: str = Field(min_length=1, max_length=500)
-    counterparty: str = Field(min_length=1, max_length=500)
+    our_party: str | None = Field(default=None, min_length=1, max_length=500)
+    counterparty: str | None = Field(default=None, min_length=1, max_length=500)
 
     @model_validator(mode="after")
     def validate_perspective(self) -> "PartyResolutionStageResult":
+        if self.resolution_status == "PARTIAL":
+            if self.party_a is not None and self.party_b is not None:
+                raise ValueError("PARTIAL party resolution cannot contain both parties")
+            if self.our_party is not None or self.counterparty is not None:
+                raise ValueError("PARTIAL party resolution cannot map review perspective")
+            return self
+        if self.party_a is None or self.party_b is None:
+            raise ValueError("RESOLVED party resolution requires both parties")
+        if self.our_party is None or self.counterparty is None:
+            raise ValueError("RESOLVED party resolution requires perspective mapping")
+        if self.party_a.name.casefold() == self.party_b.name.casefold():
+            raise ValueError("resolved contract parties must be distinct")
         expected_our = self.party_a.name if self.perspective == "PARTY_A" else self.party_b.name
         expected_other = self.party_b.name if self.perspective == "PARTY_A" else self.party_a.name
         if self.our_party != expected_our or self.counterparty != expected_other:

@@ -71,12 +71,32 @@ _FIELD_PATTERN = "|".join(
         "邮箱",
     )
 )
+_ENTITY_NAME_FIELD_PATTERN = "|".join(
+    re.escape(value)
+    for value in (
+        "单位名称",
+        "公司名称",
+        "企业名称",
+        "单位全称",
+    )
+)
 _PARTY_DECLARATION = re.compile(
     rf"(?P<label>{_LABEL_PATTERN})"
     rf"\s*(?:[（(][^）)]{{0,24}}[）)])?\s*(?:名称\s*)?[：:]\s*"
+    rf"(?:(?:{_ENTITY_NAME_FIELD_PATTERN})\s*[：:]\s*)?"
     rf"(?P<name>.*?)"
     rf"(?=(?:\s*(?:{_LABEL_PATTERN})\s*(?:[（(][^）)]{{0,24}}[）)])?\s*(?:名称\s*)?[：:])"
     rf"|(?:\s+(?:{_FIELD_PATTERN})\s*[：:])|[；;]|$)",
+    re.IGNORECASE,
+)
+_PAIRED_ROLE_DECLARATION = re.compile(
+    rf"(?P<label_a>{_LABEL_PATTERN})"
+    rf"\s*[（(][^）)]{{1,24}}[）)]\s*(?:[：:]\s*)?"
+    rf"(?P<name_a>.*?)"
+    rf"\s*[,，]\s*"
+    rf"(?P<label_b>{_LABEL_PATTERN})"
+    rf"\s*[（(][^）)]{{1,24}}[）)]\s*(?:[：:]\s*)?"
+    rf"(?P<name_b>.*?)(?:[；;。])?\s*$",
     re.IGNORECASE,
 )
 _EDGE_CHARACTERS = frozenset(" \t\r\n\u3000,，。'\"“”‘’《》<>")
@@ -101,6 +121,33 @@ def extract_party_candidates(blocks: list[ParsedContractBlock]) -> list[IRParty]
     for block in blocks:
         if block.block_type == "footer":
             continue
+        for matched in _PAIRED_ROLE_DECLARATION.finditer(block.text):
+            paired_roles = (
+                _LABEL_TO_ROLE[_normalized_label(matched.group("label_a"))],
+                _LABEL_TO_ROLE[_normalized_label(matched.group("label_b"))],
+            )
+            if paired_roles[0] == paired_roles[1]:
+                continue
+            for role, group_name in zip(paired_roles, ("name_a", "name_b"), strict=True):
+                start, end = _trim_name_span(block.text, *matched.span(group_name))
+                if start >= end:
+                    continue
+                name = block.text[start:end]
+                if _is_placeholder(name) or len(name) > 500:
+                    continue
+                key = role, _normalized_name(name)
+                anchor = SourceAnchor(
+                    anchor_id=_anchor_id(block.block_id, start, end),
+                    block_id=block.block_id,
+                    page_number=block.page_number,
+                    char_start=start,
+                    char_end=end,
+                )
+                existing = candidates.get(key)
+                if existing is None:
+                    candidates[key] = (name, [anchor])
+                elif anchor.anchor_id not in {item.anchor_id for item in existing[1]}:
+                    existing[1].append(anchor)
         for matched in _PARTY_DECLARATION.finditer(block.text):
             role = _LABEL_TO_ROLE[_normalized_label(matched.group("label"))]
             start, end = _trim_name_span(block.text, *matched.span("name"))

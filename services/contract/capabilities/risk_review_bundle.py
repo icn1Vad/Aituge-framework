@@ -4192,31 +4192,10 @@ def _po_root_formal_finding_text(
             catalog=catalog,
         )
     if first.canonical_root_type == "UNBOUNDED_LIABILITY_EXPOSURE":
-        primary_ids = list(
-            dict.fromkeys(
-                source_id
-                for candidate in candidates
-                for source_id in candidate.core_primary_evidence_source_ids
-            )
-        )
-        evidence_summary = _join_template_fragments(
-            list(
-                dict.fromkeys(
-                    catalog.evidence_sources[source_id].quoted_text
-                    for source_id in primary_ids
-                    if source_id in catalog.evidence_sources
-                )
-            )
-        )
-        if not evidence_summary:
-            evidence_summary = _join_template_fragments(
-                list(dict.fromkeys(candidate.trigger_reason for candidate in candidates))
-            )
         return (
             "赔偿范围开放且累计责任缺少有效上限",
             (
                 "同一责任结构同时包含开放损失范围、赔偿责任或责任上限缺口。"
-                f"Primary Evidence显示：{evidence_summary}。"
             ),
             (
                 f"{request.our_party}可能承担缺少金额边界的直接、间接或第三方责任；"
@@ -4237,31 +4216,11 @@ def _po_root_formal_finding_text(
             "RISK_ROOT_TEMPLATE_UNKNOWN",
             f"No merged Finding template for {first.canonical_root_type}",
         )
-    primary_ids = list(
-        dict.fromkeys(
-            source_id
-            for candidate in candidates
-            for source_id in candidate.core_primary_evidence_source_ids
-        )
-    )
-    evidence_summary = _join_template_fragments(
-        list(
-            dict.fromkeys(
-                catalog.evidence_sources[source_id].quoted_text
-                for source_id in primary_ids
-                if source_id in catalog.evidence_sources
-            )
-        )
-    )
-    if not evidence_summary:
-        evidence_summary = _join_template_fragments(
-            list(dict.fromkeys(candidate.trigger_reason for candidate in candidates))
-        )
     title = "履行范围、交付边界及进度责任存在同源失衡风险"
     issue = (
         f"同一组核心履行条款既允许{request.counterparty}提出开放式要求，"
         f"又要求{request.our_party}按要求完成项目任务和交付，但未同步封闭"
-        f"范围、书面变更和交付节点。Primary Evidence显示：{evidence_summary}。"
+        f"范围、书面变更和交付节点。"
     )
     impact = (
         f"{request.our_party}可能在工作范围被扩大时仍承担原有交付期限和"
@@ -5526,57 +5485,57 @@ _LRE_ALLOWED_CONTROL_CODES: dict[str, tuple[str, ...]] = {
 _LRE_FINDING_TEMPLATES: dict[str, dict[str, str]] = {
     "BROAD_BREACH_TRIGGER_REVIEW": {
         "title": "违约责任触发和责任边界不够明确",
-        "issue": "合同责任触发安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "合同责任触发安排存在“{fact}”。",
         "impact": "{our_party}可能因宽泛触发条件承担与实际违约程度不相称的责任；风险因素为：{severity}。",
     },
     "OVERBROAD_LOSS_SCOPE_REVIEW": {
         "title": "损失赔偿范围过宽且缺少可预见性边界",
-        "issue": "合同损失范围存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "合同损失范围存在“{fact}”。",
         "impact": "{our_party}可能承担间接、预期利益及开放费用等难以控制的赔偿；风险因素为：{severity}。",
     },
     "CUMULATIVE_REMEDIES_REVIEW": {
         "title": "违约金与赔偿等责任可能重复累计",
-        "issue": "合同责任累计安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "合同责任累计安排存在“{fact}”。",
         "impact": "{our_party}可能就同一损失同时承担多种责任；风险因素为：{severity}。",
     },
     "LIABILITY_CAP_ABSENT": {
         "title": "合同缺少责任总上限",
-        "issue": "合同文本检查发现“{fact}”。检查依据为：{evidence}。",
+        "issue": "合同文本检查发现“{fact}”。",
         "impact": "{our_party}的累计责任金额缺少可预测上限；风险因素为：{severity}。",
     },
     "LIABILITY_CAP_BYPASS_REVIEW": {
         "title": "责任上限可能被其他责任条款绕过",
-        "issue": "合同责任上限与其他责任安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "合同责任上限与其他责任安排存在“{fact}”。",
         "impact": "{our_party}表面受限的责任仍可能因例外或累计条款失去上限保护；风险因素为：{severity}。",
     },
     "OVERBROAD_INDEMNITY_REVIEW": {
         "title": "赔偿和第三方责任范围过宽",
-        "issue": "合同赔偿安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "合同赔偿安排存在“{fact}”。",
         "impact": "{our_party}可能承担缺少过错、因果、范围或程序限制的赔偿责任；风险因素为：{severity}。",
     },
     "TERMINATION_RIGHTS_REVIEW": {
         "title": "解除权和整改程序存在失衡",
-        "issue": "合同解除安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "合同解除安排存在“{fact}”。",
         "impact": "{our_party}可能因单方或宽泛解除条件失去合理补救机会；风险因素为：{severity}。",
     },
     "TERMINATION_SETTLEMENT_REVIEW": {
         "title": "终止后的结算和退出义务不完整",
-        "issue": "合同终止处理存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "合同终止处理存在“{fact}”。",
         "impact": "{our_party}可能在终止时面对结算、返还或持续责任不确定性；风险因素为：{severity}。",
     },
     "TERMINATION_SETTLEMENT_ABSENT": {
         "title": "合同缺少终止结算和退出机制",
-        "issue": "合同文本检查发现“{fact}”。检查依据为：{evidence}。",
+        "issue": "合同文本检查发现“{fact}”。",
         "impact": "{our_party}可能在终止时面对结算、返还或持续责任不确定性；风险因素为：{severity}。",
     },
     "FORCE_MAJEURE_MECHANISM_ABSENT": {
         "title": "合同缺少完整不可抗力机制",
-        "issue": "合同文本检查发现“{fact}”。检查依据为：{evidence}。",
+        "issue": "合同文本检查发现“{fact}”。",
         "impact": "{our_party}遇到不可控事件时的通知、减损、费用、进度和退出安排不明确；风险因素为：{severity}。",
     },
     "DISPUTE_RESOLUTION_ABSENT": {
         "title": "合同缺少明确争议解决和管辖机制",
-        "issue": "合同文本检查发现“{fact}”。检查依据为：{evidence}。",
+        "issue": "合同文本检查发现“{fact}”。",
         "impact": "{our_party}发生争议时可能面临程序选择、管辖和维权成本不确定性；风险因素为：{severity}。",
     },
 }
@@ -5831,62 +5790,62 @@ _ICD_ALLOWED_CONTROL_CODES: dict[str, tuple[str, ...]] = {
 _ICD_FINDING_TEMPLATES: dict[str, dict[str, str]] = {
     "FOREGROUND_IP_OWNERSHIP_REVIEW": {
         "title": "项目成果知识产权归属或使用边界存在风险",
-        "issue": "项目成果安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "项目成果安排存在“{fact}”。",
         "impact": "{our_party}可能无法稳定取得或保留履约所需的成果权利；风险因素为：{severity}。",
     },
     "FOREGROUND_IP_OWNERSHIP_ABSENT": {
         "title": "合同缺少项目成果知识产权归属机制",
-        "issue": "合同技术文本检查发现“{fact}”。检查依据为：{evidence}。",
+        "issue": "合同技术文本检查发现“{fact}”。",
         "impact": "{our_party}对项目成果的取得、使用、修改和后续利用可能缺少明确权利基础；风险因素为：{severity}。",
     },
     "BACKGROUND_IP_LICENSE_REVIEW": {
         "title": "背景知识产权许可边界存在风险",
-        "issue": "背景知识产权或许可安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "背景知识产权或许可安排存在“{fact}”。",
         "impact": "{our_party}可能承担超范围转让或缺少必要使用权的风险；风险因素为：{severity}。",
     },
     "BACKGROUND_IP_LICENSE_ABSENT": {
         "title": "合同缺少背景知识产权和许可边界",
-        "issue": "合同技术文本检查发现“{fact}”。检查依据为：{evidence}。",
+        "issue": "合同技术文本检查发现“{fact}”。",
         "impact": "{our_party}既有技术与项目使用权可能发生混同或授权不足；风险因素为：{severity}。",
     },
     "THIRD_PARTY_IP_PROTECTION_REVIEW": {
         "title": "第三方知识产权保证和侵权救济存在风险",
-        "issue": "第三方权利安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "第三方权利安排存在“{fact}”。",
         "impact": "{our_party}可能因第三方索赔承担停用、替换、抗辩或赔偿暴露；风险因素为：{severity}。",
     },
     "THIRD_PARTY_IP_PROTECTION_ABSENT": {
         "title": "合同缺少第三方知识产权保证和侵权救济",
-        "issue": "合同技术文本检查发现“{fact}”。检查依据为：{evidence}。",
+        "issue": "合同技术文本检查发现“{fact}”。",
         "impact": "{our_party}面对第三方权利主张时可能缺少替换、修改、许可和赔偿保障；风险因素为：{severity}。",
     },
     "CONFIDENTIALITY_PROTECTION_REVIEW": {
         "title": "保密保护范围或执行机制存在风险",
-        "issue": "保密安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "保密安排存在“{fact}”。",
         "impact": "{our_party}的商业秘密和履约信息可能因范围、期限或披露程序不清而保护不足；风险因素为：{severity}。",
     },
     "CONFIDENTIALITY_COMPLETENESS_ABSENT": {
         "title": "保密条款缺少完整保护机制",
-        "issue": "合同技术文本检查发现“{fact}”。检查依据为：{evidence}。",
+        "issue": "合同技术文本检查发现“{fact}”。",
         "impact": "{our_party}可能难以约束保密例外、允许披露对象、法定披露和终止后持续义务；风险因素为：{severity}。",
     },
     "DATA_PROCESSING_SECURITY_REVIEW": {
         "title": "数据处理目的或安全控制存在风险",
-        "issue": "数据处理或安全安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "数据处理或安全安排存在“{fact}”。",
         "impact": "{our_party}可能因处理范围、访问权限、安全标准或事件责任不清承担暴露；风险因素为：{severity}。",
     },
     "DATA_PROCESSING_SECURITY_ABSENT": {
         "title": "合同缺少数据处理和安全机制",
-        "issue": "合同技术文本检查发现“{fact}”。检查依据为：{evidence}。",
+        "issue": "合同技术文本检查发现“{fact}”。",
         "impact": "{our_party}可能无法控制数据用途、访问范围、安全措施和事件通知；风险因素为：{severity}。",
     },
     "DATA_RETURN_DELETION_REVIEW": {
         "title": "数据返还、删除或留存安排存在风险",
-        "issue": "数据生命周期安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "数据生命周期安排存在“{fact}”。",
         "impact": "{our_party}可能在合同结束后无法收回或限制继续留存使用相关数据；风险因素为：{severity}。",
     },
     "DATA_RETURN_DELETION_ABSENT": {
         "title": "合同缺少数据返还、删除和留存闭环",
-        "issue": "合同技术文本检查发现“{fact}”。检查依据为：{evidence}。",
+        "issue": "合同技术文本检查发现“{fact}”。",
         "impact": "{our_party}可能无法确认数据及载体已返还、删除或仅按法定期限留存；风险因素为：{severity}。",
     },
 }
@@ -6128,77 +6087,77 @@ _PO_ALLOWED_CONTROL_CODES: dict[str, tuple[str, ...]] = {
 _PO_FINDING_TEMPLATES: dict[str, dict[str, str]] = {
     "SCOPE_EXPANSION": {
         "title": "履行范围存在开放式扩张风险",
-        "issue": "合同履行安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "合同履行安排存在“{fact}”。",
         "impact": "履行范围可能在缺少同步确认和对价调整的情况下扩张，进而影响{our_party}的履约权益、成本或交易预期；风险因素为：{severity}。",
     },
     "DELIVERY_SCHEDULE_REVIEW": {
         "title": "交付期限或责任边界不够明确",
-        "issue": "合同交付安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "合同交付安排存在“{fact}”。",
         "impact": "{our_party}可能因交付节点或延迟归责不清承担履约争议；风险因素为：{severity}。",
     },
     "RIGHTS_OBLIGATIONS_IMBALANCE": {
         "title": "权利义务和单方控制安排不平衡",
-        "issue": "合同权利义务安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "合同权利义务安排存在“{fact}”。",
         "impact": "单方控制权的主体、条件或救济边界不清，可能使{our_party}缺少对等程序保障；风险因素为：{severity}。",
     },
     "COOPERATION_DEPENDENCY": {
         "title": "履约依赖与配合责任边界不清",
-        "issue": "合同配合安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "合同配合安排存在“{fact}”。",
         "impact": "{counterparty}配合不足可能影响{our_party}履行，但工期和责任未得到充分保护；风险因素为：{severity}。",
     },
     "COOPERATION_OBLIGATION_ABSENT": {
         "title": "相对方必要配合义务缺失",
-        "issue": "合同文本检查发现“{fact}”。检查依据为：{evidence}。",
+        "issue": "合同文本检查发现“{fact}”。",
         "impact": "{our_party}可能在缺少{counterparty}必要配合的情况下仍承担履约后果；风险因素为：{severity}。",
     },
     "QUALITY_STANDARD_UNMEASURABLE": {
         "title": "服务标准缺少可衡量指标",
-        "issue": "合同质量或服务标准存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "合同质量或服务标准存在“{fact}”。",
         "impact": "{our_party}可能因缺少客观、可验证的质量标准而难以主张或证明履约是否合格；风险因素为：{severity}。",
     },
     "ACCEPTANCE_MECHANISM_REVIEW": {
         "title": "验收机制存在不完整风险",
-        "issue": "合同验收安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "合同验收安排存在“{fact}”。",
         "impact": "{our_party}可能因验收标准、期限、整改或复验机制不清而面临交付、接收或结算争议；风险因素为：{severity}。",
     },
     "ACCEPTANCE_MECHANISM_ABSENT": {
         "title": "合同缺少完整验收机制",
-        "issue": "合同文本检查发现“{fact}”。检查依据为：{evidence}。",
+        "issue": "合同文本检查发现“{fact}”。",
         "impact": "{our_party}可能因缺少明确验收程序而无法稳定确认交付、接收和结算条件；风险因素为：{severity}。",
     },
     "ASSIGNMENT_SUBCONTRACT_REVIEW": {
         "title": "转委托、分包或转让安排需要限制",
-        "issue": "合同第三方参与安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "合同第三方参与安排存在“{fact}”。",
         "impact": "{our_party}可能因第三方参与范围、责任延续或同意程序不清承担履约风险；风险因素为：{severity}。",
     },
     "CHANGE_CONTROL_REVIEW": {
         "title": "变更控制和费用工期联动不足",
-        "issue": "合同变更安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "合同变更安排存在“{fact}”。",
         "impact": "变更未经双方确认时，{our_party}的工作范围、价款、资源或进度权益可能受到影响；风险因素为：{severity}。",
     },
     "CHANGE_CONTROL_ABSENT": {
         "title": "合同缺少书面变更控制机制",
-        "issue": "合同文本检查发现“{fact}”。检查依据为：{evidence}。",
+        "issue": "合同文本检查发现“{fact}”。",
         "impact": "{our_party}可能无法确定新增要求对价款、资源和工期的影响；风险因素为：{severity}。",
     },
     "WARRANTY_SUPPORT_REVIEW": {
         "title": "质保、整改或支持机制不完整",
-        "issue": "合同质保或支持安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "合同质保或支持安排存在“{fact}”。",
         "impact": "{our_party}可能因支持范围、期限、整改和复验责任不清而面临质量缺陷处理及持续履约争议；风险因素为：{severity}。",
     },
     "WARRANTY_SUPPORT_ABSENT": {
         "title": "合同缺少质保、整改或支持机制",
-        "issue": "合同文本检查发现“{fact}”。检查依据为：{evidence}。",
+        "issue": "合同文本检查发现“{fact}”。",
         "impact": "{our_party}可能无法通过明确机制处理质量缺陷和后续支持；风险因素为：{severity}。",
     },
     "PROJECTED_IR_REVIEW": {
         "title": "履行安排存在待控制风险",
-        "issue": "合同履行安排存在“{fact}”。Primary Evidence显示：{evidence}。",
+        "issue": "合同履行安排存在“{fact}”。",
         "impact": "{our_party}的履约权益可能受到影响；风险因素为：{severity}。",
     },
     "MISSING_EXPECTED_IR": {
         "title": "合同缺少必要履行安排",
-        "issue": "合同文本检查发现“{fact}”。检查依据为：{evidence}。",
+        "issue": "合同文本检查发现“{fact}”。",
         "impact": "{our_party}可能因必要机制缺失承担履约不确定性；风险因素为：{severity}。",
     },
 }

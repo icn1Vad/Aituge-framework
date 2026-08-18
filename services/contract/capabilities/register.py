@@ -149,6 +149,7 @@ class ContractIrToolInput(ContractDocumentToolInput):
 
 class PartyValue(StrictModel):
     name: str = Field(min_length=1, max_length=500)
+    name_resolved: bool = True
 
 
 class SourceAnchor(StrictModel):
@@ -343,15 +344,28 @@ class ParseContractStageResult(StrictModel):
 
 class PartyResolutionStageResult(StrictModel):
     result_type: Literal["PARTY_RESOLUTION_STAGE_V1"]
+    resolution_status: Literal["RESOLVED", "PARTIAL"] = "RESOLVED"
     contract_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=80)
-    party_a: PartyValue
-    party_b: PartyValue
+    party_a: PartyValue | None = None
+    party_b: PartyValue | None = None
     perspective: Literal["PARTY_A", "PARTY_B"]
-    our_party: str = Field(min_length=1, max_length=500)
-    counterparty: str = Field(min_length=1, max_length=500)
+    our_party: str | None = Field(default=None, min_length=1, max_length=500)
+    counterparty: str | None = Field(default=None, min_length=1, max_length=500)
 
     @model_validator(mode="after")
     def validate_perspective(self) -> "PartyResolutionStageResult":
+        if self.resolution_status == "PARTIAL":
+            if self.party_a is not None and self.party_b is not None:
+                raise ValueError("PARTIAL party resolution cannot contain both parties")
+            if self.our_party is not None or self.counterparty is not None:
+                raise ValueError("PARTIAL party resolution cannot map review perspective")
+            return self
+        if self.party_a is None or self.party_b is None:
+            raise ValueError("RESOLVED party resolution requires both parties")
+        if self.our_party is None or self.counterparty is None:
+            raise ValueError("RESOLVED party resolution requires perspective mapping")
+        if self.party_a.name.casefold() == self.party_b.name.casefold():
+            raise ValueError("resolved contract parties must be distinct")
         expected_our = self.party_a.name if self.perspective == "PARTY_A" else self.party_b.name
         expected_other = self.party_b.name if self.perspective == "PARTY_A" else self.party_a.name
         if self.our_party != expected_our or self.counterparty != expected_other:
@@ -539,6 +553,8 @@ def _party_window_context(party: PartyResolutionStageResult) -> str:
             "Validated party context only; never use these values as extraction_text or evidence:",
             f"PARTY_A_NAME={party.party_a.name}",
             f"PARTY_B_NAME={party.party_b.name}",
+            f"PARTY_A_NAME_RESOLVED={party.party_a.name_resolved}",
+            f"PARTY_B_NAME_RESOLVED={party.party_b.name_resolved}",
             f"PERSPECTIVE={party.perspective}",
             f"OUR_PARTY={party.our_party}",
             f"COUNTERPARTY={party.counterparty}",
@@ -552,14 +568,36 @@ _TRAILING_PARENTHETICAL_SUFFIX = re.compile(
     r"^(?P<base>.*\S)\s*[（(][^（）()]+[）)]$"
 )
 
+_LEGAL_ENTITY_SUFFIXES = tuple(
+    value.casefold()
+    for value in (
+        "有限责任公司",
+        "股份有限公司",
+        "有限公司",
+        "合伙企业",
+        "个人独资企业",
+    )
+)
+
 
 def _normalized_party_name(value: str) -> str:
     """Normalize parser formatting without altering legal-entity punctuation."""
     return " ".join(value.split()).strip().rstrip("|｜").rstrip()
 
 
-def _unique_party_name(candidates: list[Any], role: str) -> str:
-    names: dict[str, str] = {}
+def _is_likely_ocr_truncation(shorter_key: str, longer_key: str) -> bool:
+    """Discard an incomplete enterprise-name prefix when a complete name exists."""
+    return (
+        len(shorter_key) >= 4
+        and longer_key.startswith(shorter_key)
+        and len(longer_key) - len(shorter_key) <= 12
+        and not shorter_key.endswith(_LEGAL_ENTITY_SUFFIXES)
+        and longer_key.endswith(_LEGAL_ENTITY_SUFFIXES)
+    )
+
+
+def _unique_party_name(candidates: list[Any], role: str) -> str | None:
+    names: dict[str, tuple[str, Any]] = {}
     for candidate in candidates:
         if candidate.role != role:
             continue
@@ -567,20 +605,32 @@ def _unique_party_name(candidates: list[Any], role: str) -> str:
         # structural markup, not part of the legal entity name.
         name = _normalized_party_name(candidate.name)
         if name:
-            names.setdefault(name.casefold(), name)
-    canonical_names: dict[str, str] = {}
-    for key, name in names.items():
+            names.setdefault(name.casefold(), (name, candidate))
+    canonical_names: dict[str, tuple[str, Any]] = {}
+    for key, (name, candidate) in names.items():
         suffix = _TRAILING_PARENTHETICAL_SUFFIX.match(name)
         base = _normalized_party_name(suffix.group("base")) if suffix else ""
         canonical_key = base.casefold() if base and base.casefold() in names else key
-        canonical_names.setdefault(canonical_key, names.get(canonical_key, name))
-    if len(canonical_names) != 1:
-        raise StageExecutionError(
-            f"Contract has {len(canonical_names)} unambiguous {role} candidates; manual input is required.",
-            code="PARTY_UNRESOLVED",
-            retryable=False,
-        )
-    return next(iter(canonical_names.values()))
+        canonical_names.setdefault(canonical_key, names.get(canonical_key, (name, candidate)))
+
+    ignored_truncations: set[str] = set()
+    for shorter_key, (_shorter_name, shorter_candidate) in canonical_names.items():
+        for longer_key, (_longer_name, longer_candidate) in canonical_names.items():
+            if shorter_key == longer_key:
+                continue
+            if _is_likely_ocr_truncation(
+                shorter_key,
+                longer_key,
+            ):
+                ignored_truncations.add(shorter_key)
+                break
+
+    resolved_names = [
+        value for key, value in canonical_names.items() if key not in ignored_truncations
+    ]
+    if len(resolved_names) != 1:
+        return None
+    return resolved_names[0][0]
 
 
 def _direct_party_resolution_handler(base_url: str, token: str):
@@ -679,19 +729,31 @@ def _direct_party_resolution_handler(base_url: str, token: str):
         candidates = extract_party_candidates(blocks.blocks)
         party_a_name = _unique_party_name(candidates, "PARTY_A")
         party_b_name = _unique_party_name(candidates, "PARTY_B")
-        if party_a_name.casefold() == party_b_name.casefold():
-            raise StageExecutionError(
-                "Resolved contract parties are identical; manual input is required.",
-                code="PARTY_UNRESOLVED",
-                retryable=False,
-            )
+        if (
+            party_a_name is not None
+            and party_b_name is not None
+            and party_a_name.casefold() == party_b_name.casefold()
+        ):
+            party_a_name = None
+            party_b_name = None
+        party_a_name_resolved = party_a_name is not None
+        party_b_name_resolved = party_b_name is not None
+        party_a_name = party_a_name or "甲方"
+        party_b_name = party_b_name or "乙方"
         our_party = party_a_name if task_input.perspective == "PARTY_A" else party_b_name
         counterparty = party_b_name if task_input.perspective == "PARTY_A" else party_a_name
         result = PartyResolutionStageResult(
             result_type="PARTY_RESOLUTION_STAGE_V1",
+            resolution_status="RESOLVED",
             contract_type="AUTO",
-            party_a={"name": party_a_name},
-            party_b={"name": party_b_name},
+            party_a={
+                "name": party_a_name,
+                "name_resolved": party_a_name_resolved,
+            },
+            party_b={
+                "name": party_b_name,
+                "name_resolved": party_b_name_resolved,
+            },
             perspective=task_input.perspective,
             our_party=our_party,
             counterparty=counterparty,
@@ -699,12 +761,17 @@ def _direct_party_resolution_handler(base_url: str, token: str):
         duration_ms = max(0, round((time.perf_counter() - started_at) * 1000))
         return StageServiceResult(
             output=result.model_dump(mode="json"),
-            summary=f"Resolved explicit contract parties deterministically in {duration_ms} ms.",
+            summary=(
+                "Resolved explicit contract parties with status "
+                f"{result.resolution_status} in {duration_ms} ms."
+            ),
             metadata={
                 "party_resolution_engine": "deterministic-explicit-labels-v1",
                 "duration_ms": duration_ms,
                 "candidate_count": len(candidates),
                 "model_call_count": 0,
+                "party_a_name_resolved": party_a_name_resolved,
+                "party_b_name_resolved": party_b_name_resolved,
             },
         )
 
@@ -1364,6 +1431,31 @@ async def _load_bound_grounded_answer_input(
         raise RuntimeError("The current grounded-answer task input is invalid.") from exc
 
 
+_GROUNDED_CLASSIFICATION_FIELDS = frozenset(
+    {
+        "risk_level",
+        "high_count",
+        "medium_count",
+        "low_count",
+        "info_count",
+    }
+)
+
+
+def _project_grounded_review_result(value: Any) -> Any:
+    """Remove internal classification fields from report and chat context."""
+
+    if isinstance(value, dict):
+        return {
+            key: _project_grounded_review_result(item)
+            for key, item in value.items()
+            if key not in _GROUNDED_CLASSIFICATION_FIELDS
+        }
+    if isinstance(value, list):
+        return [_project_grounded_review_result(item) for item in value]
+    return value
+
+
 def _grounded_review_result_tool_factory(base_url: str, token: str):
     """Create a review-result tool bound to its TaskManager task input."""
 
@@ -1429,7 +1521,10 @@ def _grounded_review_result_tool_factory(base_url: str, token: str):
                 raise RuntimeError(
                     "contract_get_review_result returned an invalid JSON response."
                 ) from exc
-            return json.dumps(result, ensure_ascii=False)
+            return json.dumps(
+                _project_grounded_review_result(result),
+                ensure_ascii=False,
+            )
 
         tool = FunctionTool.from_defaults(
             async_fn=get_review_result,

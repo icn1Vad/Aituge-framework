@@ -76,9 +76,29 @@ def test_protocol_v1_reserved_arrays_have_zero_max_items() -> None:
     schema = create_app(Settings(internal_auth_enabled=False)).openapi()
     components = schema["components"]["schemas"]
 
-    assert components["ReviewResultData"]["properties"]["relationships"]["maxItems"] == 0
+    assert components["PublicReviewResultData"]["properties"]["relationships"]["maxItems"] == 0
     assert components["Evidence"]["properties"]["bounding_boxes"]["maxItems"] == 0
     assert "quoted_text_hash" not in components["EvidenceCandidate"]["required"]
+
+
+def test_public_result_openapi_does_not_expose_risk_classification() -> None:
+    schema = create_app(Settings(internal_auth_enabled=False)).openapi()
+    components = schema["components"]["schemas"]
+    public_result = components["PublicReviewResultData"]
+    public_finding = components["PublicFinding"]
+    public_summary = components["PublicReviewSummary"]
+
+    response_ref = schema["paths"]["/v1/contract-reviews/{review_id}/result"]["get"][
+        "responses"
+    ]["200"]["content"]["application/json"]["schema"]["$ref"]
+    response_name = response_ref.rsplit("/", 1)[-1]
+
+    assert components[response_name]["properties"]["data"]["$ref"].endswith(
+        "/PublicReviewResultData"
+    )
+    assert "risk_level" not in public_finding["properties"]
+    assert set(public_summary["properties"]) == {"overview", "finding_count"}
+    assert "findings" in public_result["required"]
 
 
 def test_framework_callback_openapi_exposes_both_discriminators() -> None:

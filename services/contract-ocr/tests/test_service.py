@@ -10,7 +10,11 @@ from xml.etree import ElementTree
 from pypdf import PdfWriter
 
 import contract_ocr.service as service_module
-from contract_ocr.service import ContractOcrService, OcrSettings
+from contract_ocr.service import (
+    ContractOcrService,
+    OcrSettings,
+    RenderedTile,
+)
 
 
 class FakeEngine:
@@ -144,3 +148,39 @@ def test_native_text_pdf_becomes_docx_without_paddle(monkeypatch) -> None:
         document_xml = document_archive.read("word/document.xml")
     assert "测试甲公司".encode("utf-8") in document_xml
     assert "测试乙公司".encode("utf-8") in document_xml
+
+
+class OffsetRenderer:
+    def render_tiles(self, _: Path, workdir: Path) -> list[RenderedTile]:
+        path = workdir / "tile.png"
+        path.write_bytes(b"fake")
+        return [
+            RenderedTile(
+                page_number=1,
+                page_count=1,
+                tile_index=1,
+                y_offset=100,
+                full_width=100,
+                full_height=300,
+                path=path,
+            )
+        ]
+
+
+def test_structure_pdf_offsets_tile_coordinates() -> None:
+    service = ContractOcrService(
+        OcrSettings(),
+        engine=FakeEngine(),
+        renderer=OffsetRenderer(),
+    )
+
+    result = service.structure_pdf(scanned_pdf())
+
+    assert result.inspection.classification == "OCR_REQUIRED"
+    assert result.pages[0]["height"] == 300
+    assert result.pages[0]["blocks"][0]["bbox"] == [1, 102, 90, 130]
+    assert result.pages[0]["blocks"][0]["tile_index"] == 1
+    assert result.pages[0]["tables"][0]["cell_box_list"] == [
+        [1, 140, 45, 180],
+        [45, 140, 90, 180],
+    ]

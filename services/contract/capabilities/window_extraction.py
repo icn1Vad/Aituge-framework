@@ -430,6 +430,20 @@ def _align_extractions(
             continue
         expected_occurrences = model_occurrence_counts[occurrence_key]
         if len(candidates) > 1 and len(candidates) != expected_occurrences:
+            if model_item.extraction_class in {"DATE", "AMOUNT"}:
+                # Explicit scalar values may legitimately be repeated in a
+                # contract (for example, the same signing date on the cover
+                # and signature page).  Their value remains usable even when
+                # one model item cannot select a unique occurrence.  Preserve
+                # every source-backed occurrence and let the deterministic
+                # value canonicalizer bind each one to its local context or
+                # mark that relation ambiguous; do not fail the whole Window.
+                results.extend(
+                    _ground_repeated_explicit_value(
+                        request, model_item, candidates, alignment_status
+                    )
+                )
+                continue
             retry_feedback = _ambiguous_alignment_retry_feedback(
                 model_item,
                 candidate_count=len(candidates),
@@ -539,6 +553,42 @@ def _align_extractions(
         results,
         key=lambda item: (item.rendered_char_start, item.extraction_class, item.extraction_text),
     )
+
+
+def _ground_repeated_explicit_value(
+    request: WindowExtractionRequest,
+    model_item: ModelExtraction,
+    candidates: list[tuple[int, int]],
+    alignment_status: Literal["MATCH_EXACT", "MATCH_NORMALIZED"],
+) -> list[AlignedExtraction]:
+    """Ground every occurrence of one repeated DATE/AMOUNT value.
+
+    The model cannot safely assign one identical scalar to one of several
+    source locations.  Treat the model output only as value recognition here:
+    source positions come from the deterministic matcher, while semantic
+    relation binding is deliberately deferred to the local canonicalizer.
+    """
+
+    grounded: list[AlignedExtraction] = []
+    for start, end in candidates:
+        grounded_text = request.source_text[start:end]
+        grounded.append(
+            AlignedExtraction(
+                extraction_class=model_item.extraction_class,
+                extraction_text=grounded_text,
+                subject=None,
+                predicate=None,
+                object=grounded_text,
+                term=None,
+                meaning=None,
+                referenced_clause_nos=[],
+                rendered_char_start=start,
+                rendered_char_end=end,
+                alignment_status=alignment_status,
+                source_spans=_map_source_spans(request, start, end),
+            )
+        )
+    return grounded
 
 
 def _deduplicate_exact_extractions(

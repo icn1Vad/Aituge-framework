@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from contract.ir.models import IRParty, SourceAnchor
 from contract.party import extract_party_candidates
 from contract.parser.models import ParsedContractBlock
+from services.contract.capabilities.register import _unique_party_name
 
 
 def _block(block_no: int, text: str, *, page_number: int | None = 1) -> ParsedContractBlock:
@@ -19,6 +21,39 @@ def _block(block_no: int, text: str, *, page_number: int | None = 1) -> ParsedCo
     )
 
 
+def _party(role: str, name: str, *pages: int) -> IRParty:
+    return IRParty(
+        role=role,
+        name=name,
+        source_anchors=[
+            SourceAnchor(
+                anchor_id=f"anchor-{role}-{page}",
+                block_id=f"block-{page}",
+                page_number=page,
+                char_start=0,
+                char_end=len(name),
+            )
+            for page in pages
+        ],
+    )
+
+
+def _party_without_page(role: str, name: str, anchor_no: int) -> IRParty:
+    return IRParty(
+        role=role,
+        name=name,
+        source_anchors=[
+            SourceAnchor(
+                anchor_id=f"anchor-{role}-{anchor_no}",
+                block_id=f"block-{anchor_no}",
+                page_number=None,
+                char_start=0,
+                char_end=len(name),
+            )
+        ],
+    )
+
+
 def test_extracts_chinese_aliases_and_exact_source_anchors() -> None:
     block = _block(1, "委托方（甲方）：某某科技有限公司 受托方（乙方）：某某服务中心")
 
@@ -33,6 +68,29 @@ def test_extracts_chinese_aliases_and_exact_source_anchors() -> None:
         assert anchor.block_id == block.block_id
         assert anchor.page_number == 1
         assert block.text[anchor.char_start : anchor.char_end] == candidate.name
+
+
+def test_extracts_paired_role_labels_without_colons() -> None:
+    block = _block(
+        1,
+        "甲方（出租方）苏杨，乙方（承租方）西安市雁塔区丈八街道办事处",
+    )
+
+    candidates = extract_party_candidates([block])
+
+    assert [(item.role, item.name) for item in candidates] == [
+        ("PARTY_A", "苏杨"),
+        ("PARTY_B", "西安市雁塔区丈八街道办事处"),
+    ]
+    for candidate in candidates:
+        anchor = candidate.source_anchors[0]
+        assert block.text[anchor.char_start : anchor.char_end] == candidate.name
+
+
+def test_does_not_treat_unqualified_party_prose_as_paired_declaration() -> None:
+    block = _block(1, "甲方应按时交付，乙方应按时付款。")
+
+    assert extract_party_candidates([block]) == []
 
 
 def test_extracts_english_party_labels_from_one_block() -> None:
@@ -60,3 +118,48 @@ def test_deduplicates_repeated_signature_names_and_keeps_all_anchors() -> None:
     assert candidates[0].role == "PARTY_A"
     assert candidates[0].name == "某某有限公司"
     assert [anchor.page_number for anchor in candidates[0].source_anchors] == [1, 3]
+
+
+def test_strips_nested_entity_name_field_from_signature_party() -> None:
+    block = _block(1, "乙方：单位名称：西安帝融商业运营管理有限公司", page_number=6)
+
+    candidates = extract_party_candidates([block])
+
+    assert [(item.role, item.name) for item in candidates] == [
+        ("PARTY_B", "西安帝融商业运营管理有限公司"),
+    ]
+    anchor = candidates[0].source_anchors[0]
+    assert block.text[anchor.char_start : anchor.char_end] == candidates[0].name
+
+
+def test_reconciles_repeated_full_name_with_late_ocr_truncation() -> None:
+    candidates = [
+        _party("PARTY_B", "西安帝融商业运营管理有限公司", 1, 2),
+        _party("PARTY_B", "西安帝融商业运营管", 6),
+    ]
+
+    assert _unique_party_name(candidates, "PARTY_B") == "西安帝融商业运营管理有限公司"
+
+
+def test_keeps_distinct_complete_legal_entities_unresolved() -> None:
+    candidates = [
+        _party("PARTY_B", "西安帝融商业运营管理有限公司", 1, 2),
+        _party("PARTY_B", "西安帝融商业运营管理有限责任公司", 6),
+    ]
+    assert _unique_party_name(candidates, "PARTY_B") is None
+
+
+def test_reconciles_truncation_with_single_full_name_evidence() -> None:
+    candidates = [
+        _party_without_page("PARTY_B", "西安帝融商业运营管理有限公司", 1),
+        _party_without_page("PARTY_B", "西安帝融商业运营管", 2),
+    ]
+    assert _unique_party_name(candidates, "PARTY_B") == "西安帝融商业运营管理有限公司"
+
+
+def test_does_not_apply_enterprise_prefix_rule_to_natural_people() -> None:
+    candidates = [
+        _party("PARTY_A", "张三", 1),
+        _party("PARTY_A", "张三丰", 2),
+    ]
+    assert _unique_party_name(candidates, "PARTY_A") is None

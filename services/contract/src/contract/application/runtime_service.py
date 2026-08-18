@@ -15,6 +15,7 @@ from contract.api.models import (
     PartyResolutionCreateRequest,
     PartyResolutionStatusData,
     ReviewResultData,
+    PublicReviewResultData,
     ReviewStage,
     PartyResolutionData,
     ReviewStatus,
@@ -181,8 +182,8 @@ class RuntimeContractReviewService:
             user_id=context.user_id,
         )
         self._require_execution_mode(state, "PARTY_RESOLUTION")
-        party_resolution = self._party_resolution(state)
-        return self._party_resolution_status_data(state, party_resolution)
+        stage_result = self._party_resolution_stage_result(state)
+        return self._party_resolution_status_data(state, stage_result)
 
     def create_review(
         self,
@@ -282,7 +283,7 @@ class RuntimeContractReviewService:
         self._require_execution_mode(state, "FULL_REVIEW")
         return self._status_data(state, self._party_resolution(state))
 
-    def get_result(self, review_id: str, *, context: InternalRequestContext) -> ReviewResultData:
+    def get_result(self, review_id: str, *, context: InternalRequestContext) -> PublicReviewResultData:
         status = self.get_status(review_id, context=context)
         if status.status != ReviewStatus.SUCCEEDED:
             raise ContractError(
@@ -300,7 +301,8 @@ class RuntimeContractReviewService:
         if value is None:
             raise ContractError("RESULT_INVALID", "合同审查结果记录不存在", status_code=500)
         try:
-            return ReviewResultData.model_validate(value)
+            internal = ReviewResultData.model_validate(value)
+            return PublicReviewResultData.from_internal(internal)
         except ValidationError as exc:
             raise ContractError("RESULT_INVALID", "合同审查结果不符合冻结协议", status_code=500) from exc
 
@@ -596,7 +598,7 @@ class RuntimeContractReviewService:
             reused=reused,
         )
 
-    def _party_resolution(self, state: dict) -> PartyResolutionData | None:
+    def _party_resolution_stage_result(self, state: dict) -> PartyResolutionStageResult | None:
         attempt = state["active_attempt"]
         if attempt is None:
             return None
@@ -616,9 +618,17 @@ class RuntimeContractReviewService:
                 attempt["attempt_no"],
             )
             return None
+        return result
+
+    def _party_resolution(self, state: dict) -> PartyResolutionData | None:
+        result = self._party_resolution_stage_result(state)
+        if result is None or result.resolution_status != "RESOLVED":
+            return None
+        assert result.party_a is not None and result.party_b is not None
+        assert result.our_party is not None and result.counterparty is not None
         return PartyResolutionData(
-            party_a=result.party_a,
-            party_b=result.party_b,
+            party_a={"name": result.party_a.name},
+            party_b={"name": result.party_b.name},
             perspective=result.perspective,
             our_party=result.our_party,
             counterparty=result.counterparty,
@@ -696,7 +706,7 @@ class RuntimeContractReviewService:
     @staticmethod
     def _party_resolution_status_data(
         state: dict,
-        party_resolution: PartyResolutionData | None,
+        party_resolution: PartyResolutionStageResult | None,
     ) -> PartyResolutionStatusData:
         attempt = state["active_attempt"]
         error = None
@@ -719,8 +729,12 @@ class RuntimeContractReviewService:
             framework_task_id=attempt["framework_task_id"] if attempt else None,
             framework_run_id=attempt["framework_run_id"] if attempt else None,
             error=error,
-            party_a_name=party_resolution.party_a.name if party_resolution else None,
-            party_b_name=party_resolution.party_b.name if party_resolution else None,
+            party_a_name=(
+                party_resolution.party_a.name if party_resolution and party_resolution.party_a else None
+            ),
+            party_b_name=(
+                party_resolution.party_b.name if party_resolution and party_resolution.party_b else None
+            ),
             updated_at=state["updated_at"],
         )
 

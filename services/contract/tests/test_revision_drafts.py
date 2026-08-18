@@ -28,6 +28,7 @@ from services.contract.capabilities.revision_drafts import (
     compute_revision_hash,
     _find_contract_ir_list,
     _model_request_payload,
+    _parse_generated_replacements,
     source_from_formal_payload,
 )
 
@@ -58,6 +59,35 @@ class _Generator:
                 for item in items
             )
         )
+
+
+@dataclass(frozen=True)
+class _RevisionKeyOnly:
+    revision_key: str
+
+
+def test_revision_output_accepts_unique_keys_in_provider_order() -> None:
+    items = (
+        _RevisionKeyOnly("revision-a"),
+        _RevisionKeyOnly("revision-b"),
+    )
+    content = json.dumps(
+        {
+            "drafts": [
+                {
+                    "revision_key": "revision-b",
+                    "replacement_text": "draft-b",
+                },
+                {
+                    "revision_key": "revision-a",
+                    "replacement_text": "draft-a",
+                },
+            ]
+        }
+    )
+
+    parsed = _parse_generated_replacements(content, items)  # type: ignore[arg-type]
+    assert [item.revision_key for item in parsed] == ["revision-a", "revision-b"]
 
 
 def _absence_source(*, verification_note: str | None = "已检查第六条，未发现违约后的补救安排。") -> RevisionReviewSource:
@@ -626,9 +656,15 @@ def test_same_anchor_bundle_uses_chapter_style_deduplicates_and_structures_child
 
     owner = next(item for item in response.drafts if item.group_operation_owner)
     assert "双方各自既有的软件、工具和资料的知识产权仍归原权利人所有" not in owner.replacement_text
-    assert "\n(a) 取得继续使用的权利；" in owner.replacement_text
-    assert "\n(b) 修改或替换为不侵权成果；" in owner.replacement_text
-    assert "\n(c) 退还相应款项。" in owner.replacement_text
+    assert "\n取得继续使用的权利；" in owner.replacement_text
+    assert "\n修改或替换为不侵权成果；" in owner.replacement_text
+    assert "\n退还相应款项。" in owner.replacement_text
+    literal_items = [item for item in owner.numbering_plan if item.marker]
+    assert [(item.marker, item.text) for item in literal_items] == [
+        ("(a)", "取得继续使用的权利；"),
+        ("(b)", "修改或替换为不侵权成果；"),
+        ("(c)", "退还相应款项。"),
+    ]
     bundled = generator.calls[1][0]
     assert isinstance(bundled, BundledRevisionRequest)
     payload = _model_request_payload(bundled, source)
