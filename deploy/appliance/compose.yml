@@ -150,6 +150,73 @@ services:
           - ai-proof
       model_runtime:
 
+  qianxuesen-mentor:
+    image: ai-framework-qianxuesen-mentor:local
+    build:
+      context: ../..
+      dockerfile: deploy/appliance/qianxuesen-mentor.Dockerfile
+      network: host
+    restart: unless-stopped
+    environment:
+      MODEL_CONFIG_DIR: /aituge_model/config
+      MODEL_GATEWAY_URL: http://model-gateway:18300
+      MODEL_GATEWAY_TOKEN: ${MODEL_GATEWAY_TOKEN}
+      MODEL_PACK_ID: ${MODEL_PACK_ID:-api-rerank}
+      QXS_MODEL_PACK_ID: ${MODEL_PACK_ID:-api-rerank}
+      QXS_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/proofreading
+      QXS_CORPUS_ROOT: /app/corpus
+      QXS_STORAGE_ROOT: /app/.qxs-data
+      QXS_OCR_ENABLED: ${QXS_OCR_ENABLED:-false}
+    ports:
+      - "${QXS_BIND_ADDRESS:-0.0.0.0}:${QXS_PORT:-18400}:18400"
+    volumes:
+      - ${AI_FRAMEWORK_RUNTIME_ROOT:-../../runtime}/qianxuesen-mentor-data:/app/.qxs-data
+      - ${QXS_CORPUS_ROOT:-../../../../钱学森导师智能体}:/app/corpus:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      model-gateway:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18400/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    networks:
+      ai_internal:
+      proofspace:
+        aliases:
+          - ai-qianxuesen-mentor
+      model_runtime:
+
+  qianxuesen-mentor-ocr:
+    profiles: ["qxs-ocr"]
+    image: ai-framework-qianxuesen-mentor-ocr:local
+    build:
+      context: ../..
+      dockerfile: deploy/appliance/qianxuesen-mentor-ocr.Dockerfile
+      network: host
+    environment:
+      QXS_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/proofreading
+      QXS_CORPUS_ROOT: /app/corpus
+      QXS_STORAGE_ROOT: /app/.qxs-data
+      QXS_OCR_ENABLED: "true"
+      QXS_OCR_DEVICE: ${QXS_OCR_DEVICE:-cpu}
+      QXS_OCR_FORMULA_ENABLED: ${QXS_OCR_FORMULA_ENABLED:-false}
+    volumes:
+      - ${AI_FRAMEWORK_RUNTIME_ROOT:-../../runtime}/qianxuesen-mentor-data:/app/.qxs-data
+      - ${QXS_CORPUS_ROOT:-../../../../钱学森导师智能体}:/app/corpus:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ai_internal
+
   smoke:
     image: ai-framework-smoke:local
     build:
@@ -251,8 +318,9 @@ services:
       TASK_WORKER_POLL_SECONDS: ${TASK_WORKER_POLL_SECONDS:-1}
       TASK_EVENT_BROKER: redis
       TASK_EXECUTOR_LOCK_BACKEND: redis
-      AITUGE_CAPABILITY_ENTRIES: '["/opt/proof-capabilities/register.py","/opt/smoke-capabilities/register.py","/opt/contract-capabilities/register.py"]'
+      AITUGE_CAPABILITY_ENTRIES: '["/opt/proof-capabilities/register.py","/opt/smoke-capabilities/register.py","/opt/contract-capabilities/register.py","/opt/qianxuesen-mentor-capabilities/register.py"]'
       PROOF_SERVICE_BASE_URL: http://proof:18100
+      QXS_SERVICE_BASE_URL: http://qianxuesen-mentor:18400
       SMOKE_SERVICE_BASE_URL: http://smoke:18200
       CONTRACT_SERVICE_BASE_URL: http://ai-contract:18200
       MODEL_CONFIG_DIR: /app/aituge_model/config
@@ -292,8 +360,11 @@ services:
       - ../../services/proof/capabilities:/opt/proof-capabilities:ro
       - ../../services/smoke/capabilities:/opt/smoke-capabilities:ro
       - ../../services/contract/capabilities:/opt/contract-capabilities:ro
+      - ../../services/qianxuesen-mentor/capabilities:/opt/qianxuesen-mentor-capabilities:ro
     depends_on:
       proof:
+        condition: service_healthy
+      qianxuesen-mentor:
         condition: service_healthy
       smoke:
         condition: service_healthy
@@ -340,12 +411,15 @@ services:
       - ../../services/proof/capabilities:/opt/proof-capabilities:ro
       - ../../services/smoke/capabilities:/opt/smoke-capabilities:ro
       - ../../services/contract/capabilities:/opt/contract-capabilities:ro
+      - ../../services/qianxuesen-mentor/capabilities:/opt/qianxuesen-mentor-capabilities:ro
     depends_on:
       framework:
         condition: service_healthy
       ai-contract:
         condition: service_healthy
       proof:
+        condition: service_healthy
+      qianxuesen-mentor:
         condition: service_healthy
       smoke:
         condition: service_healthy
