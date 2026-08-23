@@ -18,6 +18,7 @@ _ROLE_LABELS = {
         "需方",
         "委托方",
         "发包方",
+        "托运人",
         "出租方",
         "出租人",
         "客户方",
@@ -37,6 +38,7 @@ _ROLE_LABELS = {
         "供方",
         "受托方",
         "承包方",
+        "承运人",
         "承租方",
         "承租人",
         "服务方",
@@ -67,6 +69,7 @@ _FIELD_PATTERN = "|".join(
     re.escape(value)
     for value in (
         "统一社会信用代码",
+        "收件人",
         "证件号码",
         "身份证件号码",
         "身份证号码",
@@ -80,6 +83,11 @@ _FIELD_PATTERN = "|".join(
         "电话",
         "传真",
         "邮箱",
+        "电子邮件",
+        "电子邮箱",
+        "邮政编码",
+        "授权代表",
+        "日期",
     )
 )
 _ENTITY_NAME_FIELD_PATTERN = "|".join(
@@ -119,6 +127,14 @@ _ALIASED_PARTY_DECLARATION = re.compile(
 _ROLE_FIELD_DECLARATION = re.compile(
     rf"(?P<label>{_LABEL_PATTERN})\s*/\s*"
     rf"(?:注册地址|地址|法定代表人|证件号码)(?:\s*/\s*(?:注册地址|地址|法定代表人|证件号码))*",
+    re.IGNORECASE,
+)
+_ROLE_TABLE_DECLARATION = re.compile(
+    rf"(?P<label>{_LABEL_PATTERN})\s*[|｜]\s*(?:全\s*称|名称(?:\s*[（(]或姓名[）)])?)",
+    re.IGNORECASE,
+)
+_PARENTHETICAL_ROLE_MARKER = re.compile(
+    r"[（(]\s*(?P<label>甲\s*方|乙\s*方)\s*[）)]",
     re.IGNORECASE,
 )
 _PAIRED_ROLE_DECLARATION = re.compile(
@@ -178,6 +194,12 @@ def extract_party_evidence(blocks: list[ParsedContractBlock]) -> PartyExtraction
     for block in blocks:
         if block.block_type == "footer":
             continue
+        for matched in _PARENTHETICAL_ROLE_MARKER.finditer(block.text):
+            declared_roles.add(
+                "PARTY_A" if "甲" in matched.group("label") else "PARTY_B"
+            )
+        for matched in _ROLE_TABLE_DECLARATION.finditer(block.text):
+            declared_roles.add(_LABEL_TO_ROLE[_normalized_label(matched.group("label"))])
         for matched in _ROLE_FIELD_DECLARATION.finditer(block.text):
             declared_roles.add(_LABEL_TO_ROLE[_normalized_label(matched.group("label"))])
         for matched in _PAIRED_ROLE_DECLARATION.finditer(block.text):

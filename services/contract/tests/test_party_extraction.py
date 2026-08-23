@@ -200,6 +200,41 @@ def test_records_blank_finance_lease_identity_fields_as_not_stated() -> None:
     assert evidence.candidates == []
 
 
+def test_ignores_blank_finance_lease_contact_and_signature_fields() -> None:
+    evidence = extract_party_evidence(
+        [
+            _block(1, "致出租人：收件人：地址：邮政编码：电话：传真：电子邮件："),
+            _block(2, "致承租人：收件人：地址：邮政编码：电话：传真：电子邮箱："),
+            _block(3, "出租人：（公章） 授权代表： 日期："),
+            _block(4, "承租人：日期：授权代表：（公章）"),
+        ]
+    )
+
+    assert evidence.declared_roles == frozenset({"PARTY_A", "PARTY_B"})
+    assert evidence.candidates == []
+
+
+def test_records_spaced_parenthetical_party_markers_as_not_stated() -> None:
+    evidence = extract_party_evidence(
+        [
+            _block(1, "委 托 人: (甲 方)"),
+            _block(2, "受 托 人： (乙 方)"),
+        ]
+    )
+
+    assert evidence.declared_roles == frozenset({"PARTY_A", "PARTY_B"})
+    assert evidence.candidates == []
+
+
+def test_records_blank_shipping_roles_as_not_stated() -> None:
+    evidence = extract_party_evidence(
+        [_block(1, "托运人 | 全称 | | 承运人 | 全称 |")]
+    )
+
+    assert evidence.declared_roles == frozenset({"PARTY_A", "PARTY_B"})
+    assert evidence.candidates == []
+
+
 def test_records_blank_personal_information_contract_roles_as_not_stated() -> None:
     evidence = extract_party_evidence(
         [
