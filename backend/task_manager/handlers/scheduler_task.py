@@ -139,6 +139,19 @@ class SchedulerTaskHandler:
             )
             content = f"已将{fast_change.field_label}修改为{fast_change.value}。"
             yield TaskHandlerEvent(
+                event_type="stream_chunk",
+                stage="agent_stream",
+                message="Deterministic form edit response emitted.",
+                step_id="agent_stream",
+                step_index=30,
+                payload={"source_event": "fast_form_change"},
+                delta=content,
+                thread_id=task.thread_id,
+                session_id=task.session_id,
+                stage_run_id=stage_run.id,
+                agent_id=profile.agent_id,
+            )
+            yield TaskHandlerEvent(
                 event_type="agent_final",
                 stage="agent_stream",
                 message="Deterministic form edit completed.",
