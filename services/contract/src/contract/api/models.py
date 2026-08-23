@@ -206,6 +206,7 @@ class PartyResolutionCreateData(FrameworkMappingModel):
 
 class PartyProfile(StrictModel):
     name: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    name_status: Literal["EXTRACTED", "USER_CONFIRMED", "NOT_STATED"] = "EXTRACTED"
 
     @model_validator(mode="before")
     @classmethod
@@ -269,8 +270,23 @@ class PartyResolutionStatusData(FrameworkMappingModel):
     error: ErrorData | None = None
     party_a_name: Annotated[str, StringConstraints(min_length=1, max_length=500)] | None = None
     party_b_name: Annotated[str, StringConstraints(min_length=1, max_length=500)] | None = None
+    party_a_name_status: Literal["EXTRACTED", "USER_CONFIRMED", "NOT_STATED"] | None = None
+    party_b_name_status: Literal["EXTRACTED", "USER_CONFIRMED", "NOT_STATED"] | None = None
     schema_version: Literal["1.0"] = "1.0"
     updated_at: AwareDatetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_legacy_name_statuses(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        for role in ("a", "b"):
+            name_key = f"party_{role}_name"
+            status_key = f"party_{role}_name_status"
+            if normalized.get(name_key) is not None and normalized.get(status_key) is None:
+                normalized[status_key] = "EXTRACTED"
+        return normalized
 
     @model_validator(mode="after")
     def validate_status_shape(self) -> "PartyResolutionStatusData":
@@ -285,6 +301,10 @@ class PartyResolutionStatusData(FrameworkMappingModel):
             raise ValueError("Only FAILED party resolutions can expose an error")
         if self.party_a_name is not None and self.party_a_name == self.party_b_name:
             raise ValueError("resolved contract parties must be distinct")
+        if (self.party_a_name is None) != (self.party_a_name_status is None):
+            raise ValueError("party_a_name and party_a_name_status must be returned together")
+        if (self.party_b_name is None) != (self.party_b_name_status is None):
+            raise ValueError("party_b_name and party_b_name_status must be returned together")
         return self
 
 

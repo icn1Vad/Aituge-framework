@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contract.ir.models import IRParty, SourceAnchor
-from contract.party import extract_party_candidates
+from contract.party import extract_party_candidates, extract_party_evidence
 from contract.parser.models import ParsedContractBlock
 from services.contract.capabilities.register import _unique_party_name
 
@@ -91,6 +91,27 @@ def test_does_not_treat_unqualified_party_prose_as_paired_declaration() -> None:
     block = _block(1, "甲方应按时交付，乙方应按时付款。")
 
     assert extract_party_candidates([block]) == []
+
+
+def test_extracts_wrapped_labels_and_advisory_role() -> None:
+    samples = (
+        "【甲方】：甲公司 【乙方】：乙公司",
+        "[甲方]：甲公司 [乙方]：乙公司",
+        "委托方：甲公司 顾问方：乙公司",
+    )
+    for text in samples:
+        candidates = extract_party_candidates([_block(1, text)])
+        assert [(item.role, item.name) for item in candidates] == [
+            ("PARTY_A", "甲公司"),
+            ("PARTY_B", "乙公司"),
+        ]
+
+
+def test_records_explicit_empty_role_without_treating_prose_as_declaration() -> None:
+    evidence = extract_party_evidence([_block(1, "甲方（盖章）： 乙方：乙公司")])
+    assert evidence.declared_roles == frozenset({"PARTY_A", "PARTY_B"})
+    assert [(item.role, item.name) for item in evidence.candidates] == [("PARTY_B", "乙公司")]
+    assert extract_party_evidence([_block(2, "甲方应交付，乙方应付款")]).declared_roles == frozenset()
 
 
 def test_extracts_english_party_labels_from_one_block() -> None:

@@ -55,6 +55,7 @@ class ParseContractStageResult(StrictModel):
 class StagePartyProfile(StrictModel):
     name: str = Field(min_length=1, max_length=500)
     name_resolved: bool = True
+    name_status: Literal["EXTRACTED", "USER_CONFIRMED", "NOT_STATED"] = "EXTRACTED"
 
 
 class PartyResolutionStageResult(StrictModel):

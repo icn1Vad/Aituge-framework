@@ -2404,6 +2404,16 @@
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "name_status": {
+            "default": "EXTRACTED",
+            "enum": [
+              "EXTRACTED",
+              "USER_CONFIRMED",
+              "NOT_STATED"
+            ],
+            "title": "Name Status",
+            "type": "string"
           }
         },
         "required": [
@@ -2731,6 +2741,22 @@
             ],
             "title": "Party A Name"
           },
+          "party_a_name_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "EXTRACTED",
+                  "USER_CONFIRMED",
+                  "NOT_STATED"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Party A Name Status"
+          },
           "party_b_name": {
             "anyOf": [
               {
@@ -2743,6 +2769,22 @@
               }
             ],
             "title": "Party B Name"
+          },
+          "party_b_name_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "EXTRACTED",
+                  "USER_CONFIRMED",
+                  "NOT_STATED"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Party B Name Status"
           },
           "resolution_id": {
             "maxLength": 160,
@@ -3607,6 +3649,16 @@
             "default": true,
             "title": "Name Resolved",
             "type": "boolean"
+          },
+          "name_status": {
+            "default": "EXTRACTED",
+            "enum": [
+              "EXTRACTED",
+              "USER_CONFIRMED",
+              "NOT_STATED"
+            ],
+            "title": "Name Status",
+            "type": "string"
           }
         },
         "required": [

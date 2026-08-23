@@ -136,10 +136,11 @@ def test_contract_profile_discards_internal_party_resolution_marker() -> None:
     )
 
     payload = profile.model_dump(mode="json")
-    assert payload["party_a"] == {"name": "Company A"}
-    assert payload["party_b"] == {"name": "Company B"}
+    assert payload["party_a"] == {"name": "Company A", "name_status": "EXTRACTED"}
+    assert payload["party_b"] == {"name": "Company B", "name_status": "EXTRACTED"}
     schema = ContractProfile.model_json_schema()
     assert "name_resolved" not in schema["$defs"]["PartyProfile"]["properties"]
+    assert "name_status" in schema["$defs"]["PartyProfile"]["properties"]
 
 
 def test_result_summary_must_match_findings() -> None:

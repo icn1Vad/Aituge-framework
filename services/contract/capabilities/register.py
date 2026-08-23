@@ -150,6 +150,7 @@ class ContractIrToolInput(ContractDocumentToolInput):
 class PartyValue(StrictModel):
     name: str = Field(min_length=1, max_length=500)
     name_resolved: bool = True
+    name_status: Literal["EXTRACTED", "USER_CONFIRMED", "NOT_STATED"] = "EXTRACTED"
 
 
 class SourceAnchor(StrictModel):
@@ -633,11 +634,50 @@ def _unique_party_name(candidates: list[Any], role: str) -> str | None:
     return resolved_names[0][0]
 
 
+def _resolved_party_value(
+    candidates: list[Any],
+    declared_roles: frozenset[str],
+    role: str,
+) -> PartyValue:
+    name = _unique_party_name(candidates, role)
+    if name is not None:
+        return PartyValue(name=name, name_resolved=True, name_status="EXTRACTED")
+    if any(candidate.role == role for candidate in candidates):
+        raise StageExecutionError(
+            f"Contract has multiple unambiguous {role} candidates; manual input is required.",
+            code="PARTY_UNRESOLVED",
+            retryable=False,
+        )
+    if role in declared_roles:
+        return PartyValue(
+            name="甲方" if role == "PARTY_A" else "乙方",
+            name_resolved=False,
+            name_status="NOT_STATED",
+        )
+    raise StageExecutionError(
+        f"Contract has no explicit {role} declaration; manual input is required.",
+        code="PARTY_UNRESOLVED",
+        retryable=False,
+    )
+
+
+def _confirmed_party_value(name: str, role: str) -> PartyValue:
+    placeholder = "甲方" if role == "PARTY_A" else "乙方"
+    status: Literal["USER_CONFIRMED", "NOT_STATED"] = (
+        "NOT_STATED" if name == placeholder else "USER_CONFIRMED"
+    )
+    return PartyValue(
+        name=name,
+        name_resolved=status != "NOT_STATED",
+        name_status=status,
+    )
+
+
 def _direct_party_resolution_handler(base_url: str, token: str):
     """Resolve explicitly labelled contract parties without an LLM call."""
 
     async def execute(context: StageExecutionContext) -> StageServiceResult:
-        from contract.party import extract_party_candidates
+        from contract.party import extract_party_evidence
 
         started_at = time.perf_counter()
         task_input = ContractTaskInput.model_validate(context.task.input_payload_json or {})
@@ -658,8 +698,8 @@ def _direct_party_resolution_handler(base_url: str, token: str):
             result = PartyResolutionStageResult(
                 result_type="PARTY_RESOLUTION_STAGE_V1",
                 contract_type="AUTO",
-                party_a={"name": party_a_name},
-                party_b={"name": party_b_name},
+                party_a=_confirmed_party_value(party_a_name, "PARTY_A"),
+                party_b=_confirmed_party_value(party_b_name, "PARTY_B"),
                 perspective=task_input.perspective,
                 our_party=our_party,
                 counterparty=counterparty,
@@ -726,34 +766,26 @@ def _direct_party_resolution_handler(base_url: str, token: str):
                 code="PARTY_UNRESOLVED",
                 retryable=False,
             )
-        candidates = extract_party_candidates(blocks.blocks)
-        party_a_name = _unique_party_name(candidates, "PARTY_A")
-        party_b_name = _unique_party_name(candidates, "PARTY_B")
-        if (
-            party_a_name is not None
-            and party_b_name is not None
-            and party_a_name.casefold() == party_b_name.casefold()
-        ):
-            party_a_name = None
-            party_b_name = None
-        party_a_name_resolved = party_a_name is not None
-        party_b_name_resolved = party_b_name is not None
-        party_a_name = party_a_name or "甲方"
-        party_b_name = party_b_name or "乙方"
+        evidence = extract_party_evidence(blocks.blocks)
+        candidates = evidence.candidates
+        party_a = _resolved_party_value(candidates, evidence.declared_roles, "PARTY_A")
+        party_b = _resolved_party_value(candidates, evidence.declared_roles, "PARTY_B")
+        party_a_name = party_a.name
+        party_b_name = party_b.name
+        if party_a_name.casefold() == party_b_name.casefold():
+            raise StageExecutionError(
+                "Resolved contract parties are identical; manual input is required.",
+                code="PARTY_UNRESOLVED",
+                retryable=False,
+            )
         our_party = party_a_name if task_input.perspective == "PARTY_A" else party_b_name
         counterparty = party_b_name if task_input.perspective == "PARTY_A" else party_a_name
         result = PartyResolutionStageResult(
             result_type="PARTY_RESOLUTION_STAGE_V1",
             resolution_status="RESOLVED",
             contract_type="AUTO",
-            party_a={
-                "name": party_a_name,
-                "name_resolved": party_a_name_resolved,
-            },
-            party_b={
-                "name": party_b_name,
-                "name_resolved": party_b_name_resolved,
-            },
+            party_a=party_a,
+            party_b=party_b,
             perspective=task_input.perspective,
             our_party=our_party,
             counterparty=counterparty,
@@ -770,8 +802,10 @@ def _direct_party_resolution_handler(base_url: str, token: str):
                 "duration_ms": duration_ms,
                 "candidate_count": len(candidates),
                 "model_call_count": 0,
-                "party_a_name_resolved": party_a_name_resolved,
-                "party_b_name_resolved": party_b_name_resolved,
+                "party_a_name_resolved": party_a.name_resolved,
+                "party_b_name_resolved": party_b.name_resolved,
+                "party_a_name_status": party_a.name_status,
+                "party_b_name_status": party_b.name_status,
             },
         )
 

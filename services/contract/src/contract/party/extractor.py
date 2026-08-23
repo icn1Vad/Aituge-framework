@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import re
 import unicodedata
@@ -36,6 +37,8 @@ _ROLE_LABELS = {
         "承包方",
         "承租方",
         "服务方",
+        "顾问方",
+        "咨询方",
         "party b",
         "seller",
         "supplier",
@@ -80,12 +83,14 @@ _ENTITY_NAME_FIELD_PATTERN = "|".join(
         "单位全称",
     )
 )
+_PARTY_QUALIFIER_PATTERN = r"(?:[（(][^）)]{0,24}[）)]|【[^】]{0,24}】|\[[^\]]{0,24}\])"
+_LABEL_TOKEN_PATTERN = rf"(?:【\s*|\[\s*)?(?:{_LABEL_PATTERN})(?:\s*】|\s*\])?"
 _PARTY_DECLARATION = re.compile(
-    rf"(?P<label>{_LABEL_PATTERN})"
-    rf"\s*(?:[（(][^）)]{{0,24}}[）)])?\s*(?:名称\s*)?[：:]\s*"
+    rf"(?:【\s*|\[\s*)?(?P<label>{_LABEL_PATTERN})(?:\s*】|\s*\])?"
+    rf"\s*(?:{_PARTY_QUALIFIER_PATTERN})?\s*(?:名称\s*)?[：:]\s*"
     rf"(?:(?:{_ENTITY_NAME_FIELD_PATTERN})\s*[：:]\s*)?"
     rf"(?P<name>.*?)"
-    rf"(?=(?:\s*(?:{_LABEL_PATTERN})\s*(?:[（(][^）)]{{0,24}}[）)])?\s*(?:名称\s*)?[：:])"
+    rf"(?=(?:\s*{_LABEL_TOKEN_PATTERN}\s*(?:{_PARTY_QUALIFIER_PATTERN})?\s*(?:名称\s*)?[：:])"
     rf"|(?:\s+(?:{_FIELD_PATTERN})\s*[：:])|[；;]|$)",
     re.IGNORECASE,
 )
@@ -99,7 +104,7 @@ _PAIRED_ROLE_DECLARATION = re.compile(
     rf"(?P<name_b>.*?)(?:[；;。])?\s*$",
     re.IGNORECASE,
 )
-_EDGE_CHARACTERS = frozenset(" \t\r\n\u3000,，。'\"“”‘’《》<>")
+_EDGE_CHARACTERS = frozenset(" \t\r\n\u3000,，。'\"“”‘’《》<>[]【】")
 _PLACEHOLDERS = frozenset(
     {
         "",
@@ -115,9 +120,16 @@ _PLACEHOLDERS = frozenset(
 )
 
 
-def extract_party_candidates(blocks: list[ParsedContractBlock]) -> list[IRParty]:
-    """Extract only explicitly labelled party candidates from stable source blocks."""
+@dataclass(frozen=True)
+class PartyExtractionEvidence:
+    candidates: list[IRParty]
+    declared_roles: frozenset[str]
+
+
+def extract_party_evidence(blocks: list[ParsedContractBlock]) -> PartyExtractionEvidence:
+    """Extract candidates and explicit role-label evidence from stable source blocks."""
     candidates: dict[tuple[str, str], tuple[str, list[SourceAnchor]]] = {}
+    declared_roles: set[str] = set()
     for block in blocks:
         if block.block_type == "footer":
             continue
@@ -128,6 +140,7 @@ def extract_party_candidates(blocks: list[ParsedContractBlock]) -> list[IRParty]
             )
             if paired_roles[0] == paired_roles[1]:
                 continue
+            declared_roles.update(paired_roles)
             for role, group_name in zip(paired_roles, ("name_a", "name_b"), strict=True):
                 start, end = _trim_name_span(block.text, *matched.span(group_name))
                 if start >= end:
@@ -150,6 +163,7 @@ def extract_party_candidates(blocks: list[ParsedContractBlock]) -> list[IRParty]
                     existing[1].append(anchor)
         for matched in _PARTY_DECLARATION.finditer(block.text):
             role = _LABEL_TO_ROLE[_normalized_label(matched.group("label"))]
+            declared_roles.add(role)
             start, end = _trim_name_span(block.text, *matched.span("name"))
             if start >= end:
                 continue
@@ -169,10 +183,18 @@ def extract_party_candidates(blocks: list[ParsedContractBlock]) -> list[IRParty]
                 candidates[key] = (name, [anchor])
             elif anchor.anchor_id not in {item.anchor_id for item in existing[1]}:
                 existing[1].append(anchor)
-    return [
-        IRParty(role=role, name=name, source_anchors=anchors)
-        for (role, _normalized), (name, anchors) in candidates.items()
-    ]
+    return PartyExtractionEvidence(
+        candidates=[
+            IRParty(role=role, name=name, source_anchors=anchors)
+            for (role, _normalized), (name, anchors) in candidates.items()
+        ],
+        declared_roles=frozenset(declared_roles),
+    )
+
+
+def extract_party_candidates(blocks: list[ParsedContractBlock]) -> list[IRParty]:
+    """Backward-compatible candidate-only view."""
+    return extract_party_evidence(blocks).candidates
 
 
 def _trim_name_span(text: str, start: int, end: int) -> tuple[int, int]:

@@ -627,8 +627,14 @@ class RuntimeContractReviewService:
         assert result.party_a is not None and result.party_b is not None
         assert result.our_party is not None and result.counterparty is not None
         return PartyResolutionData(
-            party_a={"name": result.party_a.name},
-            party_b={"name": result.party_b.name},
+            party_a={
+                "name": result.party_a.name,
+                "name_status": result.party_a.name_status,
+            },
+            party_b={
+                "name": result.party_b.name,
+                "name_status": result.party_b.name_status,
+            },
             perspective=result.perspective,
             our_party=result.our_party,
             counterparty=result.counterparty,
@@ -734,6 +740,16 @@ class RuntimeContractReviewService:
             ),
             party_b_name=(
                 party_resolution.party_b.name if party_resolution and party_resolution.party_b else None
+            ),
+            party_a_name_status=(
+                party_resolution.party_a.name_status
+                if party_resolution and party_resolution.party_a
+                else None
+            ),
+            party_b_name_status=(
+                party_resolution.party_b.name_status
+                if party_resolution and party_resolution.party_b
+                else None
             ),
             updated_at=state["updated_at"],
         )
