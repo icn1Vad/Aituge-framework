@@ -115,6 +115,46 @@ def test_docx_does_not_force_source_pdf_page_breaks() -> None:
     assert paragraph_text == ["Section nine", "The parties shall negotiate to resolve disputes."]
 
 
+class XmlControlCharacterEngine:
+    initialized = True
+
+    def parse_page(self, _: Path):
+        return [
+            {
+                "width": 100,
+                "height": 200,
+                "parsing_res_list": [
+                    {
+                        "block_id": "1",
+                        "block_order": 1,
+                        "block_label": "text",
+                        "block_content": "甲方：测试甲公司\x00\x0b\n乙方：测试乙公司\uffff",
+                    },
+                    {
+                        "block_id": "2",
+                        "block_order": 2,
+                        "block_label": "table",
+                        "block_content": "<table><tr><td>金额\x00</td><td>100\x0b</td></tr></table>",
+                    },
+                ],
+            }
+        ]
+
+
+def test_docx_strips_characters_forbidden_by_xml() -> None:
+    service = ContractOcrService(OcrSettings(), engine=XmlControlCharacterEngine())
+
+    result = service.convert_pdf("scan.pdf", scanned_pdf())
+
+    with zipfile.ZipFile(io.BytesIO(result.archive)) as archive:
+        contract_docx = archive.read("contract.docx")
+    with zipfile.ZipFile(io.BytesIO(contract_docx)) as document_archive:
+        document_xml = document_archive.read("word/document.xml")
+    assert "测试甲公司".encode("utf-8") in document_xml
+    assert "测试乙公司".encode("utf-8") in document_xml
+    assert "金额".encode("utf-8") in document_xml
+
+
 class NativeTextEngine:
     initialized = False
 

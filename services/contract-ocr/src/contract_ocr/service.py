@@ -26,6 +26,9 @@ _WORD_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessi
 _HTML_TAG = re.compile(r"<[^>]+>")
 _ROW_TAG = re.compile(r"<tr[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
 _CELL_TAG = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.IGNORECASE | re.DOTALL)
+_INVALID_XML_CHARACTERS = re.compile(
+    "[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\ud800-\\udfff\\ufffe\\uffff]"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -634,7 +637,8 @@ def _append_html_table(document: Any, value: str) -> bool:
 
 
 def _clean_text(value: str) -> str:
-    return html.unescape(_HTML_TAG.sub("", value)).replace("\u00a0", " ").strip()
+    normalized = html.unescape(_HTML_TAG.sub("", value)).replace("\u00a0", " ")
+    return _INVALID_XML_CHARACTERS.sub("", normalized).strip()
 
 
 def _offset_boxes(value: Any, y_offset: int) -> Any:
