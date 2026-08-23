@@ -91,7 +91,7 @@ _PARTY_DECLARATION = re.compile(
     rf"(?:(?:{_ENTITY_NAME_FIELD_PATTERN})\s*[：:]\s*)?"
     rf"(?P<name>.*?)"
     rf"(?=(?:\s*{_LABEL_TOKEN_PATTERN}\s*(?:{_PARTY_QUALIFIER_PATTERN})?\s*(?:名称\s*)?[：:])"
-    rf"|(?:\s+(?:{_FIELD_PATTERN})\s*[：:])|[；;]|$)",
+    rf"|(?:\s*(?:{_FIELD_PATTERN})\s*[：:])|[；;]|$)",
     re.IGNORECASE,
 )
 _PAIRED_ROLE_DECLARATION = re.compile(
@@ -117,6 +117,21 @@ _PLACEHOLDERS = frozenset(
         "签字盖章",
         "签字或盖章",
     }
+)
+_SEAL_PREFIX = re.compile(
+    r"^\s*[（(【\[]\s*(?:公章|盖章|签章|签字或盖章)\s*[）)】\]]\s*",
+    re.IGNORECASE,
+)
+_ORGANIZATION_SUFFIXES = (
+    "公司",
+    "企业",
+    "医院",
+    "学校",
+    "大学",
+    "中心",
+    "委员会",
+    "事务所",
+    "研究院",
 )
 
 
@@ -168,7 +183,11 @@ def extract_party_evidence(blocks: list[ParsedContractBlock]) -> PartyExtraction
             if start >= end:
                 continue
             name = block.text[start:end]
-            if _is_placeholder(name) or len(name) > 500:
+            if (
+                _is_placeholder(name)
+                or _is_signature_ocr_artifact(name)
+                or len(name) > 500
+            ):
                 continue
             key = role, _normalized_name(name)
             anchor = SourceAnchor(
@@ -221,6 +240,18 @@ def _is_placeholder(value: str) -> bool:
         normalized in _PLACEHOLDERS
         or unwrapped in _PLACEHOLDERS
         or not any(character.isalnum() for character in normalized)
+    )
+
+
+def _is_signature_ocr_artifact(value: str) -> bool:
+    """Reject seal/stamp OCR codes while preserving real signed entity names."""
+    matched = _SEAL_PREFIX.match(value)
+    if matched is None:
+        return False
+    candidate = _normalized_name(value[matched.end() :]).rstrip("|｜")
+    return (
+        any(character.isdigit() for character in candidate)
+        and not candidate.endswith(_ORGANIZATION_SUFFIXES)
     )
 
 

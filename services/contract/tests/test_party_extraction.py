@@ -153,6 +153,30 @@ def test_strips_nested_entity_name_field_from_signature_party() -> None:
     assert block.text[anchor.char_start : anchor.char_end] == candidates[0].name
 
 
+def test_ignores_signature_stamp_ocr_code_but_keeps_declared_party() -> None:
+    candidates = extract_party_candidates(
+        [
+            _block(1, "甲方：西安市中医医院"),
+            _block(2, "甲方：西安市中医医院", page_number=2),
+            _block(3, "甲方：（公章）网京120353地址：西安市凤城八路69号", page_number=6),
+            _block(4, "乙方：西安帝融商业运营管理有限公司"),
+        ]
+    )
+
+    assert [(item.role, item.name) for item in candidates] == [
+        ("PARTY_A", "西安市中医医院"),
+        ("PARTY_B", "西安帝融商业运营管理有限公司"),
+    ]
+    assert _unique_party_name(candidates, "PARTY_A") == "西安市中医医院"
+
+
+def test_keeps_signed_organization_name_that_contains_digits() -> None:
+    candidates = extract_party_candidates([_block(1, "甲方：（公章）西安第120工程有限公司")])
+    assert [(item.role, item.name) for item in candidates] == [
+        ("PARTY_A", "（公章）西安第120工程有限公司")
+    ]
+
+
 def test_reconciles_repeated_full_name_with_late_ocr_truncation() -> None:
     candidates = [
         _party("PARTY_B", "西安帝融商业运营管理有限公司", 1, 2),
