@@ -9,6 +9,7 @@ from contract.risk.models import (
     ExecutionMode,
     PlaybookManifest,
     RiskHorizontalCandidate,
+    RiskSourceBlock,
     SpecialistReviewerSpec,
 )
 from contract.risk.plan_builder import RiskReviewPlanBuilder
@@ -233,3 +234,79 @@ def test_strict_models_reject_invalid_enum_values() -> None:
         Criticality("MUST")
     with pytest.raises(ValueError):
         ExecutionMode("AGENT")
+
+
+def test_oversized_commercial_context_is_sharded_without_losing_items() -> None:
+    value = risk_plan_input()
+    semantic_ir = value.stage_result.semantic_ir.model_dump(mode="json")
+    payment_items = []
+    extra_blocks = []
+    for index in range(1, 13):
+        text = f"第{index}组付款条件：" + "甲方验收后按节点支付对应款项。" * 60
+        block_id = f"block-payment-{index:02d}"
+        anchor = {
+            "anchor_id": f"anchor-payment-{index:02d}",
+            "block_id": block_id,
+            "page_number": index,
+            "char_start": 0,
+            "char_end": len(text),
+        }
+        payment_items.append(
+            {
+                "item_id": f"item-payment-{index:02d}",
+                "subject": "甲方",
+                "predicate": "应支付",
+                "object": f"第{index}组款项",
+                "source_anchors": [anchor],
+            }
+        )
+        extra_blocks.append(
+            RiskSourceBlock(
+                block_id=block_id,
+                block_no=index + 1,
+                page_number=index,
+                text=text,
+            )
+        )
+    semantic_ir["payment_terms"] = payment_items
+    stage_result = type(value.stage_result).model_validate(
+        {
+            **value.stage_result.model_dump(mode="json"),
+            "semantic_ir": semantic_ir,
+        }
+    )
+    plan = RiskReviewPlanBuilder().build(
+        value.model_copy(
+            update={
+                "stage_result": stage_result,
+                "source_blocks": [*value.source_blocks, *extra_blocks],
+            }
+        )
+    )
+
+    commercial = next(
+        unit
+        for unit in plan.review_units
+        if unit.unit_id == "commercial_financial"
+    )
+    contexts = [
+        context
+        for context in plan.contexts
+        if context.unit_id == "commercial_financial"
+    ]
+    assert len(commercial.batch_ids) == len(contexts) > 1
+    assert all(
+        [check.check_code for check in context.check_specs]
+        == [f"CF-{index:03d}" for index in range(1, 9)]
+        for context in contexts
+    )
+    assert all(context.estimated_input_tokens <= 6000 for context in contexts)
+    projected_ids = [
+        item.item_id
+        for context in contexts
+        for item in [*context.definitions, *context.projected_ir_items]
+    ]
+    for expected in (f"item-payment-{index:02d}" for index in range(1, 13)):
+        assert projected_ids.count(expected) == 1
+    assert contexts[0].absence_evidence_sources
+    assert all(not context.absence_evidence_sources for context in contexts[1:])

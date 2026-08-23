@@ -8,7 +8,7 @@ import json
 import re
 import statistics
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Literal, Protocol
@@ -1128,14 +1128,14 @@ class BaseReviewUnitResult(StrictModel):
     unit_id: str = Field(pattern=BASE_UNIT_ID_PATTERN)
     domain: str = Field(pattern=BASE_UNIT_ID_PATTERN)
     status: Literal["COMPLETED", "PARTIAL_FAILED", "FAILED"]
-    batch_ids: list[str] = Field(min_length=1, max_length=2)
+    batch_ids: list[str] = Field(min_length=1, max_length=32)
     check_results: list[CheckCoverageResult] = Field(min_length=5, max_length=8)
     findings: list[FindingDraft] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
-    model_call_count: int = Field(ge=0, le=4)
-    repair_count: int = Field(ge=0, le=2)
-    schema_repair_count: int = Field(default=0, ge=0, le=2)
-    evidence_selection_repair_count: int = Field(default=0, ge=0, le=2)
+    model_call_count: int = Field(ge=0, le=64)
+    repair_count: int = Field(ge=0, le=32)
+    schema_repair_count: int = Field(default=0, ge=0, le=32)
+    evidence_selection_repair_count: int = Field(default=0, ge=0, le=32)
     evidence_binding_normalization_count: int = Field(default=0, ge=0)
     ignored_model_link_fields_count: int = Field(default=0, ge=0)
     deterministic_enrichment_count: int = Field(default=0, ge=0)
@@ -1163,8 +1163,8 @@ class BaseReviewUnitResult(StrictModel):
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
     duration_ms: int = Field(ge=0)
-    trace_ids: list[str] = Field(default_factory=list, max_length=4)
-    call_metrics: list[LlmCallMetric] = Field(default_factory=list, max_length=4)
+    trace_ids: list[str] = Field(default_factory=list, max_length=64)
+    call_metrics: list[LlmCallMetric] = Field(default_factory=list, max_length=64)
     fva_assessments: list[FvaAssessmentResult] = Field(
         default_factory=list,
         max_length=1,
@@ -10786,17 +10786,65 @@ def _merge_unit_result(unit, by_batch: dict[str, ReviewBatchResult]) -> BaseRevi
     batches = [by_batch[batch_id] for batch_id in unit.batch_ids]
     expected_codes = tuple(item.check_code for item in unit.check_specs)
     raw_checks = [item for batch in batches for item in batch.check_results]
-    checks_by_code = {item.check_code: item for item in raw_checks}
-    if (
-        len(checks_by_code) != len(raw_checks)
-        or set(checks_by_code) != set(expected_codes)
-    ):
+    grouped_checks: dict[str, list[CheckCoverageResult]] = defaultdict(list)
+    for item in raw_checks:
+        grouped_checks[item.check_code].append(item)
+    if set(grouped_checks) != set(expected_codes):
         raise DirectReviewError(
             "RISK_UNIT_CHECK_COVERAGE_INVALID",
-            f"{_value(unit.unit_id)} Batch merge lost or duplicated a Check",
+            f"{_value(unit.unit_id)} Batch merge lost or introduced a Check",
         )
-    checks = [checks_by_code[check_code] for check_code in expected_codes]
-    findings = [item for batch in batches for item in batch.findings]
+
+    def merge_check(values: list[CheckCoverageResult]) -> CheckCoverageResult:
+        finding_ids = list(
+            dict.fromkeys(
+                finding_id
+                for value in values
+                for finding_id in value.finding_local_ids
+            )
+        )
+        if all(value.status == "FAILED" for value in values):
+            status = "FAILED"
+            reason_code = "CHECK_FAILED"
+        elif finding_ids:
+            status = "REVIEWED"
+            reason_code = "RISK_IDENTIFIED"
+        elif any(value.status == "REVIEWED" for value in values):
+            status = "REVIEWED"
+            reason_code = (
+                "INSUFFICIENT_EVIDENCE"
+                if any(
+                    value.reason_code == "INSUFFICIENT_EVIDENCE"
+                    for value in values
+                )
+                else "NO_RISK_IDENTIFIED"
+            )
+        else:
+            status = "NOT_APPLICABLE"
+            reason_code = "NOT_APPLICABLE"
+        notes = list(dict.fromkeys(value.decision_note for value in values))
+        return CheckCoverageResult(
+            check_code=values[0].check_code,
+            status=status,
+            reason_code=reason_code,
+            decision_note=" | ".join(notes)[:1000],
+            finding_local_ids=finding_ids,
+        )
+
+    checks = [merge_check(grouped_checks[code]) for code in expected_codes]
+    findings_by_id: dict[str, FindingDraft] = {}
+    for batch in batches:
+        for finding in batch.findings:
+            previous = findings_by_id.setdefault(
+                finding.finding_local_id,
+                finding,
+            )
+            if previous != finding:
+                raise DirectReviewError(
+                    "RISK_UNIT_FINDING_ID_CONFLICT",
+                    "The same Finding ID has different payloads across context shards",
+                )
+    findings = list(findings_by_id.values())
     canonical_roots = [
         item for batch in batches for item in batch.canonical_risk_roots
     ]
@@ -10872,6 +10920,46 @@ def _merge_unit_result(unit, by_batch: dict[str, ReviewBatchResult]) -> BaseRevi
             "RISK_UNIT_FINDING_CONTAMINATED",
             "A Finding crossed its assigned Review Unit",
         )
+    grouped_decisions: dict[str, list[CheckDecisionResult]] = defaultdict(list)
+    for batch in batches:
+        for decision in batch.check_decisions:
+            grouped_decisions[decision.check_code].append(decision)
+    merged_check_decisions: list[CheckDecisionResult] = []
+    for check_code, decisions in sorted(grouped_decisions.items()):
+        finding_ids = _replace_finding_ids(
+            [
+                finding_id
+                for decision in decisions
+                for finding_id in decision.finding_local_ids
+            ],
+            finding_id_replacements,
+        )
+        merged_check_decisions.append(
+            CheckDecisionResult(
+                check_code=check_code,
+                status="REVIEWED",
+                reason_code=(
+                    "RISK_IDENTIFIED"
+                    if finding_ids
+                    else (
+                        "INSUFFICIENT_EVIDENCE"
+                        if any(
+                            decision.reason_code == "INSUFFICIENT_EVIDENCE"
+                            for decision in decisions
+                        )
+                        else "NO_RISK_IDENTIFIED"
+                    )
+                ),
+                candidate_ids=list(
+                    dict.fromkeys(
+                        candidate_id
+                        for decision in decisions
+                        for candidate_id in decision.candidate_ids
+                    )
+                ),
+                finding_local_ids=finding_ids,
+            )
+        )
     return BaseReviewUnitResult(
         unit_id=_value(unit.unit_id),
         domain=_value(unit.domain),
@@ -10880,7 +10968,8 @@ def _merge_unit_result(unit, by_batch: dict[str, ReviewBatchResult]) -> BaseRevi
             if all(item.status == "FAILED" for item in checks)
             else (
                 "PARTIAL_FAILED"
-                if any(
+                if any(batch.status != "COMPLETED" for batch in batches)
+                or any(
                     item.status == "FAILED"
                     or item.reason_code == "INSUFFICIENT_EVIDENCE"
                     for item in checks
@@ -10955,18 +11044,7 @@ def _merge_unit_result(unit, by_batch: dict[str, ReviewBatchResult]) -> BaseRevi
                 item.root_id,
             ),
         ),
-        check_decisions=[
-            decision.model_copy(
-                update={
-                    "finding_local_ids": _replace_finding_ids(
-                        decision.finding_local_ids,
-                        finding_id_replacements,
-                    )
-                }
-            )
-            for batch in batches
-            for decision in batch.check_decisions
-        ],
+        check_decisions=merged_check_decisions,
         supporting_primary_overlap_count=sum(
             batch.supporting_primary_overlap_count for batch in batches
         ),

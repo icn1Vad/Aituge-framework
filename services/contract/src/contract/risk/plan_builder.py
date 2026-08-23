@@ -4,6 +4,7 @@ import hashlib
 import math
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Iterable
 
 from contract.application.idempotency import canonical_json
@@ -79,6 +80,13 @@ _FVA_CHECK_SOURCE_PATTERNS = {
         r"行政许可|审批|备案|监管)"
     ),
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _ContextSlice:
+    projected: tuple[RiskProjectedIrItem, ...]
+    excerpts: tuple[RiskSourceExcerpt, ...]
+    estimated_tokens: int
 
 
 def fva_item_matches_check(
@@ -393,55 +401,259 @@ class RiskReviewPlanBuilder:
         if not checks:
             return [], []
         _soft_limit, hard_limit = self._input_limits(unit_id)
-        groups = self._partition_checks(
-            value=value,
-            unit_id=unit_id,
-            checks=checks,
-            all_items=all_items,
-            excerpts=excerpts,
-            candidates=candidates,
-            hard_limit=hard_limit,
+        groups = (
+            [checks]
+            if unit_id == "commercial_financial"
+            else self._partition_checks(
+                value=value,
+                unit_id=unit_id,
+                checks=checks,
+                all_items=all_items,
+                excerpts=excerpts,
+                candidates=candidates,
+                hard_limit=hard_limit,
+            )
         )
 
         contexts: list[RiskReviewContext] = []
         batches: list[ReviewBatchSpec] = []
         for group in groups:
             ir_types = self._ir_types(group)
-            projected = self._select_items(all_items, ir_types, candidates)
-            selected_excerpts = self._select_excerpts(projected, excerpts, candidates)
-            estimate = self._estimate_context(value, group, projected, selected_excerpts, candidates)
-            batch_id = self._stable_id(
-                "risk-batch",
-                {
-                    "review_id": value.review_id,
-                    "generation_id": value.generation_id,
-                    "attempt_no": value.attempt_no,
-                    "unit_id": unit_id,
-                    "check_codes": [item.check_code for item in group],
-                },
+            full_projected = self._select_items(all_items, ir_types, candidates)
+            full_excerpts = self._select_excerpts(
+                full_projected,
+                excerpts,
+                candidates,
             )
-            batch = ReviewBatchSpec(
-                batch_id=batch_id,
-                check_codes=[item.check_code for item in group],
-                required_ir_types=list(ir_types),
-                projected_item_ids=[item.item_id for item in projected],
-                source_anchor_ids=[item.anchor_id for item in selected_excerpts],
-                estimated_input_tokens=estimate,
+            slices = self._context_slices(
+                value=value,
+                checks=group,
+                projected=full_projected,
+                excerpts=full_excerpts,
+                candidates=candidates,
+                hard_limit=hard_limit,
             )
-            batches.append(batch)
-            contexts.append(
-                self._context(
-                    value=value,
-                    unit_id=unit_id,
-                    batch=batch,
-                    checks=group,
-                    projected=projected,
-                    excerpts=selected_excerpts,
-                    candidates=candidates,
-                    total_ir_item_count=len(all_items),
+            full_present = sorted({item.ir_type for item in full_projected})
+            full_evidence_sources = self._evidence_sources(
+                value.generation_id,
+                unit_id,
+                group,
+                full_projected,
+                full_excerpts,
+            )
+            full_absence_sources = self._absence_evidence_sources(
+                value.generation_id,
+                unit_id,
+                group,
+                full_present,
+                full_evidence_sources,
+                scope_label=(
+                    "当前检查的全部合同IR与Source Excerpt"
+                    if len(slices) > 1
+                    else "当前Batch投影的合同IR与Source Excerpt"
+                ),
+            )
+            for shard_index, context_slice in enumerate(slices, start=1):
+                batch_id = self._stable_id(
+                    "risk-batch",
+                    {
+                        "review_id": value.review_id,
+                        "generation_id": value.generation_id,
+                        "attempt_no": value.attempt_no,
+                        "unit_id": unit_id,
+                        "check_codes": [item.check_code for item in group],
+                        "shard_index": shard_index,
+                        "shard_count": len(slices),
+                        "projected_item_ids": [
+                            item.item_id for item in context_slice.projected
+                        ],
+                    },
+                )
+                batch = ReviewBatchSpec(
+                    batch_id=batch_id,
+                    check_codes=[item.check_code for item in group],
+                    required_ir_types=list(ir_types),
+                    projected_item_ids=[
+                        item.item_id for item in context_slice.projected
+                    ],
+                    source_anchor_ids=[
+                        item.anchor_id for item in context_slice.excerpts
+                    ],
+                    estimated_input_tokens=context_slice.estimated_tokens,
+                )
+                batches.append(batch)
+                contexts.append(
+                    self._context(
+                        value=value,
+                        unit_id=unit_id,
+                        batch=batch,
+                        checks=group,
+                        projected=context_slice.projected,
+                        excerpts=context_slice.excerpts,
+                        candidates=candidates,
+                        total_ir_item_count=len(all_items),
+                        coverage_present_ir_types=full_present,
+                        absence_sources=(
+                            full_absence_sources if shard_index == 1 else []
+                        ),
+                    )
+                )
+        return contexts, batches
+
+    def _context_slices(
+        self,
+        *,
+        value: RiskReviewPlanInput,
+        checks: tuple[CheckSpec, ...],
+        projected: tuple[RiskProjectedIrItem, ...],
+        excerpts: tuple[RiskSourceExcerpt, ...],
+        candidates: tuple[RiskHorizontalCandidate, ...],
+        hard_limit: int,
+    ) -> list[_ContextSlice]:
+        estimate = self._estimate_context(
+            value,
+            checks,
+            projected,
+            excerpts,
+            candidates,
+        )
+        if estimate <= hard_limit:
+            return [_ContextSlice(projected, excerpts, estimate)]
+        if candidates:
+            raise ContractError(
+                "RISK_CONTEXT_BUDGET_EXCEEDED",
+                "A horizontal candidate context exceeds its Business Context budget",
+                status_code=422,
+                details={"estimated_tokens": estimate},
+            )
+
+        excerpts_by_anchor = {item.anchor_id: item for item in excerpts}
+        parent = {item.item_id: item.item_id for item in projected}
+
+        def find(item_id: str) -> str:
+            while parent[item_id] != item_id:
+                parent[item_id] = parent[parent[item_id]]
+                item_id = parent[item_id]
+            return item_id
+
+        def union(left: str, right: str) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        ids_by_anchor: dict[str, list[str]] = defaultdict(list)
+        for item in projected:
+            for anchor in item.source_anchors:
+                ids_by_anchor[anchor.anchor_id].append(item.item_id)
+        for item_ids in ids_by_anchor.values():
+            for item_id in item_ids[1:]:
+                union(item_ids[0], item_id)
+
+        components: dict[str, list[RiskProjectedIrItem]] = defaultdict(list)
+        for item in projected:
+            components[find(item.item_id)].append(item)
+        ordered_components = sorted(
+            components.values(),
+            key=lambda values: min(
+                (
+                    excerpts_by_anchor[anchor.anchor_id].block_no,
+                    excerpts_by_anchor[anchor.anchor_id].char_start,
+                    item.item_id,
+                )
+                for item in values
+                for anchor in item.source_anchors
+            ),
+        )
+
+        result: list[_ContextSlice] = []
+        current: list[RiskProjectedIrItem] = []
+        for component in ordered_components:
+            candidate_items = tuple([*current, *component])
+            candidate_excerpts = self._select_excerpts(
+                candidate_items,
+                excerpts_by_anchor,
+            )
+            candidate_estimate = self._estimate_context(
+                value,
+                checks,
+                candidate_items,
+                candidate_excerpts,
+                (),
+            )
+            if current and candidate_estimate > hard_limit:
+                current_items = tuple(current)
+                current_excerpts = self._select_excerpts(
+                    current_items,
+                    excerpts_by_anchor,
+                )
+                current_estimate = self._estimate_context(
+                    value,
+                    checks,
+                    current_items,
+                    current_excerpts,
+                    (),
+                )
+                result.append(
+                    _ContextSlice(
+                        current_items,
+                        current_excerpts,
+                        current_estimate,
+                    )
+                )
+                current = list(component)
+            else:
+                current = list(candidate_items)
+
+            component_items = tuple(current)
+            component_excerpts = self._select_excerpts(
+                component_items,
+                excerpts_by_anchor,
+            )
+            component_estimate = self._estimate_context(
+                value,
+                checks,
+                component_items,
+                component_excerpts,
+                (),
+            )
+            if component_estimate > hard_limit:
+                raise ContractError(
+                    "RISK_CONTEXT_ATOMIC_COMPONENT_TOO_LARGE",
+                    "One connected Evidence component exceeds the Business Context budget",
+                    status_code=422,
+                    details={
+                        "check_codes": [item.check_code for item in checks],
+                        "estimated_tokens": component_estimate,
+                        "item_ids": [item.item_id for item in component_items],
+                    },
+                )
+        if current:
+            current_items = tuple(current)
+            current_excerpts = self._select_excerpts(
+                current_items,
+                excerpts_by_anchor,
+            )
+            result.append(
+                _ContextSlice(
+                    current_items,
+                    current_excerpts,
+                    self._estimate_context(
+                        value,
+                        checks,
+                        current_items,
+                        current_excerpts,
+                        (),
+                    ),
                 )
             )
-        return contexts, batches
+        if not result:
+            raise ContractError(
+                "RISK_CONTEXT_BUDGET_EXCEEDED",
+                "An empty context exceeds the Business Context budget",
+                status_code=422,
+            )
+        return result
 
     def _partition_checks(
         self,
@@ -474,21 +686,10 @@ class RiskReviewPlanBuilder:
                 candidates,
             )
             estimates[mask] = estimate
-            if estimate <= hard_limit:
+            # A single oversized Check remains a valid partition here. Its
+            # Evidence context is split deterministically by _context_slices.
+            if estimate <= hard_limit or mask & (mask - 1) == 0:
                 valid_masks.add(mask)
-
-        for index, check in enumerate(checks):
-            mask = 1 << index
-            if mask not in valid_masks:
-                raise ContractError(
-                    "RISK_CONTEXT_BUDGET_EXCEEDED",
-                    f"A single check exceeds the {unit_id} Business Context budget",
-                    status_code=422,
-                    details={
-                        "check_code": check.check_code,
-                        "estimated_tokens": estimates[mask],
-                    },
-                )
 
         memo: dict[int, tuple[int, ...]] = {0: ()}
 
@@ -548,8 +749,12 @@ class RiskReviewPlanBuilder:
         excerpts: tuple[RiskSourceExcerpt, ...],
         candidates: tuple[RiskHorizontalCandidate, ...],
         total_ir_item_count: int,
+        coverage_present_ir_types: list[IrField] | None = None,
+        absence_sources: list[RiskAbsenceEvidenceSource] | None = None,
     ) -> RiskReviewContext:
-        present = sorted({item.ir_type for item in projected})
+        present = coverage_present_ir_types or sorted(
+            {item.ir_type for item in projected}
+        )
         required = self._ir_types(checks)
         missing = sorted(set(required) - set(present))
         definitions = [item for item in projected if item.ir_type == "definitions"]
@@ -561,13 +766,15 @@ class RiskReviewPlanBuilder:
             projected,
             excerpts,
         )
-        absence_sources = self._absence_evidence_sources(
-            value.generation_id,
-            unit_id,
-            checks,
-            present,
-            evidence_sources,
-        )
+        if absence_sources is None:
+            absence_sources = self._absence_evidence_sources(
+                value.generation_id,
+                unit_id,
+                checks,
+                present,
+                evidence_sources,
+                scope_label="当前Batch投影的合同IR与Source Excerpt",
+            )
         evidence_policies = self._check_evidence_policies(
             checks,
             evidence_sources,
@@ -732,6 +939,8 @@ class RiskReviewPlanBuilder:
         checks: tuple[CheckSpec, ...],
         present_ir_types: list[IrField],
         evidence_sources: list[RiskEvidenceSource],
+        *,
+        scope_label: str,
     ) -> list[RiskAbsenceEvidenceSource]:
         result = []
         for check in checks:
@@ -750,7 +959,7 @@ class RiskReviewPlanBuilder:
                     missing_target,
                 ) = ICD_ABSENCE_POLICIES[check.check_code]
                 checked_scope = (
-                    f"当前Batch全部ICD领域IR与Source Excerpt；"
+                    f"{scope_label}；ICD领域；"
                     f"检查项{check.check_code}；检查范围：{checked_target}"
                 )
                 verification_method = (
@@ -772,7 +981,7 @@ class RiskReviewPlanBuilder:
                     missing_target,
                 ) = LRE_ABSENCE_POLICIES[check.check_code]
                 checked_scope = (
-                    f"当前Batch全部LRE领域IR与Source Excerpt；"
+                    f"{scope_label}；LRE领域；"
                     f"检查项{check.check_code}；检查范围：{checked_target}"
                 )
                 verification_method = (
@@ -782,7 +991,7 @@ class RiskReviewPlanBuilder:
                 )
             else:
                 checked_scope = (
-                    f"当前Batch投影的合同IR与Source Excerpt；检查项{check.check_code}"
+                    f"{scope_label}；检查项{check.check_code}"
                 )
                 verification_method = (
                     "Python按CheckSpec.required_ir_types及确定性候选扫描当前Batch；"
