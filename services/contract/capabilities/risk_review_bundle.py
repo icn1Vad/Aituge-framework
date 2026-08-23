@@ -1226,32 +1226,56 @@ class CrossUnitOverlapCandidate(StrictModel):
     action: Literal["RECORDED_NOT_MERGED"] = "RECORDED_NOT_MERGED"
 
 
+BASE_MAX_BATCHES = 160
+BASE_MAX_MODEL_CALLS = BASE_MAX_BATCHES * 2
+
+
 class BaseBundleMetrics(StrictModel):
     queue_duration_ms: int = Field(ge=0)
     wall_duration_ms: int = Field(ge=0)
     peak_concurrency: int = Field(ge=1, le=7)
-    batch_count: int = Field(default=7, ge=1, le=16)
+    batch_count: int = Field(default=7, ge=1, le=BASE_MAX_BATCHES)
     unit_count: Literal[5] = 5
-    model_call_count: int = Field(ge=0, le=16)
-    repair_count: int = Field(ge=0, le=7)
+    model_call_count: int = Field(ge=0, le=BASE_MAX_MODEL_CALLS)
+    repair_count: int = Field(ge=0, le=BASE_MAX_BATCHES)
     tool_call_count: Literal[0] = 0
     prompt_tokens: int | None = Field(default=None, ge=0)
     cached_tokens: int | None = Field(default=None, ge=0)
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
     prompt_budget_policy_version: Literal["2.0"] = PROMPT_BUDGET_POLICY_VERSION
-    prompt_budget_warning_count: int = Field(default=0, ge=0, le=16)
-    prompt_budget_hard_failure_count: int = Field(default=0, ge=0, le=16)
+    prompt_budget_warning_count: int = Field(
+        default=0,
+        ge=0,
+        le=BASE_MAX_BATCHES,
+    )
+    prompt_budget_hard_failure_count: int = Field(
+        default=0,
+        ge=0,
+        le=BASE_MAX_BATCHES,
+    )
     max_provider_prompt_tokens: int | None = Field(default=None, ge=0)
-    batches_over_target: list[str] = Field(default_factory=list, max_length=16)
-    batches_over_hard_limit: list[str] = Field(default_factory=list, max_length=16)
+    batches_over_target: list[str] = Field(
+        default_factory=list,
+        max_length=BASE_MAX_BATCHES,
+    )
+    batches_over_hard_limit: list[str] = Field(
+        default_factory=list,
+        max_length=BASE_MAX_BATCHES,
+    )
     slowest_batch_id: str = Field(pattern=r"^risk-batch-[0-9a-f]{32}$")
     slowest_batch_duration_ms: int = Field(ge=0)
     slowest_unit_id: str = Field(pattern=BASE_UNIT_ID_PATTERN)
     slowest_unit_duration_ms: int = Field(ge=0)
-    batch_metrics: list[BaseBundleBatchMetric] = Field(min_length=1, max_length=16)
+    batch_metrics: list[BaseBundleBatchMetric] = Field(
+        min_length=1,
+        max_length=BASE_MAX_BATCHES,
+    )
     unit_metrics: list[BaseBundleUnitMetric] = Field(min_length=5, max_length=5)
-    failed_batch_ids: list[str] = Field(default_factory=list, max_length=16)
+    failed_batch_ids: list[str] = Field(
+        default_factory=list,
+        max_length=BASE_MAX_BATCHES,
+    )
 
 
 class BaseRiskReviewBundle(StrictModel):
@@ -1262,7 +1286,10 @@ class BaseRiskReviewBundle(StrictModel):
     plan_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     status: Literal["COMPLETED", "PARTIAL_FAILED"]
     units: list[BaseReviewUnitResult] = Field(min_length=5, max_length=5)
-    batch_results: list[ReviewBatchResult] = Field(min_length=1, max_length=16)
+    batch_results: list[ReviewBatchResult] = Field(
+        min_length=1,
+        max_length=BASE_MAX_BATCHES,
+    )
     cross_unit_overlap_candidates: list[CrossUnitOverlapCandidate] = Field(
         default_factory=list
     )
@@ -1299,15 +1326,21 @@ class BaseBundleFailure(StrictModel):
     )
     error_code: str = Field(min_length=1, max_length=160)
     error_message: str = Field(min_length=1, max_length=4000)
-    completed_batch_count: int = Field(ge=0, le=16)
-    cancelled_batch_count: int = Field(ge=0, le=16)
-    in_flight_batch_count: int = Field(ge=0, le=16)
+    completed_batch_count: int = Field(ge=0, le=BASE_MAX_BATCHES)
+    cancelled_batch_count: int = Field(ge=0, le=BASE_MAX_BATCHES)
+    in_flight_batch_count: int = Field(ge=0, le=BASE_MAX_BATCHES)
     trace_id: str = Field(min_length=1, max_length=200)
-    completed_batch_ids: list[str] = Field(default_factory=list, max_length=16)
-    cancelled_batch_ids: list[str] = Field(default_factory=list, max_length=16)
+    completed_batch_ids: list[str] = Field(
+        default_factory=list,
+        max_length=BASE_MAX_BATCHES,
+    )
+    cancelled_batch_ids: list[str] = Field(
+        default_factory=list,
+        max_length=BASE_MAX_BATCHES,
+    )
     diagnostic_batch_results: list[ReviewBatchResult] = Field(
         default_factory=list,
-        max_length=16,
+        max_length=BASE_MAX_BATCHES,
     )
 
 
