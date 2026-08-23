@@ -142,6 +142,28 @@ def test_all_forty_five_frozen_checks_have_one_closed_route() -> None:
     }
 
 
+def test_lre002_canonical_unbounded_liability_root_has_legacy_route() -> None:
+    finding = FindingDraft.model_validate(
+        _finding(
+            "1",
+            "LRE-002",
+            "liability_remedies_exit",
+            "LIABILITY",
+            "UNBOUNDED_LIABILITY_EXPOSURE",
+            0,
+            14,
+        )
+    )
+
+    route = FindingCompatibilityRouter().route(
+        finding,
+        source_root_id="root-unbounded-liability",
+        owner_type="BASE_DOMAIN",
+    )
+
+    assert route.legacy_artifact_type == "liability_termination_review_result"
+
+
 def test_duplicate_source_finding_id_is_a_hard_failure() -> None:
     finding = _finding(
         "1",
