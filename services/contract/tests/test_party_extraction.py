@@ -70,6 +70,21 @@ def test_extracts_chinese_aliases_and_exact_source_anchors() -> None:
         assert block.text[anchor.char_start : anchor.char_end] == candidate.name
 
 
+def test_extracts_construction_employer_and_contractor() -> None:
+    evidence = extract_party_evidence(
+        [
+            _block(1, "发包人（全称）：淮安市淮阴区南陈集镇人民政府"),
+            _block(2, "承包人（全称）：江苏建发市政工程有限公司"),
+        ]
+    )
+
+    assert evidence.declared_roles == frozenset({"PARTY_A", "PARTY_B"})
+    assert [(item.role, item.name) for item in evidence.candidates] == [
+        ("PARTY_A", "淮安市淮阴区南陈集镇人民政府"),
+        ("PARTY_B", "江苏建发市政工程有限公司"),
+    ]
+
+
 def test_extracts_paired_role_labels_without_colons() -> None:
     block = _block(
         1,
