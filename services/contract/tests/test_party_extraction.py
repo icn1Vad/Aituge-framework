@@ -177,6 +177,82 @@ def test_keeps_signed_organization_name_that_contains_digits() -> None:
     ]
 
 
+def test_extracts_descriptive_roles_explicitly_aliased_as_parties() -> None:
+    candidates = extract_party_candidates(
+        [
+            _block(1, "保证人(以下称甲方):上海市中小微企业政策性融资担保基金管理中心"),
+            _block(2, "贷款人(以下称乙方):某某银行股份有限公司"),
+        ]
+    )
+
+    assert [(item.role, item.name) for item in candidates] == [
+        ("PARTY_A", "上海市中小微企业政策性融资担保基金管理中心"),
+        ("PARTY_B", "某某银行股份有限公司"),
+    ]
+
+
+def test_records_blank_finance_lease_identity_fields_as_not_stated() -> None:
+    evidence = extract_party_evidence(
+        [_block(1, "1、出租人/注册地址/法定代表人 | 2、承租人/注册地址/法定代表人")]
+    )
+
+    assert evidence.declared_roles == frozenset({"PARTY_A", "PARTY_B"})
+    assert evidence.candidates == []
+
+
+def test_records_blank_personal_information_contract_roles_as_not_stated() -> None:
+    evidence = extract_party_evidence(
+        [
+            _block(1, "个人信息处理者："),
+            _block(2, "地址："),
+            _block(3, "境外接收方："),
+            _block(4, "地址："),
+        ]
+    )
+
+    assert evidence.declared_roles == frozenset({"PARTY_A", "PARTY_B"})
+    assert evidence.candidates == []
+
+
+def test_stops_empty_party_fields_before_identity_and_third_party_labels() -> None:
+    evidence = extract_party_evidence(
+        [
+            _block(1, "甲方：证件号码：乙方：证件号码：丙方（借款人）：证件号码："),
+            _block(2, "乙方：丙方（签字或公章）："),
+        ]
+    )
+
+    assert evidence.declared_roles == frozenset({"PARTY_A", "PARTY_B"})
+    assert evidence.candidates == []
+
+
+def test_extracts_two_party_names_without_consuming_third_party_fields() -> None:
+    candidates = extract_party_candidates(
+        [_block(1, "甲方：张三 证件号码：123 乙方：李四 证件号码：456 丙方（担保人）：王五")]
+    )
+
+    assert [(item.role, item.name) for item in candidates] == [
+        ("PARTY_A", "张三"),
+        ("PARTY_B", "李四"),
+    ]
+
+
+def test_ignores_bare_signature_seal_placeholders() -> None:
+    candidates = extract_party_candidates(
+        [
+            _block(1, "甲方：杭锦后旗公安局"),
+            _block(2, "乙方：巴彦淖尔市诚馨物业服务有限公司"),
+            _block(3, "甲方：（章）"),
+            _block(4, "乙方：（章）"),
+        ]
+    )
+
+    assert [(item.role, item.name) for item in candidates] == [
+        ("PARTY_A", "杭锦后旗公安局"),
+        ("PARTY_B", "巴彦淖尔市诚馨物业服务有限公司"),
+    ]
+
+
 def test_reconciles_repeated_full_name_with_late_ocr_truncation() -> None:
     candidates = [
         _party("PARTY_B", "西安帝融商业运营管理有限公司", 1, 2),

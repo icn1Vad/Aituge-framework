@@ -19,7 +19,9 @@ _ROLE_LABELS = {
         "委托方",
         "发包方",
         "出租方",
+        "出租人",
         "客户方",
+        "个人信息处理者",
         "party a",
         "buyer",
         "purchaser",
@@ -36,9 +38,11 @@ _ROLE_LABELS = {
         "受托方",
         "承包方",
         "承租方",
+        "承租人",
         "服务方",
         "顾问方",
         "咨询方",
+        "境外接收方",
         "party b",
         "seller",
         "supplier",
@@ -63,6 +67,10 @@ _FIELD_PATTERN = "|".join(
     re.escape(value)
     for value in (
         "统一社会信用代码",
+        "证件号码",
+        "身份证件号码",
+        "身份证号码",
+        "身份证号",
         "法定代表人",
         "注册地址",
         "通讯地址",
@@ -85,13 +93,32 @@ _ENTITY_NAME_FIELD_PATTERN = "|".join(
 )
 _PARTY_QUALIFIER_PATTERN = r"(?:[（(][^）)]{0,24}[）)]|【[^】]{0,24}】|\[[^\]]{0,24}\])"
 _LABEL_TOKEN_PATTERN = rf"(?:【\s*|\[\s*)?(?:{_LABEL_PATTERN})(?:\s*】|\s*\])?"
+_NON_TARGET_LABEL_PATTERN = r"(?:丙方|丁方|戊方)"
+_NON_TARGET_LABEL_TOKEN_PATTERN = (
+    rf"(?:【\s*|\[\s*)?{_NON_TARGET_LABEL_PATTERN}(?:\s*】|\s*\])?"
+)
 _PARTY_DECLARATION = re.compile(
     rf"(?:【\s*|\[\s*)?(?P<label>{_LABEL_PATTERN})(?:\s*】|\s*\])?"
     rf"\s*(?:{_PARTY_QUALIFIER_PATTERN})?\s*(?:名称\s*)?[：:]\s*"
     rf"(?:(?:{_ENTITY_NAME_FIELD_PATTERN})\s*[：:]\s*)?"
     rf"(?P<name>.*?)"
     rf"(?=(?:\s*{_LABEL_TOKEN_PATTERN}\s*(?:{_PARTY_QUALIFIER_PATTERN})?\s*(?:名称\s*)?[：:])"
+    rf"|(?:\s*{_NON_TARGET_LABEL_TOKEN_PATTERN}\s*(?:{_PARTY_QUALIFIER_PATTERN})?\s*(?:名称\s*)?[：:])"
     rf"|(?:\s*(?:{_FIELD_PATTERN})\s*[：:])|[；;]|$)",
+    re.IGNORECASE,
+)
+_ALIASED_PARTY_DECLARATION = re.compile(
+    rf"(?P<descriptor>[\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9]{{0,23}})\s*"
+    rf"[（(]\s*(?:以下)?称\s*(?P<label>甲方|乙方)\s*[）)]\s*[：:]\s*"
+    rf"(?P<name>.*?)"
+    rf"(?=(?:\s*{_LABEL_TOKEN_PATTERN}\s*(?:{_PARTY_QUALIFIER_PATTERN})?\s*(?:名称\s*)?[：:])"
+    rf"|(?:\s*{_NON_TARGET_LABEL_TOKEN_PATTERN}\s*(?:{_PARTY_QUALIFIER_PATTERN})?\s*(?:名称\s*)?[：:])"
+    rf"|(?:\s*(?:{_FIELD_PATTERN})\s*[：:])|[；;]|$)",
+    re.IGNORECASE,
+)
+_ROLE_FIELD_DECLARATION = re.compile(
+    rf"(?P<label>{_LABEL_PATTERN})\s*/\s*"
+    rf"(?:注册地址|地址|法定代表人|证件号码)(?:\s*/\s*(?:注册地址|地址|法定代表人|证件号码))*",
     re.IGNORECASE,
 )
 _PAIRED_ROLE_DECLARATION = re.compile(
@@ -116,6 +143,9 @@ _PLACEHOLDERS = frozenset(
         "盖章",
         "签字盖章",
         "签字或盖章",
+        "签字或公章",
+        "章",
+        "公章",
     }
 )
 _SEAL_PREFIX = re.compile(
@@ -148,6 +178,8 @@ def extract_party_evidence(blocks: list[ParsedContractBlock]) -> PartyExtraction
     for block in blocks:
         if block.block_type == "footer":
             continue
+        for matched in _ROLE_FIELD_DECLARATION.finditer(block.text):
+            declared_roles.add(_LABEL_TO_ROLE[_normalized_label(matched.group("label"))])
         for matched in _PAIRED_ROLE_DECLARATION.finditer(block.text):
             paired_roles = (
                 _LABEL_TO_ROLE[_normalized_label(matched.group("label_a"))],
@@ -176,7 +208,11 @@ def extract_party_evidence(blocks: list[ParsedContractBlock]) -> PartyExtraction
                     candidates[key] = (name, [anchor])
                 elif anchor.anchor_id not in {item.anchor_id for item in existing[1]}:
                     existing[1].append(anchor)
-        for matched in _PARTY_DECLARATION.finditer(block.text):
+        declarations = [
+            *_ALIASED_PARTY_DECLARATION.finditer(block.text),
+            *_PARTY_DECLARATION.finditer(block.text),
+        ]
+        for matched in sorted(declarations, key=lambda item: item.start()):
             role = _LABEL_TO_ROLE[_normalized_label(matched.group("label"))]
             declared_roles.add(role)
             start, end = _trim_name_span(block.text, *matched.span("name"))
