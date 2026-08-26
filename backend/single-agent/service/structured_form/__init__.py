@@ -1,6 +1,12 @@
 """Reusable structured-form capability for Single Agent workflows."""
 
-from .fast_path import FastFormChange, match_explicit_form_change
+from .ai_interpreter import (
+    AiFormCommandInterpreter,
+    FormCommandDecision,
+    InterpretedFormChange,
+    can_interpret_form_command,
+    normalize_form_command,
+)
 from .models import FormFieldDefinition, FormWorkflowDefinition
 from .registry import get_workflow_definition, register_workflow_definition
 from .tool import (
@@ -11,14 +17,17 @@ from .tool import (
 )
 
 __all__ = [
+    "AiFormCommandInterpreter",
     "ApplyFormChangesInput",
-    "FastFormChange",
+    "FormCommandDecision",
     "FormFieldDefinition",
     "FormWorkflowDefinition",
+    "InterpretedFormChange",
     "StartWorkflowInput",
+    "can_interpret_form_command",
     "create_apply_form_changes_bundle",
     "get_workflow_definition",
     "create_start_workflow_bundle",
-    "match_explicit_form_change",
+    "normalize_form_command",
     "register_workflow_definition",
 ]

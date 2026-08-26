@@ -13,7 +13,12 @@ from scheduling.scheduler import (
     SchedulingRuntimeOptions,
     SchedulingService,
 )
-from service.structured_form import match_explicit_form_change
+from loguru import logger
+from service.conversation.llm_runner import LlmRuntime
+from service.structured_form import (
+    AiFormCommandInterpreter,
+    can_interpret_form_command,
+)
 
 from task_manager.handlers.base import TaskExecutionContext, TaskHandlerEvent
 from task_manager.artifact_service import TaskArtifactPublisher
@@ -93,77 +98,56 @@ class SchedulerTaskHandler:
         )
         started = time.perf_counter()
 
-        fast_change = match_explicit_form_change(
-            dict(task.input_payload_json or {}),
-            task_message,
-        )
-        if fast_change is not None:
-            tool_call_id = f"fast-form-change:{task.id}"
-            arguments = json.dumps(fast_change.arguments(), ensure_ascii=False)
-            yield TaskHandlerEvent(
-                event_type="tool_started",
-                stage="tool_execution",
-                message="Tool 'apply_form_changes' started.",
-                step_id=f"tool_started:{tool_call_id}",
-                step_index=25,
-                payload={
-                    "tool_name": "apply_form_changes",
-                    "tool_call_id": tool_call_id,
-                    "arguments": arguments,
-                    "status": "started",
-                },
-                thread_id=task.thread_id,
-                session_id=task.session_id,
-                stage_run_id=stage_run.id,
-                agent_id=profile.agent_id,
-            )
-            yield TaskHandlerEvent(
-                event_type="tool_completed",
-                stage="tool_execution",
-                message="Tool 'apply_form_changes' completed.",
-                step_id=f"tool_completed:{tool_call_id}",
-                step_index=35,
-                payload={
-                    "tool_name": "apply_form_changes",
-                    "tool_call_id": tool_call_id,
-                    "arguments": arguments,
-                    "status": "completed",
-                    "result_chars": 0,
-                    "artifacts": [],
-                    "error": "",
-                },
-                thread_id=task.thread_id,
-                session_id=task.session_id,
-                stage_run_id=stage_run.id,
-                agent_id=profile.agent_id,
-            )
-            content = f"已将{fast_change.field_label}修改为{fast_change.value}。"
+        task_payload = dict(task.input_payload_json or {})
+        form_decision = None
+        if can_interpret_form_command(task_payload):
+            progress = "正在理解您的要求并核对当前表单，确认字段和取值后会立即执行并反馈结果。\n\n"
             yield TaskHandlerEvent(
                 event_type="stream_chunk",
                 stage="agent_stream",
-                message="Deterministic form edit response emitted.",
-                step_id="agent_stream",
-                step_index=30,
-                payload={"source_event": "fast_form_change"},
-                delta=content,
+                message="AI form command interpretation started.",
+                step_id="form_command_interpretation",
+                step_index=15,
+                payload={"source_event": "ai_form_command_progress"},
+                delta=progress,
                 thread_id=task.thread_id,
                 session_id=task.session_id,
                 stage_run_id=stage_run.id,
                 agent_id=profile.agent_id,
             )
-            yield TaskHandlerEvent(
-                event_type="agent_final",
-                stage="agent_stream",
-                message="Deterministic form edit completed.",
-                step_id="agent_final",
-                step_index=40,
-                payload={"source_event": "fast_form_change", "content_chars": len(content)},
-                thread_id=task.thread_id,
-                session_id=task.session_id,
-                final_content=content,
+            interpreter = AiFormCommandInterpreter(
+                LlmRuntime(
+                    tenant_id=task.tenant_id,
+                    model_pack_id=task.model_pack_id,
+                )
+            )
+            try:
+                form_decision = await interpreter.interpret(
+                    task_payload,
+                    task_message,
+                    model_id=request.model or profile.model_id,
+                    trace_id=f"task-{task.id}-form-command",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "AI form command interpretation failed; falling back to ReAct: "
+                    "task_id={}, error={}",
+                    task.id,
+                    exc.__class__.__name__,
+                )
+
+        if form_decision is not None and form_decision.action in {
+            "apply_changes",
+            "clarify",
+        }:
+            for form_event in _form_command_events(
+                decision=form_decision,
+                task=task,
+                task_payload=task_payload,
                 stage_run_id=stage_run.id,
                 agent_id=profile.agent_id,
-            )
+            ):
+                yield form_event
             await update_stage_run(
                 stage_run.id,
                 status="completed",
@@ -471,3 +455,109 @@ def _bounded_tool_arguments(payload: dict[str, Any]) -> str:
         text[:TOOL_ARGUMENT_MAX_CHARS]
         + f"...（参数已截断，原始 {len(text)} 字符）"
     )
+
+
+def _form_command_events(
+    *,
+    decision: Any,
+    task: TaskEntity,
+    task_payload: dict[str, Any],
+    stage_run_id: str,
+    agent_id: str,
+) -> list[TaskHandlerEvent]:
+    events: list[TaskHandlerEvent] = []
+    if decision.action == "apply_changes":
+        tool_call_id = f"ai-form-change:{task.id}"
+        arguments = json.dumps(
+            decision.arguments(
+                draft_id=str(task_payload["active_resource_id"]),
+                expected_version=int(task_payload["draft_version"]),
+            ),
+            ensure_ascii=False,
+        )
+        common_payload = {
+            "tool_name": "apply_form_changes",
+            "tool_call_id": tool_call_id,
+            "arguments": arguments,
+        }
+        events.extend(
+            [
+                TaskHandlerEvent(
+                    event_type="tool_started",
+                    stage="tool_execution",
+                    message="Tool 'apply_form_changes' started.",
+                    step_id=f"tool_started:{tool_call_id}",
+                    step_index=25,
+                    payload={**common_payload, "status": "started"},
+                    thread_id=task.thread_id,
+                    session_id=task.session_id,
+                    stage_run_id=stage_run_id,
+                    agent_id=agent_id,
+                ),
+                TaskHandlerEvent(
+                    event_type="tool_completed",
+                    stage="tool_execution",
+                    message="Tool 'apply_form_changes' completed.",
+                    step_id=f"tool_completed:{tool_call_id}",
+                    step_index=35,
+                    payload={
+                        **common_payload,
+                        "status": "completed",
+                        "result_chars": 0,
+                        "artifacts": [],
+                        "error": "",
+                    },
+                    thread_id=task.thread_id,
+                    session_id=task.session_id,
+                    stage_run_id=stage_run_id,
+                    agent_id=agent_id,
+                ),
+            ]
+        )
+        content = decision.success_message()
+        source_event = "ai_form_change"
+        final_message = "AI form edit completed."
+    else:
+        content = decision.clarification
+        source_event = "ai_form_clarification"
+        final_message = "AI form clarification completed."
+
+    metrics = {
+        "source_event": source_event,
+        "content_chars": len(content),
+        "model_duration_ms": decision.model_duration_ms,
+        "time_to_first_token_ms": decision.time_to_first_token_ms,
+    }
+    events.extend(
+        [
+            TaskHandlerEvent(
+                event_type="stream_chunk",
+                stage="agent_stream",
+                message="AI form response emitted.",
+                step_id="agent_stream",
+                step_index=30,
+                payload=metrics,
+                delta=content,
+                thread_id=task.thread_id,
+                session_id=task.session_id,
+                stage_run_id=stage_run_id,
+                agent_id=agent_id,
+            ),
+            TaskHandlerEvent(
+                event_type="agent_final",
+                stage="agent_stream",
+                message=final_message,
+                step_id="agent_final",
+                step_index=40,
+                payload=metrics,
+                thread_id=task.thread_id,
+                session_id=task.session_id,
+                final_content=content,
+                usage=decision.usage,
+                token_usage=decision.usage,
+                stage_run_id=stage_run_id,
+                agent_id=agent_id,
+            ),
+        ]
+    )
+    return events
