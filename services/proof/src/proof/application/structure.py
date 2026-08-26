@@ -245,6 +245,13 @@ def _extract_decimal_units(
             if start <= index < end and marker.kind == MarkerKind.ARABIC_ITEM
         )
         entries.sort(key=lambda item: item[0])
+
+    decimal_entries = [
+        (index, marker) for index, marker in entries if marker.kind == MarkerKind.DECIMAL
+    ]
+    if decimal_entries and not _has_explicit_decimal_root(entries, decimal_entries):
+        return _extract_decimal_fragment_units(blocks, decimal_entries, start, end)
+
     top_entries = _main_numeric_top_entries(
         _peer_indent_entries(
             [(index, marker) for index, marker in entries if marker.depth == 1],
@@ -293,6 +300,118 @@ def _extract_decimal_units(
                         len(units) + 1,
                         DECIMAL_PROFILE,
                         _heading_context(blocks, start, top_index),
+                    )
+                )
+    return units, anchor_depth, len(entries)
+
+
+def _has_explicit_decimal_root(
+    entries: list[tuple[int, NumberingMarker]],
+    decimal_entries: list[tuple[int, NumberingMarker]],
+) -> bool:
+    """Return whether a visible top-level heading owns a decimal hierarchy.
+
+    A policy excerpt may begin at ``6.2`` without containing the owning ``6``
+    heading.  Flat numbered lists later in that excerpt (``1.``, ``2.``, ...)
+    must not be promoted to top-level sections merely because they form an
+    increasing run.
+    """
+    first_decimal_by_root: dict[int, int] = {}
+    for index, marker in decimal_entries:
+        root = marker.path[0]
+        first_decimal_by_root[root] = min(index, first_decimal_by_root.get(root, index))
+    return any(
+        marker.depth == 1
+        and marker.path
+        and marker.path[0] in first_decimal_by_root
+        and index < first_decimal_by_root[marker.path[0]]
+        for index, marker in entries
+    )
+
+
+def _extract_decimal_fragment_units(
+    blocks: list[DocumentBlock],
+    entries: list[tuple[int, NumberingMarker]],
+    start: int,
+    end: int,
+) -> tuple[list[RetrievalUnit], int, int]:
+    """Extract a decimal hierarchy whose owning top-level heading is absent.
+
+    Imported policy PDFs often start on an interior page.  In that case the
+    first visible headings can be ``6.2`` and ``6.2.1`` while ordinary lists
+    such as ``1.`` also occur in the body.  Units are therefore owned only by
+    the decimal hierarchy.  When child clauses are available, they provide
+    the retrieval granularity and the visible parent heading is retained as
+    context and as part of the first child's source blocks.
+    """
+    root_counts = Counter(marker.path[0] for _, marker in entries)
+    structural_roots = {root for root, count in root_counts.items() if count >= 2}
+    if structural_roots:
+        entries = [(index, marker) for index, marker in entries if marker.path[0] in structural_roots]
+
+    base_depth = min(marker.depth for _, marker in entries)
+    parent_entries = [(index, marker) for index, marker in entries if marker.depth == base_depth]
+    child_depth = base_depth + 1
+    has_children = sum(marker.depth == child_depth for _, marker in entries) >= 2
+    anchor_depth = child_depth if has_children else base_depth
+    units: list[RetrievalUnit] = []
+
+    if not has_children:
+        for position, (unit_start, marker) in enumerate(parent_entries):
+            unit_end = parent_entries[position + 1][0] if position + 1 < len(parent_entries) else end
+            unit_blocks = _retrieval_blocks(blocks, unit_start, unit_end)
+            if unit_blocks:
+                units.append(
+                    _build_unit(
+                        unit_blocks,
+                        marker.raw,
+                        len(units) + 1,
+                        DECIMAL_PROFILE,
+                        _heading_context(blocks, start, unit_start),
+                    )
+                )
+        return units, anchor_depth, len(entries)
+
+    for parent_position, (parent_index, parent_marker) in enumerate(parent_entries):
+        section_end = (
+            parent_entries[parent_position + 1][0]
+            if parent_position + 1 < len(parent_entries)
+            else end
+        )
+        children = [
+            (index, marker)
+            for index, marker in entries
+            if parent_index < index < section_end
+            and marker.depth == child_depth
+            and marker.path[:base_depth] == parent_marker.path
+        ]
+        if not children:
+            unit_blocks = _retrieval_blocks(blocks, parent_index, section_end)
+            if unit_blocks:
+                units.append(
+                    _build_unit(
+                        unit_blocks,
+                        parent_marker.raw,
+                        len(units) + 1,
+                        DECIMAL_PROFILE,
+                        _heading_context(blocks, start, parent_index),
+                    )
+                )
+            continue
+
+        parent_heading = _heading_context(blocks, start, parent_index) + [blocks[parent_index].text]
+        for child_position, (child_index, child_marker) in enumerate(children):
+            unit_start = parent_index if child_position == 0 else child_index
+            unit_end = children[child_position + 1][0] if child_position + 1 < len(children) else section_end
+            unit_blocks = _retrieval_blocks(blocks, unit_start, unit_end)
+            if unit_blocks:
+                units.append(
+                    _build_unit(
+                        unit_blocks,
+                        child_marker.raw,
+                        len(units) + 1,
+                        DECIMAL_PROFILE,
+                        parent_heading,
                     )
                 )
     return units, anchor_depth, len(entries)

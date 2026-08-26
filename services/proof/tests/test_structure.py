@@ -19,6 +19,15 @@ def test_numbering_recognition_is_normalized_without_changing_source_text() -> N
     assert marker.depth == 3
 
 
+def test_decimal_numbering_accepts_terminal_period() -> None:
+    marker = detect_numbering_marker("6.2. 费用管理和报销基本规定")
+    assert marker is not None
+    assert marker.kind == MarkerKind.DECIMAL
+    assert marker.raw == "6.2"
+    assert marker.normalized == "6.2"
+    assert marker.path == (6, 2)
+
+
 def test_article_owns_nested_numbered_lists() -> None:
     result = extract_policy_structure(
         [
@@ -53,6 +62,39 @@ def test_decimal_outline_uses_second_level_and_keeps_deeper_nodes() -> None:
     assert [unit.clause_no_raw for unit in result.units] == ["1", "2.1", "2.2", "3"]
     assert result.units[1].text == "2.1 采购部门\n2.1.1 负责准入。"
     assert result.units[1].heading_path == ["2 职责"]
+
+
+def test_decimal_excerpt_without_root_ignores_flat_numbered_lists() -> None:
+    result = extract_policy_structure(
+        [
+            block("6.2. 费用管理和报销基本规定", 1),
+            block("6.2.1. 报销人对票据真实性负责。", 2),
+            block("6.2.2. 费用应及时报销。", 3),
+            block("6.3. 费用报销原始单据规定", 4),
+            block("6.3.1. 电子发票应可以查验。", 5),
+            block("6.4. 差旅费", 6),
+            block("6.4.1. 出差管理", 7),
+            block("1. 调剂地区不超过限额。", 8),
+            block("2. 多人出差可合住。", 9),
+            block("3. 会议统一安排食宿时不补助。", 10),
+            block("限额为 2.5 万元。", 11),
+            block("6.4.2. 差旅费支出范围", 12),
+        ]
+    )
+    assert result.profile == "decimal_outline"
+    assert [unit.clause_no_raw for unit in result.units] == [
+        "6.2.1",
+        "6.2.2",
+        "6.3.1",
+        "6.4.1",
+        "6.4.2",
+    ]
+    assert result.units[0].text.startswith("6.2. 费用管理")
+    assert result.units[0].heading_path == ["6.2. 费用管理和报销基本规定"]
+    assert "1. 调剂地区不超过限额。" in result.units[3].text
+    assert "3. 会议统一安排食宿时不补助。" in result.units[3].text
+    assert "限额为 2.5 万元。" in result.units[3].text
+    assert result.diagnostics["content_coverage_rate"] == 1.0
 
 
 def test_chinese_outline_uses_parenthesized_second_level() -> None:
