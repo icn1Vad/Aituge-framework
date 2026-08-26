@@ -22,6 +22,7 @@ def test_parse_realistic_attendance_sheet() -> None:
     assert result.numbered_row_count == 6
     assert result.signature_evidence_count >= 3
     assert "博信诚" in result.participant_names
+    assert result.signed_participant_names == []
     assert result.confidence == 1
     assert result.warnings == []
 
@@ -101,5 +102,36 @@ def test_structure_parser_uses_coordinate_tokens_beyond_flattened_html() -> None
     assert result.numbered_row_count == 27
     assert result.signature_evidence_count == 27
     assert result.participant_names == ["张三"]
+    assert result.signed_participant_names == ["张三"]
     assert result.meeting_title == "可信赋能智安同行发展论坛"
     assert result.warnings == []
+
+def test_structure_parser_links_signatures_to_the_correct_participant() -> None:
+    prediction = {
+        "rec_texts": [
+            "序号", "参会人", "单位名称", "签到",
+            "1", "张三", "测试单位一", "",
+            "2", "李四", "测试单位二", "李四签名",
+        ],
+        "rec_boxes": [
+            [40, 10, 80, 30], [180, 10, 260, 30],
+            [360, 10, 480, 30], [580, 10, 660, 30],
+            [45, 50, 75, 70], [185, 50, 245, 70],
+            [365, 50, 500, 70], [585, 50, 665, 70],
+            [45, 90, 75, 110], [185, 90, 245, 110],
+            [365, 90, 500, 110], [585, 90, 665, 110],
+        ],
+        "rec_scores": [0.99] * 12,
+    }
+    structure = {
+        "pages": [{
+            "page_number": 1,
+            "blocks": [{"text": "项目会议签到表", "bbox": [100, 0, 500, 8]}],
+            "tables": [{"table_ocr_pred": prediction}],
+        }]
+    }
+
+    result = parse_attendance_structure("签到表.pdf", structure)
+
+    assert result.participant_names == ["张三", "李四"]
+    assert result.signed_participant_names == ["李四"]

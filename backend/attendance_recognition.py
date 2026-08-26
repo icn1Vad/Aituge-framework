@@ -38,6 +38,7 @@ class AttendanceRecognitionResponse(BaseModel):
     numbered_row_count: int = Field(ge=0)
     signature_evidence_count: int = Field(ge=0)
     participant_names: list[str] = Field(default_factory=list)
+    signed_participant_names: list[str] = Field(default_factory=list)
     organizations: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0, le=1)
     warnings: list[str] = Field(default_factory=list)
@@ -106,6 +107,7 @@ def parse_attendance_sheet(
         numbered_row_count=len(row_numbers),
         signature_evidence_count=signature_count,
         participant_names=participant_names[:50],
+        signed_participant_names=[],
         organizations=organizations[:50],
         confidence=confidence,
         warnings=warnings,
@@ -475,6 +477,12 @@ def parse_attendance_structure(
     participant_names = _unique([
         name for row in rows for name in _names_from_cell(row["participant"])
     ])
+    signed_participant_names = _unique([
+        name
+        for row in rows
+        if row["signature"]
+        for name in _names_from_cell(row["participant"])
+    ])
     organizations = _unique([
         row["organization"] for row in rows if row["organization"]
     ])
@@ -502,6 +510,7 @@ def parse_attendance_structure(
         numbered_row_count=len(rows),
         signature_evidence_count=signature_count,
         participant_names=participant_names[:50],
+        signed_participant_names=signed_participant_names[:50],
         organizations=organizations[:50],
         confidence=confidence,
         warnings=warnings,
