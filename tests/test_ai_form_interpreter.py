@@ -22,6 +22,7 @@ from service.structured_form.registry import (
 WORKFLOW = FormWorkflowDefinition(
     workflow_type="TRAVEL_APPLICATION",
     resource_type="TRAVEL_APPLICATION",
+    instructions=("活动分类和具体出差事由必须分别写入对应字段。",),
     fields=(
         FormFieldDefinition(
             key="departureDate",
@@ -238,6 +239,9 @@ async def test_interpreter_uses_compact_catalog_shanghai_time_and_no_thinking() 
     assert request["timezone"] == "Asia/Shanghai"
     assert request["current_time"].startswith("2026-08-27T00:30:00")
     assert request["user_message"] == "明天出发"
+    assert request["workflow_instructions"] == [
+        "活动分类和具体出差事由必须分别写入对应字段。"
+    ]
     assert {field["field_key"] for field in request["writable_fields"]} == {
         "departureDate",
         "travelMode",

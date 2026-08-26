@@ -252,6 +252,7 @@ def _build_user_payload(
             "current_time": current.isoformat(timespec="seconds"),
             "timezone": "Asia/Shanghai",
             "workflow_type": definition.workflow_type,
+            "workflow_instructions": list(definition.instructions),
             "user_message": message,
             "writable_fields": fields,
         },
@@ -309,6 +310,7 @@ def _completion_usage(completion: Any) -> dict[str, int] | None:
 _SYSTEM_PROMPT = """你是通用业务表单指令解析器，不是聊天助手。
 只判断用户当前这句话是否要求修改已经打开的表单。
 字段只能从 writable_fields 中按语义选择，不得创造字段，不得修改只读字段。
+必须遵守 workflow_instructions 中的业务语义要求；相关字段语义独立时要同时输出，不得用一个字段代替另一个字段。
 明确修改一个或多个字段时返回：
 {"action":"apply_changes","changes":[{"field_key":"字段键","value":"规范值"}]}
 用户确实想修改但字段或取值有歧义时返回：

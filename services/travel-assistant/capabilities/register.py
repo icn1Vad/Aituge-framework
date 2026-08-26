@@ -65,6 +65,11 @@ def _beijing_today():
 TRIP_WORKFLOW = FormWorkflowDefinition(
     workflow_type="TRAVEL_APPLICATION",
     resource_type="TRAVEL_APPLICATION",
+    instructions=(
+        "用户描述出差目的、活动名称或要去做的事情时，把这段具体事由写入 notes。",
+        "activityType 只表示活动分类，不能替代 notes；会议、培训、拜访等活动必须同时写 activityType 和具体 notes。",
+        "例如用户说‘要去开一个学术会议’，应同时输出 activityType=MEETING 和 notes=参加学术会议。",
+    ),
     fields=(
         _field("company", "公司", "申请公司"),
         _field("department", "部门", "申请部门"),
@@ -173,7 +178,10 @@ async def register(registry, settings) -> None:
             "申请日期由页面按北京时间自动带入，不属于可询问或可修改字段。"
             "没有年份的日期按当前年度处理；当前北京时间日期为"
             f"{_beijing_today().isoformat()}。"
-            "活动名称必须原样保留在 notes 中，供后续业务材料校验使用。"
+            "activityType 只用于活动分类，绝对不能替代 notes。只要用户描述了出差目的、活动名称或要去做的事情，"
+            "同一次工具调用必须把具体出差事由写入 notes；会议类内容还要同时写 activityType=MEETING。"
+            "例如用户说‘要去开一个学术会议’，必须同时写 activityType=MEETING 和 notes=参加学术会议。"
+            "活动名称必须保留在 notes 中，供后续业务材料校验使用。"
             "不要提交正式业务单据，最终提交仍由用户确认和 Java 业务服务完成。"
         ),
         default_tools=WORKFLOW_ASSISTANT_TOOLS,

@@ -28,6 +28,7 @@ class FormWorkflowDefinition:
     workflow_type: str
     resource_type: str
     fields: tuple[FormFieldDefinition, ...] = field(default_factory=tuple)
+    instructions: tuple[str, ...] = field(default_factory=tuple)
 
     def writable_fields(self) -> tuple[FormFieldDefinition, ...]:
         return tuple(item for item in self.fields if item.ai_writable)
