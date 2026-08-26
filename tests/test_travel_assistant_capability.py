@@ -67,3 +67,12 @@ def test_workflow_assistant_can_query_policies_without_starting_a_form(monkeypat
     assert "才调用 proof_search" in agent["system_prompt"]
     assert "不得继续尝试其他数据工具" in agent["system_prompt"]
     assert "proof_sql" not in agent["system_prompt"]
+    assert "必须结合完整会话历史" in agent["system_prompt"]
+    assert "禁止展示字段键或 MEETING" in agent["system_prompt"]
+    assert "当前北京时间日期" in agent["system_prompt"]
+
+    trip_fields = {field.key: field for field in module.TRIP_WORKFLOW.fields}
+    assert "applicationDate" not in trip_fields
+    assert "tripDays" in trip_fields
+    assert "activityType" in trip_fields
+    assert trip_fields["budgetYear"].enum_values == (str(module._beijing_today().year),)

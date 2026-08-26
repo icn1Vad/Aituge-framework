@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from aituge_model.config import ModelRuntimeProvider
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,6 +18,7 @@ from service.structured_form import (
 )
 
 CAPABILITY_ID = "travel-assistant"
+BEIJING_TIME_ZONE = ZoneInfo("Asia/Shanghai")
 
 WORKFLOW_ASSISTANT_TOOLS = [
     "start_workflow",
@@ -56,6 +58,10 @@ def _field(
     )
 
 
+def _beijing_today():
+    return datetime.now(BEIJING_TIME_ZONE).date()
+
+
 TRIP_WORKFLOW = FormWorkflowDefinition(
     workflow_type="TRAVEL_APPLICATION",
     resource_type="TRAVEL_APPLICATION",
@@ -63,8 +69,13 @@ TRIP_WORKFLOW = FormWorkflowDefinition(
         _field("company", "公司", "申请公司"),
         _field("department", "部门", "申请部门"),
         _field("expenseType", "费用类型", field_type="enum", enum_values=("差旅费_差旅交通",)),
-        _field("applicationDate", "申请日期", field_type="date"),
-        _field("budgetYear", "预算占用年度", "预算年度", field_type="enum", enum_values=("2026",)),
+        _field(
+            "budgetYear",
+            "预算占用年度",
+            "预算年度",
+            field_type="enum",
+            enum_values=(str(_beijing_today().year),),
+        ),
         _field("budgetSubject", "预算科目", ai_writable=False),
         _field("applicationAmount", "申请金额", "出差金额", field_type="number"),
         _field("travelMode", "出行方式", "交通方式", field_type="enum", enum_values=("机票", "高铁", "汽车")),
@@ -151,12 +162,17 @@ async def register(registry, settings) -> None:
             "明确的字段修改必须调用 apply_form_changes，不得只用文字声称已经修改。"
             "一次可提交一个或多个 changes；field_key 只能使用上下文提供的字段键。"
             "如果用户没有说清楚要改哪个字段，先追问，禁止猜测。"
+            "必须结合完整会话历史理解用户回复；用户只回复地点、日期、天数、交通方式等短答案时，"
+            "应严格按照上一轮助手逐项追问的字段顺序解释，不能脱离上一轮问题重新猜测字段。"
             "用户描述一整段出差安排时，要把日期、出发城市、到达城市、出差天数和出差事由拆成对应字段后一次调用工具。"
             "还必须理解活动性质并写入 activityType：会议、启动会、评审会、研讨会、论坛、峰会等为 MEETING，"
             "培训为 TRAINING，客户拜访或调研为 VISIT，其余为 OTHER。"
             "例如‘从北京到上海为期三天的会议研讨会’应写入 departureCity、arrivalCity、tripDays、activityType=MEETING 和 notes。"
-            "没有年份的日期按当前年度处理；当前日期为"
-            f"{date.today().isoformat()}。"
+            "tripDays 和 activityType 是内部业务字段，必须保留并用于后续补贴及会议材料判断，"
+            "但面向用户回复时只能使用‘出差天数’‘活动性质’等自然中文，禁止展示字段键或 MEETING、TRAINING、VISIT、OTHER 编码。"
+            "申请日期由页面按北京时间自动带入，不属于可询问或可修改字段。"
+            "没有年份的日期按当前年度处理；当前北京时间日期为"
+            f"{_beijing_today().isoformat()}。"
             "活动名称必须原样保留在 notes 中，供后续业务材料校验使用。"
             "不要提交正式业务单据，最终提交仍由用户确认和 Java 业务服务完成。"
         ),
