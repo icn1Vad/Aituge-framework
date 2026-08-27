@@ -69,6 +69,9 @@ TRIP_WORKFLOW = FormWorkflowDefinition(
         "用户描述出差目的、活动名称或要去做的事情时，把这段具体事由写入 notes。",
         "activityType 只表示活动分类，不能替代 notes；会议、培训、拜访等活动必须同时写 activityType 和具体 notes。",
         "例如用户说‘要去开一个学术会议’，应同时输出 activityType=MEETING 和 notes=参加学术会议。",
+        "用户明确说飞机、坐飞机或航空出行时，必须输出 travelMode=机票；明确说高铁时，必须输出 travelMode=高铁。",
+        "交通方式和舱位是两个独立字段：飞机的经济舱、商务舱以及高铁的一等座、二等座要同时输出对应 travelMode 和 cabin。",
+        "如果交通方式与舱位冲突，保留用户明确说出的 travelMode，只省略不匹配的 cabin。",
     ),
     fields=(
         _field("company", "公司", "申请公司"),

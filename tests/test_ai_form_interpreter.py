@@ -326,6 +326,9 @@ async def test_interpreter_starts_new_workflow_without_react_loop() -> None:
     assert request["timezone"] == "Asia/Shanghai"
     assert request["current_time"].startswith("2026-08-28T16:00:00")
     assert request["available_workflows"][0]["workflow_type"] == "TRAVEL_APPLICATION"
+    assert "workflow_instructions" in request["available_workflows"][0]
+    assert "交通方式" in call["system_prompt"]
+    assert "飞机二等座" in call["system_prompt"]
 
 
 
