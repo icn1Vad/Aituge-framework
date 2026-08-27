@@ -101,7 +101,7 @@ class SchedulerTaskHandler:
         task_payload = dict(task.input_payload_json or {})
         form_decision = None
         if can_interpret_form_command(task_payload):
-            progress = "正在理解您的要求并核对当前表单，确认字段和取值后会立即执行并反馈结果。\n\n"
+            progress = "正在理解您的要求并整理业务信息，确认办理方式后会立即执行并反馈结果。\n\n"
             yield TaskHandlerEvent(
                 event_type="stream_chunk",
                 stage="agent_stream",
@@ -137,6 +137,7 @@ class SchedulerTaskHandler:
                 )
 
         if form_decision is not None and form_decision.action in {
+            "start_workflow",
             "apply_changes",
             "clarify",
         }:
@@ -466,17 +467,22 @@ def _form_command_events(
     agent_id: str,
 ) -> list[TaskHandlerEvent]:
     events: list[TaskHandlerEvent] = []
-    if decision.action == "apply_changes":
-        tool_call_id = f"ai-form-change:{task.id}"
-        arguments = json.dumps(
-            decision.arguments(
+    if decision.action in {"start_workflow", "apply_changes"}:
+        tool_call_id = f"ai-form-command:{task.id}"
+        if decision.action == "start_workflow":
+            tool_name = "start_workflow"
+            arguments_payload = decision.arguments()
+            source_event = "ai_workflow_start"
+        else:
+            tool_name = "apply_form_changes"
+            arguments_payload = decision.arguments(
                 draft_id=str(task_payload["active_resource_id"]),
                 expected_version=int(task_payload["draft_version"]),
-            ),
-            ensure_ascii=False,
-        )
+            )
+            source_event = "ai_form_change"
+        arguments = json.dumps(arguments_payload, ensure_ascii=False)
         common_payload = {
-            "tool_name": "apply_form_changes",
+            "tool_name": tool_name,
             "tool_call_id": tool_call_id,
             "arguments": arguments,
         }
@@ -485,7 +491,7 @@ def _form_command_events(
                 TaskHandlerEvent(
                     event_type="tool_started",
                     stage="tool_execution",
-                    message="Tool 'apply_form_changes' started.",
+                    message=f"Tool '{tool_name}' started.",
                     step_id=f"tool_started:{tool_call_id}",
                     step_index=25,
                     payload={**common_payload, "status": "started"},
@@ -497,7 +503,7 @@ def _form_command_events(
                 TaskHandlerEvent(
                     event_type="tool_completed",
                     stage="tool_execution",
-                    message="Tool 'apply_form_changes' completed.",
+                    message=f"Tool '{tool_name}' completed.",
                     step_id=f"tool_completed:{tool_call_id}",
                     step_index=35,
                     payload={
@@ -515,8 +521,7 @@ def _form_command_events(
             ]
         )
         content = decision.success_message()
-        source_event = "ai_form_change"
-        final_message = "AI form edit completed."
+        final_message = "AI form command completed."
     else:
         content = decision.clarification
         source_event = "ai_form_clarification"

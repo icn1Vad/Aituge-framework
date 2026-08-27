@@ -1,6 +1,7 @@
 import traceback
 from typing import List, Optional, cast
 import uuid
+from urllib.parse import urlparse
 from common.llm.models import DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_RETRIES, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, DEFAULT_TIMEOUT, THINK_END_TAG, THINK_START_TAG, ChatResponseGenerator, ErrorChunk, ReasoningChunk, TextChunk
 from loguru import logger
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
@@ -8,6 +9,26 @@ from openai.types.chat import ChatCompletionChunk, ChatCompletionToolParam
 from openai.types.chat.chat_completion_chunk import ChoiceDeltaToolCall
 from extensions.trace.base import use_current_span
 from opentelemetry import trace
+
+
+def _thinking_extra_body(
+    *,
+    api_base: str,
+    provider: str,
+    model: str,
+    enabled: bool,
+) -> dict:
+    hostname = (urlparse(str(api_base)).hostname or "").lower()
+    normalized_provider = str(provider).lower()
+    normalized_model = str(model).lower()
+    if (
+        normalized_provider == "deepseek" or hostname == "api.deepseek.com"
+    ) and normalized_model.startswith("deepseek-v4-"):
+        return {"thinking": {"type": "enabled" if enabled else "disabled"}}
+    return {
+        "chat_template_kwargs": {"enable_thinking": enabled},
+        "enable_thinking": enabled,
+    }
 
 
 def update_tool_calls(
@@ -135,7 +156,12 @@ class PaiLlm():
                     max_tokens=self.max_tokens,
                     tools=tools_to_use or None,
                     stream_options={"include_usage": True},
-                    extra_body={"chat_template_kwargs":{"enable_thinking": self.enable_thinking}, "enable_thinking": self.enable_thinking},
+                    extra_body=_thinking_extra_body(
+                        api_base=self.api_base,
+                        provider=self.provider,
+                        model=self.model,
+                        enabled=self.enable_thinking,
+                    ),
                     **kwargs,
                 )
                 logger.info(f"Calling model {self.model}, enable_thinking: {self.enable_thinking}, temperature: {self.temperature}")

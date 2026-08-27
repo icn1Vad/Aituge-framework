@@ -1,6 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
+from common.llm.llm_model import _thinking_extra_body
 from service.conversation.llm_runner import LlmRuntime, _build_thinking_extra_body
 
 
@@ -23,7 +24,7 @@ def test_explicitly_disables_thinking_for_official_deepseek_v4() -> None:
     }
 
 
-def test_keeps_configured_behavior_when_contract_layer_does_not_override() -> None:
+def test_uses_official_deepseek_thinking_shape_without_override() -> None:
     llm = FakeLlm(
         api_base="https://api.deepseek.com",
         model="deepseek-v4-flash",
@@ -31,8 +32,7 @@ def test_keeps_configured_behavior_when_contract_layer_does_not_override() -> No
     )
 
     assert _build_thinking_extra_body(llm, None) == {
-        "chat_template_kwargs": {"enable_thinking": True},
-        "enable_thinking": True,
+        "thinking": {"type": "enabled"}
     }
 
 
@@ -184,3 +184,25 @@ def test_complete_remains_non_streaming_and_backward_compatible() -> None:
 
     assert value == "ordinary"
     assert completions.calls[0]["stream"] is False
+
+
+
+def test_react_stream_disables_official_deepseek_thinking_with_provider_shape() -> None:
+    assert _thinking_extra_body(
+        api_base="https://api.deepseek.com",
+        provider="deepseek",
+        model="deepseek-v4-pro",
+        enabled=False,
+    ) == {"thinking": {"type": "disabled"}}
+
+
+def test_react_stream_keeps_compatible_shape_for_other_providers() -> None:
+    assert _thinking_extra_body(
+        api_base="https://models.example.test/v1",
+        provider="openai_compatible",
+        model="qwen3",
+        enabled=False,
+    ) == {
+        "chat_template_kwargs": {"enable_thinking": False},
+        "enable_thinking": False,
+    }

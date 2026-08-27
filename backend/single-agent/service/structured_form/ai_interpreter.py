@@ -19,7 +19,7 @@ from model_observability.runtime import (
 from service.conversation.llm_runner import LlmRuntime
 
 from .models import FormFieldDefinition, FormWorkflowDefinition
-from .registry import get_workflow_definition
+from .registry import get_workflow_definition, get_workflow_definitions
 
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -35,29 +35,43 @@ class InterpretedFormChange:
 
 @dataclass(frozen=True, slots=True)
 class FormCommandDecision:
-    action: Literal["apply_changes", "clarify", "defer"]
+    action: Literal["start_workflow", "apply_changes", "clarify", "defer"]
     changes: tuple[InterpretedFormChange, ...] = ()
+    workflow_type: str = ""
     clarification: str = ""
     model_duration_ms: int = 0
     time_to_first_token_ms: int | None = None
     usage: dict[str, int] | None = None
 
-    def arguments(self, *, draft_id: str, expected_version: int) -> dict[str, Any]:
+    def arguments(
+        self,
+        *,
+        draft_id: str | None = None,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        changes = [
+            {"field_key": item.field_key, "value": item.value, "source": "ai"}
+            for item in self.changes
+        ]
+        if self.action == "start_workflow":
+            return {"workflow_type": self.workflow_type, "changes": changes}
+        if not draft_id or not isinstance(expected_version, int):
+            raise ValueError("draft_id and expected_version are required for form edits")
         return {
             "request_id": f"ai-form-{uuid4().hex}",
             "draft_id": draft_id,
             "expected_version": expected_version,
-            "changes": [
-                {
-                    "field_key": item.field_key,
-                    "value": item.value,
-                    "source": "ai",
-                }
-                for item in self.changes
-            ],
+            "changes": changes,
         }
 
     def success_message(self) -> str:
+        if self.action == "start_workflow":
+            if not self.changes:
+                return "已为您打开新的业务申请草稿，请继续补充信息。"
+            details = "、".join(
+                f"{item.field_label}：{item.value}" for item in self.changes
+            )
+            return f"已为您生成申请草稿，并填写 {len(self.changes)} 项内容：{details}。"
         if len(self.changes) == 1:
             item = self.changes[0]
             return f"已将{item.field_label}修改为{item.value}。"
@@ -82,10 +96,18 @@ class AiFormCommandInterpreter:
         trace_id: str | None = None,
         now: datetime | None = None,
     ) -> FormCommandDecision | None:
-        context = _active_form_context(payload)
-        if context is None:
+        active_context = _active_form_context(payload)
+        start_context = _start_workflow_context(payload)
+        if active_context is None and start_context is None:
             return None
-        definition, current_form = context
+        if active_context is not None:
+            definition, current_form = active_context
+            user_payload = _build_user_payload(message, definition, current_form, now=now)
+            system_prompt = _EDIT_SYSTEM_PROMPT
+        else:
+            definition = None
+            user_payload = _build_start_user_payload(message, start_context or (), now=now)
+            system_prompt = _START_SYSTEM_PROMPT
         active_model_id = (
             model_id
             or self.llm_runtime.model_runtime_provider.active_pack.llm.id
@@ -94,17 +116,12 @@ class AiFormCommandInterpreter:
             messages=[
                 {
                     "role": "user",
-                    "content": _build_user_payload(
-                        message,
-                        definition,
-                        current_form,
-                        now=now,
-                    ),
+                    "content": user_payload,
                 }
             ],
             model_id=active_model_id,
-            system_prompt=_SYSTEM_PROMPT,
-            max_tokens=480,
+            system_prompt=system_prompt,
+            max_tokens=640,
             temperature=0,
             thinking_override=False,
             response_format={"type": "json_object"},
@@ -113,13 +130,23 @@ class AiFormCommandInterpreter:
             defer_terminal=True,
         )
         try:
-            decision = normalize_form_command(
-                completion.content,
-                definition,
-                model_duration_ms=completion.model_duration_ms,
-                time_to_first_token_ms=completion.time_to_first_token_ms,
-                usage=_completion_usage(completion),
-            )
+            metrics = {
+                "model_duration_ms": completion.model_duration_ms,
+                "time_to_first_token_ms": completion.time_to_first_token_ms,
+                "usage": _completion_usage(completion),
+            }
+            if definition is not None:
+                decision = normalize_form_command(
+                    completion.content,
+                    definition,
+                    **metrics,
+                )
+            else:
+                decision = normalize_start_workflow_command(
+                    completion.content,
+                    start_context or (),
+                    **metrics,
+                )
         except asyncio.CancelledError:
             await finalize_deferred_completion_validation_failed(
                 completion,
@@ -144,7 +171,10 @@ class AiFormCommandInterpreter:
 
 
 def can_interpret_form_command(payload: dict[str, Any]) -> bool:
-    return _active_form_context(payload) is not None
+    return (
+        _active_form_context(payload) is not None
+        or _start_workflow_context(payload) is not None
+    )
 
 
 def normalize_form_command(
@@ -184,35 +214,72 @@ def normalize_form_command(
     if action != "apply_changes":
         raise ValueError("unsupported action")
 
-    raw_changes = payload.get("changes")
-    if not isinstance(raw_changes, list) or not 1 <= len(raw_changes) <= 100:
-        raise ValueError("changes must contain between 1 and 100 items")
-    fields = {field.key: field for field in definition.writable_fields()}
-    seen: set[str] = set()
-    changes: list[InterpretedFormChange] = []
-    for raw_change in raw_changes:
-        if not isinstance(raw_change, dict):
-            raise ValueError("change must be an object")
-        field_key = str(raw_change.get("field_key") or "").strip()
-        field = fields.get(field_key)
-        if field is None:
-            raise ValueError(f"unknown or non-writable field: {field_key}")
-        if field_key in seen:
-            raise ValueError(f"duplicate field: {field_key}")
-        seen.add(field_key)
-        changes.append(
-            InterpretedFormChange(
-                field_key=field.key,
-                field_label=field.label,
-                value=_normalize_value(field, raw_change.get("value")),
-            )
-        )
+    changes = _normalize_changes(
+        payload.get("changes"),
+        definition,
+        allow_empty=False,
+    )
     return FormCommandDecision(
         action="apply_changes",
         changes=tuple(changes),
         model_duration_ms=model_duration_ms,
         time_to_first_token_ms=time_to_first_token_ms,
         usage=usage,
+    )
+
+
+def normalize_start_workflow_command(
+    content: str,
+    definitions: tuple[FormWorkflowDefinition, ...],
+    *,
+    model_duration_ms: int = 0,
+    time_to_first_token_ms: int | None = None,
+    usage: dict[str, int] | None = None,
+) -> FormCommandDecision:
+    try:
+        payload = json.loads(content)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("response is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("response root must be an object")
+
+    metrics = {
+        "model_duration_ms": model_duration_ms,
+        "time_to_first_token_ms": time_to_first_token_ms,
+        "usage": usage,
+    }
+    action = payload.get("action")
+    if action == "defer":
+        return FormCommandDecision(action="defer", **metrics)
+    if action == "clarify":
+        clarification = str(payload.get("clarification") or "").strip()
+        if not clarification or len(clarification) > _MAX_CLARIFICATION_CHARS:
+            raise ValueError("clarification is missing or too long")
+        return FormCommandDecision(
+            action="clarify",
+            clarification=clarification,
+            **metrics,
+        )
+    if action != "start_workflow":
+        raise ValueError("unsupported action")
+
+    workflow_type = str(payload.get("workflow_type") or "").strip().upper()
+    definition = next(
+        (item for item in definitions if item.workflow_type == workflow_type),
+        None,
+    )
+    if definition is None:
+        raise ValueError("unknown workflow_type")
+    changes = _normalize_changes(
+        payload.get("changes", []),
+        definition,
+        allow_empty=True,
+    )
+    return FormCommandDecision(
+        action="start_workflow",
+        workflow_type=workflow_type,
+        changes=tuple(changes),
+        **metrics,
     )
 
 
@@ -226,6 +293,21 @@ def _active_form_context(
         return None
     form = payload.get("form")
     return definition, form if isinstance(form, dict) else {}
+
+
+def _start_workflow_context(
+    payload: dict[str, Any],
+) -> tuple[FormWorkflowDefinition, ...] | None:
+    active_workflow = str(payload.get("active_workflow") or "").strip().upper()
+    if (
+        not active_workflow.endswith("_ASSISTANT")
+        or payload.get("active_resource_id")
+    ):
+        return None
+    if get_workflow_definition(active_workflow) is not None:
+        return None
+    definitions = get_workflow_definitions()
+    return definitions or None
 
 
 def _build_user_payload(
@@ -259,6 +341,77 @@ def _build_user_payload(
         ensure_ascii=False,
         separators=(",", ":"),
     )
+
+
+def _build_start_user_payload(
+    message: str,
+    definitions: tuple[FormWorkflowDefinition, ...],
+    *,
+    now: datetime | None,
+) -> str:
+    current = (now or datetime.now(_SHANGHAI)).astimezone(_SHANGHAI)
+    workflows = []
+    for definition in definitions:
+        workflows.append(
+            {
+                "workflow_type": definition.workflow_type,
+                "workflow_instructions": list(definition.instructions),
+                "writable_fields": [
+                    {
+                        "field_key": field.key,
+                        "label": field.label,
+                        "aliases": list(field.aliases),
+                        "type": field.field_type,
+                        "enum_values": list(field.enum_values),
+                    }
+                    for field in definition.writable_fields()
+                ],
+            }
+        )
+    return json.dumps(
+        {
+            "current_time": current.isoformat(timespec="seconds"),
+            "timezone": "Asia/Shanghai",
+            "user_message": message,
+            "available_workflows": workflows,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _normalize_changes(
+    raw_changes: Any,
+    definition: FormWorkflowDefinition,
+    *,
+    allow_empty: bool,
+) -> list[InterpretedFormChange]:
+    if not isinstance(raw_changes, list):
+        raise ValueError("changes must be a list")
+    minimum = 0 if allow_empty else 1
+    if not minimum <= len(raw_changes) <= 100:
+        raise ValueError(f"changes must contain between {minimum} and 100 items")
+    fields = {field.key: field for field in definition.writable_fields()}
+    seen: set[str] = set()
+    changes: list[InterpretedFormChange] = []
+    for raw_change in raw_changes:
+        if not isinstance(raw_change, dict):
+            raise ValueError("change must be an object")
+        field_key = str(raw_change.get("field_key") or "").strip()
+        field = fields.get(field_key)
+        if field is None:
+            raise ValueError(f"unknown or non-writable field: {field_key}")
+        if field_key in seen:
+            raise ValueError(f"duplicate field: {field_key}")
+        seen.add(field_key)
+        changes.append(
+            InterpretedFormChange(
+                field_key=field.key,
+                field_label=field.label,
+                value=_normalize_value(field, raw_change.get("value")),
+            )
+        )
+    return changes
 
 
 def _normalize_value(field: FormFieldDefinition, value: Any) -> Any:
@@ -307,7 +460,22 @@ def _completion_usage(completion: Any) -> dict[str, int] | None:
     return normalized or None
 
 
-_SYSTEM_PROMPT = """你是通用业务表单指令解析器，不是聊天助手。
+_START_SYSTEM_PROMPT = """你是通用业务事务启动解析器，不是聊天助手。
+判断用户当前这句话是否明确要求新建 available_workflows 中的一种业务事项。
+明确要发起事项时返回：
+{"action":"start_workflow","workflow_type":"业务类型","changes":[{"field_key":"字段键","value":"规范值"}]}
+用户明确要办理但业务类型无法确定时返回：
+{"action":"clarify","clarification":"一句简短、具体的追问"}
+制度咨询、费用标准查询、闲聊、上传附件、修改旧事项等不应新建事项的请求返回：
+{"action":"defer"}
+只能选择 available_workflows 中的 workflow_type 和 writable_fields，不得创造字段。
+用户已经明确提供的全部字段要一次提取；必须遵守 workflow_instructions，相关语义独立的字段要同时输出。
+日期必须结合 current_time 和 timezone 解析为 YYYY-MM-DD；“明天”“后天”等不得按 UTC 计算。
+枚举值必须严格使用 enum_values 中的值；同一句中的交通方式与舱位明显冲突时，只省略冲突字段，不阻止创建其他字段。
+数字输出 JSON 数字。不要输出 Markdown、解释或工具调用，只输出一个 JSON 对象。"""
+
+
+_EDIT_SYSTEM_PROMPT = """你是通用业务表单指令解析器，不是聊天助手。
 只判断用户当前这句话是否要求修改已经打开的表单。
 字段只能从 writable_fields 中按语义选择，不得创造字段，不得修改只读字段。
 必须遵守 workflow_instructions 中的业务语义要求；相关字段语义独立时要同时输出，不得用一个字段代替另一个字段。

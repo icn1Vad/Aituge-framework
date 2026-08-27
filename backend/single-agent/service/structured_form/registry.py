@@ -24,6 +24,10 @@ def get_workflow_definition(
     return _WORKFLOWS.get(normalized)
 
 
+def get_workflow_definitions() -> tuple[FormWorkflowDefinition, ...]:
+    return tuple(_WORKFLOWS.values())
+
+
 def clear_workflow_definitions() -> None:
     """Test-only reset hook."""
 

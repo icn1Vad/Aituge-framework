@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -11,8 +12,10 @@ from service.structured_form.ai_interpreter import (
     AiFormCommandInterpreter,
     can_interpret_form_command,
     normalize_form_command,
+    normalize_start_workflow_command,
 )
 from service.structured_form.models import FormFieldDefinition, FormWorkflowDefinition
+from task_manager.handlers.scheduler_task import _form_command_events
 from service.structured_form.registry import (
     clear_workflow_definitions,
     register_workflow_definition,
@@ -184,11 +187,14 @@ def test_clarification_and_defer_are_explicit_decisions() -> None:
     assert defer.action == "defer"
 
 
-def test_only_active_versioned_form_uses_interpreter() -> None:
+def test_active_form_or_assistant_start_context_uses_interpreter() -> None:
     assert can_interpret_form_command(form_payload())
     assert not can_interpret_form_command(form_payload(active_resource_id=""))
     assert not can_interpret_form_command(form_payload(draft_version=None))
     assert not can_interpret_form_command(form_payload(active_workflow="UNKNOWN"))
+    assert can_interpret_form_command(
+        {"active_workflow": "TRAVEL_ASSISTANT", "form": {}}
+    )
 
 
 @dataclass
@@ -252,3 +258,107 @@ async def test_interpreter_uses_compact_catalog_shanghai_time_and_no_thinking() 
     assert "budgetSubject" not in {
         field["field_key"] for field in request["writable_fields"]
     }
+
+
+
+def test_normalizes_ai_workflow_start_with_initial_fields() -> None:
+    decision = normalize_start_workflow_command(
+        json.dumps(
+            {
+                "action": "start_workflow",
+                "workflow_type": "TRAVEL_APPLICATION",
+                "changes": [
+                    {"field_key": "departureDate", "value": "2026-08-30"},
+                    {"field_key": "passenger", "value": "赵泽鹏"},
+                    {"field_key": "applicationAmount", "value": 1200},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        (WORKFLOW,),
+    )
+
+    assert decision.action == "start_workflow"
+    assert decision.workflow_type == "TRAVEL_APPLICATION"
+    assert decision.arguments() == {
+        "workflow_type": "TRAVEL_APPLICATION",
+        "changes": [
+            {"field_key": "departureDate", "value": "2026-08-30", "source": "ai"},
+            {"field_key": "passenger", "value": "赵泽鹏", "source": "ai"},
+            {"field_key": "applicationAmount", "value": 1200, "source": "ai"},
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_interpreter_starts_new_workflow_without_react_loop() -> None:
+    runtime = FakeRuntime(
+        json.dumps(
+            {
+                "action": "start_workflow",
+                "workflow_type": "TRAVEL_APPLICATION",
+                "changes": [
+                    {"field_key": "departureDate", "value": "2026-08-30"},
+                    {"field_key": "travelMode", "value": "机票"},
+                    {"field_key": "passenger", "value": "赵泽鹏"},
+                ],
+            },
+            ensure_ascii=False,
+        )
+    )
+    interpreter = AiFormCommandInterpreter(runtime)  # type: ignore[arg-type]
+
+    decision = await interpreter.interpret(
+        {"active_workflow": "TRAVEL_ASSISTANT", "form": {}},
+        "后天坐飞机出发，乘机人赵泽鹏",
+        model_id="deepseek-v4-pro",
+        now=datetime(2026, 8, 28, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert decision is not None
+    assert decision.action == "start_workflow"
+    assert decision.workflow_type == "TRAVEL_APPLICATION"
+    call = runtime.calls[0]
+    assert call["thinking_override"] is False
+    assert call["max_tokens"] == 640
+    assert "start_workflow" in call["system_prompt"]
+    request = json.loads(call["messages"][0]["content"])
+    assert request["timezone"] == "Asia/Shanghai"
+    assert request["current_time"].startswith("2026-08-28T16:00:00")
+    assert request["available_workflows"][0]["workflow_type"] == "TRAVEL_APPLICATION"
+
+
+
+def test_start_workflow_decision_emits_standard_tool_events() -> None:
+    decision = normalize_start_workflow_command(
+        '{"action":"start_workflow","workflow_type":"TRAVEL_APPLICATION",'
+        '"changes":[{"field_key":"passenger","value":"赵泽鹏"}]}',
+        (WORKFLOW,),
+    )
+    task = SimpleNamespace(
+        id="task-1",
+        thread_id="thread-1",
+        session_id="session-1",
+    )
+
+    events = _form_command_events(
+        decision=decision,
+        task=task,
+        task_payload={"active_workflow": "TRAVEL_ASSISTANT"},
+        stage_run_id="stage-1",
+        agent_id="workflow-assistant-agent",
+    )
+
+    assert [event.event_type for event in events] == [
+        "tool_started",
+        "tool_completed",
+        "stream_chunk",
+        "agent_final",
+    ]
+    assert events[0].payload["tool_name"] == "start_workflow"
+    arguments = json.loads(events[0].payload["arguments"])
+    assert arguments["workflow_type"] == "TRAVEL_APPLICATION"
+    assert arguments["changes"] == [
+        {"field_key": "passenger", "value": "赵泽鹏", "source": "ai"}
+    ]
+    assert events[2].payload["source_event"] == "ai_workflow_start"

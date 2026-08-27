@@ -1157,7 +1157,7 @@ def _is_retryable_provider_error(exc: BaseException) -> bool:
 
 def _build_thinking_extra_body(llm: Any, thinking_override: Optional[bool]) -> dict[str, Any]:
     enabled = llm.enable_thinking if thinking_override is None else thinking_override
-    if thinking_override is not None and _is_official_deepseek_v4(llm):
+    if _is_official_deepseek_v4(llm):
         return {"thinking": {"type": "enabled" if enabled else "disabled"}}
     return {
         "chat_template_kwargs": {"enable_thinking": enabled},
