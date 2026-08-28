@@ -464,6 +464,9 @@ _START_SYSTEM_PROMPT = """你是通用业务事务启动解析器，不是聊天
 判断用户当前这句话是否明确要求新建 available_workflows 中的一种业务事项。
 明确要发起事项时返回：
 {"action":"start_workflow","workflow_type":"业务类型","changes":[{"field_key":"字段键","value":"规范值"}]}
+只要能够确定 workflow_type，就必须立即返回 start_workflow；即使用户没有提供任何表单字段，也返回空 changes 创建草稿。
+费用类型、日期、金额等 writable_fields 缺失或未确定时，不得因此追问；这些信息应在草稿打开后继续补充。
+例如“我要报销”应直接启动 TRAVEL_REIMBURSEMENT 且 changes 为空，不得追问报销费用类型。
 用户明确要办理但业务类型无法确定时返回：
 {"action":"clarify","clarification":"一句简短、具体的追问"}
 制度咨询、费用标准查询、闲聊、上传附件、修改旧事项等不应新建事项的请求返回：

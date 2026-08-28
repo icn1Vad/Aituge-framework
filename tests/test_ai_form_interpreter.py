@@ -322,6 +322,9 @@ async def test_interpreter_starts_new_workflow_without_react_loop() -> None:
     assert call["thinking_override"] is False
     assert call["max_tokens"] == 640
     assert "start_workflow" in call["system_prompt"]
+    assert "即使用户没有提供任何表单字段" in call["system_prompt"]
+    assert "不得因此追问" in call["system_prompt"]
+    assert "我要报销" in call["system_prompt"]
     request = json.loads(call["messages"][0]["content"])
     assert request["timezone"] == "Asia/Shanghai"
     assert request["current_time"].startswith("2026-08-28T16:00:00")
