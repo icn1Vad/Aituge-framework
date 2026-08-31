@@ -7,6 +7,7 @@ from datetime import date
 from pathlib import Path
 
 import httpx
+import pytest
 from contract.config import Settings
 from contract.legal_evidence.embedding import OpenAICompatibleLegalEmbeddingProvider
 from contract.legal_evidence.indexer import LegalEvidenceIndexer
@@ -44,6 +45,91 @@ def test_migration_defines_independent_projection_tables_and_ann_index() -> None
     assert "metadata_verification_status" in sql
     assert "effective_from date NULL" in sql
     assert "effective_to date NULL" in sql
+    resume_sql = (MIGRATIONS_DIR / "008_legal_evidence_resume_hashes.sql").read_text(
+        "utf-8"
+    )
+    assert "projection_hash char(64)" in resume_sql
+    assert resume_sql.count("embedding_input_hash char(64)") == 2
+
+
+def test_projection_and_embedding_hashes_cover_their_exact_inputs() -> None:
+    base = LegalRetrievalUnit(
+        unit_id="unit-1",
+        release_id="release-1",
+        instrument_id="instrument-1",
+        version_id="version-1",
+        source_node_ids=["node-1"],
+        title="测试法规",
+        article_no="第一条",
+        content="相同正文。",
+        jurisdiction="CN",
+        content_hash="a" * 64,
+        sequence=1,
+    )
+    renamed = base.model_copy(update={"title": "测试法规修订版"})
+    moved = base.model_copy(update={"jurisdiction": "CN-11", "sequence": 2})
+
+    assert renamed.content_hash == base.content_hash
+    assert renamed.embedding_input_hash != base.embedding_input_hash
+    assert renamed.projection_hash != base.projection_hash
+    assert moved.embedding_input_hash == base.embedding_input_hash
+    assert moved.projection_hash != base.projection_hash
+
+
+def test_repository_resume_rejects_projection_and_embedding_input_drift() -> None:
+    base = LegalRetrievalUnit(
+        unit_id="unit-1",
+        release_id="release-1",
+        instrument_id="instrument-1",
+        version_id="version-1",
+        source_node_ids=["node-1"],
+        title="测试法规",
+        article_no="第一条",
+        content="相同正文。",
+        content_hash="a" * 64,
+        sequence=1,
+    )
+
+    class _Connection:
+        def execute(self, sql, _params):
+            if "FROM legal_evidence_embedding" in sql:
+                return _RowsCursor(
+                    [
+                        {
+                            "unit_id": base.unit_id,
+                            "embedding_input_hash": base.embedding_input_hash,
+                        }
+                    ]
+                )
+            if "FROM legal_evidence_unit" in sql:
+                return _RowsCursor(
+                    [
+                        {
+                            "unit_id": base.unit_id,
+                            "projection_hash": base.projection_hash,
+                        }
+                    ]
+                )
+            raise AssertionError(sql)
+
+    class _Repository(PostgresLegalEvidenceRepository):
+        def __init__(self):
+            super().__init__(Settings())
+            self.connection = _Connection()
+
+        @contextmanager
+        def _connect(self):
+            yield self.connection
+
+    repository = _Repository()
+    assert repository.units_requiring_projection([base]) == []
+    assert repository.units_requiring_embedding([base], profile_id="profile") == []
+
+    renamed = base.model_copy(update={"title": "测试法规修订版"})
+    with pytest.raises(RuntimeError, match="projection unit identity drifted"):
+        repository.units_requiring_projection([renamed])
+    with pytest.raises(RuntimeError, match="embedding input hash drifted"):
+        repository.units_requiring_embedding([renamed], profile_id="profile")
 
 
 def test_article_assembler_keeps_article_and_child_paragraphs_in_one_unit() -> None:
@@ -531,3 +617,210 @@ def test_indexer_embeds_small_batches_concurrently_and_preserves_order() -> None
     assert [vector[0] for _, vectors in batches for vector in vectors] == [
         float(index) for index in range(16)
     ]
+
+
+def test_indexer_reuses_completed_rows_and_persists_one_embedding_write_per_flush() -> (
+    None
+):
+    class _Source:
+        def active_release(self):
+            return {"release_id": "source-1", "manifest_sha256": "a" * 64}
+
+        def retrieval_root_count(self, _release_id):
+            return 16
+
+        def iter_nodes(self, _release_id, *, page_size):
+            del page_size
+            for index in range(16):
+                yield {
+                    "release_id": "source-1",
+                    "instrument_key": f"instrument-{index}",
+                    "version_id": f"version-{index:02d}",
+                    "title": "测试法规",
+                    "category_root": "法律",
+                    "jurisdiction_code": "CN",
+                    "issuing_authority_names_json": "[]",
+                    "source_url": None,
+                    "node_id": f"node-{index}",
+                    "parent_node_id": None,
+                    "node_type": "PREAMBLE",
+                    "node_number": None,
+                    "heading": None,
+                    "content_plain": f"content-{index}",
+                    "sequence": index,
+                    "path": "前言",
+                    "content_sha256": f"{index:064x}",
+                }
+
+        def iter_instruments(self, _release_id, *, page_size):
+            del page_size
+            return iter(())
+
+        def iter_relations(self, _release_id, *, page_size):
+            del page_size
+            return iter(())
+
+    class _Provider:
+        profile_id = "profile"
+        provider = "test"
+        model = "test"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def embed_documents(self, texts):
+            self.calls += 1
+            return [[float(index)] for index, _text in enumerate(texts)]
+
+    class _Target:
+        def __init__(self) -> None:
+            self.embedding_writes = []
+            self.relations_reset = False
+
+        def stage_release(self, **_kwargs):
+            return True
+
+        @staticmethod
+        def units_requiring_projection(units):
+            return list(units)[8:]
+
+        @staticmethod
+        def units_requiring_embedding(units, *, profile_id):
+            assert profile_id == "profile"
+            return list(units)[4:]
+
+        @staticmethod
+        def upsert_units(units):
+            assert len(list(units)) == 8
+            return 8
+
+        def upsert_embeddings(self, *, units, vectors, **_kwargs):
+            self.embedding_writes.append((list(units), list(vectors)))
+            return len(units)
+
+        def reset_staged_relations(self, _release_id):
+            self.relations_reset = True
+
+        @staticmethod
+        def representative_unit_ids(_release_id):
+            return {}
+
+        @staticmethod
+        def iter_units(_release_id, *, page_size):
+            del page_size
+            return iter(())
+
+        @staticmethod
+        def unit_ids_by_instrument_articles(_release_id, _keys):
+            return {}
+
+        @staticmethod
+        def representative_unit_id(*_args):
+            return None
+
+        @staticmethod
+        def upsert_relations(relations):
+            return len(list(relations))
+
+        @staticmethod
+        def mark_projection_complete(_release_id, *, expected_unit_count):
+            assert expected_unit_count == 16
+            return 16, 0
+
+    provider = _Provider()
+    target = _Target()
+    result = LegalEvidenceIndexer(
+        _Source(),
+        target,
+        embedding_provider=provider,
+        write_batch_size=16,
+        embedding_batch_size=2,
+        embedding_workers=1,
+    ).publish()
+
+    assert provider.calls == 6
+    assert len(target.embedding_writes) == 1
+    assert len(target.embedding_writes[0][0]) == 12
+    assert len(target.embedding_writes[0][1]) == 12
+    assert result["projected_units"] == 16
+    assert result["new_units"] == 8
+    assert result["embedded_units"] == 16
+    assert result["new_embeddings"] == 12
+    assert result["reused_units"] == 8
+    assert result["reused_embeddings"] == 4
+    assert target.relations_reset is True
+
+
+def test_embedding_batch_failure_writes_no_partial_embedding_flush() -> None:
+    class _Source:
+        def active_release(self):
+            return {"release_id": "source-1", "manifest_sha256": "a" * 64}
+
+        def retrieval_root_count(self, _release_id):
+            return 4
+
+        def iter_nodes(self, _release_id, *, page_size):
+            del page_size
+            for index in range(4):
+                yield {
+                    "release_id": "source-1",
+                    "instrument_key": f"instrument-{index}",
+                    "version_id": f"version-{index}",
+                    "title": "测试法规",
+                    "category_root": "法律",
+                    "jurisdiction_code": "CN",
+                    "issuing_authority_names_json": "[]",
+                    "source_url": None,
+                    "node_id": f"node-{index}",
+                    "parent_node_id": None,
+                    "node_type": "PREAMBLE",
+                    "node_number": None,
+                    "heading": None,
+                    "content_plain": f"content-{index}",
+                    "sequence": index,
+                    "path": "前言",
+                    "content_sha256": f"{index:064x}",
+                }
+
+    class _Provider:
+        profile_id = "profile"
+        provider = "test"
+        model = "test"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def embed_documents(self, texts):
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("embedding batch failed")
+            return [[0.0] for _text in texts]
+
+    class _Target:
+        def __init__(self) -> None:
+            self.embedding_writes = 0
+
+        @staticmethod
+        def stage_release(**_kwargs):
+            return True
+
+        @staticmethod
+        def upsert_units(units):
+            return len(list(units))
+
+        def upsert_embeddings(self, **_kwargs):
+            self.embedding_writes += 1
+            return 0
+
+    target = _Target()
+    with pytest.raises(RuntimeError, match="embedding batch failed"):
+        LegalEvidenceIndexer(
+            _Source(),
+            target,
+            embedding_provider=_Provider(),
+            write_batch_size=4,
+            embedding_batch_size=2,
+            embedding_workers=1,
+        ).publish()
+
+    assert target.embedding_writes == 0

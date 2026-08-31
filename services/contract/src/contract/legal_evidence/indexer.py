@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 
 from contract.application.idempotency import canonical_json
 from contract.config import Settings
@@ -20,7 +23,7 @@ from contract.legal_evidence.projection import (
 )
 from contract.persistence.postgres.migrate import run_migrations
 
-PROJECTION_VERSION = "legal-evidence-projection-v2"
+PROJECTION_VERSION = "legal-evidence-projection-v3"
 _KNOWN_RELATIONS = {
     "CITES",
     "BASED_ON",
@@ -64,9 +67,7 @@ class LegalEvidenceIndexer:
 
     @staticmethod
     def _embedding_text(item: LegalRetrievalUnit) -> str:
-        return "\n".join(
-            part for part in (item.title, item.article_no or "", item.content) if part
-        )
+        return item.embedding_input
 
     def _embed_batches(
         self, units: list[LegalRetrievalUnit]
@@ -93,8 +94,47 @@ class LegalEvidenceIndexer:
                 vectors = list(executor.map(embed, batches))
         return list(zip(batches, vectors, strict=True))
 
+    def _expected_release_id(self, source_release_id: str | None) -> str:
+        source_release = self.source.active_release()
+        if source_release is None:
+            raise RuntimeError("No active MySQL legal release exists")
+        if source_release_id and source_release["release_id"] != source_release_id:
+            raise RuntimeError("Requested source release is not active")
+        identity = {
+            "source_release_id": str(source_release["release_id"]),
+            "source_manifest_sha256": str(source_release["manifest_sha256"]),
+            "projection_version": PROJECTION_VERSION,
+            "embedding_profile_id": (
+                self.embedding_provider.profile_id if self.embedding_provider else None
+            ),
+        }
+        return "legal-index-" + hashlib.sha256(
+            canonical_json(identity).encode("utf-8")
+        ).hexdigest()[:32]
+
     def publish(
         self, *, source_release_id: str | None = None, activate: bool = False
+    ) -> dict:
+        expected_release_id = self._expected_release_id(source_release_id)
+        lock_factory = getattr(self.target, "projection_lock", None)
+        lock_context = (
+            lock_factory(expected_release_id)
+            if callable(lock_factory)
+            else nullcontext()
+        )
+        with lock_context:
+            return self._publish_locked(
+                source_release_id=source_release_id,
+                activate=activate,
+                expected_release_id=expected_release_id,
+            )
+
+    def _publish_locked(
+        self,
+        *,
+        source_release_id: str | None,
+        activate: bool,
+        expected_release_id: str,
     ) -> dict:
         source_release = self.source.active_release()
         if source_release is None:
@@ -121,6 +161,10 @@ class LegalEvidenceIndexer:
                 canonical_json(release_identity).encode("utf-8")
             ).hexdigest()[:32]
         )
+        if release_id != expected_release_id:
+            raise RuntimeError(
+                "The active MySQL legal release changed before projection staging"
+            )
         writable = self.target.stage_release(
             release_id=release_id,
             source_release_id=source_release_id,
@@ -133,12 +177,27 @@ class LegalEvidenceIndexer:
         if not writable:
             if activate:
                 self.target.activate_release(release_id)
+            count_reader = getattr(self.target, "projection_counts", None)
+            actual_units, actual_embeddings, actual_relations = (
+                count_reader(release_id) if callable(count_reader) else (0, 0, 0)
+            )
             return {
                 "release_id": release_id,
                 "source_release_id": source_release_id,
-                "projected_units": 0,
-                "embedded_units": 0,
-                "projected_relations": 0,
+                "processed_units": actual_units,
+                "projected_units": actual_units,
+                "new_units": 0,
+                "reused_units": actual_units,
+                "embedded_units": actual_embeddings,
+                "new_embeddings": 0,
+                "reused_embeddings": actual_embeddings,
+                "projected_relations": actual_relations,
+                "actual_units": actual_units,
+                "actual_embeddings": actual_embeddings,
+                "actual_relations": actual_relations,
+                "sealed_units": actual_units,
+                "sealed_relations": actual_relations,
+                "expected_units": expected_unit_count,
                 "internal_references": 0,
                 "named_references": 0,
                 "named_references_linked": 0,
@@ -151,16 +210,80 @@ class LegalEvidenceIndexer:
         assembler = LegalArticleAssembler()
         pending_units: list[LegalRetrievalUnit] = []
         projected = 0
+        new_units = 0
         embedded = 0
+        reused_units = 0
+        reused_embeddings = 0
+        started_at = time.monotonic()
+        last_unit_report = 0
+
+        def report_progress(*, phase: str, force: bool = False) -> None:
+            nonlocal last_unit_report
+            if not force and projected - last_unit_report < 10_000:
+                return
+            last_unit_report = projected
+            print(
+                json.dumps(
+                    {
+                        "event": "LEGAL_PROJECTION_PROGRESS",
+                        "release_id": release_id,
+                        "phase": phase,
+                        "expected_units": expected_unit_count,
+                        "processed_units": projected,
+                        "embedded_units": embedded + reused_embeddings,
+                        "new_units": new_units,
+                        "new_embeddings": embedded,
+                        "reused_units": reused_units,
+                        "reused_embeddings": reused_embeddings,
+                        "unit_percent": round(100 * projected / expected_unit_count, 2),
+                        "elapsed_seconds": round(time.monotonic() - started_at, 1),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
 
         def flush() -> None:
-            nonlocal projected, embedded
+            nonlocal projected, new_units, embedded
+            nonlocal reused_units, reused_embeddings
             if not pending_units:
                 return
-            self.target.upsert_units(pending_units)
-            projected += len(pending_units)
+            batch = list(pending_units)
+            pending_units.clear()
+            projection_filter = getattr(self.target, "units_requiring_projection", None)
+            units_to_write = (
+                projection_filter(batch) if callable(projection_filter) else batch
+            )
+            self.target.upsert_units(units_to_write)
+            projected += len(batch)
+            new_units += len(units_to_write)
+            reused_units += len(batch) - len(units_to_write)
             if self.embedding_provider is not None:
-                for embedding_units, vectors in self._embed_batches(pending_units):
+                embedding_filter = getattr(
+                    self.target, "units_requiring_embedding", None
+                )
+                units_to_embed = (
+                    embedding_filter(
+                        batch,
+                        profile_id=self.embedding_provider.profile_id,
+                    )
+                    if callable(embedding_filter)
+                    else batch
+                )
+                reused_embeddings += len(batch) - len(units_to_embed)
+                embedding_batches = self._embed_batches(units_to_embed)
+                if embedding_batches:
+                    embedding_units = [
+                        item
+                        for batch_units, _batch_vectors in embedding_batches
+                        for item in batch_units
+                    ]
+                    vectors = [
+                        vector
+                        for _batch_units, batch_vectors in embedding_batches
+                        for vector in batch_vectors
+                    ]
                     embedded += self.target.upsert_embeddings(
                         units=embedding_units,
                         vectors=vectors,
@@ -168,7 +291,7 @@ class LegalEvidenceIndexer:
                         provider=self.embedding_provider.provider,
                         model=self.embedding_provider.model,
                     )
-            pending_units.clear()
+            report_progress(phase="UNITS_AND_EMBEDDINGS")
 
         for row in self.source.iter_nodes(source_release_id, page_size=self.page_size):
             for unit in assembler.feed(row):
@@ -180,6 +303,11 @@ class LegalEvidenceIndexer:
             unit = unit.model_copy(update={"release_id": release_id})
             pending_units.append(unit)
         flush()
+        report_progress(phase="UNITS_AND_EMBEDDINGS_COMPLETE", force=True)
+
+        relation_reset = getattr(self.target, "reset_staged_relations", None)
+        if callable(relation_reset):
+            relation_reset(release_id)
 
         # Build an exact, unique title alias index. Ambiguous aliases are never
         # auto-linked because a wrong legal edge is worse than a missing edge.
@@ -372,12 +500,30 @@ class LegalEvidenceIndexer:
         )
         if activate:
             self.target.activate_release(release_id)
+        count_reader = getattr(self.target, "projection_counts", None)
+        actual_units, actual_embeddings, actual_relations = (
+            count_reader(release_id)
+            if callable(count_reader)
+            else (
+                sealed_unit_count,
+                embedded + reused_embeddings,
+                sealed_relation_count,
+            )
+        )
         return {
             "release_id": release_id,
             "source_release_id": source_release_id,
+            "processed_units": projected,
             "projected_units": projected,
-            "embedded_units": embedded,
+            "new_units": new_units,
+            "embedded_units": embedded + reused_embeddings,
+            "new_embeddings": embedded,
+            "reused_units": reused_units,
+            "reused_embeddings": reused_embeddings,
             "projected_relations": relation_count,
+            "actual_units": actual_units,
+            "actual_embeddings": actual_embeddings,
+            "actual_relations": actual_relations,
             "sealed_units": sealed_unit_count,
             "sealed_relations": sealed_relation_count,
             "expected_units": expected_unit_count,

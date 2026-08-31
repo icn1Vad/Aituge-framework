@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable
+from contextlib import contextmanager
 from typing import Any
 
 from psycopg.rows import dict_row
@@ -34,6 +35,29 @@ class PostgresLegalEvidenceRepository:
 
     def _connect(self):
         return open_contract_database_connection(self.settings, row_factory=dict_row)
+
+    @contextmanager
+    def projection_lock(self, release_id: str):
+        """Hold a session advisory lock for the complete projection publish."""
+
+        lock_key = int.from_bytes(
+            hashlib.sha256(release_id.encode("utf-8")).digest()[:8],
+            byteorder="big",
+            signed=True,
+        )
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT pg_try_advisory_lock(%s) AS acquired",
+                (lock_key,),
+            ).fetchone()
+            if row is None or not bool(row["acquired"]):
+                raise RuntimeError(
+                    "Another legal evidence projection is already publishing this release"
+                )
+            try:
+                yield
+            finally:
+                conn.execute("SELECT pg_advisory_unlock(%s)", (lock_key,))
 
     def active_release(self) -> LegalEvidenceRelease | None:
         with self._connect() as conn:
@@ -307,7 +331,16 @@ class PostgresLegalEvidenceRepository:
                         WHERE e.release_id = r.release_id) AS relation_count,
                        (SELECT count(*) FROM legal_evidence_embedding e
                         WHERE e.release_id = r.release_id
-                          AND e.embedding_profile_id = r.embedding_profile_id) AS embedding_count
+                          AND e.embedding_profile_id = r.embedding_profile_id) AS embedding_count,
+                       (SELECT count(*)
+                        FROM legal_evidence_embedding e
+                        JOIN legal_evidence_unit u
+                          ON u.release_id = e.release_id AND u.unit_id = e.unit_id
+                        WHERE e.release_id = r.release_id
+                          AND e.embedding_profile_id = r.embedding_profile_id
+                          AND (e.content_hash <> u.content_hash
+                               OR e.embedding_input_hash <> u.embedding_input_hash)
+                       ) AS invalid_embedding_count
                 FROM legal_evidence_release r
                 WHERE r.release_id = %s
                 FOR UPDATE
@@ -332,6 +365,10 @@ class PostgresLegalEvidenceRepository:
             if row["embedding_profile_id"] and int(row["embedding_count"] or 0) != unit_count:
                 raise RuntimeError(
                     "Refusing to seal a partially embedded legal evidence release"
+                )
+            if int(row.get("invalid_embedding_count") or 0) != 0:
+                raise RuntimeError(
+                    "Refusing to seal a legal evidence release with drifted embeddings"
                 )
             if row["projection_status"] == "READY":
                 if (
@@ -370,27 +407,12 @@ class PostgresLegalEvidenceRepository:
                   jurisdiction, authority_level, issuing_authority,
                   effective_from, effective_to, validity_status,
                   metadata_verification_status, official_source_url,
-                  content_hash, sequence
+                  content_hash, projection_hash, embedding_input_hash, sequence
                 ) VALUES (
                   %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
-                ON CONFLICT (release_id, unit_id) DO UPDATE SET
-                  source_node_ids = EXCLUDED.source_node_ids,
-                  title = EXCLUDED.title,
-                  article_no = EXCLUDED.article_no,
-                  heading_path = EXCLUDED.heading_path,
-                  content = EXCLUDED.content,
-                  jurisdiction = EXCLUDED.jurisdiction,
-                  authority_level = EXCLUDED.authority_level,
-                  issuing_authority = EXCLUDED.issuing_authority,
-                  effective_from = EXCLUDED.effective_from,
-                  effective_to = EXCLUDED.effective_to,
-                  validity_status = EXCLUDED.validity_status,
-                  metadata_verification_status = EXCLUDED.metadata_verification_status,
-                  official_source_url = EXCLUDED.official_source_url,
-                  content_hash = EXCLUDED.content_hash,
-                  sequence = EXCLUDED.sequence
+                ON CONFLICT (release_id, unit_id) DO NOTHING
                     """,
                     [
                         (
@@ -412,6 +434,8 @@ class PostgresLegalEvidenceRepository:
                             item.metadata_verification_status,
                             item.official_source_url,
                             item.content_hash,
+                            item.projection_hash,
+                            item.embedding_input_hash,
                             item.sequence,
                         )
                         for item in rows
@@ -419,6 +443,77 @@ class PostgresLegalEvidenceRepository:
                 )
             conn.commit()
         return len(rows)
+
+    def units_requiring_projection(
+        self, units: Iterable[LegalRetrievalUnit]
+    ) -> list[LegalRetrievalUnit]:
+        """Return units absent from an interrupted immutable projection."""
+        rows = list(units)
+        if not rows:
+            return []
+        release_ids = {item.release_id for item in rows}
+        if len(release_ids) != 1:
+            raise ValueError("Projection unit batch must belong to one release")
+        release_id = next(iter(release_ids))
+        with self._connect() as conn:
+            existing = {
+                str(row["unit_id"]): str(row["projection_hash"])
+                for row in conn.execute(
+                    """
+                    SELECT unit_id, projection_hash
+                    FROM legal_evidence_unit
+                    WHERE release_id = %s AND unit_id = ANY(%s)
+                    """,
+                    (release_id, [item.unit_id for item in rows]),
+                ).fetchall()
+            }
+        drifted = [
+            item.unit_id
+            for item in rows
+            if item.unit_id in existing
+            and existing[item.unit_id] != item.projection_hash
+        ]
+        if drifted:
+            raise RuntimeError("Existing projection unit identity drifted")
+        return [item for item in rows if item.unit_id not in existing]
+
+    def units_requiring_embedding(
+        self,
+        units: Iterable[LegalRetrievalUnit],
+        *,
+        profile_id: str,
+    ) -> list[LegalRetrievalUnit]:
+        """Return units without an exact embedding for this immutable profile."""
+        rows = list(units)
+        if not rows:
+            return []
+        release_ids = {item.release_id for item in rows}
+        if len(release_ids) != 1:
+            raise ValueError("Embedding unit batch must belong to one release")
+        release_id = next(iter(release_ids))
+        with self._connect() as conn:
+            existing = {
+                str(row["unit_id"]): str(row["embedding_input_hash"])
+                for row in conn.execute(
+                    """
+                    SELECT unit_id, embedding_input_hash
+                    FROM legal_evidence_embedding
+                    WHERE release_id = %s
+                      AND embedding_profile_id = %s
+                      AND unit_id = ANY(%s)
+                    """,
+                    (release_id, profile_id, [item.unit_id for item in rows]),
+                ).fetchall()
+            }
+        drifted = [
+            item.unit_id
+            for item in rows
+            if item.unit_id in existing
+            and existing[item.unit_id] != item.embedding_input_hash
+        ]
+        if drifted:
+            raise RuntimeError("Existing embedding input hash drifted")
+        return [item for item in rows if item.unit_id not in existing]
 
     def upsert_embeddings(
         self,
@@ -439,15 +534,10 @@ class PostgresLegalEvidenceRepository:
                     """
                 INSERT INTO legal_evidence_embedding (
                   release_id, unit_id, embedding_profile_id, provider,
-                  model, dimensions, embedding, content_hash
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s::vector, %s)
-                ON CONFLICT (release_id, unit_id, embedding_profile_id) DO UPDATE SET
-                  provider = EXCLUDED.provider,
-                  model = EXCLUDED.model,
-                  dimensions = EXCLUDED.dimensions,
-                  embedding = EXCLUDED.embedding,
-                  content_hash = EXCLUDED.content_hash,
-                  created_at = now()
+                  model, dimensions, embedding, content_hash,
+                  embedding_input_hash
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s::vector, %s, %s)
+                ON CONFLICT (release_id, unit_id, embedding_profile_id) DO NOTHING
                     """,
                     [
                         (
@@ -459,6 +549,7 @@ class PostgresLegalEvidenceRepository:
                             len(vector),
                             _vector_text(vector),
                             unit.content_hash,
+                            unit.embedding_input_hash,
                         )
                         for unit, vector in zip(units, vectors, strict=True)
                     ],
@@ -666,13 +757,7 @@ class PostgresLegalEvidenceRepository:
                   release_id, relation_id, source_unit_id, target_unit_id,
                   relation_type, evidence_text, confidence, verification_status
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (release_id, relation_id) DO UPDATE SET
-                  source_unit_id = EXCLUDED.source_unit_id,
-                  target_unit_id = EXCLUDED.target_unit_id,
-                  relation_type = EXCLUDED.relation_type,
-                  evidence_text = EXCLUDED.evidence_text,
-                  confidence = EXCLUDED.confidence,
-                  verification_status = EXCLUDED.verification_status
+                ON CONFLICT (release_id, relation_id) DO NOTHING
                     """,
                     [
                         (
@@ -691,6 +776,58 @@ class PostgresLegalEvidenceRepository:
             conn.commit()
         return len(rows)
 
+    def reset_staged_relations(self, release_id: str) -> None:
+        """Clear an interrupted relation phase before deterministic rebuild."""
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT status, projection_status
+                FROM legal_evidence_release
+                WHERE release_id = %s
+                FOR UPDATE
+                """,
+                (release_id,),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("Legal evidence release does not exist")
+            if row["status"] != "STAGED" or row["projection_status"] != "BUILDING":
+                raise RuntimeError(
+                    "Relations can only be rebuilt for a STAGED/BUILDING projection"
+                )
+            conn.execute(
+                "DELETE FROM legal_evidence_relation WHERE release_id = %s",
+                (release_id,),
+            )
+            conn.commit()
+
+    def projection_counts(self, release_id: str) -> tuple[int, int, int]:
+        """Return authoritative unit, embedding, and relation counts."""
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                  (SELECT count(*) FROM legal_evidence_unit u
+                   WHERE u.release_id = r.release_id) AS unit_count,
+                  (SELECT count(*) FROM legal_evidence_embedding e
+                   WHERE e.release_id = r.release_id
+                     AND e.embedding_profile_id = r.embedding_profile_id) AS embedding_count,
+                  (SELECT count(*) FROM legal_evidence_relation x
+                   WHERE x.release_id = r.release_id) AS relation_count
+                FROM legal_evidence_release r
+                WHERE r.release_id = %s
+                """,
+                (release_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Legal evidence release does not exist")
+        return (
+            int(row["unit_count"] or 0),
+            int(row["embedding_count"] or 0),
+            int(row["relation_count"] or 0),
+        )
+
     def activate_release(self, release_id: str) -> None:
         with self._connect() as conn:
             row = conn.execute(
@@ -703,7 +840,16 @@ class PostgresLegalEvidenceRepository:
                         WHERE e.release_id = r.release_id) AS relation_count,
                        (SELECT count(*) FROM legal_evidence_embedding e
                         WHERE e.release_id = r.release_id
-                          AND e.embedding_profile_id = r.embedding_profile_id) AS embedding_count
+                          AND e.embedding_profile_id = r.embedding_profile_id) AS embedding_count,
+                       (SELECT count(*)
+                        FROM legal_evidence_embedding e
+                        JOIN legal_evidence_unit u
+                          ON u.release_id = e.release_id AND u.unit_id = e.unit_id
+                        WHERE e.release_id = r.release_id
+                          AND e.embedding_profile_id = r.embedding_profile_id
+                          AND (e.content_hash <> u.content_hash
+                               OR e.embedding_input_hash <> u.embedding_input_hash)
+                       ) AS invalid_embedding_count
                 FROM legal_evidence_release r
                 WHERE r.release_id = %s
                 FOR UPDATE
@@ -732,6 +878,10 @@ class PostgresLegalEvidenceRepository:
             ):
                 raise RuntimeError(
                     "Refusing to activate a partially embedded legal evidence release"
+                )
+            if int(row.get("invalid_embedding_count") or 0) != 0:
+                raise RuntimeError(
+                    "Refusing to activate a legal evidence release with drifted embeddings"
                 )
             if row["status"] == "ACTIVE":
                 # Activation of the current release is an idempotent no-op. In

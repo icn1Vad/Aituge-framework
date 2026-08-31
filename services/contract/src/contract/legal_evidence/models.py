@@ -77,6 +77,31 @@ class LegalRetrievalUnit(StrictModel):
             raise ValueError("source_node_ids must be unique")
         return self
 
+    @property
+    def projection_hash(self) -> str:
+        """Identity of every persisted retrieval-unit field.
+
+        ``content_hash`` deliberately covers only the legal text because it is
+        exposed as source provenance.  Resume safety needs a stronger identity:
+        a changed title, article number, jurisdiction, source-node set, or
+        sequence must never silently reuse an older projected row.
+        """
+
+        payload = self.model_dump(mode="json")
+        return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+    @property
+    def embedding_input(self) -> str:
+        """The exact text supplied to the embedding provider."""
+
+        return "\n".join(
+            part for part in (self.title, self.article_no or "", self.content) if part
+        )
+
+    @property
+    def embedding_input_hash(self) -> str:
+        return hashlib.sha256(self.embedding_input.encode("utf-8")).hexdigest()
+
 
 class LegalSearchCandidate(StrictModel):
     unit: LegalRetrievalUnit
