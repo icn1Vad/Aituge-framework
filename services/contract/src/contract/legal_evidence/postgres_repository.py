@@ -361,8 +361,9 @@ class PostgresLegalEvidenceRepository:
         if not rows:
             return 0
         with self._connect() as conn:
-            conn.executemany(
-                """
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    """
                 INSERT INTO legal_evidence_unit (
                   release_id, unit_id, instrument_id, version_id,
                   source_node_ids, title, article_no, heading_path, content,
@@ -390,32 +391,32 @@ class PostgresLegalEvidenceRepository:
                   official_source_url = EXCLUDED.official_source_url,
                   content_hash = EXCLUDED.content_hash,
                   sequence = EXCLUDED.sequence
-                """,
-                [
-                    (
-                        item.release_id,
-                        item.unit_id,
-                        item.instrument_id,
-                        item.version_id,
-                        item.source_node_ids,
-                        item.title,
-                        item.article_no,
-                        item.heading_path,
-                        item.content,
-                        item.jurisdiction,
-                        item.authority_level,
-                        item.issuing_authority,
-                        item.effective_from,
-                        item.effective_to,
-                        item.validity_status,
-                        item.metadata_verification_status,
-                        item.official_source_url,
-                        item.content_hash,
-                        item.sequence,
-                    )
-                    for item in rows
-                ],
-            )
+                    """,
+                    [
+                        (
+                            item.release_id,
+                            item.unit_id,
+                            item.instrument_id,
+                            item.version_id,
+                            item.source_node_ids,
+                            item.title,
+                            item.article_no,
+                            item.heading_path,
+                            item.content,
+                            item.jurisdiction,
+                            item.authority_level,
+                            item.issuing_authority,
+                            item.effective_from,
+                            item.effective_to,
+                            item.validity_status,
+                            item.metadata_verification_status,
+                            item.official_source_url,
+                            item.content_hash,
+                            item.sequence,
+                        )
+                        for item in rows
+                    ],
+                )
             conn.commit()
         return len(rows)
 
@@ -433,8 +434,9 @@ class PostgresLegalEvidenceRepository:
         if not units:
             return 0
         with self._connect() as conn:
-            conn.executemany(
-                """
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    """
                 INSERT INTO legal_evidence_embedding (
                   release_id, unit_id, embedding_profile_id, provider,
                   model, dimensions, embedding, content_hash
@@ -446,21 +448,21 @@ class PostgresLegalEvidenceRepository:
                   embedding = EXCLUDED.embedding,
                   content_hash = EXCLUDED.content_hash,
                   created_at = now()
-                """,
-                [
-                    (
-                        unit.release_id,
-                        unit.unit_id,
-                        profile_id,
-                        provider,
-                        model,
-                        len(vector),
-                        _vector_text(vector),
-                        unit.content_hash,
-                    )
-                    for unit, vector in zip(units, vectors, strict=True)
-                ],
-            )
+                    """,
+                    [
+                        (
+                            unit.release_id,
+                            unit.unit_id,
+                            profile_id,
+                            provider,
+                            model,
+                            len(vector),
+                            _vector_text(vector),
+                            unit.content_hash,
+                        )
+                        for unit, vector in zip(units, vectors, strict=True)
+                    ],
+                )
             conn.commit()
         return len(units)
 
@@ -657,8 +659,9 @@ class PostgresLegalEvidenceRepository:
         if not rows:
             return 0
         with self._connect() as conn:
-            conn.executemany(
-                """
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    """
                 INSERT INTO legal_evidence_relation (
                   release_id, relation_id, source_unit_id, target_unit_id,
                   relation_type, evidence_text, confidence, verification_status
@@ -670,21 +673,21 @@ class PostgresLegalEvidenceRepository:
                   evidence_text = EXCLUDED.evidence_text,
                   confidence = EXCLUDED.confidence,
                   verification_status = EXCLUDED.verification_status
-                """,
-                [
-                    (
-                        item.release_id,
-                        item.relation_id,
-                        item.source_unit_id,
-                        item.target_unit_id,
-                        item.relation_type,
-                        item.evidence_text,
-                        item.confidence,
-                        item.verification_status,
-                    )
-                    for item in rows
-                ],
-            )
+                    """,
+                    [
+                        (
+                            item.release_id,
+                            item.relation_id,
+                            item.source_unit_id,
+                            item.target_unit_id,
+                            item.relation_type,
+                            item.evidence_text,
+                            item.confidence,
+                            item.verification_status,
+                        )
+                        for item in rows
+                    ],
+                )
             conn.commit()
         return len(rows)
 
