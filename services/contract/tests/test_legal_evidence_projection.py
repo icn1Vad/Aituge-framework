@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import threading
+import time
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
+import httpx
 from contract.config import Settings
 from contract.legal_evidence.embedding import OpenAICompatibleLegalEmbeddingProvider
 from contract.legal_evidence.indexer import LegalEvidenceIndexer
-from contract.legal_evidence.models import LegalEvidenceIssue, LegalEvidencePlanRequest
+from contract.legal_evidence.models import (
+    LegalEvidenceIssue,
+    LegalEvidencePlanRequest,
+    LegalRetrievalUnit,
+)
 from contract.legal_evidence.planner import AdaptiveLegalEvidencePlanner
 from contract.legal_evidence.postgres_repository import PostgresLegalEvidenceRepository
 from contract.legal_evidence.projection import (
@@ -146,7 +153,13 @@ def test_named_statute_reference_preserves_explicit_target_article() -> None:
 
 
 def test_indexer_does_not_depend_on_a_java_export_endpoint() -> None:
-    source = Path(__file__).parents[1] / "src" / "contract" / "legal_evidence" / "mysql_source.py"
+    source = (
+        Path(__file__).parents[1]
+        / "src"
+        / "contract"
+        / "legal_evidence"
+        / "mysql_source.py"
+    )
     text = source.read_text("utf-8")
     assert "SSDictCursor" in text
     assert "biz_legal_node" in text
@@ -384,7 +397,9 @@ def test_active_release_is_an_immutable_idempotent_noop() -> None:
     assert not any("DO UPDATE" in sql for sql in repository.connection.statements)
 
 
-def test_release_id_changes_with_publication_inputs_and_existing_release_skips_writes() -> None:
+def test_release_id_changes_with_publication_inputs_and_existing_release_skips_writes() -> (
+    None
+):
     first_target = _NoopPublishedTarget()
     result = LegalEvidenceIndexer(_NoopSource(), first_target).publish()
 
@@ -422,3 +437,97 @@ def test_embedding_adapter_uses_model_gateway_component_header(monkeypatch) -> N
     assert provider.embed_query("合同") == [0.25, 0.75]
     assert captured["headers"]["X-Aituge-Model-Component-ID"] == "embedding-component"
     assert "X-Model-Registration-Id" not in captured["headers"]
+
+
+def test_embedding_adapter_retries_transient_gateway_failure(monkeypatch) -> None:
+    attempts = []
+    sleeps = []
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"index": 0, "embedding": [0.25, 0.75]}]}
+
+    def fake_post(url, *, headers, json, timeout):
+        del headers, json, timeout
+        attempts.append(url)
+        if len(attempts) == 1:
+            response = httpx.Response(503, request=httpx.Request("POST", url))
+            raise httpx.HTTPStatusError(
+                "temporary gateway failure",
+                request=response.request,
+                response=response,
+            )
+        return _Response()
+
+    monkeypatch.setattr("contract.legal_evidence.embedding.httpx.post", fake_post)
+    monkeypatch.setattr("contract.legal_evidence.embedding.time.sleep", sleeps.append)
+    provider = OpenAICompatibleLegalEmbeddingProvider(
+        base_url="http://model-gateway/v1",
+        api_key="test-key",
+        registration_id="embedding-component",
+        model="embedding-model",
+        dimensions=2,
+        maximum_attempts=2,
+        retry_base_seconds=0.25,
+    )
+
+    assert provider.embed_query("合同") == [0.25, 0.75]
+    assert len(attempts) == 2
+    assert sleeps == [0.25]
+
+
+def test_indexer_embeds_small_batches_concurrently_and_preserves_order() -> None:
+    class _ConcurrentProvider:
+        profile_id = "profile"
+        provider = "test"
+        model = "test"
+
+        def __init__(self) -> None:
+            self.active = 0
+            self.maximum_active = 0
+            self.lock = threading.Lock()
+
+        def embed_documents(self, texts):
+            with self.lock:
+                self.active += 1
+                self.maximum_active = max(self.maximum_active, self.active)
+            time.sleep(0.02)
+            with self.lock:
+                self.active -= 1
+            return [[float(text.rsplit("-", 1)[-1])] for text in texts]
+
+    provider = _ConcurrentProvider()
+    units = [
+        LegalRetrievalUnit(
+            unit_id=f"unit-{index}",
+            release_id="release-1",
+            instrument_id="instrument-1",
+            version_id="version-1",
+            source_node_ids=[f"node-{index}"],
+            title="测试法规",
+            content=f"content-{index}",
+            content_hash=f"{index:064x}",
+            sequence=index,
+        )
+        for index in range(16)
+    ]
+    indexer = LegalEvidenceIndexer(
+        _NoopSource(),
+        _NoopPublishedTarget(),
+        embedding_provider=provider,
+        embedding_batch_size=2,
+        embedding_workers=4,
+    )
+
+    batches = indexer._embed_batches(units)
+
+    assert provider.maximum_active > 1
+    assert [item.unit_id for batch, _ in batches for item in batch] == [
+        item.unit_id for item in units
+    ]
+    assert [vector[0] for _, vectors in batches for vector in vectors] == [
+        float(index) for index in range(16)
+    ]

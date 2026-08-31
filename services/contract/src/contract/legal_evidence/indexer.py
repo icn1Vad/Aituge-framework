@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from contract.application.idempotency import canonical_json
 from contract.config import Settings
@@ -33,6 +34,7 @@ _KNOWN_RELATIONS = {
     "INTERNAL_REF",
 }
 
+
 class LegalEvidenceIndexer:
     """One-shot MySQL -> PostgreSQL projection publisher."""
 
@@ -44,9 +46,13 @@ class LegalEvidenceIndexer:
         embedding_provider: OpenAICompatibleLegalEmbeddingProvider | None = None,
         page_size: int = 1000,
         write_batch_size: int = 200,
-        embedding_batch_size: int = 32,
+        embedding_batch_size: int = 8,
+        embedding_workers: int = 8,
     ) -> None:
-        if min(page_size, write_batch_size, embedding_batch_size) <= 0:
+        if (
+            min(page_size, write_batch_size, embedding_batch_size, embedding_workers)
+            <= 0
+        ):
             raise ValueError("Indexer batch sizes must be positive")
         self.source = source
         self.target = target
@@ -54,8 +60,42 @@ class LegalEvidenceIndexer:
         self.page_size = page_size
         self.write_batch_size = write_batch_size
         self.embedding_batch_size = embedding_batch_size
+        self.embedding_workers = embedding_workers
 
-    def publish(self, *, source_release_id: str | None = None, activate: bool = False) -> dict:
+    @staticmethod
+    def _embedding_text(item: LegalRetrievalUnit) -> str:
+        return "\n".join(
+            part for part in (item.title, item.article_no or "", item.content) if part
+        )
+
+    def _embed_batches(
+        self, units: list[LegalRetrievalUnit]
+    ) -> list[tuple[list[LegalRetrievalUnit], list[list[float]]]]:
+        if self.embedding_provider is None or not units:
+            return []
+        batches = [
+            units[start : start + self.embedding_batch_size]
+            for start in range(0, len(units), self.embedding_batch_size)
+        ]
+
+        def embed(batch: list[LegalRetrievalUnit]) -> list[list[float]]:
+            return self.embedding_provider.embed_documents(
+                [self._embedding_text(item) for item in batch]
+            )
+
+        if len(batches) == 1 or self.embedding_workers == 1:
+            vectors = [embed(batch) for batch in batches]
+        else:
+            with ThreadPoolExecutor(
+                max_workers=min(self.embedding_workers, len(batches)),
+                thread_name_prefix="legal-embedding",
+            ) as executor:
+                vectors = list(executor.map(embed, batches))
+        return list(zip(batches, vectors, strict=True))
+
+    def publish(
+        self, *, source_release_id: str | None = None, activate: bool = False
+    ) -> dict:
         source_release = self.source.active_release()
         if source_release is None:
             raise RuntimeError("No active MySQL legal release exists")
@@ -64,7 +104,9 @@ class LegalEvidenceIndexer:
         source_release_id = str(source_release["release_id"])
         expected_unit_count = self.source.retrieval_root_count(source_release_id)
         if expected_unit_count <= 0:
-            raise RuntimeError("The active MySQL legal release has no ARTICLE/PREAMBLE nodes")
+            raise RuntimeError(
+                "The active MySQL legal release has no ARTICLE/PREAMBLE nodes"
+            )
         release_identity = {
             "source_release_id": source_release_id,
             "source_manifest_sha256": str(source_release["manifest_sha256"]),
@@ -73,9 +115,12 @@ class LegalEvidenceIndexer:
                 self.embedding_provider.profile_id if self.embedding_provider else None
             ),
         }
-        release_id = "legal-index-" + hashlib.sha256(
-            canonical_json(release_identity).encode("utf-8")
-        ).hexdigest()[:32]
+        release_id = (
+            "legal-index-"
+            + hashlib.sha256(
+                canonical_json(release_identity).encode("utf-8")
+            ).hexdigest()[:32]
+        )
         writable = self.target.stage_release(
             release_id=release_id,
             source_release_id=source_release_id,
@@ -115,24 +160,7 @@ class LegalEvidenceIndexer:
             self.target.upsert_units(pending_units)
             projected += len(pending_units)
             if self.embedding_provider is not None:
-                for start in range(0, len(pending_units), self.embedding_batch_size):
-                    embedding_units = pending_units[
-                        start : start + self.embedding_batch_size
-                    ]
-                    vectors = self.embedding_provider.embed_documents(
-                        [
-                            "\n".join(
-                                part
-                                for part in (
-                                    item.title,
-                                    item.article_no or "",
-                                    item.content,
-                                )
-                                if part
-                            )
-                            for item in embedding_units
-                        ]
-                    )
+                for embedding_units, vectors in self._embed_batches(pending_units):
                     embedded += self.target.upsert_embeddings(
                         units=embedding_units,
                         vectors=vectors,
@@ -156,9 +184,7 @@ class LegalEvidenceIndexer:
         # Build an exact, unique title alias index. Ambiguous aliases are never
         # auto-linked because a wrong legal edge is worse than a missing edge.
         unique_aliases, ambiguous_aliases = unique_instrument_aliases(
-            self.source.iter_instruments(
-                source_release_id, page_size=self.page_size
-            )
+            self.source.iter_instruments(source_release_id, page_size=self.page_size)
         )
         representative_units = self.target.representative_unit_ids(release_id)
 
@@ -309,7 +335,9 @@ class LegalEvidenceIndexer:
             )
             named_matched_count += 1
 
-        for row in self.source.iter_relations(source_release_id, page_size=self.page_size):
+        for row in self.source.iter_relations(
+            source_release_id, page_size=self.page_size
+        ):
             relation_type = str(row["relation_type"]).upper()
             if relation_type not in _KNOWN_RELATIONS:
                 continue
@@ -323,7 +351,11 @@ class LegalEvidenceIndexer:
                 str(row["target_instrument_key"]),
                 str(row["target_version_id"]) if row.get("target_version_id") else None,
             )
-            if not source_unit_id or not target_unit_id or source_unit_id == target_unit_id:
+            if (
+                not source_unit_id
+                or not target_unit_id
+                or source_unit_id == target_unit_id
+            ):
                 continue
             append_relation(
                 source_unit_id=source_unit_id,
@@ -362,20 +394,26 @@ class LegalEvidenceIndexer:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Publish legal evidence projection")
     parser.add_argument("--mysql-url", default=os.getenv("LEGAL_SOURCE_MYSQL_URL", ""))
-    parser.add_argument("--mysql-host", default=os.getenv("LEGAL_SOURCE_MYSQL_HOST", ""))
+    parser.add_argument(
+        "--mysql-host", default=os.getenv("LEGAL_SOURCE_MYSQL_HOST", "")
+    )
     parser.add_argument(
         "--mysql-port",
         type=int,
         default=int(os.getenv("LEGAL_SOURCE_MYSQL_PORT", "3306")),
     )
-    parser.add_argument("--mysql-user", default=os.getenv("LEGAL_SOURCE_MYSQL_USER", ""))
+    parser.add_argument(
+        "--mysql-user", default=os.getenv("LEGAL_SOURCE_MYSQL_USER", "")
+    )
     parser.add_argument(
         "--mysql-password", default=os.getenv("LEGAL_SOURCE_MYSQL_PASSWORD", "")
     )
     parser.add_argument(
         "--mysql-database", default=os.getenv("LEGAL_SOURCE_MYSQL_DATABASE", "")
     )
-    parser.add_argument("--postgres-url", default=os.getenv("CONTRACT_DATABASE_URL", ""))
+    parser.add_argument(
+        "--postgres-url", default=os.getenv("CONTRACT_DATABASE_URL", "")
+    )
     parser.add_argument("--source-release-id")
     parser.add_argument(
         "--activate-release-id",
@@ -383,21 +421,44 @@ def main() -> None:
     )
     parser.add_argument("--page-size", type=int, default=1000)
     parser.add_argument("--write-batch-size", type=int, default=200)
-    parser.add_argument("--embedding-batch-size", type=int, default=32)
+    parser.add_argument(
+        "--embedding-batch-size",
+        type=int,
+        default=int(os.getenv("LEGAL_EMBEDDING_BATCH_SIZE", "8")),
+    )
+    parser.add_argument(
+        "--embedding-workers",
+        type=int,
+        default=int(os.getenv("LEGAL_EMBEDDING_WORKERS", "8")),
+    )
     parser.add_argument("--activate", action="store_true")
-    parser.add_argument("--embedding-base-url", default=os.getenv("LEGAL_EMBEDDING_BASE_URL", ""))
-    parser.add_argument("--embedding-api-key", default=os.getenv("LEGAL_EMBEDDING_API_KEY", ""))
+    parser.add_argument(
+        "--embedding-base-url", default=os.getenv("LEGAL_EMBEDDING_BASE_URL", "")
+    )
+    parser.add_argument(
+        "--embedding-api-key", default=os.getenv("LEGAL_EMBEDDING_API_KEY", "")
+    )
     parser.add_argument(
         "--embedding-registration-id",
         default=os.getenv("LEGAL_EMBEDDING_REGISTRATION_ID", ""),
     )
-    parser.add_argument("--embedding-model", default=os.getenv("LEGAL_EMBEDDING_MODEL", ""))
+    parser.add_argument(
+        "--embedding-model", default=os.getenv("LEGAL_EMBEDDING_MODEL", "")
+    )
+    parser.add_argument(
+        "--embedding-max-attempts",
+        type=int,
+        default=int(os.getenv("LEGAL_EMBEDDING_MAX_ATTEMPTS", "4")),
+    )
+    parser.add_argument(
+        "--embedding-retry-base-seconds",
+        type=float,
+        default=float(os.getenv("LEGAL_EMBEDDING_RETRY_BASE_SECONDS", "0.5")),
+    )
     args = parser.parse_args()
     has_mysql_parts = all((args.mysql_host, args.mysql_user, args.mysql_database))
     if not args.postgres_url or (
-        not args.activate_release_id
-        and not args.mysql_url
-        and not has_mysql_parts
+        not args.activate_release_id and not args.mysql_url and not has_mysql_parts
     ):
         parser.error(
             "--postgres-url and either --mysql-url or "
@@ -417,12 +478,18 @@ def main() -> None:
         )
         return
     embedding_provider = None
-    if args.embedding_base_url and args.embedding_registration_id and args.embedding_model:
+    if (
+        args.embedding_base_url
+        and args.embedding_registration_id
+        and args.embedding_model
+    ):
         embedding_provider = OpenAICompatibleLegalEmbeddingProvider(
             base_url=args.embedding_base_url,
             api_key=args.embedding_api_key,
             registration_id=args.embedding_registration_id,
             model=args.embedding_model,
+            maximum_attempts=args.embedding_max_attempts,
+            retry_base_seconds=args.embedding_retry_base_seconds,
         )
     result = LegalEvidenceIndexer(
         MySqlLegalSource(
@@ -438,6 +505,7 @@ def main() -> None:
         page_size=args.page_size,
         write_batch_size=args.write_batch_size,
         embedding_batch_size=args.embedding_batch_size,
+        embedding_workers=args.embedding_workers,
     ).publish(source_release_id=args.source_release_id, activate=args.activate)
     print(result)
 
