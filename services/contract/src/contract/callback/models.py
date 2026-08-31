@@ -12,6 +12,7 @@ from contract.api.models import (
     EvidenceType,
     Finding,
     ReviewSummary,
+    LegalEvidenceReference,
     StrictModel,
 )
 from contract.ir.models import IRDefinition, IRSemanticItem
@@ -237,6 +238,12 @@ class FinalizeReviewStageResult(StrictModel):
     summary: ReviewSummary
     findings: list[Finding]
     evidences: list[Evidence]
+    legal_evidence_release_id: str | None = None
+    legal_evidence_bundle_hash: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
+    legal_evidences: list[LegalEvidenceReference] = Field(default_factory=list)
     relationships: list[None] = Field(default_factory=list, max_length=0)
 
 

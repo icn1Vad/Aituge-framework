@@ -14,27 +14,28 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Sequence
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
 from contract.api.models import ContractProfile, Evidence, Finding, ReviewSummary
 from contract.application.result_hash import compute_result_hash
 from contract.callback.models import (
     CommercialTermsStageResult,
-    EvidenceCandidate as LegacyEvidenceCandidate,
     FindingConsolidationArtifact,
     LiabilityTerminationStageResult,
     MissingAmbiguityStageResult,
     RelationExtractionStageResult,
     RightsObligationsStageResult,
 )
+from contract.callback.models import (
+    EvidenceCandidate as LegacyEvidenceCandidate,
+)
 from contract.errors import ContractError
 from contract.evidence import materialize_evidence_set
 from contract.review import merge_review_stage_results, namespace_review_stage_result
 from contract.risk.playbooks import PlaybookRegistry, build_default_registry
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
 from services.contract.capabilities.risk_review import (
     FindingDraft,
 )
-
 
 COMPATIBILITY_ROUTING_VERSION = "1.0"
 
@@ -391,6 +392,7 @@ class LegacyRiskArtifactAdapter:
                 impact_to_our_party=finding.impact_to_our_party,
                 suggestion=finding.suggestion,
                 evidence_ids=[item.evidence_id for item in legacy_evidence],
+                legal_evidence_ids=sorted(set(finding.legal_evidence_ids)),
             )
             artifact_type = record.legacy_artifact_type
             findings_by_artifact[artifact_type].append(compatible_finding)

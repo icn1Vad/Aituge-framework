@@ -6,8 +6,8 @@ import json
 
 import pytest
 from pydantic import ValidationError
-
 from service.conversation.llm_runner import LlmCompletionResult
+
 from services.contract.capabilities.risk_review import (
     COMMERCIAL_CHECK_CODES,
     COMMERCIAL_DECISION_POLICIES,
@@ -187,18 +187,46 @@ class FakeRuntime:
         return self.responses.pop(0)
 
 
-def _review(responses: list[LlmCompletionResult]):
+def _review(
+    responses: list[LlmCompletionResult],
+    request: CommercialReviewRequest | None = None,
+):
     runtime = FakeRuntime(responses)
     reviewer = CommercialFinancialDirectReviewer(runtime_factory=lambda _tenant: runtime)
     result = asyncio.run(
         reviewer.review(
-            _request(),
+            request or _request(),
             tenant_id="tenant-1",
             model_id="deepseek-v4-flash",
             framework_run_id="run-1",
         )
     )
     return result, runtime
+
+
+def test_empty_legal_evidence_keeps_commercial_prompt_on_legacy_shape() -> None:
+    prompt, _ir_refs, _anchor_refs, _candidate = _prompt(_request())
+    payload = json.loads(prompt.split("\n", 1)[1])
+    assert "legal_evidence_catalog" not in payload
+    assert "legal_evidence_input_tokens" not in payload
+    assert not any(
+        "legal_evidence" in rule
+        for rule in payload["output_contract"]["rules"]
+    )
+
+
+def test_legal_catalog_budget_omission_is_explicit(monkeypatch) -> None:
+    request = _request()
+    request.legal_evidence = [object()]  # compactor is isolated below
+    monkeypatch.setattr(
+        "services.contract.capabilities.risk_review.compact_legal_evidence_catalog",
+        lambda *_args, **_kwargs: ([], 0),
+    )
+
+    _prompt(request)
+
+    assert request.legal_evidence == []
+    assert request.legal_evidence_prompt_status == "OMITTED_TOKEN_BUDGET"
 
 
 def test_direct_review_succeeds_with_all_checks_zero_tools_and_one_call() -> None:
@@ -755,7 +783,10 @@ def test_cf005_requires_payment_quote_and_absence_of_safeguard() -> None:
     ]
 
     result, _runtime = _review(
-        [_completion(json.dumps(payload, ensure_ascii=False))]
+        [_completion(json.dumps(payload, ensure_ascii=False))],
+        _request_with_single_payment_text(
+            "本合同签订后十日内，甲方应一次性支付全部合同价款。"
+        ),
     )
 
     finding = next(item for item in result.findings if item.check_code == "CF-005")
@@ -798,7 +829,12 @@ def test_cf005_rejects_advance_payment_finding_without_absence_check() -> None:
     ]
 
     with pytest.raises(DirectReviewError) as raised:
-        _review(responses)
+        _review(
+            responses,
+            _request_with_single_payment_text(
+                "本合同签订后十日内，甲方应一次性支付全部合同价款。"
+            ),
+        )
 
     assert raised.value.code == "RISK_CF005_EVIDENCE_INVALID"
 

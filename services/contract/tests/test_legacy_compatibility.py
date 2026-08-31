@@ -4,11 +4,20 @@ import hashlib
 from dataclasses import replace
 
 import pytest
-
-from contract.api.models import ContractProfile
+from contract.api.models import (
+    ContractProfile,
+    LegalEvidenceReference,
+    PublicReviewResultData,
+    ReviewResultData,
+    ReviewSummary,
+)
 from contract.callback.models import FindingConsolidationArtifact
 from contract.errors import ContractError
-from services.contract.capabilities.finding_consolidation import FindingRef, make_pair_id
+
+from services.contract.capabilities.finding_consolidation import (
+    FindingRef,
+    make_pair_id,
+)
 from services.contract.capabilities.legacy_compatibility import (
     FindingCompatibilityRouter,
     LegacyCompatibilityContext,
@@ -16,7 +25,6 @@ from services.contract.capabilities.legacy_compatibility import (
     finalize_legacy_compatible_result,
 )
 from services.contract.capabilities.risk_review import FindingDraft
-
 
 BLOCK_TEXT = "Party A must prepay the full price. Party B has unlimited liability."
 BLOCK = {
@@ -52,6 +60,81 @@ def test_routes_base_and_horizontal_findings_to_five_strict_legacy_artifacts() -
         "BASE_DOMAIN",
         "HORIZONTAL",
     }
+
+
+def test_legal_evidence_ids_survive_compatibility_and_public_projection() -> None:
+    raw = _finding(
+        "1",
+        "CF-005",
+        "commercial_financial",
+        "PAYMENT",
+        "ADVANCE_PAYMENT_SECURITY_RISK",
+        0,
+        14,
+    )
+    raw["legal_evidence_ids"] = ["legal-evidence-" + "1" * 32]
+    projection = LegacyRiskArtifactAdapter().adapt(_bundle([raw]))
+    compatible = projection.artifacts.commercial_terms_review_result.findings[0]
+    assert compatible.legal_evidence_ids == raw["legal_evidence_ids"]
+
+    consolidation = FindingConsolidationArtifact(
+        result_type="FINDING_CONSOLIDATION_V1",
+        status="SKIPPED",
+        candidate_count=0,
+        model_call_count=0,
+        decisions=[],
+        skip_reason="SINGLE_FINDING",
+    )
+    finalized = finalize_legacy_compatible_result(
+        projection,
+        context=_context(),
+        consolidation=consolidation,
+        blocks=[BLOCK],
+    )
+    assert finalized.final_findings[0].legal_evidence_ids == raw["legal_evidence_ids"]
+
+    context = _context()
+    internal = ReviewResultData(
+        review_id=context.review_id,
+        business_task_id=context.business_task_id,
+        contract_version_id=context.contract_version_id,
+        contract_profile=context.contract_profile,
+        summary=ReviewSummary(
+            overview="完成",
+            high_count=1,
+            medium_count=0,
+            low_count=0,
+            info_count=0,
+        ),
+        findings=finalized.final_findings,
+        evidences=finalized.final_evidence,
+        legal_evidence_release_id="release-legal-test",
+        legal_evidence_bundle_hash="sha256:" + "2" * 64,
+        legal_evidences=[
+            LegalEvidenceReference(
+                evidence_id=raw["legal_evidence_ids"][0],
+                release_id="release-legal-test",
+                unit_id="unit-legal-test",
+                source_node_ids=["node-legal-test"],
+                title="中华人民共和国民法典",
+                article_no="第五百零九条",
+                heading_path=["第三编 合同"],
+                content="当事人应当按照约定全面履行自己的义务。",
+                jurisdiction="CN",
+                authority_level="LAW",
+                issuing_authority="全国人民代表大会",
+                validity_status="UNKNOWN",
+                metadata_verification_status="UNVERIFIED",
+                content_hash="3" * 64,
+                check_codes=["CF-005"],
+                issue_ids=["legal-issue-" + "4" * 32],
+                cautions=["LEGAL_VALIDITY_UNVERIFIED"],
+            )
+        ],
+        result_hash="sha256:" + "0" * 64,
+    )
+    public = PublicReviewResultData.from_internal(internal)
+    assert public.findings[0].legal_evidence_ids == raw["legal_evidence_ids"]
 
 
 def test_fva005_is_the_only_other_route() -> None:

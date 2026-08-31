@@ -78,6 +78,13 @@ def merge_review_stage_results(
         winner = min(candidates, key=_finding_preference)
         selected = dict(winner)
         selected["evidence_ids"] = []
+        selected["legal_evidence_ids"] = sorted(
+            {
+                evidence_id
+                for candidate in candidates
+                for evidence_id in candidate.get("legal_evidence_ids", [])
+            }
+        )
         selected_findings[selected["finding_id"]] = selected
         for candidate in candidates:
             finding_id_mapping[candidate["finding_id"]] = selected["finding_id"]
@@ -97,6 +104,13 @@ def merge_review_stage_results(
             winner = min(candidates, key=_finding_preference)
             selected = dict(winner)
             selected["evidence_ids"] = []
+            selected["legal_evidence_ids"] = sorted(
+                {
+                    evidence_id
+                    for candidate in candidates
+                    for evidence_id in candidate.get("legal_evidence_ids", [])
+                }
+            )
             semantic_findings[selected["finding_id"]] = selected
             for candidate in candidates:
                 semantic_id_mapping[candidate["finding_id"]] = selected["finding_id"]

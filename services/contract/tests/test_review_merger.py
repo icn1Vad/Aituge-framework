@@ -17,8 +17,12 @@ from contract.review import merge_review_stage_results, namespace_review_stage_r
 
 
 def test_merges_semantic_duplicate_findings_and_source_evidence_deterministically() -> None:
-    medium = _finding("finding-medium", "MEDIUM", "Payment risk", "Payment is late")
-    high = _finding("finding-high", "HIGH", "  Payment   risk ", "Payment is late")
+    medium = _finding("finding-medium", "MEDIUM", "Payment risk", "Payment is late").model_copy(
+        update={"legal_evidence_ids": ["legal-evidence-medium"]}
+    )
+    high = _finding("finding-high", "HIGH", "  Payment   risk ", "Payment is late").model_copy(
+        update={"legal_evidence_ids": ["legal-evidence-high"]}
+    )
     first = RightsObligationsStageResult(
         result_type="RIGHTS_OBLIGATIONS_STAGE_V1",
         findings=[medium],
@@ -39,6 +43,10 @@ def test_merges_semantic_duplicate_findings_and_source_evidence_deterministicall
     assert findings[0].finding_id == "finding-high"
     assert findings[0].risk_level.value == "HIGH"
     assert findings[0].evidence_ids == ["evidence-a"]
+    assert findings[0].legal_evidence_ids == [
+        "legal-evidence-high",
+        "legal-evidence-medium",
+    ]
     assert len(evidences) == 1
     assert evidences[0].finding_id == "finding-high"
 

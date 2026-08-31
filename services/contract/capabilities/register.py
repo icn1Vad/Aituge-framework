@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import time
+from datetime import date
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
@@ -49,6 +51,7 @@ except ModuleNotFoundError as exc:  # standalone capability mount in the runtime
 
 
 CAPABILITY_ID = "contract-review"
+logger = logging.getLogger(__name__)
 CAPABILITY_DIR = Path(__file__).resolve().parent
 TASK_TYPE = "contract.review.run"
 PIPELINE_ID = "contract-review-pipeline-v1"
@@ -75,6 +78,9 @@ FROZEN_ASYNC_ERROR_CODES = {
     "RESULT_INVALID",
     "EVIDENCE_INVALID",
 }
+
+LegalEvidencePolicy = Literal["OFF", "OPTIONAL", "REQUIRED"]
+LEGAL_EVIDENCE_POLICIES = frozenset({"OFF", "OPTIONAL", "REQUIRED"})
 
 
 class StrictModel(BaseModel):
@@ -479,6 +485,31 @@ class EvidenceVerificationStageResult(StrictModel):
     relationships: list[None] = Field(default_factory=list, max_length=0)
 
 
+class LegalEvidenceReference(StrictModel):
+    evidence_id: str = Field(pattern=r"^legal-evidence-[0-9a-f]{32}$")
+    release_id: str = Field(min_length=1, max_length=160)
+    unit_id: str = Field(min_length=1, max_length=160)
+    source_node_ids: list[str] = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=1000)
+    article_no: str | None = Field(default=None, max_length=160)
+    heading_path: list[str] = Field(default_factory=list)
+    content: str = Field(min_length=1)
+    jurisdiction: str | None = Field(default=None, max_length=128)
+    authority_level: str | None = Field(default=None, max_length=128)
+    issuing_authority: str | None = Field(default=None, max_length=1000)
+    effective_from: date | None = None
+    effective_to: date | None = None
+    validity_status: Literal[
+        "ACTIVE", "NOT_YET_EFFECTIVE", "EXPIRED", "REPEALED", "UNKNOWN"
+    ] | None = None
+    metadata_verification_status: Literal["VERIFIED", "UNVERIFIED", "REJECTED"]
+    official_source_url: str | None = Field(default=None, max_length=4000)
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    check_codes: list[str] = Field(min_length=1, max_length=45)
+    issue_ids: list[str] = Field(min_length=1)
+    cautions: list[str] = Field(default_factory=list, max_length=20)
+
+
 class FinalizeReviewStageResult(StrictModel):
     result_type: Literal["FINAL_REVIEW_STAGE_V1"]
     schema_version: Literal["1.0"]
@@ -489,6 +520,12 @@ class FinalizeReviewStageResult(StrictModel):
     summary: ReviewSummary
     findings: list[Finding]
     evidences: list[Evidence]
+    legal_evidence_release_id: str | None = Field(default=None, max_length=160)
+    legal_evidence_bundle_hash: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
+    legal_evidences: list[LegalEvidenceReference] = Field(default_factory=list)
     relationships: list[None] = Field(default_factory=list, max_length=0)
 
 
@@ -935,7 +972,57 @@ def _window_contract_ir_handler(base_url: str, token: str, model_id: str):
     return execute
 
 
-def _direct_contract_review_handler(base_url: str, token: str, model_id: str):
+def _normalize_legal_evidence_policy(value: Any) -> LegalEvidencePolicy:
+    policy = str(value or "OFF").strip().upper()
+    if policy not in LEGAL_EVIDENCE_POLICIES:
+        raise ValueError(
+            "LEGAL_EVIDENCE_POLICY must be one of OFF, OPTIONAL, or REQUIRED"
+        )
+    return cast(LegalEvidencePolicy, policy)
+
+
+def _required_legal_evidence_error(reasons: list[str]) -> StageExecutionError:
+    normalized = sorted(set(reasons or ["BUNDLE_UNUSABLE"]))
+    return StageExecutionError(
+        "Required legal evidence is unavailable: " + ", ".join(normalized),
+        code="FRAMEWORK_RUN_FAILED",
+        retryable=False,
+        details={
+            "legal_evidence_policy": "REQUIRED",
+            "legal_evidence_degradation_reasons": normalized,
+        },
+    )
+
+
+def _apply_legal_evidence_policy(policy: LegalEvidencePolicy, data: Any):
+    if data.policy != policy:
+        raise ValueError("Legal-evidence response policy does not match the request")
+    reasons = list(data.degradation_reasons)
+    if data.usable:
+        if data.bundle is None:
+            raise ValueError("Usable legal-evidence response is missing its bundle")
+        return data.bundle, reasons
+    if policy == "REQUIRED":
+        raise _required_legal_evidence_error(reasons)
+    return None, reasons
+
+
+def _degrade_or_block_legal_evidence(
+    policy: LegalEvidencePolicy,
+    reason: str,
+) -> list[str]:
+    reasons = [reason]
+    if policy == "REQUIRED":
+        raise _required_legal_evidence_error(reasons)
+    return reasons
+
+
+def _direct_contract_review_handler(
+    base_url: str,
+    token: str,
+    model_id: str,
+    legal_evidence_policy: LegalEvidencePolicy = "OFF",
+):
     """Run the accepted Direct structured review as the formal final stage.
 
     The final stage ID and DTO remain frozen so Contract Python, the result
@@ -945,6 +1032,7 @@ def _direct_contract_review_handler(base_url: str, token: str, model_id: str):
     async def execute(context: StageExecutionContext) -> StageServiceResult:
         try:
             from contract.risk.models import RiskReviewPlanInput, RiskSourceBlock
+            from contract.internal.models import ContractLegalEvidenceToolData
             from contract.api.models import ContractProfile as DirectContractProfile
             from contract.callback.models import (
                 ExtractContractIrStageResult as DirectExtractContractIrStageResult,
@@ -1089,6 +1177,43 @@ def _direct_contract_review_handler(base_url: str, token: str, model_id: str):
                 "execution_source": "FORMAL_DIRECT_PIPELINE",
             },
         )
+        legal_evidence_bundle = None
+        legal_evidence_reasons: list[str] = []
+        if legal_evidence_policy == "OFF":
+            legal_evidence_reasons = ["POLICY_OFF"]
+        else:
+            try:
+                async with httpx.AsyncClient(base_url=base_url, timeout=60) as client:
+                    legal_response = await client.post(
+                        f"/v1/internal/contract-reviews/{value.review_id}/legal-evidence",
+                        headers={
+                            "X-Internal-Service": "aituge-framework",
+                            "X-Internal-Token": token,
+                            "X-Request-Id": f"contract-direct:{context.run.id}:legal-evidence",
+                        },
+                        json={
+                            "policy": legal_evidence_policy,
+                            "plan_input": value.model_dump(mode="json"),
+                        },
+                    )
+                legal_response.raise_for_status()
+                response_body = legal_response.json()
+                legal_data = (
+                    response_body.get("data") if isinstance(response_body, dict) else None
+                )
+                policy_data = ContractLegalEvidenceToolData.model_validate(legal_data)
+                legal_evidence_bundle, legal_evidence_reasons = (
+                    _apply_legal_evidence_policy(legal_evidence_policy, policy_data)
+                )
+            except (httpx.HTTPError, ValueError, TypeError) as exc:
+                legal_evidence_reasons = _degrade_or_block_legal_evidence(
+                    legal_evidence_policy,
+                    "PLANNING_REQUEST_FAILED",
+                )
+                logger.warning(
+                    "Optional legal evidence planning degraded: %s",
+                    exc,
+                )
         try:
             summary, _attempt, payload, _compatible, _extended = await _execute_one(
                 run_index=task_input.attempt_no,
@@ -1100,6 +1225,7 @@ def _direct_contract_review_handler(base_url: str, token: str, model_id: str):
                 run_id_prefix=f"formal-direct-{context.run.id}",
                 allow_dynamic_base_batch_count=True,
                 diagnostic_allow_oracle_drift=True,
+                legal_evidence_bundle=legal_evidence_bundle,
             )
         except Exception as exc:
             code = getattr(exc, "code", "FRAMEWORK_RUN_FAILED")
@@ -1128,6 +1254,16 @@ def _direct_contract_review_handler(base_url: str, token: str, model_id: str):
                 "repair_calls": summary.get("total_repairs", 0),
                 "tool_calls": summary.get("total_tool_calls", 0),
                 "core_result_signature": summary.get("core_result_signature"),
+                "legal_evidence_status": (
+                    legal_evidence_bundle.status
+                    if legal_evidence_bundle
+                    else ("OFF" if legal_evidence_policy == "OFF" else "DEGRADED")
+                ),
+                "legal_evidence_policy": legal_evidence_policy,
+                "legal_evidence_degradation_reasons": legal_evidence_reasons,
+                "legal_evidence_bundle_hash": (
+                    legal_evidence_bundle.bundle_hash if legal_evidence_bundle else None
+                ),
             },
         )
 
@@ -1585,6 +1721,9 @@ async def register(registry, settings) -> None:
     )
     active_pack = model_runtime.active_pack
     model_id = active_pack.llm.id
+    legal_evidence_policy = _normalize_legal_evidence_policy(
+        settings.get("LEGAL_EVIDENCE_POLICY")
+    )
     internal_headers = {
         "X-Internal-Service": "aituge-framework",
         "X-Internal-Token": callback_token,
@@ -1700,7 +1839,12 @@ async def register(registry, settings) -> None:
     )
     registry.register_stage_handler(
         name="contract_direct_review_v1",
-        handler=_direct_contract_review_handler(base_url, callback_token, model_id),
+        handler=_direct_contract_review_handler(
+            base_url,
+            callback_token,
+            model_id,
+            legal_evidence_policy,
+        ),
     )
     registry.register_stage_handler(
         name="contract_grounded_answer_finalize_v1",

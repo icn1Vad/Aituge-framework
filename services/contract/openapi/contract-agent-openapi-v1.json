@@ -1412,6 +1412,36 @@
             "title": "Findings",
             "type": "array"
           },
+          "legal_evidence_bundle_hash": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legal Evidence Bundle Hash"
+          },
+          "legal_evidence_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legal Evidence Release Id"
+          },
+          "legal_evidences": {
+            "items": {
+              "$ref": "#/components/schemas/LegalEvidenceReference"
+            },
+            "title": "Legal Evidences",
+            "type": "array"
+          },
           "relationships": {
             "items": {
               "type": "null"
@@ -1493,6 +1523,15 @@
             "minLength": 1,
             "title": "Issue",
             "type": "string"
+          },
+          "legal_evidence_ids": {
+            "items": {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": "Legal Evidence Ids",
+            "type": "array"
           },
           "our_party": {
             "maxLength": 500,
@@ -2297,6 +2336,216 @@
         "type": "object"
       },
       "JsonValue": {},
+      "LegalEvidenceReference": {
+        "additionalProperties": false,
+        "description": "Durable, self-contained legal source referenced by a Finding.",
+        "properties": {
+          "article_no": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Article No"
+          },
+          "authority_level": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authority Level"
+          },
+          "cautions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Cautions",
+            "type": "array"
+          },
+          "check_codes": {
+            "items": {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 45,
+            "minItems": 1,
+            "title": "Check Codes",
+            "type": "array"
+          },
+          "content": {
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "content_hash": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "effective_from": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective From"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          },
+          "evidence_id": {
+            "pattern": "^legal-evidence-[0-9a-f]{32}$",
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "heading_path": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Heading Path",
+            "type": "array"
+          },
+          "issue_ids": {
+            "items": {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Issue Ids",
+            "type": "array"
+          },
+          "issuing_authority": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuing Authority"
+          },
+          "jurisdiction": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jurisdiction"
+          },
+          "metadata_verification_status": {
+            "enum": [
+              "VERIFIED",
+              "UNVERIFIED",
+              "REJECTED"
+            ],
+            "title": "Metadata Verification Status",
+            "type": "string"
+          },
+          "official_source_url": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Official Source Url"
+          },
+          "release_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Release Id",
+            "type": "string"
+          },
+          "source_node_ids": {
+            "items": {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Source Node Ids",
+            "type": "array"
+          },
+          "title": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "unit_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Unit Id",
+            "type": "string"
+          },
+          "validity_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ACTIVE",
+                  "NOT_YET_EFFECTIVE",
+                  "EXPIRED",
+                  "REPEALED",
+                  "UNKNOWN"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validity Status"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "release_id",
+          "unit_id",
+          "source_node_ids",
+          "title",
+          "content",
+          "metadata_verification_status",
+          "content_hash",
+          "check_codes",
+          "issue_ids"
+        ],
+        "title": "LegalEvidenceReference",
+        "type": "object"
+      },
       "LiabilityTerminationStageResult": {
         "additionalProperties": false,
         "properties": {
@@ -2865,6 +3114,15 @@
             "title": "Issue",
             "type": "string"
           },
+          "legal_evidence_ids": {
+            "items": {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": "Legal Evidence Ids",
+            "type": "array"
+          },
           "our_party": {
             "maxLength": 500,
             "minLength": 1,
@@ -2933,6 +3191,38 @@
               "$ref": "#/components/schemas/PublicFinding"
             },
             "title": "Findings",
+            "type": "array"
+          },
+          "legal_evidence_bundle_hash": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legal Evidence Bundle Hash"
+          },
+          "legal_evidence_release_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legal Evidence Release Id"
+          },
+          "legal_evidences": {
+            "items": {
+              "$ref": "#/components/schemas/LegalEvidenceReference"
+            },
+            "title": "Legal Evidences",
             "type": "array"
           },
           "relationships": {
@@ -3065,6 +3355,38 @@
               "$ref": "#/components/schemas/Finding"
             },
             "title": "Findings",
+            "type": "array"
+          },
+          "legal_evidence_bundle_hash": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legal Evidence Bundle Hash"
+          },
+          "legal_evidence_release_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legal Evidence Release Id"
+          },
+          "legal_evidences": {
+            "items": {
+              "$ref": "#/components/schemas/LegalEvidenceReference"
+            },
+            "title": "Legal Evidences",
             "type": "array"
           },
           "relationships": {

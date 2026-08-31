@@ -16,8 +16,7 @@ from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from contract.api.models import ReviewResultData
-from contract.api.models import ReviewSummary
+from contract.api.models import LegalEvidenceReference, ReviewResultData, ReviewSummary
 from contract.application.idempotency import canonical_json
 from contract.application.result_hash import compute_result_hash
 from contract.callback.models import (
@@ -192,6 +191,7 @@ def build_formal_result(
     generation_id: str,
     framework_task_id: str,
     framework_run_id: str,
+    legal_evidence_bundle: Any | None = None,
 ) -> tuple[FinalizeReviewStageResult, ReviewResultData, str]:
     """Build and validate the exact formal final-stage/result DTOs."""
 
@@ -209,6 +209,67 @@ def build_formal_result(
         relationships=[],
     )
     counts = Counter(finding.risk_level.value for finding in verified.findings)
+    referenced_legal_ids = {
+        evidence_id
+        for finding in verified.findings
+        for evidence_id in finding.legal_evidence_ids
+    }
+    legal_catalog: list[LegalEvidenceReference] = []
+    legal_release_id = None
+    legal_bundle_hash = None
+    if referenced_legal_ids:
+        if legal_evidence_bundle is None or not legal_evidence_bundle.usable:
+            raise DirectE2EError(
+                "LEGAL_EVIDENCE_REFERENCE_INVALID",
+                "Final findings reference legal evidence without a usable frozen bundle",
+            )
+        evidence_by_id = {
+            item.evidence_id: item
+            for item in legal_evidence_bundle.evidence
+            if item.check_codes
+        }
+        unknown = sorted(referenced_legal_ids - set(evidence_by_id))
+        if unknown:
+            raise DirectE2EError(
+                "LEGAL_EVIDENCE_REFERENCE_INVALID",
+                "Final findings reference evidence outside the frozen bundle: "
+                + ",".join(unknown),
+            )
+        if not legal_evidence_bundle.release_id:
+            raise DirectE2EError(
+                "LEGAL_EVIDENCE_REFERENCE_INVALID",
+                "Cited legal evidence bundle has no release identity",
+            )
+        legal_release_id = legal_evidence_bundle.release_id
+        legal_bundle_hash = legal_evidence_bundle.bundle_hash
+        for evidence_id in sorted(referenced_legal_ids):
+            evidence = evidence_by_id[evidence_id]
+            unit = evidence.unit
+            legal_catalog.append(
+                LegalEvidenceReference(
+                    evidence_id=evidence.evidence_id,
+                    release_id=unit.release_id,
+                    unit_id=unit.unit_id,
+                    source_node_ids=unit.source_node_ids,
+                    title=unit.title,
+                    article_no=unit.article_no,
+                    heading_path=unit.heading_path,
+                    content=unit.content,
+                    jurisdiction=unit.jurisdiction,
+                    authority_level=unit.authority_level,
+                    issuing_authority=unit.issuing_authority,
+                    effective_from=unit.effective_from,
+                    effective_to=unit.effective_to,
+                    validity_status=unit.validity_status,
+                    metadata_verification_status=unit.metadata_verification_status,
+                    official_source_url=unit.official_source_url,
+                    content_hash=unit.content_hash,
+                    check_codes=evidence.check_codes,
+                    issue_ids=evidence.issue_ids,
+                    cautions=evidence.cautions,
+                )
+            )
+
     formal = FinalizeReviewStageResult(
         result_type="FINAL_REVIEW_STAGE_V1",
         schema_version="1.0",
@@ -225,6 +286,9 @@ def build_formal_result(
         ),
         findings=verified.findings,
         evidences=verified.evidences,
+        legal_evidence_release_id=legal_release_id,
+        legal_evidence_bundle_hash=legal_bundle_hash,
+        legal_evidences=legal_catalog,
         relationships=[],
     )
     raw = formal.model_dump(mode="json")
@@ -467,6 +531,7 @@ class DirectRiskReviewEndToEndRunner:
         framework_task_id: str,
         framework_run_id: str,
         core_signature: str | None = None,
+        legal_evidence_bundle: Any | None = None,
     ) -> tuple[DirectRiskReviewEndToEndResult, ReviewResultData]:
         started = time.perf_counter()
         if request.review_id != compatibility_context.review_id:
@@ -477,6 +542,7 @@ class DirectRiskReviewEndToEndRunner:
             generation_id=request.generation_id,
             framework_task_id=framework_task_id,
             framework_run_id=framework_run_id,
+            legal_evidence_bundle=legal_evidence_bundle,
         )
         receipt = self.sink.submit(payload.model_dump(mode="json"))
         callback = build_final_callback(

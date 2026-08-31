@@ -64,10 +64,13 @@ from contract.internal.models import (
     ContractReviewResultToolData,
     ContractReviewResultToolRequest,
     ContractRiskPlanRequest,
+    ContractLegalEvidenceRequest,
+    ContractLegalEvidenceToolData,
     ContractWindowPlanToolData,
     ContractWindowPlanToolRequest,
 )
 from contract.risk.models import RiskReviewPlan
+from contract.legal_evidence.provider import build_legal_evidence_provider
 from contract.internal.service import ContractInternalService
 from contract.persistence.postgres.callback_repository import FrameworkCallbackRepository
 from contract.persistence.postgres.repository import ContractRepository
@@ -466,6 +469,29 @@ def create_app(
                 status_code=409,
             )
         data = await asyncio.to_thread(_internal_service(http_request).get_risk_plan, payload)
+        return SuccessResponse(data=data, request_id=request_id)
+
+    @app.post(
+        "/v1/internal/contract-reviews/{review_id}/legal-evidence",
+        response_model=SuccessResponse[ContractLegalEvidenceToolData],
+        responses=ERROR_RESPONSES,
+        include_in_schema=False,
+    )
+    async def contract_get_legal_evidence(
+        review_id: str,
+        payload: ContractLegalEvidenceRequest,
+        http_request: Request,
+        request_id: Annotated[str, Depends(_framework_request_id)],
+    ) -> SuccessResponse[ContractLegalEvidenceToolData]:
+        if payload.plan_input.review_id != review_id:
+            raise ContractError(
+                "FRAMEWORK_CALLBACK_MISMATCH",
+                "Legal evidence review_id does not match the request path",
+                status_code=409,
+            )
+        data = await asyncio.to_thread(
+            _internal_service(http_request).get_legal_evidence, payload
+        )
         return SuccessResponse(data=data, request_id=request_id)
 
     @app.get(
@@ -875,6 +901,7 @@ def _ensure_internal_components(request: Request) -> None:
         repository,
         callback_repository,
         document_processor=document_processor,
+        legal_evidence_provider=build_legal_evidence_provider(settings),
     )
     request.app.state.contract_internal_service = internal_service
     request.app.state.framework_callback_service = FrameworkCallbackService(

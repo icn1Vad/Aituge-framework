@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import re
 import time
 import unicodedata
@@ -18,25 +17,31 @@ from collections import defaultdict
 from datetime import date
 from typing import Any, Callable, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
 from contract.application.idempotency import canonical_json
+from contract.legal_evidence.models import LegalEvidence
+from contract.legal_evidence.prompting import (
+    compact_legal_evidence_catalog,
+    legal_evidence_ids_for_check,
+    remaining_legal_prompt_budget,
+)
 from contract.risk.models import RiskReviewPlanInput
 from contract.risk.playbooks import build_default_registry
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from service.conversation.llm_runner import LlmCompletionResult, LlmRuntime
+from task_manager.output_parser import parse_json_output
+
 from services.contract.capabilities.model_observation import (
     finalize_completion_success,
     finalize_completion_validation_failed,
 )
+from services.contract.capabilities.party_roles import contract_party_roles
 from services.contract.capabilities.prompt_budget import (
+    PROVIDER_PROMPT_HARD_LIMIT_TOKENS,
     PromptBudgetResult,
     evaluate_prompt_budget,
 )
-from services.contract.capabilities.party_roles import contract_party_roles
 from services.contract.capabilities.risk_review import EvidenceCandidate, FindingDraft
 from services.contract.capabilities.risk_review_bundle import BaseRiskReviewBundle
-from task_manager.output_parser import parse_json_output
-
 
 HORIZONTAL_UNIT_IDS = (
     "cross_clause_consistency",
@@ -313,6 +318,11 @@ class HorizontalBatchMetric(StrictModel):
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
     prompt_budget: PromptBudgetResult | None = None
+    legal_evidence_status: Literal[
+        "NOT_REQUESTED", "INCLUDED", "OMITTED_TOKEN_BUDGET"
+    ] = "NOT_REQUESTED"
+    legal_evidence_candidate_count: int = Field(default=0, ge=0)
+    legal_evidence_prompted_count: int = Field(default=0, ge=0)
     status: Literal["COMPLETED", "FAILED"] = "COMPLETED"
     error_code: str | None = None
     error_message: str | None = None
@@ -1056,10 +1066,16 @@ def build_horizontal_plan(
     )
 
 
-def _batch_prompt(
+def _batch_prompt_details(
     plan: HorizontalReviewPlan,
     batch: HorizontalBatch,
-) -> str:
+    legal_evidence: list[LegalEvidence] | None = None,
+) -> tuple[
+    str,
+    list[LegalEvidence],
+    int,
+    Literal["NOT_REQUESTED", "INCLUDED", "OMITTED_TOKEN_BUDGET"],
+]:
     candidates = {
         item.candidate_id: item for item in plan.candidates
     }
@@ -1097,10 +1113,39 @@ def _batch_prompt(
                     "counter_evidence_source_ids": ["只能来自白名单"],
                     "recommended_control_codes": ["RISK时从allowed_control_codes选择"],
                 }
-            ]
+            ],
         },
     }
-    return canonical_json(payload)
+    baseline_prompt = canonical_json(payload)
+    legal_budget = remaining_legal_prompt_budget(
+        baseline_prompt=baseline_prompt,
+        system_prompt=_SYSTEM_PROMPT,
+        hard_limit_tokens=PROVIDER_PROMPT_HARD_LIMIT_TOKENS,
+    )
+    effective_evidence = list(legal_evidence or [])
+    legal_catalog, legal_tokens = compact_legal_evidence_catalog(
+        effective_evidence,
+        maximum_catalog_tokens=legal_budget,
+    )
+    if not legal_catalog:
+        status = "OMITTED_TOKEN_BUDGET" if effective_evidence else "NOT_REQUESTED"
+        return baseline_prompt, [], 0, status
+    payload["legal_evidence_catalog"] = legal_catalog
+    payload["legal_evidence_input_tokens"] = legal_tokens
+    payload["output_contract"]["legal_evidence_rules"] = [
+        "法律依据不能代替合同原文Evidence",
+        "UNVERIFIED的生效日期或状态不得表述为已核实现行有效",
+        "Evidence ID由Python绑定，模型不得输出或编造",
+    ]
+    return canonical_json(payload), effective_evidence, legal_tokens, "INCLUDED"
+
+
+def _batch_prompt(
+    plan: HorizontalReviewPlan,
+    batch: HorizontalBatch,
+    legal_evidence: list[LegalEvidence] | None = None,
+) -> str:
+    return _batch_prompt_details(plan, batch, legal_evidence)[0]
 
 
 def _parse_decisions(
@@ -1260,6 +1305,7 @@ def _materialize_unit(
     decisions: list[HorizontalDecision],
     metrics: list[HorizontalBatchMetric],
     started: float,
+    legal_evidence_by_check: dict[str, list[LegalEvidence]] | None = None,
 ) -> HorizontalUnitResult:
     candidate_by_id = {
         item.candidate_id: item
@@ -1374,6 +1420,10 @@ def _materialize_unit(
             our_party=value.our_party,
             counterparty=value.counterparty,
             evidence_candidates=evidence_candidates,
+            legal_evidence_ids=legal_evidence_ids_for_check(
+                (legal_evidence_by_check or {}).get(candidate.check_code, []),
+                candidate.check_code,
+            ),
         )
         findings.append(finding)
         roots.append(
@@ -1468,6 +1518,11 @@ def _materialize_unit(
                     else []
                 )
                 + (
+                    ["LEGAL_EVIDENCE_OMITTED_TOKEN_BUDGET"]
+                    if item.legal_evidence_status == "OMITTED_TOKEN_BUDGET"
+                    else []
+                )
+                + (
                     [f"{item.error_code}: {item.error_message}"]
                     if item.status == "FAILED"
                     else []
@@ -1487,6 +1542,7 @@ async def execute_horizontal_unit(
     runtime_factory: Callable[[str], HorizontalLlmCompleter] = LlmRuntime,
     framework_run_id: str | None = None,
     timeout_seconds: float = 60.0,
+    legal_evidence: list[LegalEvidence] | None = None,
 ) -> HorizontalUnitResult:
     started = time.perf_counter()
     batches = [item for item in plan.batches if item.unit_id == unit_id]
@@ -1499,8 +1555,12 @@ async def execute_horizontal_unit(
             decisions=[],
             metrics=[],
             started=started,
+            legal_evidence_by_check={},
         )
     runtime = runtime_factory(tenant_id)
+    prompted_legal_evidence_by_check: dict[str, dict[str, LegalEvidence]] = {
+        check_code: {} for check_code in HORIZONTAL_CHECK_CODES
+    }
 
     async def run_batch(
         batch: HorizontalBatch,
@@ -1508,10 +1568,28 @@ async def execute_horizontal_unit(
         batch_started = time.perf_counter()
         selected = [candidates[item] for item in batch.candidate_ids]
         completion: LlmCompletionResult | None = None
+        batch_legal_evidence = [
+            item
+            for item in (legal_evidence or [])
+            if bool(set(item.check_codes) & set(batch.check_codes))
+        ]
+        (
+            prompt,
+            effective_legal_evidence,
+            batch_legal_tokens,
+            legal_evidence_status,
+        ) = _batch_prompt_details(plan, batch, batch_legal_evidence)
+        for check_code in batch.check_codes:
+            prompted_legal_evidence_by_check[check_code].update(
+                {item.evidence_id: item for item in effective_legal_evidence}
+            )
         try:
             completion = await asyncio.wait_for(
                 runtime.complete_with_usage(
-                    messages=[{"role": "user", "content": _batch_prompt(plan, batch)}],
+                    messages=[{
+                        "role": "user",
+                        "content": prompt,
+                    }],
                     model_id=model_id,
                     system_prompt=_SYSTEM_PROMPT,
                     max_tokens=2500,
@@ -1530,7 +1608,9 @@ async def execute_horizontal_unit(
             budget = evaluate_prompt_budget(
                 provider_prompt_tokens=completion.prompt_tokens,
                 provider_cached_tokens=completion.cached_tokens,
-                estimated_business_context_tokens=batch.estimated_business_context_tokens,
+                estimated_business_context_tokens=(
+                    batch.estimated_business_context_tokens + batch_legal_tokens
+                ),
                 unit_id=unit_id,
                 batch_id=batch.batch_id,
             )
@@ -1556,6 +1636,9 @@ async def execute_horizontal_unit(
                 completion_tokens=completion.completion_tokens,
                 total_tokens=completion.total_tokens,
                 prompt_budget=budget,
+                legal_evidence_status=legal_evidence_status,
+                legal_evidence_candidate_count=len(batch_legal_evidence),
+                legal_evidence_prompted_count=len(effective_legal_evidence),
             )
             await finalize_completion_success(completion)
             return decisions, metric
@@ -1598,6 +1681,9 @@ async def execute_horizontal_unit(
                 status="FAILED",
                 error_code=code,
                 error_message=message[:1000],
+                legal_evidence_status=legal_evidence_status,
+                legal_evidence_candidate_count=len(batch_legal_evidence),
+                legal_evidence_prompted_count=len(effective_legal_evidence),
             )
 
     results = await asyncio.gather(*(run_batch(batch) for batch in batches))
@@ -1610,6 +1696,10 @@ async def execute_horizontal_unit(
         decisions=decisions,
         metrics=metrics,
         started=started,
+        legal_evidence_by_check={
+            check_code: list(evidence_by_id.values())
+            for check_code, evidence_by_id in prompted_legal_evidence_by_check.items()
+        },
     )
 
 
@@ -1622,6 +1712,7 @@ async def execute_horizontal_phase(
     runtime_factory: Callable[[str], HorizontalLlmCompleter] = LlmRuntime,
     framework_run_id: str | None = None,
     timeout_seconds: float = 60.0,
+    legal_evidence_by_domain: dict[str, list[LegalEvidence]] | None = None,
 ) -> tuple[list[HorizontalUnitResult], int]:
     active = 0
     peak = 0
@@ -1642,6 +1733,7 @@ async def execute_horizontal_phase(
                 runtime_factory=runtime_factory,
                 framework_run_id=framework_run_id,
                 timeout_seconds=timeout_seconds,
+                legal_evidence=(legal_evidence_by_domain or {}).get(unit_id, []),
             )
         finally:
             async with lock:

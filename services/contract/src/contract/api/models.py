@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import date
 from enum import Enum
 from typing import Annotated, Generic, Literal, TypeVar
 
@@ -13,7 +14,6 @@ from pydantic import (
     StringConstraints,
     model_validator,
 )
-
 
 SCHEMA_VERSION = "1.0"
 Identifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
@@ -352,11 +352,14 @@ class Finding(StrictModel):
     impact_to_our_party: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
     suggestion: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
     evidence_ids: list[Identifier] = Field(min_length=1)
+    legal_evidence_ids: list[Identifier] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_unique_evidence_ids(self) -> "Finding":
         if len(self.evidence_ids) != len(set(self.evidence_ids)):
             raise ValueError("evidence_ids must be unique")
+        if len(self.legal_evidence_ids) != len(set(self.legal_evidence_ids)):
+            raise ValueError("legal_evidence_ids must be unique")
         return self
 
 
@@ -403,6 +406,52 @@ class Evidence(StrictModel):
         return self
 
 
+class LegalEvidenceReference(StrictModel):
+    """Durable, self-contained legal source referenced by a Finding."""
+
+    evidence_id: Annotated[
+        str,
+        StringConstraints(pattern=r"^legal-evidence-[0-9a-f]{32}$"),
+    ]
+    release_id: Identifier
+    unit_id: Identifier
+    source_node_ids: list[Identifier] = Field(min_length=1)
+    title: Annotated[str, StringConstraints(min_length=1, max_length=1000)]
+    article_no: Annotated[str, StringConstraints(max_length=160)] | None = None
+    heading_path: list[str] = Field(default_factory=list)
+    content: Annotated[str, StringConstraints(min_length=1)]
+    jurisdiction: Annotated[str, StringConstraints(max_length=128)] | None = None
+    authority_level: Annotated[str, StringConstraints(max_length=128)] | None = None
+    issuing_authority: Annotated[str, StringConstraints(max_length=1000)] | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
+    validity_status: Literal[
+        "ACTIVE",
+        "NOT_YET_EFFECTIVE",
+        "EXPIRED",
+        "REPEALED",
+        "UNKNOWN",
+    ] | None = None
+    metadata_verification_status: Literal["VERIFIED", "UNVERIFIED", "REJECTED"]
+    official_source_url: Annotated[str, StringConstraints(max_length=4000)] | None = None
+    content_hash: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    check_codes: list[Identifier] = Field(min_length=1, max_length=45)
+    issue_ids: list[Identifier] = Field(min_length=1)
+    cautions: list[str] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_reference_identity(self) -> "LegalEvidenceReference":
+        if len(self.source_node_ids) != len(set(self.source_node_ids)):
+            raise ValueError("source_node_ids must be unique")
+        if len(self.check_codes) != len(set(self.check_codes)):
+            raise ValueError("check_codes must be unique")
+        if len(self.issue_ids) != len(set(self.issue_ids)):
+            raise ValueError("issue_ids must be unique")
+        if self.effective_from and self.effective_to and self.effective_from > self.effective_to:
+            raise ValueError("effective_from must not be after effective_to")
+        return self
+
+
 class ReviewResultData(StrictModel):
     schema_version: Literal["1.0"] = "1.0"
     review_id: Identifier
@@ -412,6 +461,9 @@ class ReviewResultData(StrictModel):
     summary: ReviewSummary
     findings: list[Finding]
     evidences: list[Evidence]
+    legal_evidence_release_id: Identifier | None = None
+    legal_evidence_bundle_hash: HashValue | None = None
+    legal_evidences: list[LegalEvidenceReference] = Field(default_factory=list)
     relationships: list[None] = Field(default_factory=list, max_length=0)
     result_hash: HashValue
 
@@ -419,20 +471,43 @@ class ReviewResultData(StrictModel):
     def validate_result_links_and_counts(self) -> "ReviewResultData":
         finding_by_id = {finding.finding_id: finding for finding in self.findings}
         evidence_by_id = {evidence.evidence_id: evidence for evidence in self.evidences}
+        legal_evidence_by_id = {
+            evidence.evidence_id: evidence for evidence in self.legal_evidences
+        }
         if len(finding_by_id) != len(self.findings):
             raise ValueError("finding_id values must be unique")
         if len(evidence_by_id) != len(self.evidences):
             raise ValueError("evidence_id values must be unique")
+        if len(legal_evidence_by_id) != len(self.legal_evidences):
+            raise ValueError("legal evidence_id values must be unique")
+
+        referenced_legal_evidence_ids: set[str] = set()
 
         for finding in self.findings:
             for evidence_id in finding.evidence_ids:
                 evidence = evidence_by_id.get(evidence_id)
                 if evidence is None or evidence.finding_id != finding.finding_id:
                     raise ValueError("Every finding evidence reference must resolve to the same finding")
+            for evidence_id in finding.legal_evidence_ids:
+                if evidence_id not in legal_evidence_by_id:
+                    raise ValueError("Every legal evidence reference must resolve in legal_evidences")
+                referenced_legal_evidence_ids.add(evidence_id)
         for evidence in self.evidences:
             finding = finding_by_id.get(evidence.finding_id)
             if finding is None or evidence.evidence_id not in finding.evidence_ids:
                 raise ValueError("Every evidence must be referenced by its finding")
+        if referenced_legal_evidence_ids != set(legal_evidence_by_id):
+            raise ValueError("Every legal evidence must be referenced by at least one finding")
+        if self.legal_evidences:
+            if self.legal_evidence_release_id is None or self.legal_evidence_bundle_hash is None:
+                raise ValueError("Legal evidence catalog requires release and bundle identity")
+            if any(
+                evidence.release_id != self.legal_evidence_release_id
+                for evidence in self.legal_evidences
+            ):
+                raise ValueError("Every legal evidence must belong to the declared release")
+        elif self.legal_evidence_release_id is not None or self.legal_evidence_bundle_hash is not None:
+            raise ValueError("Legal evidence identity cannot exist without cited legal evidence")
 
         expected_counts = {
             RiskLevel.HIGH: self.summary.high_count,
@@ -470,6 +545,7 @@ class PublicFinding(StrictModel):
     impact_to_our_party: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
     suggestion: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
     evidence_ids: list[Identifier] = Field(min_length=1)
+    legal_evidence_ids: list[Identifier] = Field(default_factory=list)
 
 
 class PublicReviewResultData(StrictModel):
@@ -483,6 +559,9 @@ class PublicReviewResultData(StrictModel):
     summary: PublicReviewSummary
     findings: list[PublicFinding]
     evidences: list[Evidence]
+    legal_evidence_release_id: Identifier | None = None
+    legal_evidence_bundle_hash: HashValue | None = None
+    legal_evidences: list[LegalEvidenceReference] = Field(default_factory=list)
     relationships: list[None] = Field(default_factory=list, max_length=0)
     result_hash: HashValue
 
@@ -503,6 +582,9 @@ class PublicReviewResultData(StrictModel):
                 for finding in value.findings
             ],
             evidences=value.evidences,
+            legal_evidence_release_id=value.legal_evidence_release_id,
+            legal_evidence_bundle_hash=value.legal_evidence_bundle_hash,
+            legal_evidences=value.legal_evidences,
             relationships=value.relationships,
             # Keep the durable internal hash so revision-draft and report lookups remain compatible.
             result_hash=value.result_hash,

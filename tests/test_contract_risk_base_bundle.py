@@ -10,7 +10,6 @@ from types import SimpleNamespace
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_SRC = ROOT / "services" / "contract" / "src"
 CONTRACT_TESTS = ROOT / "services" / "contract" / "tests"
@@ -18,16 +17,17 @@ for path in (CONTRACT_SRC, CONTRACT_TESTS):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from contract.risk.plan_builder import RiskReviewPlanBuilder
+from common.tokenization import estimate_tokens_in_text
 from contract.risk.icd_source_policy import (
     ICD_ABSENCE_POLICIES,
     icd_item_matches_check,
 )
 from contract.risk.lre_source_policy import lre_has_broad_breach_trigger
+from contract.risk.plan_builder import RiskReviewPlanBuilder
 from contract.risk.po_source_policy import po_item_matches_check
-from common.tokenization import estimate_tokens_in_text
 from risk_fixture_loader import load_fixed_risk_plan_input
 from service.conversation.llm_runner import LlmCompletionResult
+
 from services.contract.capabilities.risk_review import (
     CheckCoverageResult,
     DirectReviewError,
@@ -38,8 +38,6 @@ from services.contract.capabilities.risk_review import (
     ReviewUnitResult,
 )
 from services.contract.capabilities.risk_review_bundle import (
-    BASE_UNIT_IDS,
-    EXPECTED_BASE_CHECK_CODES,
     _GENERIC_SYSTEM_PROMPT,
     _ICD_ALLOWED_CONTROL_CODES,
     _ICD_SEVERITY_FACTOR_POLICIES,
@@ -48,10 +46,12 @@ from services.contract.capabilities.risk_review_bundle import (
     _PO_ALLOWED_CONTROL_CODES,
     _PO_CANDIDATE_SYSTEM_PROMPT,
     _PO_SEVERITY_FACTOR_POLICIES,
+    BASE_UNIT_IDS,
+    EXPECTED_BASE_CHECK_CODES,
+    BaseBundleExecutionError,
     CandidateDecisionResponseRaw,
     CandidateSeverityFactors,
     CanonicalRiskRoot,
-    BaseBundleExecutionError,
     DeterministicRiskCandidate,
     GenericAttemptArtifact,
     GenericBaseDirectReviewer,
@@ -64,36 +64,35 @@ from services.contract.capabilities.risk_review_bundle import (
     _candidate_allowed_source_ids,
     _candidate_risk_level,
     _canonical_risk_key,
-    _po_canonical_root_groups,
-    _po_candidates_share_canonical_root,
     _generic_prompt,
     _generic_repair_snapshot,
-    _materialize_po_candidate_decisions,
-    _parse_po_candidate_output,
-    _po_evidence_catalog,
-    _po_factor_has_required_evidence,
-    _join_template_fragments,
     _icd_factor_has_required_evidence,
     _icd_scene_relevant,
+    _join_template_fragments,
     _lre_factor_has_required_evidence,
+    _materialize_po_candidate_decisions,
     _merge_equivalent_same_root_findings,
     _merge_lre_cross_batch_roots,
-    _po_risk_level,
+    _parse_po_candidate_output,
     _po_candidate_prompt,
+    _po_candidates_share_canonical_root,
+    _po_canonical_root_groups,
+    _po_evidence_catalog,
+    _po_factor_has_required_evidence,
+    _po_risk_level,
     _po_severity_factors,
+    _resolve_finding_fields,
+    _resolve_po_evidence_source_ids,
+    _validate_domain_safety,
+    _validate_generic_semantic_preservation,
     _validate_icd_domain_safety,
     _validate_po_control_codes,
     _validate_po_semantic_severity_factors,
-    _resolve_finding_fields,
-    _resolve_po_evidence_source_ids,
-    _validate_generic_semantic_preservation,
-    _validate_domain_safety,
     bundle_duration_summary,
     execute_base_risk_review_bundle,
     generic_request_from_context,
 )
 from services.contract.scripts import contract_risk_stage63_bundle as stage63_runner
-
 
 FIXTURE_ENV = "CONTRACT_RISK_FIXTURE_DIR"
 FAILED_PO_ATTEMPT_ENV = "CONTRACT_RISK_FAILED_PO_ATTEMPT_ARTIFACT"
@@ -198,6 +197,31 @@ def _request() -> GenericReviewRequest:
         present_ir_types=["definitions"],
         missing_ir_types=[],
         estimated_input_tokens=1200,
+    )
+
+
+def test_generic_legal_catalog_budget_omission_is_explicit(monkeypatch) -> None:
+    request = _request()
+    request.legal_evidence = [object()]  # compactor is isolated below
+    monkeypatch.setattr(
+        "services.contract.capabilities.risk_review_bundle.compact_legal_evidence_catalog",
+        lambda *_args, **_kwargs: ([], 0),
+    )
+
+    _generic_prompt(request)
+
+    assert request.legal_evidence == []
+    assert request.legal_evidence_prompt_status == "OMITTED_TOKEN_BUDGET"
+
+
+def test_empty_legal_evidence_keeps_generic_prompt_on_legacy_shape() -> None:
+    prompt, _ir_refs, _anchor_refs = _generic_prompt(_request())
+    payload = json.loads(prompt.split("\n", 1)[1])
+    assert "legal_evidence_catalog" not in payload
+    assert "legal_evidence_input_tokens" not in payload
+    assert not any(
+        "legal_evidence" in rule
+        for rule in payload["output_contract"]["rules"]
     )
 
 

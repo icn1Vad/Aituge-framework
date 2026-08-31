@@ -22,10 +22,22 @@ RESULT_HASH_FIELDS = (
 
 def normalize_result_for_hash(value: Mapping[str, Any]) -> dict[str, Any]:
     normalized = {field: copy.deepcopy(value[field]) for field in RESULT_HASH_FIELDS}
+    if value.get("legal_evidences"):
+        normalized["legal_evidence_release_id"] = copy.deepcopy(
+            value.get("legal_evidence_release_id")
+        )
+        normalized["legal_evidence_bundle_hash"] = copy.deepcopy(
+            value.get("legal_evidence_bundle_hash")
+        )
+        normalized["legal_evidences"] = sorted(
+            copy.deepcopy(value["legal_evidences"]),
+            key=lambda item: item["evidence_id"],
+        )
     normalized["findings"] = sorted(normalized["findings"], key=lambda item: item["finding_id"])
     normalized["evidences"] = sorted(normalized["evidences"], key=lambda item: item["evidence_id"])
     for finding in normalized["findings"]:
         finding["evidence_ids"] = sorted(finding["evidence_ids"])
+        finding["legal_evidence_ids"] = sorted(finding.get("legal_evidence_ids", []))
     return normalized
 
 

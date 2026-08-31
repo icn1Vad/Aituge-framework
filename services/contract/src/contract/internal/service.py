@@ -32,6 +32,8 @@ from contract.internal.models import (
     ContractClauseContextToolData,
     ContractClauseContextToolRequest,
     ContractRiskPlanRequest,
+    ContractLegalEvidenceRequest,
+    ContractLegalEvidenceToolData,
     ContractDocumentToolData,
     ContractDocumentToolRequest,
     ContractIrToolData,
@@ -46,6 +48,17 @@ from contract.internal.models import (
 )
 from contract.risk.models import RiskReviewPlan, RiskReviewPlanInput, RiskSourceBlock
 from contract.risk.plan_builder import RiskReviewPlanBuilder
+from contract.legal_evidence.provider import (
+    DisabledLegalEvidenceProvider,
+    LegalEvidenceProvider,
+)
+from contract.legal_evidence.models import (
+    FrozenLegalEvidencePlanningFailure,
+    LegalEvidenceBundle,
+    LegalEvidenceSnapshotCompatibilityError,
+    LegalEvidenceSnapshotConflict,
+)
+from contract.ir.models import ContractIR
 from contract.ir.windowing import build_section_units, build_section_windows, validate_window_coverage
 from contract.parser.models import ParsedContractBlock
 from contract.persistence.postgres.callback_repository import FrameworkCallbackRepository
@@ -62,6 +75,40 @@ REVIEW_ARTIFACT_MODELS = {
 }
 
 
+def _legal_evidence_degradation_reasons(
+    bundle: LegalEvidenceBundle | None,
+) -> list[str]:
+    if bundle is None:
+        return ["NO_BUNDLE"]
+    reasons: list[str] = []
+    if bundle.status != "READY":
+        reasons.append(f"BUNDLE_STATUS_{bundle.status}")
+    if not any(item.check_codes for item in bundle.evidence):
+        reasons.append("EMPTY_CHECK_MAPPING")
+    if bundle.unresolved_issue_ids:
+        reasons.append("UNRESOLVED_ISSUES")
+    if bundle.conflicts:
+        reasons.append("CONFLICTS_PRESENT")
+    if bundle.stop_reason == "SAFETY_BUDGET_REACHED":
+        reasons.append("SAFETY_BUDGET_REACHED")
+    reasons.extend(f"CHANNEL_DEGRADED_{channel}" for channel in bundle.degraded_channels)
+    if not bundle.usable and not reasons:
+        reasons.append("BUNDLE_UNUSABLE")
+    return reasons
+
+
+def _unavailable_legal_evidence(
+    request: ContractLegalEvidenceRequest,
+    reason: str,
+) -> ContractLegalEvidenceToolData:
+    return ContractLegalEvidenceToolData(
+        policy=request.policy,
+        enabled=True,
+        usable=False,
+        degradation_reasons=[reason],
+    )
+
+
 class ContractInternalService:
     def __init__(
         self,
@@ -69,11 +116,44 @@ class ContractInternalService:
         callback_repository: FrameworkCallbackRepository,
         document_processor: ContractDocumentProcessor | None = None,
         risk_plan_builder: RiskReviewPlanBuilder | None = None,
+        legal_evidence_provider: LegalEvidenceProvider | None = None,
     ) -> None:
         self.repository = repository
         self.callback_repository = callback_repository
         self.document_processor = document_processor
         self.risk_plan_builder = risk_plan_builder or RiskReviewPlanBuilder()
+        self.legal_evidence_provider = (
+            legal_evidence_provider or DisabledLegalEvidenceProvider()
+        )
+
+    def get_legal_evidence(
+        self, request: ContractLegalEvidenceRequest
+    ) -> ContractLegalEvidenceToolData:
+        if request.policy == "OFF":
+            return ContractLegalEvidenceToolData(
+                policy="OFF",
+                enabled=False,
+                usable=False,
+                degradation_reasons=["POLICY_OFF"],
+            )
+        try:
+            bundle = self.legal_evidence_provider.provide(request.plan_input)
+        except LegalEvidenceSnapshotConflict:
+            return _unavailable_legal_evidence(request, "SNAPSHOT_CONFLICT")
+        except LegalEvidenceSnapshotCompatibilityError:
+            return _unavailable_legal_evidence(
+                request, "SNAPSHOT_COMPATIBILITY_CONFLICT"
+            )
+        except FrozenLegalEvidencePlanningFailure:
+            return _unavailable_legal_evidence(request, "PLANNING_FAILED_FROZEN")
+        reasons = _legal_evidence_degradation_reasons(bundle)
+        return ContractLegalEvidenceToolData(
+            policy=request.policy,
+            enabled=True,
+            usable=bundle is not None and bundle.usable,
+            degradation_reasons=reasons,
+            bundle=bundle,
+        )
 
     def execute_stage(self, request: StageExecuteRequest):
         context = self._execution_context(request)

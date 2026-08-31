@@ -10,24 +10,30 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Protocol
 
+from contract.legal_evidence.models import LegalEvidence
+from contract.legal_evidence.prompting import (
+    compact_legal_evidence_catalog,
+    legal_evidence_ids_for_check,
+    remaining_legal_prompt_budget,
+)
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-
 from service.conversation.llm_runner import LlmCompletionResult, LlmRuntime
+from task_manager.output_parser import parse_json_output
+
 from services.contract.capabilities.model_observation import (
     deferred_completion_kwargs,
     finalize_completion_success,
     finalize_completion_validation_failed,
 )
-from services.contract.capabilities.prompt_budget import (
-    PromptBudgetResult,
-    evaluate_prompt_budget,
-)
 from services.contract.capabilities.party_roles import (
     contract_party_roles,
     text_names_role,
 )
-from task_manager.output_parser import parse_json_output
-
+from services.contract.capabilities.prompt_budget import (
+    PROVIDER_PROMPT_HARD_LIMIT_TOKENS,
+    PromptBudgetResult,
+    evaluate_prompt_budget,
+)
 
 COMMERCIAL_UNIT_ID = "commercial_financial"
 COMMERCIAL_CHECK_CODES = tuple(f"CF-{index:03d}" for index in range(1, 9))
@@ -230,6 +236,13 @@ class CommercialReviewRequest(StrictModel):
     projected_ir_items: list[CommercialIrItem] = Field(default_factory=list)
     source_excerpts: list[CommercialSourceExcerpt] = Field(min_length=1)
     estimated_input_tokens: int = Field(ge=1, le=6000)
+    # Evidence count follows legal-issue coverage. Prompt text is bounded by
+    # deterministic compression, not by silently dropping evidence records.
+    legal_evidence: list[LegalEvidence] = Field(default_factory=list)
+    legal_evidence_input_tokens: int = Field(default=0, ge=0)
+    legal_evidence_prompt_status: Literal[
+        "NOT_REQUESTED", "INCLUDED", "OMITTED_TOKEN_BUDGET"
+    ] = "NOT_REQUESTED"
 
     @model_validator(mode="after")
     def validate_identity_and_coverage(self) -> "CommercialReviewRequest":
@@ -460,6 +473,7 @@ class FindingDraft(StrictModel):
     our_party: str = Field(min_length=1, max_length=500)
     counterparty: str = Field(min_length=1, max_length=500)
     evidence_candidates: list[EvidenceCandidate] = Field(min_length=1)
+    legal_evidence_ids: list[str] = Field(default_factory=list)
 
 
 class CheckCoverageResult(StrictModel):
@@ -549,7 +563,9 @@ def enforce_provider_prompt_budget(
     budget = evaluate_prompt_budget(
         unit_id=request.unit_id,
         batch_id=request.batch_id,
-        estimated_business_context_tokens=request.estimated_input_tokens,
+        estimated_business_context_tokens=(
+            request.estimated_input_tokens + request.legal_evidence_input_tokens
+        ),
         provider_prompt_tokens=completion.prompt_tokens,
         provider_cached_tokens=completion.cached_tokens,
     )
@@ -585,6 +601,15 @@ class CommercialFinancialDirectReviewer:
         framework_run_id: str | None = None,
     ) -> ReviewUnitResult:
         prompt, ir_refs, anchor_refs, cf005_candidate = _prompt(request)
+        repair_prompt = (
+            _prompt(
+                request.model_copy(
+                    update={"legal_evidence": [], "legal_evidence_input_tokens": 0}
+                )
+            )[0]
+            if request.legal_evidence
+            else prompt
+        )
         runtime = self.runtime_factory(tenant_id)
         started = time.perf_counter()
         calls: list[LlmCompletionResult] = []
@@ -601,7 +626,9 @@ class CommercialFinancialDirectReviewer:
 
         for repair_no in range(2):
             parsed: ParsedModelOutput | None = None
-            messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
+            messages: list[dict[str, str]] = [
+                {"role": "user", "content": repair_prompt if repair_no else prompt}
+            ]
             if repair_no:
                 repair_payload = {
                     "task": "REPAIR_JSON_SCHEMA_ONLY",
@@ -769,6 +796,8 @@ class CommercialFinancialDirectReviewer:
                 "Commercial Direct Review exceeded the hard output token limit",
             )
         warnings = list(result[2])
+        if request.legal_evidence_prompt_status == "OMITTED_TOKEN_BUDGET":
+            warnings.append("LEGAL_EVIDENCE_OMITTED_TOKEN_BUDGET")
         if final_completion_tokens is not None and final_completion_tokens > 2500:
             warnings.append("RISK_OUTPUT_SOFT_LIMIT_EXCEEDED")
         return ReviewUnitResult(
@@ -808,8 +837,15 @@ class CommercialFinancialDirectReviewer:
         )
 
 
-def commercial_request_from_context(value: BaseModel | dict[str, Any]) -> CommercialReviewRequest:
+def commercial_request_from_context(
+    value: BaseModel | dict[str, Any],
+    *,
+    legal_evidence: list[LegalEvidence] | None = None,
+) -> CommercialReviewRequest:
     payload = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
+    _, legal_tokens = compact_legal_evidence_catalog(
+        legal_evidence or []
+    )
     def project_item(item: dict[str, Any]) -> dict[str, Any]:
         return {
             "ir_type": item["ir_type"],
@@ -854,6 +890,8 @@ def commercial_request_from_context(value: BaseModel | dict[str, Any]) -> Commer
             ],
             "source_excerpts": payload["source_excerpts"],
             "estimated_input_tokens": payload["estimated_input_tokens"],
+            "legal_evidence": legal_evidence or [],
+            "legal_evidence_input_tokens": legal_tokens,
         }
     )
 
@@ -1142,6 +1180,39 @@ def _prompt(
             ],
         },
     }
+    baseline_prompt = (
+        "审查Context。仅返回JSON；顶层只能是check_results；"
+        "禁止checks、Markdown、解释、分析、复述和技术字段。"
+        "CF-001至CF-008各返回一次：\n"
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    )
+    legal_budget = remaining_legal_prompt_budget(
+        baseline_prompt=baseline_prompt,
+        system_prompt=_SYSTEM_PROMPT,
+        hard_limit_tokens=PROVIDER_PROMPT_HARD_LIMIT_TOKENS,
+    )
+    had_legal_evidence = bool(request.legal_evidence)
+    legal_catalog, legal_tokens = compact_legal_evidence_catalog(
+        request.legal_evidence,
+        maximum_catalog_tokens=legal_budget,
+    )
+    if legal_catalog:
+        payload["legal_evidence_catalog"] = legal_catalog
+        payload["legal_evidence_input_tokens"] = legal_tokens
+        payload["output_contract"]["rules"].extend(
+            [
+                "legal_evidence_catalog仅作法律依据；不能代替合同原文Evidence",
+                "UNVERIFIED的生效日期或状态不得表述为已核实现行有效",
+                "法律Evidence ID由Python确定性绑定，模型禁止输出或编造",
+            ]
+        )
+        request.legal_evidence_input_tokens = legal_tokens
+        request.legal_evidence_prompt_status = "INCLUDED"
+    else:
+        if had_legal_evidence:
+            request.legal_evidence_prompt_status = "OMITTED_TOKEN_BUDGET"
+        request.legal_evidence = []
+        request.legal_evidence_input_tokens = 0
     return (
         "审查Context。仅返回JSON；顶层只能是check_results；"
         "禁止checks、Markdown、解释、分析、复述和技术字段。"
@@ -1603,6 +1674,10 @@ def _finding(
         our_party=request.our_party,
         counterparty=request.counterparty,
         evidence_candidates=evidence,
+        legal_evidence_ids=legal_evidence_ids_for_check(
+            request.legal_evidence,
+            value.check_code,
+        ),
     )
 
 

@@ -15,6 +15,7 @@ dependencies = [
   "psycopg[binary]>=3.2,<4",
   "pydantic-settings>=2.4,<3",
   "pypdf>=5,<7",
+  "pymysql>=1.1,<2",
   "python-docx>=1.1,<2",
   "python-multipart>=0.0.9,<1",
   "uvicorn[standard]>=0.30,<1",

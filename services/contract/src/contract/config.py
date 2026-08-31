@@ -96,6 +96,46 @@ class Settings(BaseSettings):
 
     mock_mode: bool = True
 
+    legal_evidence_policy: Literal["OFF", "OPTIONAL", "REQUIRED"] = Field(
+        default="OFF",
+        validation_alias="LEGAL_EVIDENCE_POLICY",
+    )
+    legal_evidence_default_jurisdiction: str = Field(
+        default="CN",
+        max_length=128,
+        validation_alias="LEGAL_EVIDENCE_DEFAULT_JURISDICTION",
+    )
+    legal_embedding_base_url: str = Field(
+        default="", validation_alias="LEGAL_EMBEDDING_BASE_URL"
+    )
+    legal_embedding_api_key: str = Field(
+        default="", validation_alias="LEGAL_EMBEDDING_API_KEY"
+    )
+    legal_embedding_registration_id: str = Field(
+        default="", validation_alias="LEGAL_EMBEDDING_REGISTRATION_ID"
+    )
+    legal_embedding_model: str = Field(
+        default="", validation_alias="LEGAL_EMBEDDING_MODEL"
+    )
+    legal_reranker_base_url: str = Field(
+        default="", validation_alias="LEGAL_RERANKER_BASE_URL"
+    )
+    legal_reranker_registration_id: str = Field(
+        default="", validation_alias="LEGAL_RERANKER_REGISTRATION_ID"
+    )
+    legal_reranker_model: str = Field(
+        default="", validation_alias="LEGAL_RERANKER_MODEL"
+    )
+    legal_reranker_api_key: str = Field(
+        default="", validation_alias="LEGAL_RERANKER_API_KEY"
+    )
+
+    @property
+    def legal_evidence_enabled(self) -> bool:
+        """Keep provider construction policy-driven without a second switch."""
+
+        return self.legal_evidence_policy != "OFF"
+
     def resolved_data_dir(self) -> Path:
         return self.data_dir.expanduser().resolve()
 

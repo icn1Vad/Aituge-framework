@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, model_validator
 
 from contract.api.models import ReviewResultData, StrictModel
 from contract.ir.models import ContractIR
 from contract.risk.models import RiskReviewPlan
+from contract.risk.models import RiskReviewPlanInput
+from contract.legal_evidence.models import LegalEvidenceBundle
 
 
 class ContractDocumentToolRequest(StrictModel):
@@ -43,6 +45,33 @@ class ContractRiskPlanRequest(ContractDocumentToolRequest):
         min_length=1,
         max_length=20,
     )
+
+
+class ContractLegalEvidenceRequest(StrictModel):
+    policy: Literal["OFF", "OPTIONAL", "REQUIRED"] = "OFF"
+    plan_input: RiskReviewPlanInput
+
+
+class ContractLegalEvidenceToolData(StrictModel):
+    policy: Literal["OFF", "OPTIONAL", "REQUIRED"]
+    enabled: bool
+    usable: bool
+    degradation_reasons: list[str] = Field(default_factory=list, max_length=50)
+    bundle: LegalEvidenceBundle | None = None
+
+    @model_validator(mode="after")
+    def validate_policy_outcome(self) -> ContractLegalEvidenceToolData:
+        if self.policy == "OFF":
+            if self.enabled or self.usable or self.bundle is not None:
+                raise ValueError("OFF legal-evidence policy must not execute a provider")
+        elif not self.enabled:
+            raise ValueError("OPTIONAL and REQUIRED legal-evidence policies are enabled")
+        expected_usable = self.bundle is not None and self.bundle.usable
+        if self.usable != expected_usable:
+            raise ValueError("usable must match the returned legal-evidence bundle")
+        if not self.usable and not self.degradation_reasons:
+            raise ValueError("An unusable legal-evidence outcome requires a reason")
+        return self
 
 
 class ContractDocumentToolData(StrictModel):

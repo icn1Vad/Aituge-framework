@@ -1,14 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
-import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_SRC = ROOT / "services" / "contract" / "src"
@@ -17,25 +16,30 @@ for path in (CONTRACT_SRC, CONTRACT_TESTS):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from risk_fixture_loader import load_fixed_risk_plan_input
+from contract.application.idempotency import canonical_json
 from contract.risk.plan_builder import RiskReviewPlanBuilder
+from risk_fixture_loader import load_fixed_risk_plan_input
 from service.conversation.llm_runner import LlmCompletionResult
+
 from services.contract.capabilities.horizontal_review import (
     HORIZONTAL_CHECK_CODES,
+    HorizontalBatch,
+    HorizontalCandidate,
+    HorizontalEvidenceSource,
     HorizontalReviewError,
+    _batch_prompt,
     build_extended_bundle,
     build_horizontal_plan,
     build_relationship_index,
     execute_horizontal_phase,
     execute_horizontal_unit,
 )
-from services.contract.capabilities.risk_review_bundle import BaseRiskReviewBundle
 from services.contract.capabilities.risk_review_bundle import (
+    BaseRiskReviewBundle,
     _generic_prompt,
     generic_input_diagnostics,
     generic_request_from_context,
 )
-
 
 FIXTURE_ENV = "CONTRACT_RISK_FIXTURE_DIR"
 BASE_ARTIFACT_ENV = "CONTRACT_RISK_STAGE63_BUNDLE_ARTIFACT"
@@ -113,6 +117,92 @@ class _SlowRiskRuntime(_RiskRuntime):
     async def complete_with_usage(self, **kwargs):
         await asyncio.sleep(0.05)
         return await super().complete_with_usage(**kwargs)
+
+
+def test_empty_legal_evidence_keeps_horizontal_prompt_on_legacy_shape() -> None:
+    source_id = "horizontal-es-" + "1" * 32
+    candidate_id = "horizontal-candidate-" + "2" * 32
+    source = HorizontalEvidenceSource.model_construct(
+        source_id=source_id,
+        generation_id="generation-1",
+        ir_id="I001",
+        anchor_id="A001",
+        block_id="block-1",
+        block_no=1,
+        heading_path=[],
+        char_start=0,
+        char_end=2,
+        quoted_text="原文",
+        quoted_text_hash="sha256:" + "3" * 64,
+    )
+    candidate = HorizontalCandidate.model_construct(
+        candidate_id=candidate_id,
+        unit_id="cross_clause_consistency",
+        check_code="CCC-001",
+        candidate_type="TERM_CONFLICT",
+        candidate_strength="HARD_RULE",
+        normalized_topic="期限",
+        conflict_dimension=None,
+        left_evidence_source_ids=[source_id],
+        right_evidence_source_ids=[source_id],
+        context_evidence_source_ids=[],
+        absence_evidence_source_ids=[],
+        left_normalized_claim="30天",
+        right_normalized_claim="60天",
+        possible_resolution_rules=[],
+        allowed_counter_evidence_source_ids=[source_id],
+        allowed_supporting_evidence_source_ids=[source_id],
+        required_trigger_conditions=["期限冲突"],
+        disqualifying_conditions=[],
+        primary_evidence_requirements=["两处合同原文"],
+        absence_evidence_requirements=[],
+        canonical_root_type="TERM_CONFLICT",
+        severity_rule_id="TERM_CONFLICT_V1",
+        deterministic_severity_factors=[],
+        allowed_severity_factors=[],
+        allowed_control_codes=["ALIGN_TERM"],
+        owner_type="HORIZONTAL",
+        linked_base_finding_ids=[],
+        requires_model_decision=True,
+    )
+    batch = HorizontalBatch(
+        batch_id="risk-batch-" + "4" * 32,
+        unit_id="cross_clause_consistency",
+        check_codes=["CCC-001"],
+        candidate_ids=[candidate_id],
+        evidence_source_ids=[source_id],
+        estimated_business_context_tokens=10,
+    )
+    plan = SimpleNamespace(
+        candidates=[candidate],
+        evidence_sources=[source],
+        absence_evidence_sources=[],
+    )
+
+    prompt = _batch_prompt(plan, batch, legal_evidence=[])
+    expected = {
+        "task": "HORIZONTAL_CANDIDATE_DECISION",
+        "unit_id": batch.unit_id,
+        "candidate_decisions_required": [candidate.model_dump(mode="json")],
+        "evidence_sources": [source.model_dump(mode="json")],
+        "absence_evidence_sources": [],
+        "output_contract": {
+            "candidate_decisions": [
+                {
+                    "candidate_id": "必须来自输入",
+                    "verdict": "RISK|NO_RISK|INSUFFICIENT_EVIDENCE",
+                    "decision_summary": "只说明裁决，不生成正式Finding",
+                    "resolution_reason": "NO_RISK时必填，否则null",
+                    "severity_factors": ["只能来自allowed_severity_factors"],
+                    "supporting_evidence_source_ids": ["只能来自白名单"],
+                    "counter_evidence_source_ids": ["只能来自白名单"],
+                    "recommended_control_codes": ["RISK时从allowed_control_codes选择"],
+                }
+            ]
+        },
+    }
+    assert prompt == canonical_json(expected)
+    assert "legal_evidence" not in prompt
 
 
 def test_registry_and_horizontal_plan_cover_exactly_11_of_45_checks() -> None:

@@ -274,6 +274,27 @@ def _budget_failures(metrics: list[Any] | list[dict[str, Any]]) -> list[str]:
     return failures
 
 
+def _require_complete_review_phase(
+    phase: str,
+    status: str,
+    units: list[Any],
+) -> None:
+    """Prevent a partially executed seven-domain review from looking successful."""
+
+    if status == "COMPLETED":
+        return
+    incomplete = sorted(
+        str(getattr(item, "unit_id", "unknown"))
+        for item in units
+        if getattr(item, "status", None) != "COMPLETED"
+    )
+    detail = ",".join(incomplete) if incomplete else "unknown"
+    raise DirectE2EError(
+        "RISK_REVIEW_PARTIAL_FAILED",
+        f"{phase} review phase did not complete: {detail}",
+    )
+
+
 def _core_components(extended: ExtendedRiskReviewBundle) -> list[dict[str, Any]]:
     units = {item.unit_id: item for item in extended.base_bundle.units}
     fva = units["formation_validity_authority"]
@@ -349,6 +370,33 @@ def _core_signature(extended: ExtendedRiskReviewBundle) -> str:
     return stable_hash(_core_components(extended))
 
 
+def _validate_final_legal_evidence_links(compatible, legal_evidence_bundle) -> None:
+    if legal_evidence_bundle is None or not legal_evidence_bundle.usable:
+        if any(item.legal_evidence_ids for item in compatible.final_findings):
+            raise DirectE2EError(
+                "LEGAL_EVIDENCE_REFERENCE_INVALID",
+                "Final findings reference legal evidence without a usable frozen bundle",
+            )
+        return
+    known_ids = {
+        item.evidence_id
+        for item in legal_evidence_bundle.evidence
+        if item.check_codes
+    }
+    referenced_ids = {
+        evidence_id
+        for item in compatible.final_findings
+        for evidence_id in item.legal_evidence_ids
+    }
+    unknown = sorted(referenced_ids - known_ids)
+    if unknown:
+        raise DirectE2EError(
+            "LEGAL_EVIDENCE_REFERENCE_INVALID",
+            "Final findings reference evidence outside the frozen bundle: "
+            + ",".join(unknown),
+        )
+
+
 async def _execute_one(
     *,
     run_index: int,
@@ -360,6 +408,7 @@ async def _execute_one(
     run_id_prefix: str = "stage66-direct-e2e",
     allow_dynamic_base_batch_count: bool = False,
     diagnostic_allow_oracle_drift: bool = False,
+    legal_evidence_bundle=None,
 ) -> tuple[dict[str, Any], dict[str, Any], ReviewResultData, Any, Any]:
     run_id = f"{run_id_prefix}-{run_index}"
     started = time.perf_counter()
@@ -374,7 +423,9 @@ async def _execute_one(
         fixture_id=request.fixture_id,
         framework_run_id=f"{run_id}-base",
         allow_dynamic_batch_count=allow_dynamic_base_batch_count,
+        legal_evidence_bundle=legal_evidence_bundle,
     )
+    _require_complete_review_phase("base", base.status, list(base.units))
     base_wall = round((time.perf_counter() - base_started) * 1000)
 
     horizontal_build_started = time.perf_counter()
@@ -383,12 +434,33 @@ async def _execute_one(
         (time.perf_counter() - horizontal_build_started) * 1000
     )
     horizontal_started = time.perf_counter()
+    legal_evidence_by_domain = {}
+    if legal_evidence_bundle is not None and legal_evidence_bundle.usable:
+        issue_domain = {
+            issue.issue_id: issue.domain for issue in legal_evidence_bundle.issues
+        }
+        for evidence in legal_evidence_bundle.evidence:
+            for issue_id in evidence.issue_ids:
+                domain = issue_domain.get(issue_id)
+                if domain:
+                    legal_evidence_by_domain.setdefault(domain, []).append(evidence)
     horizontal_units, horizontal_peak = await execute_horizontal_phase(
         value,
         horizontal_plan,
         tenant_id=tenant_id,
         model_id=model_id,
         framework_run_id=f"{run_id}-horizontal",
+        legal_evidence_by_domain=legal_evidence_by_domain,
+    )
+    horizontal_status = (
+        "COMPLETED"
+        if all(item.status == "COMPLETED" for item in horizontal_units)
+        else "PARTIAL_FAILED"
+    )
+    _require_complete_review_phase(
+        "horizontal",
+        horizontal_status,
+        list(horizontal_units),
     )
     horizontal_wall = round((time.perf_counter() - horizontal_started) * 1000)
     extended = build_extended_bundle(
@@ -458,6 +530,7 @@ async def _execute_one(
         consolidation=consolidation,
         blocks=blocks,
     )
+    _validate_final_legal_evidence_links(compatible, legal_evidence_bundle)
     verify_wall = round((time.perf_counter() - verify_started) * 1000)
 
     stage_metrics = [
@@ -490,6 +563,7 @@ async def _execute_one(
         framework_task_id=f"{run_id}-task",
         framework_run_id=f"{run_id}-framework-run",
         core_signature=_core_signature(extended),
+        legal_evidence_bundle=legal_evidence_bundle,
     )
 
     duplicate_sink = sink.submit(payload.model_dump(mode="json"))
@@ -499,6 +573,7 @@ async def _execute_one(
         generation_id=request.generation_id,
         framework_task_id=f"{run_id}-task",
         framework_run_id=f"{run_id}-framework-run",
+        legal_evidence_bundle=legal_evidence_bundle,
     )
     duplicate_callback = sink.callback(
         build_final_callback(
@@ -521,6 +596,7 @@ async def _execute_one(
         blocks=blocks,
         expected_payload=payload,
         repetitions=100,
+        legal_evidence_bundle=legal_evidence_bundle,
     )
     total_wall = round((time.perf_counter() - started) * 1000)
     total_calls = len(review_calls) + len(merge_run["call_metrics"])
@@ -625,6 +701,7 @@ def _deterministic_replay(
     blocks,
     expected_payload,
     repetitions: int,
+    legal_evidence_bundle=None,
 ) -> dict[str, Any]:
     artifact_hashes: set[str] = set()
     payload_hashes: set[str] = set()
@@ -643,6 +720,7 @@ def _deterministic_replay(
             generation_id=request.generation_id,
             framework_task_id=f"replay-task-{index}",
             framework_run_id=f"replay-run-{index}",
+            legal_evidence_bundle=legal_evidence_bundle,
         )
         sink = DryRunResultSink()
         first = sink.submit(payload.model_dump(mode="json"))

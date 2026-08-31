@@ -13,23 +13,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Literal, Protocol
 
-from pydantic import BaseModel, Field, ValidationError, ValidationInfo, model_validator
-
-from contract.risk.models import (
-    RiskAbsenceEvidenceSource,
-    RiskCheckEvidencePolicy,
-    RiskEvidenceSource,
-    RiskReviewPlan,
-)
-from services.contract.capabilities.prompt_budget import (
-    PROMPT_BUDGET_POLICY_VERSION,
-    PromptBudgetResult,
-    evaluate_prompt_budget,
-    summarize_prompt_budgets,
-)
-from services.contract.capabilities.party_roles import (
-    contract_party_roles,
-    text_names_role,
+from contract.legal_evidence.models import LegalEvidence, LegalEvidenceBundle
+from contract.legal_evidence.prompting import (
+    compact_legal_evidence_catalog,
+    legal_evidence_ids_for_check,
+    remaining_legal_prompt_budget,
 )
 from contract.risk.icd_source_policy import ICD_SOURCE_PATTERN_RULES
 from contract.risk.lre_source_policy import (
@@ -37,12 +25,32 @@ from contract.risk.lre_source_policy import (
     LRE_BROAD_BREACH_TRIGGER_PATTERN,
     LRE_SOURCE_PATTERN_RULES,
 )
+from contract.risk.models import (
+    RiskAbsenceEvidenceSource,
+    RiskCheckEvidencePolicy,
+    RiskEvidenceSource,
+    RiskReviewPlan,
+)
 from contract.risk.po_source_policy import PO_SOURCE_PATTERN_RULES
+from pydantic import BaseModel, Field, ValidationError, ValidationInfo, model_validator
 from service.conversation.llm_runner import LlmCompletionResult, LlmRuntime
+from task_manager.output_parser import parse_json_output
+
 from services.contract.capabilities.model_observation import (
     deferred_completion_kwargs,
     finalize_completion_success,
     finalize_completion_validation_failed,
+)
+from services.contract.capabilities.party_roles import (
+    contract_party_roles,
+    text_names_role,
+)
+from services.contract.capabilities.prompt_budget import (
+    PROMPT_BUDGET_POLICY_VERSION,
+    PROVIDER_PROMPT_HARD_LIMIT_TOKENS,
+    PromptBudgetResult,
+    evaluate_prompt_budget,
+    summarize_prompt_budgets,
 )
 from services.contract.capabilities.risk_review import (
     BASE_CHECK_CODE_PATTERN,
@@ -66,8 +74,6 @@ from services.contract.capabilities.risk_review import (
     commercial_request_from_context,
     enforce_provider_prompt_budget,
 )
-from task_manager.output_parser import parse_json_output
-
 
 BASE_UNIT_IDS = (
     "formation_validity_authority",
@@ -281,6 +287,13 @@ class GenericReviewRequest(StrictModel):
     present_ir_types: list[str] = Field(default_factory=list)
     missing_ir_types: list[str] = Field(default_factory=list)
     estimated_input_tokens: int = Field(ge=1, le=6000)
+    # Evidence count follows legal-issue coverage. Prompt text is bounded by
+    # deterministic compression, not by silently dropping evidence records.
+    legal_evidence: list[LegalEvidence] = Field(default_factory=list)
+    legal_evidence_input_tokens: int = Field(default=0, ge=0)
+    legal_evidence_prompt_status: Literal[
+        "NOT_REQUESTED", "INCLUDED", "OMITTED_TOKEN_BUDGET"
+    ] = "NOT_REQUESTED"
 
     @model_validator(mode="after")
     def validate_identity_and_coverage(
@@ -1450,6 +1463,15 @@ class GenericBaseDirectReviewer:
                 attempt_artifact_sink=attempt_artifact_sink,
             )
         prompt, ir_refs, anchor_refs = _generic_prompt(request)
+        repair_prompt = (
+            _generic_prompt(
+                request.model_copy(
+                    update={"legal_evidence": [], "legal_evidence_input_tokens": 0}
+                )
+            )[0]
+            if request.legal_evidence
+            else prompt
+        )
         input_diagnostics = generic_input_diagnostics(request, prompt)
         po_catalog: PoEvidenceCatalog | None = None
         if request.unit_id in {
@@ -1494,7 +1516,9 @@ class GenericBaseDirectReviewer:
         for repair_no in range(2):
             parsed: GenericParsedOutput | None = None
             attempt_started_at = _utc_now()
-            messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
+            messages: list[dict[str, str]] = [
+                {"role": "user", "content": repair_prompt if repair_no else prompt}
+            ]
             if repair_no:
                 repair_payload = _generic_repair_payload(
                     repair_type=repair_type or "SCHEMA_REPAIR",
@@ -1717,6 +1741,8 @@ class GenericBaseDirectReviewer:
                 f"{request.unit_id} exceeded the hard output token limit",
             )
         warnings = []
+        if request.legal_evidence_prompt_status == "OMITTED_TOKEN_BUDGET":
+            warnings.append("LEGAL_EVIDENCE_OMITTED_TOKEN_BUDGET")
         if final_completion_tokens is not None and final_completion_tokens > 2500:
             warnings.append("RISK_OUTPUT_SOFT_LIMIT_EXCEEDED")
         return ReviewBatchResult(
@@ -2045,6 +2071,8 @@ async def _review_po_candidate_batch(
             "performance_obligations exceeded the hard output token limit",
         )
     warnings = []
+    if request.legal_evidence_prompt_status == "OMITTED_TOKEN_BUDGET":
+        warnings.append("LEGAL_EVIDENCE_OMITTED_TOKEN_BUDGET")
     if perspective_conflict_count:
         warnings.append("RISK_PERSPECTIVE_CONFLICT")
     if final_completion_tokens is not None and final_completion_tokens > 2500:
@@ -4302,8 +4330,12 @@ def generic_request_from_context(
     value: BaseModel | dict[str, Any],
     *,
     allow_absence_only_evidence_catalog: bool = False,
+    legal_evidence: list[LegalEvidence] | None = None,
 ) -> GenericReviewRequest:
     payload = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
+    _, legal_tokens = compact_legal_evidence_catalog(
+        legal_evidence or []
+    )
 
     def project_item(item: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -4361,6 +4393,8 @@ def generic_request_from_context(
             "present_ir_types": payload["present_ir_types"],
             "missing_ir_types": payload["missing_ir_types"],
             "estimated_input_tokens": payload["estimated_input_tokens"],
+            "legal_evidence": legal_evidence or [],
+            "legal_evidence_input_tokens": legal_tokens,
         },
         context={
             "allow_absence_only_evidence_catalog": (
@@ -4887,8 +4921,39 @@ def _generic_prompt(
                 ]
             },
         }
+    prompt_prefix = "审查当前Batch。仅返回JSON，顶层只能是check_results：\n"
+    baseline_prompt = prompt_prefix + json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
+    legal_budget = remaining_legal_prompt_budget(
+        baseline_prompt=baseline_prompt,
+        system_prompt=_GENERIC_SYSTEM_PROMPT,
+        hard_limit_tokens=PROVIDER_PROMPT_HARD_LIMIT_TOKENS,
+    )
+    had_legal_evidence = bool(request.legal_evidence)
+    legal_catalog, legal_tokens = compact_legal_evidence_catalog(
+        request.legal_evidence,
+        maximum_catalog_tokens=legal_budget,
+    )
+    if legal_catalog:
+        payload["legal_evidence_catalog"] = legal_catalog
+        payload["legal_evidence_input_tokens"] = legal_tokens
+        payload["output_contract"]["rules"].extend(
+            [
+                "legal_evidence_catalog仅作法律依据；不能代替合同原文Evidence",
+                "UNVERIFIED的生效日期或状态不得表述为已核实现行有效",
+                "法律Evidence ID由Python确定性绑定，模型禁止输出或编造",
+            ]
+        )
+        request.legal_evidence_input_tokens = legal_tokens
+        request.legal_evidence_prompt_status = "INCLUDED"
+    else:
+        if had_legal_evidence:
+            request.legal_evidence_prompt_status = "OMITTED_TOKEN_BUDGET"
+        request.legal_evidence = []
+        request.legal_evidence_input_tokens = 0
     return (
-        "审查当前Batch。仅返回JSON，顶层只能是check_results：\n"
+        prompt_prefix
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
         ir_refs,
         anchor_refs,
@@ -5209,9 +5274,39 @@ def _po_candidate_prompt(
             ],
         },
     }
-    return (
-        "逐项裁决当前Batch中的全部RiskCandidate。仅返回JSON：\n"
-        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    prompt_prefix = "逐项裁决当前Batch中的全部RiskCandidate。仅返回JSON：\n"
+    baseline_prompt = prompt_prefix + json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
+    legal_budget = remaining_legal_prompt_budget(
+        baseline_prompt=baseline_prompt,
+        system_prompt=_GENERIC_SYSTEM_PROMPT,
+        hard_limit_tokens=PROVIDER_PROMPT_HARD_LIMIT_TOKENS,
+    )
+    had_legal_evidence = bool(request.legal_evidence)
+    legal_catalog, legal_tokens = compact_legal_evidence_catalog(
+        request.legal_evidence,
+        maximum_catalog_tokens=legal_budget,
+    )
+    if legal_catalog:
+        payload["legal_evidence_catalog"] = legal_catalog
+        payload["legal_evidence_input_tokens"] = legal_tokens
+        payload["output_contract"]["rules"].extend(
+            [
+                "legal_evidence_catalog仅作法律依据；不能代替合同原文Evidence",
+                "UNVERIFIED的生效日期或状态不得表述为已核实现行有效",
+                "法律Evidence ID由Python确定性绑定，模型禁止输出或编造",
+            ]
+        )
+        request.legal_evidence_input_tokens = legal_tokens
+        request.legal_evidence_prompt_status = "INCLUDED"
+    else:
+        if had_legal_evidence:
+            request.legal_evidence_prompt_status = "OMITTED_TOKEN_BUDGET"
+        request.legal_evidence = []
+        request.legal_evidence_input_tokens = 0
+    return prompt_prefix + json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     )
 
 
@@ -8457,6 +8552,10 @@ def _generic_finding(
         our_party=request.our_party,
         counterparty=request.counterparty,
         evidence_candidates=evidence,
+        legal_evidence_ids=legal_evidence_ids_for_check(
+            request.legal_evidence,
+            value.check_code,
+        ),
     )
     return (
         finding,
@@ -9304,12 +9403,16 @@ def _generic_metric(value: LlmCompletionResult, unit_id: str) -> LlmCallMetric:
 def _apply_prompt_budget(
     context: Any,
     result: ReviewBatchResult,
+    *,
+    legal_evidence_input_tokens: int = 0,
 ) -> ReviewBatchResult:
     budgets = [
         evaluate_prompt_budget(
             unit_id=result.unit_id,
             batch_id=result.batch_id,
-            estimated_business_context_tokens=context.estimated_input_tokens,
+            estimated_business_context_tokens=(
+                context.estimated_input_tokens + legal_evidence_input_tokens
+            ),
             provider_prompt_tokens=metric.prompt_tokens,
             provider_cached_tokens=metric.cached_tokens,
         )
@@ -9778,6 +9881,7 @@ async def execute_base_risk_review_bundle(
     cancel_event: asyncio.Event | None = None,
     batch_timeout_seconds: float = 60.0,
     allow_dynamic_batch_count: bool = False,
+    legal_evidence_bundle: LegalEvidenceBundle | None = None,
 ) -> BaseRiskReviewBundle:
     generic = generic_reviewer or GenericBaseDirectReviewer()
     commercial = commercial_reviewer or CommercialFinancialDirectReviewer()
@@ -9826,9 +9930,29 @@ async def execute_base_risk_review_bundle(
     states = {batch_id: "QUEUED" for batch_id in ordered_batch_ids}
     results: dict[str, ReviewBatchResult] = {}
 
+    issue_domain = {
+        issue.issue_id: issue.domain
+        for issue in (legal_evidence_bundle.issues if legal_evidence_bundle else [])
+    }
+
+    def legal_evidence_for_context(context) -> list[LegalEvidence]:
+        if legal_evidence_bundle is None or not legal_evidence_bundle.usable:
+            return []
+        assigned_codes = {item.check_code for item in context.check_specs}
+        return [
+            item
+            for item in legal_evidence_bundle.evidence
+            if (
+                any(issue_domain.get(issue_id) == context.unit_id for issue_id in item.issue_ids)
+                and bool(assigned_codes & set(item.check_codes))
+            )
+        ]
+
     async def run_batch(batch_id: str) -> ReviewBatchResult:
         nonlocal active, peak, first_started
         context = context_by_batch[batch_id]
+        batch_legal_evidence = legal_evidence_for_context(context)
+        effective_legal_tokens = 0
         async with semaphore:
             if cancel_event is not None and cancel_event.is_set():
                 states[batch_id] = "CANCELLED"
@@ -9848,9 +9972,13 @@ async def execute_base_risk_review_bundle(
             peak = max(peak, active)
             try:
                 async def invoke() -> ReviewBatchResult:
+                    nonlocal effective_legal_tokens
                     if _value(context.unit_id) == "commercial_financial":
                         request: CommercialReviewRequest = (
-                            commercial_request_from_context(context)
+                            commercial_request_from_context(
+                                context,
+                                legal_evidence=batch_legal_evidence,
+                            )
                         )
                         result = await commercial.review(
                             request,
@@ -9858,6 +9986,7 @@ async def execute_base_risk_review_bundle(
                             model_id=model_id,
                             framework_run_id=framework_run_id,
                         )
+                        effective_legal_tokens = request.legal_evidence_input_tokens
                         _record_commercial_attempts(
                             batch_id=batch_id,
                             result=result,
@@ -9869,20 +9998,27 @@ async def execute_base_risk_review_bundle(
                         allow_absence_only_evidence_catalog=(
                             allow_dynamic_batch_count
                         ),
+                        legal_evidence=batch_legal_evidence,
                     )
-                    return await generic.review(
+                    result = await generic.review(
                         request,
                         tenant_id=tenant_id,
                         model_id=model_id,
                         framework_run_id=framework_run_id,
                         attempt_artifact_sink=attempt_artifact_sink,
                     )
+                    effective_legal_tokens = request.legal_evidence_input_tokens
+                    return result
 
                 result = await asyncio.wait_for(
                     invoke(),
                     timeout=batch_timeout_seconds,
                 )
-                result = _apply_prompt_budget(context, result)
+                result = _apply_prompt_budget(
+                    context,
+                    result,
+                    legal_evidence_input_tokens=effective_legal_tokens,
+                )
                 results[batch_id] = result
                 states[batch_id] = "COMPLETED"
                 return result

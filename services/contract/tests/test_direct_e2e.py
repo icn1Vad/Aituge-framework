@@ -116,6 +116,65 @@ def test_formal_payload_reuses_frozen_dto_and_result_hash() -> None:
     assert len(payload.evidences) == 1
 
 
+def test_formal_payload_embeds_every_cited_legal_source() -> None:
+    legal_id = "legal-evidence-" + "2" * 32
+    bundle = SimpleNamespace(
+        usable=True,
+        release_id="release-legal-test",
+        bundle_hash="sha256:" + "b" * 64,
+        evidence=[
+            SimpleNamespace(
+                evidence_id=legal_id,
+                check_codes=["CF-005"],
+                issue_ids=["legal-issue-" + "3" * 32],
+                cautions=["METADATA_UNVERIFIED"],
+                unit=SimpleNamespace(
+                    release_id="release-legal-test",
+                    unit_id="unit-legal-test",
+                    source_node_ids=["node-legal-test"],
+                    title="中华人民共和国民法典",
+                    article_no="第五百零九条",
+                    heading_path=["第三编 合同"],
+                    content="当事人应当按照约定全面履行自己的义务。",
+                    jurisdiction="CN",
+                    authority_level="LAW",
+                    issuing_authority="全国人民代表大会",
+                    effective_from=None,
+                    effective_to=None,
+                    validity_status=None,
+                    metadata_verification_status="UNVERIFIED",
+                    official_source_url=None,
+                    content_hash="4" * 64,
+                ),
+            )
+        ],
+    )
+    _formal, payload, _payload_hash = build_formal_result(
+        _compatible(legal_evidence_ids=[legal_id]),
+        context=_context(),
+        generation_id="generation-test",
+        framework_task_id="task-test",
+        framework_run_id="run-test",
+        legal_evidence_bundle=bundle,
+    )
+
+    assert payload.legal_evidence_release_id == "release-legal-test"
+    assert payload.legal_evidence_bundle_hash == "sha256:" + "b" * 64
+    assert [item.evidence_id for item in payload.legal_evidences] == [legal_id]
+    assert payload.legal_evidences[0].metadata_verification_status == "UNVERIFIED"
+
+
+def test_formal_payload_rejects_dangling_legal_source_id() -> None:
+    with pytest.raises(DirectE2EError, match="usable frozen bundle"):
+        build_formal_result(
+            _compatible(legal_evidence_ids=["legal-evidence-" + "2" * 32]),
+            context=_context(),
+            generation_id="generation-test",
+            framework_task_id="task-test",
+            framework_run_id="run-test",
+        )
+
+
 def test_formal_payload_does_not_leak_internal_fields() -> None:
     _, payload, _ = build_formal_result(
         _compatible(),
@@ -427,6 +486,7 @@ def _compatible(
     title: str = "Advance payment risk",
     risk_level: str = "HIGH",
     context: LegacyCompatibilityContext | None = None,
+    legal_evidence_ids: list[str] | None = None,
 ):
     context = context or _context()
     finding_id = "finding-" + "1" * 32
@@ -465,6 +525,7 @@ def _compatible(
                 "verification_note": None,
             }
         ],
+        "legal_evidence_ids": legal_evidence_ids or [],
     }
     bundle = {
         "bundle_id": "extended-bundle-test",
