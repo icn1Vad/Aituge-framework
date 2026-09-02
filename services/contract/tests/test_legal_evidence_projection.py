@@ -208,6 +208,48 @@ def test_resume_cursor_rewinds_to_embedding_gap_before_checkpoint() -> None:
     )
 
 
+def test_legacy_resume_cursor_rewinds_to_gap_when_no_checkpoint_exists() -> None:
+    class _Connection:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def execute(self, sql, _params):
+            self.calls += 1
+            if self.calls == 1:
+                assert "legal_evidence_projection_checkpoint" in sql
+                return _Cursor(None)
+            assert "incomplete" in sql
+            assert "e.unit_id IS NULL" in sql
+            return _Cursor(
+                {
+                    "version_id": "version-020",
+                    "sequence": 18,
+                    "unit_count": 21,
+                    "embedding_count": 19,
+                    "missing_version_id": "version-010",
+                    "missing_sequence": 7,
+                }
+            )
+
+    class _Repository(PostgresLegalEvidenceRepository):
+        def __init__(self):
+            super().__init__(Settings())
+            self.connection = _Connection()
+
+        @contextmanager
+        def _connect(self):
+            yield self.connection
+
+    repository = _Repository()
+    assert repository.projection_resume_cursor("projection-1") == (
+        "version-010",
+        7,
+        21,
+        19,
+    )
+    assert repository.connection.calls == 2
+
+
 def test_article_assembler_keeps_article_and_child_paragraphs_in_one_unit() -> None:
     assembler = LegalArticleAssembler()
     rows = [

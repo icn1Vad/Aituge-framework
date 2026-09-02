@@ -46,10 +46,11 @@ tests; it is not a second architecture.
 - The durable checkpoint is written after both unit and embedding writes. On
   recovery, the indexer rewinds to the earliest missing embedding version, so
   interruption between those writes cannot create a permanently skipped gap.
-- A new projection algorithm can reuse a prior immutable vector only when the
-  unit ID, content hash, embedding-input hash, embedding profile and model
-  version all match. Reuse copies the frozen vector into the new release and
-  never calls the model again for that unit.
+- A new projection can reuse a prior immutable vector when the content hash,
+  exact embedding-input hash, embedding profile and model version all match.
+  Unit IDs intentionally contain the immutable release ID, so cross-release
+  reuse must not require equal unit IDs. Reuse copies the frozen vector under
+  the new unit ID and never calls the model again for unchanged input.
 - Relation projection is rebuilt from scratch for a staged release and remains
   immutable after sealing.
 

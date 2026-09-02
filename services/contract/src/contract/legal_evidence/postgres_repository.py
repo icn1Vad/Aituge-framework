@@ -619,21 +619,27 @@ class PostgresLegalEvidenceRepository:
                 """
                 WITH requested(unit_id, content_hash, embedding_input_hash) AS (
                   SELECT * FROM unnest(%s::text[], %s::text[], %s::text[])
+                ), compatible_source AS (
+                  SELECT DISTINCT ON (e.content_hash, e.embedding_input_hash)
+                         e.content_hash, e.embedding_input_hash,
+                         e.embedding_profile_id, e.provider, e.model,
+                         e.dimensions, e.embedding
+                  FROM legal_evidence_embedding e
+                  WHERE e.release_id = %s
+                    AND e.embedding_profile_id = %s
+                  ORDER BY e.content_hash, e.embedding_input_hash, e.unit_id
                 )
                 INSERT INTO legal_evidence_embedding (
                   release_id, unit_id, embedding_profile_id, provider,
                   model, dimensions, embedding, content_hash,
                   embedding_input_hash
                 )
-                SELECT %s, e.unit_id, e.embedding_profile_id, e.provider,
-                       e.model, e.dimensions, e.embedding, e.content_hash,
-                       e.embedding_input_hash
+                SELECT %s, r.unit_id, e.embedding_profile_id, e.provider,
+                       e.model, e.dimensions, e.embedding, r.content_hash,
+                       r.embedding_input_hash
                 FROM requested r
-                JOIN legal_evidence_embedding e
-                  ON e.release_id = %s
-                 AND e.unit_id = r.unit_id
-                 AND e.embedding_profile_id = %s
-                 AND e.content_hash = r.content_hash
+                JOIN compatible_source e
+                  ON e.content_hash = r.content_hash
                  AND e.embedding_input_hash = r.embedding_input_hash
                 ON CONFLICT (release_id, unit_id, embedding_profile_id) DO NOTHING
                 RETURNING unit_id
@@ -642,9 +648,9 @@ class PostgresLegalEvidenceRepository:
                     [item.unit_id for item in rows],
                     [item.content_hash for item in rows],
                     [item.embedding_input_hash for item in rows],
-                    target_release_id,
                     source_release_id,
                     profile_id,
+                    target_release_id,
                 ),
             ).fetchall()
             conn.commit()
@@ -1137,13 +1143,29 @@ class PostgresLegalEvidenceRepository:
                          WHERE release_id = %s) AS embedding_count
                     )
                     SELECT u.version_id, u.sequence, totals.unit_count,
-                           totals.embedding_count
+                           totals.embedding_count,
+                           missing.version_id AS missing_version_id,
+                           missing.sequence AS missing_sequence
                     FROM legal_evidence_unit u CROSS JOIN totals
+                    JOIN legal_evidence_release r ON r.release_id = u.release_id
+                    LEFT JOIN LATERAL (
+                      SELECT incomplete.version_id, incomplete.sequence
+                      FROM legal_evidence_unit incomplete
+                      LEFT JOIN legal_evidence_embedding e
+                        ON e.release_id = incomplete.release_id
+                       AND e.unit_id = incomplete.unit_id
+                       AND e.embedding_profile_id = r.embedding_profile_id
+                      WHERE incomplete.release_id = %s
+                        AND r.embedding_profile_id IS NOT NULL
+                        AND e.unit_id IS NULL
+                      ORDER BY incomplete.version_id, incomplete.sequence
+                      LIMIT 1
+                    ) missing ON true
                     WHERE u.release_id = %s
                     ORDER BY u.version_id DESC, u.sequence DESC
                     LIMIT 1
                     """,
-                    (release_id, release_id, release_id),
+                    (release_id, release_id, release_id, release_id),
                 ).fetchone()
         if row is None:
             return None

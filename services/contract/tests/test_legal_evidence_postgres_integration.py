@@ -171,6 +171,32 @@ def test_projection_resume_hashes_relation_rebuild_and_release_lock(
     ) == 1
     assert repository.units_requiring_embedding(units, profile_id=profile_id) == []
 
+    copy_release_id = f"legal-index-copy-{suffix}"
+    assert repository.stage_release(
+        release_id=copy_release_id,
+        source_release_id=f"source-copy-{suffix}",
+        source_manifest_sha256="b" * 64,
+        projection_version=PROJECTION_VERSION,
+        embedding_profile_id=profile_id,
+    )
+    copied_first = first.model_copy(
+        update={
+            "release_id": copy_release_id,
+            # Unit identity is release-scoped, so a correct cross-release
+            # embedding reuse implementation must support a different ID.
+            "unit_id": f"unit-copy-{suffix}-1",
+        }
+    )
+    assert repository.upsert_units([copied_first]) == 1
+    assert repository.copy_compatible_embeddings(
+        [copied_first],
+        profile_id=profile_id,
+        source_release_id=release_id,
+    ) == 1
+    assert repository.units_requiring_embedding(
+        [copied_first], profile_id=profile_id
+    ) == []
+
     with pytest.raises(RuntimeError, match="input hash drifted"):
         repository.units_requiring_embedding(
             [first.model_copy(update={"title": "向量输入已改变"})],
