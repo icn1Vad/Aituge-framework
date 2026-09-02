@@ -8,17 +8,39 @@ from dataclasses import dataclass, field
 
 from contract.application.idempotency import canonical_json
 from contract.legal_evidence.models import (
+    LegalApplicabilityDecision,
     LegalEvidence,
     LegalEvidenceBundle,
     LegalEvidenceConflict,
     LegalEvidenceIssue,
     LegalEvidencePlanRequest,
     LegalEvidenceRelease,
+    LegalEvidenceRelationPath,
+    LegalEvidenceVersionSnapshot,
     LegalIssueCoverage,
     LegalRelation,
     LegalRetrievalUnit,
     LegalSearchCandidate,
 )
+
+PLANNER_VERSION = "adaptive-legal-evidence-planner-v4"
+_EXACT_REFERENCE = re.compile(
+    r"《\s*([^》]{1,200}?)\s*》\s*"
+    r"(第[零〇一二三四五六七八九十百千万0-9]+条)?"
+)
+_KEYWORD_FRAGMENT = re.compile(r"[\u4e00-\u9fffA-Za-z0-9]{2,24}")
+_GENERIC_KEYWORD_TERMS = {
+    "合同",
+    "审查",
+    "风险",
+    "法律",
+    "问题",
+    "规则",
+    "我方",
+    "相对方",
+    "甲方",
+    "乙方",
+}
 from contract.legal_evidence.ports import (
     LegalEmbeddingProvider,
     LegalEvidenceRepository,
@@ -61,7 +83,13 @@ class LegalEvidencePlannerSafety:
     maximum_total_rounds: int = 1000
     maximum_total_wall_time_seconds: float = 30.0
     minimum_relevance: float = 0.05
-    relative_relevance_floor: float = 0.60
+    # Qwen3 rerank scores below 0.65 are not sufficiently calibrated to turn a
+    # merely topical lexical/vector hit into legal evidence. Exact references,
+    # verified relation edges and literal required-concept matches remain
+    # independently admissible.
+    minimum_reranker_relevance: float = 0.65
+    minimum_semantic_coverage_score: float = 0.75
+    relative_relevance_floor: float = 0.90
     maximum_neighbors_per_unit: int = 128
 
 
@@ -218,15 +246,34 @@ class AdaptiveLegalEvidencePlanner:
             stop_reason = "SAFETY_BUDGET_REACHED"
         else:
             stop_reason = "CANDIDATES_EXHAUSTED"
+        relation_paths = self._relation_paths(evidence, relation_by_id)
+        applicability_decisions = self._applicability_decisions(evidence, request)
+        version_snapshot = LegalEvidenceVersionSnapshot(
+            legal_release_id=release.source_release_id,
+            legal_projection_version=release.projection_version,
+            relation_extractor_version=release.relation_extractor_version,
+            embedding_model_version=release.embedding_model_version,
+            reranker_version=request.reranker_version,
+            planner_version=request.planner_version,
+            review_as_of_date=request.review_as_of_date,
+            contract_date=request.contract_date,
+        )
         payload = {
             "bundle_version": "1.0",
             "status": status,
             "release_id": release.release_id,
+            "version_snapshot": version_snapshot.model_dump(mode="json"),
             "issues": [item.model_dump(mode="json") for item in request.issues],
             "evidence": [item.model_dump(mode="json") for item in evidence],
             "relations": [
                 item.model_dump(mode="json")
                 for item in sorted(relation_by_id.values(), key=lambda value: value.relation_id)
+            ],
+            "relation_paths": [
+                item.model_dump(mode="json") for item in relation_paths
+            ],
+            "applicability_decisions": [
+                item.model_dump(mode="json") for item in applicability_decisions
             ],
             "coverage": [item.model_dump(mode="json") for item in coverage],
             "unresolved_issue_ids": unresolved,
@@ -325,8 +372,8 @@ class AdaptiveLegalEvidencePlanner:
             available = [item for key, item in frontier.items() if key not in selected_ids]
             if not available:
                 if exhausted:
-                    complete = bool(selected) and self._concept_coverage_complete(
-                        issue, covered
+                    complete = self._coverage_sufficient(
+                        issue, covered, selected
                     )
                     break
                 continue
@@ -347,26 +394,77 @@ class AdaptiveLegalEvidencePlanner:
                 self.safety.minimum_relevance,
                 best_selected * self.safety.relative_relevance_floor,
             )
+            relation_types = {
+                relations[relation_id].relation_type
+                for relation_id in current.relation_path
+                if relation_id in relations
+            }
+            carries_legal_consequence = bool(
+                relation_types
+                & {"AMENDS", "REPEALS", "REPLACES", "EXCEPTION_TO"}
+            )
+            adds_concepts = bool(
+                set(self._matched_concepts(issue, current.unit)) - covered
+            )
+            coverage_sufficient = self._coverage_sufficient(
+                issue, covered, selected
+            )
+            if (
+                not selected
+                and current.rerank_score is not None
+                and current.rerank_score < self.safety.minimum_reranker_relevance
+                and not adds_concepts
+                and not (current.channels & {"EXACT", "RELATION"})
+            ):
+                # The highest-ranked hybrid candidate failed calibrated
+                # semantic relevance and added no literal legal concept.
+                # Lower retrieval pages must not be scanned merely to fill a
+                # quota: this is the valid zero-evidence outcome.
+                break
             if (
                 selected
-                and self._concept_coverage_complete(issue, covered)
-                and not current.relation_path
-                and not (set(self._matched_concepts(issue, current.unit)) - covered)
-                and current_marginal < dynamic_floor
+                and not adds_concepts
+                and not carries_legal_consequence
+                and (
+                    (
+                        coverage_sufficient
+                        and bool(current.relation_path)
+                    )
+                    or current_marginal < dynamic_floor
+                )
             ):
-                # The next independent candidate adds neither uncovered legal
-                # concepts nor enough relative relevance. This is the dynamic
-                # stop: no result count is used.
-                complete = True
+                # The highest-value remaining node adds neither an uncovered
+                # legal concept, a modifying/repealing/exception consequence,
+                # nor enough relative relevance. A normal graph edge with no
+                # concept gain stops immediately once coverage is complete;
+                # otherwise a high-scoring citation fan-out can consume the
+                # entire physical budget without adding legal information.
+                # Independent initial-recall candidates still use the dynamic
+                # score floor, while amendment/repeal/replacement/exception
+                # consequences remain eligible for conflict detection.
+                # Low marginal value is a normal adaptive stop even when an
+                # issue remains explicitly unresolved.  It must not be
+                # relabelled as a physical safety-budget failure, and it must
+                # not manufacture coverage for a concept the corpus did not
+                # support.
+                complete = coverage_sufficient
                 break
             frontier.pop(current.unit.unit_id, None)
             examined += 1
             rounds += 1
-            if not self._applicable(current.unit, request):
+            if not self._applicable(current.unit, request, issue):
                 continue
             matched = self._matched_concepts(issue, current.unit)
             marginal = self._marginal_value(issue, current, covered)
             if current.score < self.safety.minimum_relevance and not matched:
+                continue
+            if not self._reliable_candidate(current, matched):
+                # Reciprocal-rank fusion is intentionally relative: the best
+                # vector hit receives a high fused score even when every
+                # document is semantically weak.  Do not turn that relative
+                # rank into legal evidence unless it is corroborated by an
+                # exact/lexical hit, a verified graph edge, a required legal
+                # concept, or an independently calibrated reranker score.
                 continue
             evidence = LegalEvidence(
                 evidence_id=self._stable_id(
@@ -453,10 +551,26 @@ class AdaptiveLegalEvidencePlanner:
     ) -> tuple[list[_FrontierItem], set[str], bool, list[str]]:
         limit = self.safety.candidate_page_size
         degraded: set[str] = set()
+        exact: list[LegalSearchCandidate] = []
+        references = [
+            (match.group(1).strip(), match.group(2) or None)
+            for match in _EXACT_REFERENCE.finditer(issue.query)
+        ]
+        if offset == 0 and references:
+            try:
+                exact = self.repository.exact_search(
+                    release_id=release.release_id,
+                    references=references,
+                    jurisdiction=request.jurisdiction,
+                    as_of_date=request.review_as_of_date.isoformat(),
+                    limit=limit,
+                )
+            except Exception:  # noqa: BLE001
+                degraded.add("EXACT")
         try:
             keyword = self.repository.keyword_search(
                 release_id=release.release_id,
-                query=issue.query,
+                query=self._keyword_query(issue),
                 jurisdiction=request.jurisdiction,
                 as_of_date=request.review_as_of_date.isoformat(),
                 offset=offset,
@@ -481,7 +595,7 @@ class AdaptiveLegalEvidencePlanner:
             # Vector retrieval is optional and vendor exceptions are opaque.
             except Exception:  # noqa: BLE001
                 degraded.add("VECTOR")
-        fused = self._fuse(keyword, vector, rank_offset=offset)
+        fused = self._fuse(exact, keyword, vector, rank_offset=offset)
         diagnostics: list[str] = []
         if self.reranker is not None and fused:
             try:
@@ -502,20 +616,53 @@ class AdaptiveLegalEvidencePlanner:
         return fused, degraded, len(keyword) == limit or len(vector) == limit, diagnostics
 
     @staticmethod
+    def _keyword_query(issue: LegalEvidenceIssue) -> str:
+        """Build a selective FTS query instead of indexing the full prompt.
+
+        The full issue prompt contains parties, facts and repeated boilerplate.
+        OR-ing all of those tokens can match most of a large legal corpus and
+        turn one retrieval page into a table-wide ranking operation.  Legal
+        concepts and evidence needs are the authoritative lexical intent; the
+        complete issue remains available to vector retrieval and reranking.
+        """
+
+        values = [*issue.required_concepts, *issue.evidence_need]
+        if issue.contract_object and issue.contract_object.upper() != "AUTO":
+            values.append(issue.contract_object)
+        terms: list[str] = []
+        for value in values:
+            normalized = re.sub(r"\s+", "", value).strip()
+            if (
+                2 <= len(normalized) <= 32
+                and normalized not in _GENERIC_KEYWORD_TERMS
+                and normalized not in terms
+            ):
+                terms.append(normalized)
+        if not terms:
+            for value in _KEYWORD_FRAGMENT.findall(issue.question):
+                if value not in _GENERIC_KEYWORD_TERMS and value not in terms:
+                    terms.append(value)
+                if len(terms) >= 16:
+                    break
+        return " ".join(terms[:16]) or issue.query[:256]
+
+    @staticmethod
     def _fuse(
+        exact: list[LegalSearchCandidate],
         keyword: list[LegalSearchCandidate],
         vector: list[LegalSearchCandidate],
         *,
         rank_offset: int = 0,
     ) -> list[_FrontierItem]:
         by_id: dict[str, _FrontierItem] = {}
-        active_channel_count = int(bool(keyword)) + int(bool(vector))
+        active_channel_count = int(bool(exact)) + int(bool(keyword)) + int(bool(vector))
         channel_peaks = {
+            "EXACT": max((item.score for item in exact), default=1.0),
             "KEYWORD": max((item.score for item in keyword), default=1.0),
             "VECTOR": max((item.score for item in vector), default=1.0),
         }
         normalized_relevance: dict[str, float] = {}
-        for channel_results in (keyword, vector):
+        for channel_results in (exact, keyword, vector):
             for rank, candidate in enumerate(channel_results, start=1):
                 contribution = 1.0 / (60 + rank_offset + rank)
                 peak = max(channel_peaks[candidate.channel], 1e-12)
@@ -629,18 +776,55 @@ class AdaptiveLegalEvidencePlanner:
         authority_factor = 1.0 if item.unit.metadata_verification_status == "VERIFIED" else 0.9
         return min(1.0, item.score * authority_factor + concept_gain)
 
-    def _concept_coverage_complete(
+    def _coverage_sufficient(
         self,
         issue: LegalEvidenceIssue,
         covered: set[str],
+        selected: list[LegalEvidence],
     ) -> bool:
         if issue.required_concepts:
-            return set(issue.required_concepts).issubset(covered)
-        return True
+            if set(issue.required_concepts).issubset(covered):
+                return True
+        elif selected:
+            return True
+        # Literal matching cannot capture every Chinese legal paraphrase. A
+        # calibrated reranker may establish semantic coverage, but only when
+        # another retrieval channel, an exact hit, a verified relation path,
+        # or at least one literal concept corroborates it.
+        return any(
+            item.rerank_score is not None
+            and item.rerank_score >= self.safety.minimum_semantic_coverage_score
+            and (
+                len(item.retrieval_channels) >= 2
+                or "EXACT" in item.retrieval_channels
+                or bool(item.relation_path)
+                or bool(item.matched_concepts)
+            )
+            for item in selected
+        )
+
+    def _reliable_candidate(
+        self,
+        item: _FrontierItem,
+        matched_concepts: list[str],
+    ) -> bool:
+        if matched_concepts:
+            return True
+        if item.channels & {"EXACT", "RELATION"}:
+            return True
+        if item.rerank_score is not None:
+            return item.rerank_score >= self.safety.minimum_reranker_relevance
+        # Keep lexical retrieval usable when no reranker is configured or the
+        # optional rerank channel degraded. When reranking did run, however,
+        # its calibrated rejection threshold must also apply to keyword hits;
+        # otherwise an unrelated common word can manufacture legal evidence.
+        return "KEYWORD" in item.channels
 
     @staticmethod
     def _applicable(
-        unit: LegalRetrievalUnit, request: LegalEvidencePlanRequest
+        unit: LegalRetrievalUnit,
+        request: LegalEvidencePlanRequest,
+        issue: LegalEvidenceIssue,
     ) -> bool:
         requested = (request.jurisdiction or "").strip().upper()
         candidate = (unit.jurisdiction or "").strip().upper()
@@ -652,11 +836,18 @@ class AdaptiveLegalEvidencePlanner:
         # Unknown dates/status are allowed as unverified evidence. They must not
         # be invented from filenames. Only verified temporal metadata excludes.
         if unit.metadata_verification_status == "VERIFIED":
-            if unit.validity_status in {"EXPIRED", "REPEALED", "NOT_YET_EFFECTIVE"}:
+            if unit.validity_status in {"EXPIRED", "REPEALED"}:
                 return False
             if unit.effective_from and unit.effective_from > request.review_as_of_date:
                 return False
             if unit.effective_to and unit.effective_to < request.review_as_of_date:
+                return False
+            if (
+                issue.domain == "formation_validity_authority"
+                and request.contract_date is not None
+                and unit.effective_from is not None
+                and unit.effective_from > request.contract_date
+            ):
                 return False
         return unit.metadata_verification_status != "REJECTED"
 
@@ -693,9 +884,12 @@ class AdaptiveLegalEvidencePlanner:
             "bundle_version": "1.0",
             "status": status,
             "release_id": None,
+            "version_snapshot": None,
             "issues": [item.model_dump(mode="json") for item in request.issues],
             "evidence": [],
             "relations": [],
+            "relation_paths": [],
+            "applicability_decisions": [],
             "coverage": [item.model_dump(mode="json") for item in coverage],
             "unresolved_issue_ids": [item.issue_id for item in request.issues],
             "conflicts": [],
@@ -707,6 +901,73 @@ class AdaptiveLegalEvidencePlanner:
             "round_count": 0,
         }
         return LegalEvidenceBundle(bundle_hash=self._hash(payload), **payload)
+
+    @staticmethod
+    def _relation_paths(
+        evidence: list[LegalEvidence],
+        relations: dict[str, LegalRelation],
+    ) -> list[LegalEvidenceRelationPath]:
+        paths: list[LegalEvidenceRelationPath] = []
+        for item in evidence:
+            if not item.relation_path:
+                continue
+            first = relations.get(item.relation_path[0])
+            if first is None:
+                continue
+            for issue_id in item.issue_ids:
+                paths.append(
+                    LegalEvidenceRelationPath(
+                        issue_id=issue_id,
+                        evidence_id=item.evidence_id,
+                        source_unit_id=first.source_unit_id,
+                        target_unit_id=item.unit.unit_id,
+                        relation_ids=list(item.relation_path),
+                    )
+                )
+        return paths
+
+    @staticmethod
+    def _applicability_decisions(
+        evidence: list[LegalEvidence],
+        request: LegalEvidencePlanRequest,
+    ) -> list[LegalApplicabilityDecision]:
+        decisions: list[LegalApplicabilityDecision] = []
+        for item in evidence:
+            unit = item.unit
+            reasons: list[str] = []
+            jurisdiction_decision = "MATCH" if unit.jurisdiction else "UNKNOWN"
+            if unit.metadata_verification_status != "VERIFIED":
+                outcome = "UNKNOWN_METADATA"
+                temporal_decision = "UNKNOWN"
+                reasons.append("法规时效元数据尚未核验")
+            elif (
+                request.contract_date is not None
+                and unit.effective_from is not None
+                and unit.effective_from > request.contract_date
+            ):
+                outcome = "REVIEW_DATE_ONLY"
+                temporal_decision = "NOT_EFFECTIVE_AT_CONTRACT_DATE"
+                reasons.append("法规生效日晚于合同日期，不得作为合同订立时依据")
+            else:
+                outcome = "APPLICABLE"
+                temporal_decision = "MATCH" if unit.effective_from else "UNKNOWN"
+                if unit.effective_from is None:
+                    reasons.append("法规生效日期未知")
+            for issue_id in item.issue_ids:
+                decisions.append(
+                    LegalApplicabilityDecision(
+                        issue_id=issue_id,
+                        evidence_id=item.evidence_id,
+                        unit_id=unit.unit_id,
+                        outcome=outcome,
+                        jurisdiction_decision=jurisdiction_decision,
+                        temporal_decision=temporal_decision,
+                        review_as_of_date=request.review_as_of_date,
+                        contract_date=request.contract_date,
+                        reasons=reasons,
+                    )
+                )
+        return decisions
 
     @staticmethod
     def _conflicts(

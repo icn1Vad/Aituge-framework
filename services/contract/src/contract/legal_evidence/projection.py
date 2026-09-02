@@ -9,6 +9,8 @@ from typing import Any, Literal
 
 from contract.legal_evidence.models import LegalRetrievalUnit
 
+RELATION_EXTRACTOR_VERSION = "legal-relation-extractor-v2"
+
 _ARTICLE_REF = re.compile(r"(?:本法|本条例|本规定|本办法)?(第[零〇一二三四五六七八九十百千万0-9]+条)")
 _NAMED_INSTRUMENT_REF = re.compile(r"《\s*([^》]{1,200}?)\s*》")
 _NAMED_ARTICLE_REF = re.compile(
@@ -45,7 +47,10 @@ class NamedInstrumentReference:
         "REPEALS", "REPLACES", "SUPPLEMENTS",
     ]
     evidence_text: str
+    evidence_start: int
+    evidence_end: int
     target_article_no: str | None = None
+    extractor_version: str = RELATION_EXTRACTOR_VERSION
     verification_status: Literal["AUTO_VERIFIED", "CANDIDATE"] = "AUTO_VERIFIED"
 
 
@@ -108,11 +113,22 @@ def extract_named_instrument_references(content: str) -> list[NamedInstrumentRef
                 normalized_title=normalized,
                 relation_type=relation_type,
                 evidence_text=context[:320],
+                evidence_start=start,
+                evidence_end=end,
                 target_article_no=(article_match.group(1) if article_match else None),
                 verification_status=verification_status,
             )
         )
     return references
+
+
+@dataclass(frozen=True, slots=True)
+class InternalArticleReference:
+    article_no: str
+    evidence_text: str
+    evidence_start: int
+    evidence_end: int
+    extractor_version: str = RELATION_EXTRACTOR_VERSION
 
 
 def instrument_aliases(row: dict[str, Any]) -> set[str]:
@@ -149,18 +165,37 @@ def unique_instrument_aliases(
     return unique, ambiguous
 
 
-def extract_internal_references(content: str) -> list[str]:
-    """Extract explicit article references without inferring semantic edges."""
+def extract_internal_reference_spans(content: str) -> list[InternalArticleReference]:
+    """Extract explicit internal article references with traceable character spans."""
     external_article_spans = [
         match.span(1) for match in _NAMED_ARTICLE_REF.finditer(content)
     ]
-    values: list[str] = []
+    values: list[InternalArticleReference] = []
+    seen: set[str] = set()
     for match in _ARTICLE_REF.finditer(content):
         span = match.span(1)
         if any(span[0] >= start and span[1] <= end for start, end in external_article_spans):
             continue
-        values.append(match.group(1))
-    return list(dict.fromkeys(values))
+        article_no = match.group(1)
+        if article_no in seen:
+            continue
+        seen.add(article_no)
+        start = max(0, match.start() - 64)
+        end = min(len(content), match.end() + 64)
+        values.append(
+            InternalArticleReference(
+                article_no=article_no,
+                evidence_text=content[start:end],
+                evidence_start=start,
+                evidence_end=end,
+            )
+        )
+    return values
+
+
+def extract_internal_references(content: str) -> list[str]:
+    """Backward-compatible article-number view of traced internal references."""
+    return [item.article_no for item in extract_internal_reference_spans(content)]
 
 
 def _json_names(raw: Any) -> str | None:
@@ -261,12 +296,15 @@ class LegalArticleAssembler:
                 str(first["category_root"]) if first.get("category_root") else None
             ),
             issuing_authority=_json_names(first.get("issuing_authority_names_json")),
-            # Source release explicitly disables date and status extraction.
-            # Never interpret a filename or free-form title as an effective date.
-            effective_from=None,
-            effective_to=None,
-            validity_status="UNKNOWN",
-            metadata_verification_status="UNVERIFIED",
+            # Only fields produced from explicit source-text evidence reach
+            # this projection. Filenames and data creation timestamps are not
+            # treated as legal effective dates.
+            effective_from=first.get("effective_from"),
+            effective_to=first.get("effective_to"),
+            validity_status=str(first.get("validity_status") or "UNKNOWN"),
+            metadata_verification_status=str(
+                first.get("metadata_verification_status") or "UNVERIFIED"
+            ),
             official_source_url=(str(first["source_url"]) if first.get("source_url") else None),
             content_hash=digest,
             sequence=int(first.get("sequence") or 0),

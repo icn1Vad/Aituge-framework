@@ -742,47 +742,44 @@ async def test_pipeline_allows_empty_signature_only_window() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pipeline_keeps_real_acceptance_clause_strict() -> None:
+async def test_pipeline_recovers_real_acceptance_clause_from_exact_source() -> None:
     extractor = FakePipelineExtractor()
 
-    with pytest.raises(WindowPipelineError) as exc_info:
-        await ContractIrWindowPipeline(extractor=extractor).run(
-            _single_window_request(
-                "\u7b2c\u516d\u6761 \u9a8c\u6536\n\u7532\u65b9\u5e94\u5f53\u5b8c\u6210\u9a8c\u6536\u3002",
-                heading_path=["\u7b2c\u516d\u6761 \u9a8c\u6536"],
-                clause_nos=["\u7b2c\u516d\u6761"],
-            ),
-            tenant_id="tenant-001",
-            model_id="contract-model",
-        )
+    result = await ContractIrWindowPipeline(extractor=extractor).run(
+        _single_window_request(
+            "\u7b2c\u516d\u6761 \u9a8c\u6536\n\u7532\u65b9\u5e94\u5f53\u5b8c\u6210\u9a8c\u6536\u3002",
+            heading_path=["\u7b2c\u516d\u6761 \u9a8c\u6536"],
+            clause_nos=["\u7b2c\u516d\u6761"],
+        ),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
 
-    assert exc_info.value.code == "WINDOW_EXTRACTION_FAILED"
     assert extractor.call_counts == {"window-001": 2}
-    attempts = exc_info.value.details["windows"][0]["attempts"]
-    assert attempts[0]["status"] == "SUSPICIOUS_CATEGORY"
-    assert "ACCEPTANCE" in attempts[0]["error_message"]
+    assert result.coverage.valid is True
+    assert len(result.semantic_ir.acceptance_terms) == 1
+    assert result.semantic_ir.acceptance_terms[0].predicate == "原文待模型复核"
+    assert result.windows[0].attempts[-1].fallback_extraction_count == 1
 
 
 @pytest.mark.asyncio
-async def test_pipeline_keeps_substantive_signature_window_strict() -> None:
+async def test_pipeline_recovers_substantive_signature_window_from_exact_source() -> None:
     extractor = FakePipelineExtractor(empty=True)
 
-    with pytest.raises(WindowPipelineError) as exc_info:
-        await ContractIrWindowPipeline(extractor=extractor).run(
-            _single_window_request(
-                "\u7b7e\u7f72\u9875\n\u7532\u65b9\uff1a\u672c\u5408\u540c\u7b7e\u7f72\u540e\u5e94\u652f\u4ed8\u670d\u52a1\u8d39\u3002",
-                heading_path=["\u7b7e\u7f72\u9875"],
-                clause_nos=[],
-            ),
-            tenant_id="tenant-001",
-            model_id="contract-model",
-        )
+    result = await ContractIrWindowPipeline(extractor=extractor).run(
+        _single_window_request(
+            "\u7b7e\u7f72\u9875\n\u7532\u65b9\uff1a\u672c\u5408\u540c\u7b7e\u7f72\u540e\u5e94\u652f\u4ed8\u670d\u52a1\u8d39\u3002",
+            heading_path=["\u7b7e\u7f72\u9875"],
+            clause_nos=[],
+        ),
+        tenant_id="tenant-001",
+        model_id="contract-model",
+    )
 
-    assert exc_info.value.code == "WINDOW_EXTRACTION_FAILED"
     assert extractor.call_counts == {"window-001": 2}
-    attempt = exc_info.value.details["windows"][0]["attempts"][0]
-    assert attempt["status"] == "SUSPICIOUS_CATEGORY"
-    assert "PAYMENT" in attempt["error_message"]
+    assert result.coverage.valid is True
+    assert len(result.semantic_ir.payment_terms) == 1
+    assert result.semantic_ir.payment_terms[0].predicate == "原文待模型复核"
 
 
 @pytest.mark.asyncio

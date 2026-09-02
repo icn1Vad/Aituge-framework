@@ -481,18 +481,18 @@ class ContractIrWindowPipeline:
                         "类别可以共享同一 extraction_text；本次只返回缺少类别的增量项，"
                         "不要重复已经通过校验的其他抽取项"
                     )
-                    if (
-                        attempt_no == self.max_attempts_per_window
-                        and set(missing_categories) == {"GOVERNING_LAW"}
-                    ):
+                    if attempt_no == self.max_attempts_per_window:
                         recovered = _recover_with_source_fallback(
                             request=request,
                             window=window,
                             attempts=attempts,
                             accepted_extractions=accepted_extractions,
                             accepted_canonicalizations=accepted_canonicalizations,
-                            required_classes={"GOVERNING_LAW"},
-                            fallback_reason="模型两次未返回适用法律类别，按原文生成保守回退映射",
+                            required_classes=set(missing_categories),
+                            fallback_reason=(
+                                "模型两次未返回强词法指示类别，按精确原文生成待复核映射："
+                                + missing_text
+                            ),
                         )
                         if recovered is not None:
                             return recovered

@@ -141,6 +141,153 @@ def test_same_unit_from_keyword_and_vector_preserves_both_channels() -> None:
     assert bundle.evidence[0].retrieval_channels == ["KEYWORD", "VECTOR"]
 
 
+def test_uncorroborated_vector_only_hit_is_not_promoted_to_legal_evidence() -> None:
+    unrelated = _unit("unit-vector-only", "一般行政管理程序。")
+    repository = InMemoryLegalEvidenceRepository(
+        release=LegalEvidenceRelease(
+            release_id="release-1",
+            source_release_id="mysql-release-1",
+            status="ACTIVE",
+            projection_version="legal-projection-v1",
+            embedding_profile_id="test-profile",
+        ),
+        vector_pages=[
+            [LegalSearchCandidate(unit=unrelated, score=0.82, channel="VECTOR")]
+        ],
+    )
+
+    bundle = AdaptiveLegalEvidencePlanner(
+        repository,
+        embedding_provider=StaticLegalEmbeddingProvider([0.1, 0.2]),
+    ).plan(_request("火星采矿许可"))
+
+    assert bundle.status == "NO_RELEVANT_EVIDENCE"
+    assert bundle.evidence == []
+    assert bundle.unresolved_issue_ids == ["legal-issue-" + "1" * 32]
+
+
+def test_vector_only_hit_can_be_promoted_by_a_calibrated_reranker() -> None:
+    paraphrased = _unit("unit-vector-reranked", "约定损害赔偿数额可以调整。")
+    repository = InMemoryLegalEvidenceRepository(
+        release=LegalEvidenceRelease(
+            release_id="release-1",
+            source_release_id="mysql-release-1",
+            status="ACTIVE",
+            projection_version="legal-projection-v1",
+            embedding_profile_id="test-profile",
+        ),
+        vector_pages=[
+            [LegalSearchCandidate(unit=paraphrased, score=0.82, channel="VECTOR")]
+        ],
+    )
+
+    bundle = AdaptiveLegalEvidencePlanner(
+        repository,
+        embedding_provider=StaticLegalEmbeddingProvider([0.1, 0.2]),
+        reranker=StaticLegalReranker({paraphrased.unit_id: 0.91}),
+    ).plan(_request("违约金"))
+
+    assert [item.unit.unit_id for item in bundle.evidence] == [
+        paraphrased.unit_id
+    ]
+    assert bundle.evidence[0].rerank_score == 0.91
+
+
+def test_low_reranker_score_rejects_uncorroborated_keyword_hit() -> None:
+    unrelated = _unit("unit-keyword-reranked", "矿权转让应当依法办理登记。")
+    repository = InMemoryLegalEvidenceRepository(
+        release=LegalEvidenceRelease(
+            release_id="release-1",
+            source_release_id="mysql-release-1",
+            status="ACTIVE",
+            projection_version="legal-projection-v1",
+        ),
+        keyword_pages=[
+            [LegalSearchCandidate(unit=unrelated, score=0.82, channel="KEYWORD")]
+        ],
+    )
+
+    bundle = AdaptiveLegalEvidencePlanner(
+        repository,
+        reranker=StaticLegalReranker({unrelated.unit_id: 0.45}),
+    ).plan(_request("银河委员会", "蓝色印章"))
+
+    assert bundle.status == "NO_RELEVANT_EVIDENCE"
+    assert bundle.evidence == []
+    assert bundle.unresolved_issue_ids == ["legal-issue-" + "1" * 32]
+
+
+def test_explicit_instrument_article_uses_exact_channel_and_freezes_versions() -> None:
+    unit = _unit("unit-exact", "当事人应当按照约定全面履行自己的义务。")
+    unit = unit.model_copy(update={"title": "中华人民共和国民法典", "article_no": "第五百零九条"})
+    repository = InMemoryLegalEvidenceRepository(
+        release=LegalEvidenceRelease(
+            release_id="projection-1",
+            source_release_id="legal-release-1",
+            status="ACTIVE",
+            projection_version="projection-v4",
+            relation_extractor_version="extractor-v2",
+            embedding_model_version="embedding-v4",
+        ),
+        exact_results=[LegalSearchCandidate(unit=unit, score=1, channel="EXACT")],
+    )
+    request = _request("履行").model_copy(
+        update={
+            "reranker_version": "reranker-v1",
+            "issues": [
+                _request("履行").issues[0].model_copy(
+                    update={"query": "请核验《中华人民共和国民法典》第五百零九条"}
+                )
+            ],
+        }
+    )
+
+    bundle = AdaptiveLegalEvidencePlanner(repository).plan(request)
+
+    assert bundle.evidence[0].retrieval_channels == ["EXACT"]
+    assert bundle.version_snapshot is not None
+    assert bundle.version_snapshot.legal_release_id == "legal-release-1"
+    assert bundle.version_snapshot.legal_projection_version == "projection-v4"
+    assert bundle.version_snapshot.relation_extractor_version == "extractor-v2"
+    assert bundle.version_snapshot.embedding_model_version == "embedding-v4"
+    assert bundle.version_snapshot.reranker_version == "reranker-v1"
+
+
+def test_law_effective_after_contract_date_is_not_formation_basis() -> None:
+    unit = _unit("unit-later", "合同依法成立并生效。")
+    unit = unit.model_copy(
+        update={
+            "effective_from": date(2026, 1, 1),
+            "validity_status": "ACTIVE",
+            "metadata_verification_status": "VERIFIED",
+        }
+    )
+    repository = InMemoryLegalEvidenceRepository(
+        release=LegalEvidenceRelease(
+            release_id="release-1",
+            source_release_id="mysql-release-1",
+            status="ACTIVE",
+            projection_version="projection-v4",
+        ),
+        keyword_pages=[[LegalSearchCandidate(unit=unit, score=1, channel="KEYWORD")]],
+    )
+    request = _request("生效").model_copy(
+        update={
+            "contract_date": date(2025, 1, 1),
+            "issues": [
+                _request("生效").issues[0].model_copy(
+                    update={"domain": "formation_validity_authority"}
+                )
+            ],
+        }
+    )
+
+    bundle = AdaptiveLegalEvidencePlanner(repository).plan(request)
+
+    assert bundle.evidence == []
+    assert bundle.status == "NO_RELEVANT_EVIDENCE"
+
+
 def test_reranker_score_is_used_and_persisted_in_bundle() -> None:
     first = _unit("unit-1", "违约金规则")
     second = _unit("unit-2", "解除合同规则", article_no="第二条")
@@ -234,6 +381,64 @@ def test_relation_expansion_adds_verified_exception_until_all_concepts_are_cover
     assert bundle.status == "DEGRADED"
     assert bundle.conflicts[0].conflict_type == "RELATION"
     assert bundle.stop_reason != "COVERAGE_SATISFIED"
+
+
+def test_graph_expansion_stops_after_ordinary_edge_adds_no_new_concept() -> None:
+    base = _unit("unit-base", "违约金可以由当事人约定。")
+    target = _unit(
+        "unit-target",
+        "违约金过分高于损失的，人民法院可以适当减少。",
+        article_no="第二条",
+    )
+    irrelevant = _unit(
+        "unit-irrelevant",
+        "一般行政机关按照年度计划开展统计。",
+        article_no="第三条",
+    )
+    first_relation = LegalRelation(
+        relation_id="relation-cites-target",
+        release_id="release-1",
+        source_unit_id=base.unit_id,
+        target_unit_id=target.unit_id,
+        relation_type="CITES",
+        evidence_text="依照第二条",
+        confidence=1,
+        verification_status="AUTO_VERIFIED",
+    )
+    second_relation = LegalRelation(
+        relation_id="relation-cites-irrelevant",
+        release_id="release-1",
+        source_unit_id=target.unit_id,
+        target_unit_id=irrelevant.unit_id,
+        relation_type="CITES",
+        evidence_text="依照第三条",
+        confidence=1,
+        verification_status="AUTO_VERIFIED",
+    )
+    repository = InMemoryLegalEvidenceRepository(
+        release=LegalEvidenceRelease(
+            release_id="release-1",
+            source_release_id="mysql-release-1",
+            status="ACTIVE",
+            projection_version="legal-projection-v1",
+        ),
+        keyword_pages=[[LegalSearchCandidate(unit=base, score=1, channel="KEYWORD")]],
+        relations={
+            base.unit_id: [(first_relation, target)],
+            target.unit_id: [(second_relation, irrelevant)],
+        },
+    )
+
+    bundle = AdaptiveLegalEvidencePlanner(repository).plan(
+        _request("违约金", "减少")
+    )
+
+    assert [item.unit.unit_id for item in bundle.evidence] == [
+        base.unit_id,
+        target.unit_id,
+    ]
+    assert bundle.coverage[0].complete is True
+    assert bundle.stop_reason == "COVERAGE_SATISFIED"
 
 
 def test_amendment_relation_creates_unresolved_validity_conflict() -> None:

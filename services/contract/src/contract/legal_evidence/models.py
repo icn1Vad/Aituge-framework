@@ -38,6 +38,10 @@ class LegalEvidenceRelease(StrictModel):
     status: Literal["STAGED", "ACTIVE", "RETIRED"]
     projection_version: str = Field(min_length=1, max_length=160)
     embedding_profile_id: str | None = Field(default=None, max_length=160)
+    relation_extractor_version: str = Field(
+        default="legal-relation-extractor-v1", min_length=1, max_length=160
+    )
+    embedding_model_version: str | None = Field(default=None, max_length=300)
 
 
 class LegalRetrievalUnit(StrictModel):
@@ -106,7 +110,7 @@ class LegalRetrievalUnit(StrictModel):
 class LegalSearchCandidate(StrictModel):
     unit: LegalRetrievalUnit
     score: float = Field(ge=0, le=1)
-    channel: Literal["KEYWORD", "VECTOR", "RELATION"]
+    channel: Literal["EXACT", "KEYWORD", "VECTOR", "RELATION"]
 
 
 class LegalRelation(StrictModel):
@@ -116,14 +120,59 @@ class LegalRelation(StrictModel):
     target_unit_id: str = Field(min_length=1, max_length=160)
     relation_type: LegalRelationType
     evidence_text: str = Field(default="", max_length=4000)
+    source_node_id: str | None = Field(default=None, max_length=160)
+    evidence_start: int | None = Field(default=None, ge=0)
+    evidence_end: int | None = Field(default=None, ge=0)
+    extractor_version: str = Field(
+        default="legal-relation-extractor-v1", min_length=1, max_length=160
+    )
     confidence: float = Field(ge=0, le=1)
     verification_status: Literal["VERIFIED", "AUTO_VERIFIED", "CANDIDATE"]
+
+    @model_validator(mode="after")
+    def validate_evidence_span(self) -> LegalRelation:
+        if (self.evidence_start is None) != (self.evidence_end is None):
+            raise ValueError("relation evidence positions must be supplied together")
+        if (
+            self.evidence_start is not None
+            and self.evidence_end is not None
+            and self.evidence_start > self.evidence_end
+        ):
+            raise ValueError("relation evidence_start must not exceed evidence_end")
+        return self
+
+
+class LegalRelationReviewItem(StrictModel):
+    review_id: str = Field(min_length=1, max_length=160)
+    release_id: str = Field(min_length=1, max_length=160)
+    source_unit_id: str = Field(min_length=1, max_length=160)
+    source_node_id: str | None = Field(default=None, max_length=160)
+    target_title: str = Field(min_length=1, max_length=1000)
+    target_article_no: str | None = Field(default=None, max_length=160)
+    proposed_relation_type: LegalRelationType
+    evidence_text: str = Field(min_length=1, max_length=4000)
+    evidence_start: int = Field(ge=0)
+    evidence_end: int = Field(ge=0)
+    extractor_version: str = Field(min_length=1, max_length=160)
+    review_reason: Literal["AMBIGUOUS_TARGET", "UNMATCHED_TARGET"]
+
+    @model_validator(mode="after")
+    def validate_review_span(self) -> LegalRelationReviewItem:
+        if self.evidence_start > self.evidence_end:
+            raise ValueError("review evidence_start must not exceed evidence_end")
+        return self
 
 
 class LegalEvidenceIssue(StrictModel):
     issue_id: str = Field(pattern=r"^legal-issue-[0-9a-f]{32}$")
     domain: LegalDomain
     query: str = Field(min_length=1, max_length=8000)
+    question: str | None = Field(default=None, min_length=1, max_length=4000)
+    facts: list[str] = Field(default_factory=list, max_length=20)
+    parties: list[str] = Field(default_factory=list, max_length=20)
+    contract_object: str | None = Field(default=None, max_length=1000)
+    source_domain: LegalDomain | None = None
+    evidence_need: list[str] = Field(default_factory=list, max_length=100)
     check_codes: list[str] = Field(default_factory=list, max_length=45)
     required_concepts: list[str] = Field(default_factory=list, max_length=100)
 
@@ -135,6 +184,19 @@ class LegalEvidenceIssue(StrictModel):
         if len(self.check_codes) != len(set(self.check_codes)):
             raise ValueError("check_codes must be unique")
         self.required_concepts = normalized
+        self.question = (self.question or self.query).strip()
+        self.source_domain = self.source_domain or self.domain
+        self.facts = list(dict.fromkeys(item.strip() for item in self.facts if item.strip()))
+        self.parties = list(
+            dict.fromkeys(item.strip() for item in self.parties if item.strip())
+        )
+        self.evidence_need = list(
+            dict.fromkeys(
+                item.strip()
+                for item in (self.evidence_need or self.required_concepts)
+                if item.strip()
+            )
+        )
         return self
 
 
@@ -145,6 +207,10 @@ class LegalEvidencePlanRequest(StrictModel):
     jurisdiction: str | None = Field(default=None, max_length=128)
     contract_date: date | None = None
     review_as_of_date: date
+    planner_version: str = Field(
+        default="adaptive-legal-evidence-planner-v2", min_length=1, max_length=160
+    )
+    reranker_version: str | None = Field(default=None, max_length=300)
     issues: list[LegalEvidenceIssue] = Field(min_length=1, max_length=100)
 
     @model_validator(mode="after")
@@ -178,7 +244,9 @@ class LegalEvidence(StrictModel):
     relevance_score: float = Field(ge=0, le=1)
     rerank_score: float | None = Field(default=None, ge=0, le=1)
     matched_concepts: list[str] = Field(default_factory=list)
-    retrieval_channels: list[Literal["KEYWORD", "VECTOR", "RELATION"]] = Field(
+    retrieval_channels: list[
+        Literal["EXACT", "KEYWORD", "VECTOR", "RELATION"]
+    ] = Field(
         min_length=1
     )
     relation_path: list[str] = Field(default_factory=list)
@@ -198,6 +266,45 @@ class LegalEvidenceConflict(StrictModel):
     conflict_type: Literal["VALIDITY", "APPLICABILITY", "RELATION"]
     evidence_ids: list[str] = Field(min_length=1)
     reason: str = Field(min_length=1, max_length=2000)
+
+
+class LegalEvidenceRelationPath(StrictModel):
+    issue_id: str = Field(pattern=r"^legal-issue-[0-9a-f]{32}$")
+    evidence_id: str = Field(pattern=r"^legal-evidence-[0-9a-f]{32}$")
+    source_unit_id: str = Field(min_length=1, max_length=160)
+    target_unit_id: str = Field(min_length=1, max_length=160)
+    relation_ids: list[str] = Field(min_length=1)
+
+
+class LegalApplicabilityDecision(StrictModel):
+    issue_id: str = Field(pattern=r"^legal-issue-[0-9a-f]{32}$")
+    evidence_id: str = Field(pattern=r"^legal-evidence-[0-9a-f]{32}$")
+    unit_id: str = Field(min_length=1, max_length=160)
+    outcome: Literal[
+        "APPLICABLE",
+        "REVIEW_DATE_ONLY",
+        "UNKNOWN_METADATA",
+    ]
+    jurisdiction_decision: Literal["MATCH", "UNKNOWN"]
+    temporal_decision: Literal[
+        "MATCH",
+        "NOT_EFFECTIVE_AT_CONTRACT_DATE",
+        "UNKNOWN",
+    ]
+    review_as_of_date: date
+    contract_date: date | None = None
+    reasons: list[str] = Field(default_factory=list, max_length=20)
+
+
+class LegalEvidenceVersionSnapshot(StrictModel):
+    legal_release_id: str = Field(min_length=1, max_length=160)
+    legal_projection_version: str = Field(min_length=1, max_length=160)
+    relation_extractor_version: str = Field(min_length=1, max_length=160)
+    embedding_model_version: str | None = Field(default=None, max_length=300)
+    reranker_version: str | None = Field(default=None, max_length=300)
+    planner_version: str = Field(min_length=1, max_length=160)
+    review_as_of_date: date
+    contract_date: date | None = None
 
 
 class LegalEvidenceBundle(StrictModel):
@@ -220,13 +327,20 @@ class LegalEvidenceBundle(StrictModel):
         "NO_RELEVANT_EVIDENCE",
     ]
     release_id: str | None = None
+    version_snapshot: LegalEvidenceVersionSnapshot | None = None
     issues: list[LegalEvidenceIssue]
     evidence: list[LegalEvidence]
     relations: list[LegalRelation]
+    relation_paths: list[LegalEvidenceRelationPath] = Field(default_factory=list)
+    applicability_decisions: list[LegalApplicabilityDecision] = Field(
+        default_factory=list
+    )
     coverage: list[LegalIssueCoverage]
     unresolved_issue_ids: list[str]
     conflicts: list[LegalEvidenceConflict]
-    degraded_channels: list[Literal["KEYWORD", "VECTOR", "RELATION", "RERANK"]]
+    degraded_channels: list[
+        Literal["EXACT", "KEYWORD", "VECTOR", "RELATION", "RERANK"]
+    ]
     rerank_applied: bool = False
     rerank_diagnostics: list[str] = Field(default_factory=list, max_length=500)
     stop_reason: Literal[
@@ -260,9 +374,6 @@ class LegalEvidenceBundle(StrictModel):
             self.binding_profile_version is not None
             and any(item.check_codes for item in self.evidence)
             and self.status in {"READY", "DEGRADED"}
-            and not self.unresolved_issue_ids
-            and not self.conflicts
-            and self.stop_reason != "SAFETY_BUDGET_REACHED"
         )
 
 

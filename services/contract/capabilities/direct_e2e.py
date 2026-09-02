@@ -16,7 +16,12 @@ from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from contract.api.models import LegalEvidenceReference, ReviewResultData, ReviewSummary
+from contract.api.models import (
+    LegalEvidenceReference,
+    LegalEvidenceVersionSnapshotReference,
+    ReviewResultData,
+    ReviewSummary,
+)
 from contract.application.idempotency import canonical_json
 from contract.application.result_hash import compute_result_hash
 from contract.callback.models import (
@@ -217,6 +222,7 @@ def build_formal_result(
     legal_catalog: list[LegalEvidenceReference] = []
     legal_release_id = None
     legal_bundle_hash = None
+    legal_version_snapshot = None
     if referenced_legal_ids:
         if legal_evidence_bundle is None or not legal_evidence_bundle.usable:
             raise DirectE2EError(
@@ -240,16 +246,53 @@ def build_formal_result(
                 "LEGAL_EVIDENCE_REFERENCE_INVALID",
                 "Cited legal evidence bundle has no release identity",
             )
-        legal_release_id = legal_evidence_bundle.release_id
+        raw_version_snapshot = getattr(legal_evidence_bundle, "version_snapshot", None)
+        if raw_version_snapshot is None:
+            raise DirectE2EError(
+                "LEGAL_EVIDENCE_REFERENCE_INVALID",
+                "Cited legal evidence bundle has no reproducibility version snapshot",
+            )
+        legal_version_snapshot = LegalEvidenceVersionSnapshotReference.model_validate(
+            raw_version_snapshot.model_dump(mode="json")
+            if isinstance(raw_version_snapshot, BaseModel)
+            else raw_version_snapshot
+        )
+        legal_release_id = legal_version_snapshot.legal_release_id
         legal_bundle_hash = legal_evidence_bundle.bundle_hash
+        paths_by_evidence: dict[str, list[dict[str, Any]]] = {}
+        for path in legal_evidence_bundle.relation_paths:
+            paths_by_evidence.setdefault(path.evidence_id, []).append(
+                {
+                    "source_unit_id": path.source_unit_id,
+                    "target_unit_id": path.target_unit_id,
+                    "relation_ids": path.relation_ids,
+                }
+            )
+        applicability_by_evidence: dict[str, list[dict[str, Any]]] = {}
+        for decision in legal_evidence_bundle.applicability_decisions:
+            evidence_id = decision.evidence_id
+            raw_decision = (
+                decision.model_dump(mode="json")
+                if isinstance(decision, BaseModel)
+                else dict(decision)
+                if isinstance(decision, Mapping)
+                else dict(vars(decision))
+            )
+            raw_decision.pop("evidence_id", None)
+            raw_decision.pop("unit_id", None)
+            applicability_by_evidence.setdefault(evidence_id, []).append(
+                raw_decision
+            )
         for evidence_id in sorted(referenced_legal_ids):
             evidence = evidence_by_id[evidence_id]
             unit = evidence.unit
             legal_catalog.append(
                 LegalEvidenceReference(
                     evidence_id=evidence.evidence_id,
-                    release_id=unit.release_id,
+                    release_id=legal_release_id,
                     unit_id=unit.unit_id,
+                    instrument_id=unit.instrument_id,
+                    version_id=unit.version_id,
                     source_node_ids=unit.source_node_ids,
                     title=unit.title,
                     article_no=unit.article_no,
@@ -266,6 +309,14 @@ def build_formal_result(
                     content_hash=unit.content_hash,
                     check_codes=evidence.check_codes,
                     issue_ids=evidence.issue_ids,
+                    retrieval_channels=evidence.retrieval_channels,
+                    relevance_score=evidence.relevance_score,
+                    rerank_score=evidence.rerank_score,
+                    relation_paths=paths_by_evidence.get(evidence.evidence_id, []),
+                    applicability_decisions=applicability_by_evidence.get(
+                        evidence.evidence_id,
+                        [],
+                    ),
                     cautions=evidence.cautions,
                 )
             )
@@ -288,6 +339,7 @@ def build_formal_result(
         evidences=verified.evidences,
         legal_evidence_release_id=legal_release_id,
         legal_evidence_bundle_hash=legal_bundle_hash,
+        legal_evidence_version_snapshot=legal_version_snapshot,
         legal_evidences=legal_catalog,
         relationships=[],
     )

@@ -406,6 +406,32 @@ class Evidence(StrictModel):
         return self
 
 
+class LegalEvidenceRelationPathReference(StrictModel):
+    source_unit_id: Identifier
+    target_unit_id: Identifier
+    relation_ids: list[Identifier] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_relation_ids(self) -> "LegalEvidenceRelationPathReference":
+        if len(self.relation_ids) != len(set(self.relation_ids)):
+            raise ValueError("relation_ids must be unique")
+        return self
+
+
+class LegalApplicabilityDecisionReference(StrictModel):
+    issue_id: Identifier
+    outcome: Literal["APPLICABLE", "REVIEW_DATE_ONLY", "UNKNOWN_METADATA"]
+    jurisdiction_decision: Literal["MATCH", "UNKNOWN"]
+    temporal_decision: Literal[
+        "MATCH",
+        "NOT_EFFECTIVE_AT_CONTRACT_DATE",
+        "UNKNOWN",
+    ]
+    review_as_of_date: date
+    contract_date: date | None = None
+    reasons: list[str] = Field(default_factory=list, max_length=20)
+
+
 class LegalEvidenceReference(StrictModel):
     """Durable, self-contained legal source referenced by a Finding."""
 
@@ -415,6 +441,8 @@ class LegalEvidenceReference(StrictModel):
     ]
     release_id: Identifier
     unit_id: Identifier
+    instrument_id: Identifier
+    version_id: Identifier
     source_node_ids: list[Identifier] = Field(min_length=1)
     title: Annotated[str, StringConstraints(min_length=1, max_length=1000)]
     article_no: Annotated[str, StringConstraints(max_length=160)] | None = None
@@ -437,6 +465,17 @@ class LegalEvidenceReference(StrictModel):
     content_hash: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
     check_codes: list[Identifier] = Field(min_length=1, max_length=45)
     issue_ids: list[Identifier] = Field(min_length=1)
+    retrieval_channels: list[
+        Literal["EXACT", "KEYWORD", "VECTOR", "RELATION"]
+    ] = Field(min_length=1)
+    relevance_score: float = Field(ge=0, le=1)
+    rerank_score: float | None = Field(default=None, ge=0, le=1)
+    relation_paths: list[LegalEvidenceRelationPathReference] = Field(
+        default_factory=list
+    )
+    applicability_decisions: list[LegalApplicabilityDecisionReference] = Field(
+        min_length=1
+    )
     cautions: list[str] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
@@ -447,9 +486,27 @@ class LegalEvidenceReference(StrictModel):
             raise ValueError("check_codes must be unique")
         if len(self.issue_ids) != len(set(self.issue_ids)):
             raise ValueError("issue_ids must be unique")
+        if len(self.retrieval_channels) != len(set(self.retrieval_channels)):
+            raise ValueError("retrieval_channels must be unique")
+        decision_issue_ids = [item.issue_id for item in self.applicability_decisions]
+        if len(decision_issue_ids) != len(set(decision_issue_ids)):
+            raise ValueError("applicability decisions must be unique per issue")
+        if set(decision_issue_ids) != set(self.issue_ids):
+            raise ValueError("applicability decisions must cover every evidence issue")
         if self.effective_from and self.effective_to and self.effective_from > self.effective_to:
             raise ValueError("effective_from must not be after effective_to")
         return self
+
+
+class LegalEvidenceVersionSnapshotReference(StrictModel):
+    legal_release_id: Identifier
+    legal_projection_version: Identifier
+    relation_extractor_version: Identifier
+    embedding_model_version: Annotated[str, StringConstraints(max_length=300)] | None = None
+    reranker_version: Annotated[str, StringConstraints(max_length=300)] | None = None
+    planner_version: Identifier
+    review_as_of_date: date
+    contract_date: date | None = None
 
 
 class ReviewResultData(StrictModel):
@@ -463,6 +520,7 @@ class ReviewResultData(StrictModel):
     evidences: list[Evidence]
     legal_evidence_release_id: Identifier | None = None
     legal_evidence_bundle_hash: HashValue | None = None
+    legal_evidence_version_snapshot: LegalEvidenceVersionSnapshotReference | None = None
     legal_evidences: list[LegalEvidenceReference] = Field(default_factory=list)
     relationships: list[None] = Field(default_factory=list, max_length=0)
     result_hash: HashValue
@@ -501,12 +559,23 @@ class ReviewResultData(StrictModel):
         if self.legal_evidences:
             if self.legal_evidence_release_id is None or self.legal_evidence_bundle_hash is None:
                 raise ValueError("Legal evidence catalog requires release and bundle identity")
+            if self.legal_evidence_version_snapshot is None:
+                raise ValueError("Legal evidence catalog requires a reproducibility version snapshot")
+            if (
+                self.legal_evidence_version_snapshot.legal_release_id
+                != self.legal_evidence_release_id
+            ):
+                raise ValueError("Legal evidence version snapshot release must match the catalog")
             if any(
                 evidence.release_id != self.legal_evidence_release_id
                 for evidence in self.legal_evidences
             ):
                 raise ValueError("Every legal evidence must belong to the declared release")
-        elif self.legal_evidence_release_id is not None or self.legal_evidence_bundle_hash is not None:
+        elif (
+            self.legal_evidence_release_id is not None
+            or self.legal_evidence_bundle_hash is not None
+            or self.legal_evidence_version_snapshot is not None
+        ):
             raise ValueError("Legal evidence identity cannot exist without cited legal evidence")
 
         expected_counts = {
@@ -561,6 +630,7 @@ class PublicReviewResultData(StrictModel):
     evidences: list[Evidence]
     legal_evidence_release_id: Identifier | None = None
     legal_evidence_bundle_hash: HashValue | None = None
+    legal_evidence_version_snapshot: LegalEvidenceVersionSnapshotReference | None = None
     legal_evidences: list[LegalEvidenceReference] = Field(default_factory=list)
     relationships: list[None] = Field(default_factory=list, max_length=0)
     result_hash: HashValue
@@ -584,6 +654,7 @@ class PublicReviewResultData(StrictModel):
             evidences=value.evidences,
             legal_evidence_release_id=value.legal_evidence_release_id,
             legal_evidence_bundle_hash=value.legal_evidence_bundle_hash,
+            legal_evidence_version_snapshot=value.legal_evidence_version_snapshot,
             legal_evidences=value.legal_evidences,
             relationships=value.relationships,
             # Keep the durable internal hash so revision-draft and report lookups remain compatible.

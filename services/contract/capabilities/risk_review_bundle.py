@@ -67,6 +67,7 @@ from services.contract.capabilities.risk_review import (
     LlmCallMetric,
     ReviewUnitResult,
     SchemaNormalizationRecord,
+    SchemaNormalizationType,
     StrictModel,
     _attempt_diagnostic,
     _stable_id,
@@ -219,6 +220,9 @@ decision_summary只说明裁决依据，使用“合同文本”“该安排”�
 RISK必须选择至少一个当前Candidate允许的recommended_control_code；NO_RISK必须给出具体反向理由；
 HARD_RULE或STRONG_SIGNAL的NO_RISK必须引用允许的Counter Evidence，不能只写“未发现风险”。
 Primary Evidence由Python固定，不能删除、替换或在输出中声明；Supporting和Counter只能从当前Candidate允许列表选择。
+source_catalog中的ABSENCE是Python按checked_scope和verification_method完成的确定性缺失核验，不表示“没有证据”。
+HARD_RULE的*_ABSENT Candidate若Primary Evidence为ABSENCE，且Counter Evidence未证明完整机制存在，必须裁决RISK；
+不得仅因没有Counter Evidence而裁决INSUFFICIENT_EVIDENCE。
 Severity只能从当前Candidate的allowed_severity_factors选择，并且必须由当前Candidate Evidence直接支持；
 它只是非权威语义提议，Python会逐项执行证据门并根据severity_rule_id计算最终风险等级。
 禁止输出Check、Category、Risk Type、风险等级、正式Finding文案、主体、立场、
@@ -234,6 +238,12 @@ FVA002_ASSESSMENT_TYPES = (
 FVA002_EXTERNAL_MATERIAL_WORDS = (
     "法定代表人",
     "授权委托书",
+    "授权",
+    "权限",
+    "授权文件",
+    "授权证明",
+    "签署权限",
+    "代表权限",
     "董事会",
     "股东会",
     "营业执照",
@@ -276,7 +286,10 @@ class GenericReviewRequest(StrictModel):
     assigned_check_specs: list[GenericCheckSpec] = Field(min_length=1, max_length=8)
     definitions: list[CommercialIrItem] = Field(default_factory=list)
     projected_ir_items: list[CommercialIrItem] = Field(default_factory=list)
-    source_excerpts: list[CommercialSourceExcerpt] = Field(min_length=1)
+    # An absence-only first shard can legitimately contain no source excerpt.
+    # The catalogue validator below still requires a deterministic Absence
+    # Source in that case. A redundant later shard is skipped before review.
+    source_excerpts: list[CommercialSourceExcerpt] = Field(default_factory=list)
     evidence_sources: list[RiskEvidenceSource] = Field(default_factory=list)
     absence_evidence_sources: list[RiskAbsenceEvidenceSource] = Field(
         default_factory=list
@@ -1105,7 +1118,7 @@ class ReviewBatchResult(StrictModel):
     call_metrics: list[LlmCallMetric] = Field(default_factory=list, max_length=2)
     repair_reasons: list[str] = Field(default_factory=list, max_length=1)
     schema_normalization_applied: bool = False
-    schema_normalization_type: Literal["TOP_LEVEL_CHECKS_TO_CHECK_RESULTS"] | None = None
+    schema_normalization_type: SchemaNormalizationType | None = None
     attempt_diagnostics: list[LlmAttemptDiagnostic] = Field(
         default_factory=list,
         max_length=2,
@@ -1375,6 +1388,7 @@ class GenericAttemptArtifact(StrictModel):
     repair_type: Literal[
         "SCHEMA_REPAIR",
         "EVIDENCE_SELECTION_REPAIR",
+        "DECISION_SUPPORT_REPAIR",
     ] | None = None
     repair_no: int = Field(ge=0, le=1)
     started_at: str
@@ -1461,17 +1475,9 @@ class GenericBaseDirectReviewer:
                 model_id=model_id,
                 framework_run_id=framework_run_id,
                 attempt_artifact_sink=attempt_artifact_sink,
+                allow_evidence_selection_repair=allow_evidence_selection_repair,
             )
         prompt, ir_refs, anchor_refs = _generic_prompt(request)
-        repair_prompt = (
-            _generic_prompt(
-                request.model_copy(
-                    update={"legal_evidence": [], "legal_evidence_input_tokens": 0}
-                )
-            )[0]
-            if request.legal_evidence
-            else prompt
-        )
         input_diagnostics = generic_input_diagnostics(request, prompt)
         po_catalog: PoEvidenceCatalog | None = None
         if request.unit_id in {
@@ -1517,7 +1523,7 @@ class GenericBaseDirectReviewer:
             parsed: GenericParsedOutput | None = None
             attempt_started_at = _utc_now()
             messages: list[dict[str, str]] = [
-                {"role": "user", "content": repair_prompt if repair_no else prompt}
+                {"role": "user", "content": prompt}
             ]
             if repair_no:
                 repair_payload = _generic_repair_payload(
@@ -1527,20 +1533,20 @@ class GenericBaseDirectReviewer:
                     expected_codes=expected_codes,
                     po_catalog=po_catalog,
                 )
-                messages.extend(
-                    [
-                        {"role": "assistant", "content": invalid_content},
-                        {
-                            "role": "user",
-                            "content": json.dumps(
-                                repair_payload,
-                                ensure_ascii=False,
-                                separators=(",", ":"),
-                                sort_keys=True,
-                            ),
-                        },
-                    ]
-                )
+                # The payload already contains the rejected JSON. Keep repair
+                # calls schema-only and bounded instead of repeating the full
+                # contract prompt plus the same invalid output a second time.
+                messages = [
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            repair_payload,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                    }
+                ]
             try:
                 completion = await runtime.complete_with_usage(
                     messages=messages,
@@ -1583,7 +1589,11 @@ class GenericBaseDirectReviewer:
             calls.append(completion)
             try:
                 enforce_provider_prompt_budget(completion, request)
-                parsed = _parse_generic_output(completion.content, expected_codes)
+                parsed = _parse_generic_output(
+                    completion.content,
+                    expected_codes,
+                    assigned_check_specs=request.assigned_check_specs,
+                )
                 semantic_preservation_passed: bool | None = None
                 if repair_no and first_snapshot is not None:
                     _validate_generic_semantic_preservation(
@@ -1753,7 +1763,13 @@ class GenericBaseDirectReviewer:
                 "PARTIAL_FAILED"
                 if any(
                     item.status == "FAILED"
-                    or item.reason_code == "INSUFFICIENT_EVIDENCE"
+                    or (
+                        item.reason_code == "INSUFFICIENT_EVIDENCE"
+                        and not (
+                            request.unit_id == "formation_validity_authority"
+                            and item.check_code == "FVA-002"
+                        )
+                    )
                     for item in check_results
                 )
                 else "COMPLETED"
@@ -1830,6 +1846,7 @@ async def _review_po_candidate_batch(
     model_id: str,
     framework_run_id: str | None,
     attempt_artifact_sink: GenericAttemptArtifactSink | None,
+    allow_evidence_selection_repair: bool,
 ) -> ReviewBatchResult:
     prompt, ir_refs, anchor_refs = _generic_prompt(request)
     candidates = _build_generic_candidates(
@@ -1848,9 +1865,32 @@ async def _review_po_candidate_batch(
             "Deterministic candidate IDs must be unique",
         )
     if not expected_ids:
-        raise DirectReviewError(
-            "RISK_MODEL_CANDIDATE_EMPTY",
-            "The current PO Batch has no Candidate requiring model review",
+        check_results = [
+            CheckCoverageResult(
+                check_code=spec.check_code,
+                status="REVIEWED",
+                reason_code="NO_RISK_IDENTIFIED",
+                decision_note=(
+                    "确定性候选生成未发现需要模型裁决的风险触发条件。"
+                ),
+                finding_local_ids=[],
+            )
+            for spec in request.assigned_check_specs
+        ]
+        return ReviewBatchResult(
+            unit_id=request.unit_id,
+            domain=request.unit_id,
+            batch_id=request.batch_id,
+            status="COMPLETED",
+            check_results=check_results,
+            findings=[],
+            warnings=[],
+            model_call_count=0,
+            repair_count=0,
+            duration_ms=0,
+            reason_code_enrichment_count=len(check_results),
+            reason_code_rule_version="1.0",
+            ignored_model_reason_code_count=0,
         )
     catalog = _po_evidence_catalog(request, candidates, ir_refs, anchor_refs)
     runtime = runtime_factory(tenant_id)
@@ -1860,39 +1900,120 @@ async def _review_po_candidate_batch(
     invalid_content = ""
     invalid_reason = ""
     first_snapshot: dict[str, Any] | None = None
+    evidence_role_normalization_count = 0
+    repair_type: Literal[
+        "SCHEMA_REPAIR",
+        "EVIDENCE_SELECTION_REPAIR",
+        "DECISION_SUPPORT_REPAIR",
+    ] | None = None
+    repair_target_candidate_ids: tuple[str, ...] = ()
     started = time.perf_counter()
 
     for repair_no in range(2):
         parsed_object: dict[str, Any] | None = None
         attempt_started_at = _utc_now()
-        messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
+        messages: list[dict[str, str]]
         if repair_no:
-            messages.extend(
-                [
-                    {"role": "assistant", "content": invalid_content},
+            repair_payload: dict[str, Any] = {
+                "task": repair_type or "SCHEMA_REPAIR",
+                "first_raw_json": invalid_content,
+                "exact_validation_error": invalid_reason,
+                "required_candidate_ids": list(expected_ids),
+            }
+            if repair_type == "EVIDENCE_SELECTION_REPAIR":
+                repair_payload.update(
                     {
-                        "role": "user",
-                        "content": json.dumps(
-                            {
-                                "task": "SCHEMA_REPAIR",
-                                "exact_validation_error": invalid_reason,
-                                "required_candidate_ids": list(expected_ids),
-                                "constraints": [
-                                    "只修JSON、字段名或非语义类型错误",
-                                    "不得新增或删除CandidateDecision",
-                                    "不得改变candidate_id、verdict、decision_summary或severity_factors",
-                                    "不得改变Supporting、Counter或recommended_control_codes",
-                                    "不得补写首轮遗漏的Candidate裁决",
-                                    "顶层只能是candidate_decisions",
-                                ],
-                            },
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                            sort_keys=True,
+                        "allowed_supporting_evidence_source_ids_by_candidate": {
+                            candidate_id: _candidate_allowed_source_ids(
+                                candidate,
+                                "Supporting",
+                            )
+                            for candidate_id, candidate in candidates_by_id.items()
+                        },
+                        "allowed_counter_evidence_source_ids_by_candidate": {
+                            candidate_id: _candidate_allowed_source_ids(
+                                candidate,
+                                "Counter",
+                            )
+                            for candidate_id, candidate in candidates_by_id.items()
+                        },
+                        "constraints": [
+                            "只修改supporting_evidence_source_ids和counter_evidence_source_ids",
+                            "不得新增、删除、改序或改写CandidateDecision",
+                            "不得改变candidate_id、verdict、decision_summary、severity_factors或recommended_control_codes",
+                            "每个Source只能从对应Candidate及Evidence角色的允许列表逐字选择",
+                            "不得构造、猜测或改写source_id",
+                            "顶层只能是candidate_decisions",
+                        ],
+                    }
+                )
+            elif repair_type == "DECISION_SUPPORT_REPAIR":
+                target_sources = {
+                    source_id
+                    for candidate_id in repair_target_candidate_ids
+                    for source_id in (
+                        *candidates_by_id[candidate_id].primary_evidence_source_ids,
+                        *_candidate_allowed_source_ids(
+                            candidates_by_id[candidate_id], "Supporting"
                         ),
-                    },
+                        *_candidate_allowed_source_ids(
+                            candidates_by_id[candidate_id], "Counter"
+                        ),
+                    )
+                }
+                repair_payload.update(
+                    {
+                        "target_candidate_ids": list(repair_target_candidate_ids),
+                        "target_candidates": {
+                            candidate_id: candidates_by_id[candidate_id].model_dump(
+                                mode="json"
+                            )
+                            for candidate_id in repair_target_candidate_ids
+                        },
+                        "source_catalog": {
+                            source_id: (
+                                catalog.evidence_sources[source_id].model_dump(
+                                    mode="json"
+                                )
+                                if source_id in catalog.evidence_sources
+                                else catalog.absence_sources[source_id].model_dump(
+                                    mode="json"
+                                )
+                            )
+                            for source_id in sorted(target_sources)
+                        },
+                        "constraints": [
+                            "只重新裁决target_candidate_ids；其他CandidateDecision所有字段必须保持不变",
+                            "target为HARD_RULE或STRONG_SIGNAL时，NO_RISK必须引用合法且能推翻Primary触发条件的Counter Evidence",
+                            "没有有效Counter且Primary已满足触发条件时应判RISK，并填写合法severity_factors和recommended_control_codes",
+                            "不得仅因Counter列表为空而判INSUFFICIENT_EVIDENCE",
+                            "不得构造、猜测或改写任何source_id",
+                            "顶层只能是candidate_decisions，覆盖和顺序必须保持不变",
+                        ],
+                    }
+                )
+            else:
+                repair_payload["constraints"] = [
+                    "只修JSON、字段名或非语义类型错误",
+                    "不得新增或删除CandidateDecision",
+                    "不得改变candidate_id、verdict、decision_summary或severity_factors",
+                    "不得改变Supporting、Counter或recommended_control_codes",
+                    "不得补写首轮遗漏的Candidate裁决",
+                    "顶层只能是candidate_decisions",
                 ]
-            )
+            messages = [
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        repair_payload,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                }
+            ]
+        else:
+            messages = [{"role": "user", "content": prompt}]
         try:
             completion = await runtime.complete_with_usage(
                 messages=messages,
@@ -1922,7 +2043,7 @@ async def _review_po_candidate_batch(
                 raw_object=None,
                 normalization=SchemaNormalizationRecord(applied=False),
                 error=exc,
-                repair_type="SCHEMA_REPAIR" if repair_no else None,
+                repair_type=repair_type if repair_no else None,
                 repair_reason=invalid_reason or None,
                 before_snapshot=None,
                 after_snapshot=None,
@@ -1939,12 +2060,21 @@ async def _review_po_candidate_batch(
                 expected_ids=expected_ids,
                 candidates_by_id=candidates_by_id,
             )
+            response, normalized_role_count = (
+                _normalize_po_non_authoritative_evidence_roles(
+                    response,
+                    candidates_by_id,
+                )
+            )
+            evidence_role_normalization_count += normalized_role_count
             current_snapshot = _po_decision_snapshot(parsed_object)
             semantic_preservation_passed: bool | None = None
             if repair_no:
                 _validate_po_decision_semantic_preservation(
                     first_snapshot,
                     current_snapshot,
+                    repair_type=repair_type or "SCHEMA_REPAIR",
+                    repair_target_candidate_ids=repair_target_candidate_ids,
                 )
                 semantic_preservation_passed = True
             (
@@ -1989,7 +2119,7 @@ async def _review_po_candidate_batch(
                 raw_object=parsed_object,
                 normalization=SchemaNormalizationRecord(applied=False),
                 error=None,
-                repair_type="SCHEMA_REPAIR" if repair_no else None,
+                repair_type=repair_type if repair_no else None,
                 repair_reason=invalid_reason or None,
                 before_snapshot=None,
                 after_snapshot=None,
@@ -2014,11 +2144,54 @@ async def _review_po_candidate_batch(
                     semantic_preservation_passed=None,
                 )
             )
+            next_repair_type = _po_candidate_repair_type(exc)
+            conflicting_duplicate_ids = _po_conflicting_duplicate_candidate_ids(
+                parsed_object,
+                candidates_by_id,
+            )
+            unsupported_negative_ids = _po_unsupported_negative_candidate_ids(
+                parsed_object,
+                candidates_by_id,
+            )
+            if (
+                next_repair_type == "EVIDENCE_SELECTION_REPAIR"
+                and unsupported_negative_ids
+            ):
+                next_repair_type = "DECISION_SUPPORT_REPAIR"
+            if conflicting_duplicate_ids:
+                next_repair_type = "DECISION_SUPPORT_REPAIR"
+            next_repair_target_ids = (
+                tuple(
+                    dict.fromkeys(
+                        [*unsupported_negative_ids, *conflicting_duplicate_ids]
+                    )
+                )
+                if next_repair_type == "DECISION_SUPPORT_REPAIR"
+                else ()
+            )
+            candidate_coverage_repairable = _po_has_exact_candidate_ids(
+                parsed_object,
+                expected_ids,
+            ) or (
+                next_repair_type == "DECISION_SUPPORT_REPAIR"
+                and _po_has_repairable_candidate_coverage(
+                    parsed_object,
+                    expected_ids,
+                    duplicate_candidate_ids=next_repair_target_ids,
+                )
+            )
             can_repair = (
                 repair_no == 0
-                and exc.repairable
-                and exc.code == "RISK_DIRECT_SCHEMA_INVALID"
-                and _po_has_exact_candidate_ids(parsed_object, expected_ids)
+                and next_repair_type is not None
+                and candidate_coverage_repairable
+                and (
+                    allow_evidence_selection_repair
+                    or next_repair_type == "SCHEMA_REPAIR"
+                )
+                and (
+                    next_repair_type != "DECISION_SUPPORT_REPAIR"
+                    or bool(next_repair_target_ids)
+                )
             )
             _emit_generic_attempt_artifact(
                 attempt_artifact_sink,
@@ -2029,7 +2202,7 @@ async def _review_po_candidate_batch(
                 raw_object=parsed_object,
                 normalization=SchemaNormalizationRecord(applied=False),
                 error=exc,
-                repair_type="SCHEMA_REPAIR" if repair_no else None,
+                repair_type=repair_type if repair_no else None,
                 repair_reason=invalid_reason or None,
                 before_snapshot=None,
                 after_snapshot=None,
@@ -2042,7 +2215,12 @@ async def _review_po_candidate_batch(
                 raise
             invalid_content = completion.content
             invalid_reason = f"{exc.code}: {exc}"
-            first_snapshot = _po_decision_snapshot(parsed_object)
+            first_snapshot = _po_decision_snapshot(
+                parsed_object,
+                allow_duplicate_ids=next_repair_target_ids,
+            )
+            repair_type = next_repair_type
+            repair_target_candidate_ids = next_repair_target_ids
             repair_reasons.append(invalid_reason)
         except asyncio.CancelledError:
             await finalize_completion_validation_failed(
@@ -2095,9 +2273,17 @@ async def _review_po_candidate_batch(
         warnings=warnings,
         model_call_count=len(calls),
         repair_count=len(calls) - 1,
-        schema_repair_count=len(calls) - 1,
-        evidence_selection_repair_count=0,
-        evidence_binding_normalization_count=0,
+        schema_repair_count=int(
+            len(calls) == 2 and repair_type == "SCHEMA_REPAIR"
+        ),
+        evidence_selection_repair_count=int(
+            len(calls) == 2
+            and repair_type in {
+                "EVIDENCE_SELECTION_REPAIR",
+                "DECISION_SUPPORT_REPAIR",
+            }
+        ),
+        evidence_binding_normalization_count=evidence_role_normalization_count,
         ignored_model_link_fields_count=0,
         selected_evidence_source_ids=_selected_po_source_ids(findings, catalog),
         prompt_tokens=_sum_optional(item.prompt_tokens for item in calls),
@@ -2150,6 +2336,34 @@ def _parse_po_candidate_output(
         raw_object = parsed.structured
         decisions = raw_object.get("candidate_decisions")
         if isinstance(decisions, list):
+            unique_decisions: list[dict[str, Any]] = []
+            first_by_id: dict[str, dict[str, Any]] = {}
+            for item in decisions:
+                if not isinstance(item, dict) or not isinstance(
+                    item.get("candidate_id"), str
+                ):
+                    unique_decisions.append(item)
+                    continue
+                candidate_id = item["candidate_id"]
+                previous = first_by_id.get(candidate_id)
+                if previous is None:
+                    first_by_id[candidate_id] = item
+                    unique_decisions.append(item)
+                elif previous != item:
+                    raise DirectReviewError(
+                        "RISK_CANDIDATE_DECISION_DUPLICATED",
+                        "Conflicting decisions were returned for one Candidate",
+                        structured_output=raw_object,
+                    )
+            if len(unique_decisions) != len(decisions):
+                # Exact byte-equivalent semantic duplicates add no judgment.
+                # Remove them before coverage validation; conflicting
+                # duplicates remain a hard failure above.
+                decisions = unique_decisions
+                raw_object = {
+                    **raw_object,
+                    "candidate_decisions": decisions,
+                }
             ids = [
                 item.get("candidate_id")
                 for item in decisions
@@ -2181,6 +2395,36 @@ def _parse_po_candidate_output(
                     f"CandidateDecision coverage/order is invalid; missing={missing}",
                     structured_output=raw_object,
                 )
+            controls_normalized = False
+            for item in decisions:
+                if not isinstance(item, dict):
+                    continue
+                candidate_id = item.get("candidate_id")
+                candidate = candidates_by_id.get(candidate_id)
+                selected = item.get("recommended_control_codes")
+                if candidate is None or not isinstance(selected, list):
+                    continue
+                allowed = _candidate_allowed_control_codes(candidate)
+                allowed_set = set(allowed)
+                normalized_controls = list(
+                    dict.fromkeys(
+                        code
+                        for code in selected
+                        if isinstance(code, str) and code in allowed_set
+                    )
+                )
+                if item.get("verdict") == "RISK" and not normalized_controls:
+                    normalized_controls = [allowed[0]]
+                elif item.get("verdict") != "RISK":
+                    normalized_controls = []
+                if normalized_controls != selected:
+                    item["recommended_control_codes"] = normalized_controls
+                    controls_normalized = True
+            if controls_normalized:
+                raw_object = {
+                    **raw_object,
+                    "candidate_decisions": decisions,
+                }
         response = CandidateDecisionResponseRaw.model_validate(raw_object)
         if tuple(item.candidate_id for item in response.candidate_decisions) != expected_ids:
             raise DirectReviewError(
@@ -2217,8 +2461,38 @@ def _po_has_exact_candidate_ids(
     return len(ids) == len(decisions) and tuple(ids) == expected_ids
 
 
+def _po_has_repairable_candidate_coverage(
+    value: dict[str, Any] | None,
+    expected_ids: tuple[str, ...],
+    *,
+    duplicate_candidate_ids: tuple[str, ...],
+) -> bool:
+    if not isinstance(value, dict) or not isinstance(
+        value.get("candidate_decisions"), list
+    ):
+        return False
+    ids = [
+        item.get("candidate_id")
+        for item in value["candidate_decisions"]
+        if isinstance(item, dict)
+    ]
+    if len(ids) != len(value["candidate_decisions"]) or any(
+        not isinstance(item, str) for item in ids
+    ):
+        return False
+    duplicate_set = set(duplicate_candidate_ids)
+    first_occurrences = list(dict.fromkeys(ids))
+    return (
+        tuple(first_occurrences) == expected_ids
+        and set(ids) == set(expected_ids)
+        and all(ids.count(candidate_id) == 1 or candidate_id in duplicate_set for candidate_id in expected_ids)
+    )
+
+
 def _po_decision_snapshot(
     value: dict[str, Any] | None,
+    *,
+    allow_duplicate_ids: tuple[str, ...] = (),
 ) -> dict[str, dict[str, Any]] | None:
     if not isinstance(value, dict) or not isinstance(
         value.get("candidate_decisions"),
@@ -2226,11 +2500,14 @@ def _po_decision_snapshot(
     ):
         return None
     result: dict[str, dict[str, Any]] = {}
+    allowed_duplicates = set(allow_duplicate_ids)
     for item in value["candidate_decisions"]:
         if not isinstance(item, dict) or not isinstance(item.get("candidate_id"), str):
             return None
         candidate_id = item["candidate_id"]
         if candidate_id in result:
+            if candidate_id in allowed_duplicates:
+                continue
             return None
         result[candidate_id] = dict(item)
     return result
@@ -2239,6 +2516,13 @@ def _po_decision_snapshot(
 def _validate_po_decision_semantic_preservation(
     before: dict[str, dict[str, Any]] | None,
     after: dict[str, dict[str, Any]] | None,
+    *,
+    repair_type: Literal[
+        "SCHEMA_REPAIR",
+        "EVIDENCE_SELECTION_REPAIR",
+        "DECISION_SUPPORT_REPAIR",
+    ] = "SCHEMA_REPAIR",
+    repair_target_candidate_ids: tuple[str, ...] = (),
 ) -> None:
     if before is None or after is None or set(before) != set(after):
         raise DirectReviewError(
@@ -2251,11 +2535,156 @@ def _validate_po_decision_semantic_preservation(
         for field, previous_value in previous.items():
             if field == "candidate_id":
                 continue
+            if (
+                repair_type == "DECISION_SUPPORT_REPAIR"
+                and candidate_id in repair_target_candidate_ids
+            ):
+                continue
+            if repair_type == "EVIDENCE_SELECTION_REPAIR" and field in {
+                "supporting_evidence_source_ids",
+                "counter_evidence_source_ids",
+            }:
+                continue
             if previous_value is not None and current.get(field) != previous_value:
                 raise DirectReviewError(
                     "RISK_REPAIR_SEMANTICS_CHANGED",
                     f"Schema Repair changed {field} for {candidate_id}",
                 )
+
+
+def _po_candidate_repair_type(
+    error: DirectReviewError,
+) -> Literal[
+    "SCHEMA_REPAIR",
+    "EVIDENCE_SELECTION_REPAIR",
+    "DECISION_SUPPORT_REPAIR",
+] | None:
+    if error.code == "RISK_DIRECT_SCHEMA_INVALID" and error.repairable:
+        return "SCHEMA_REPAIR"
+    if error.code in {
+        "RISK_COUNTER_EVIDENCE_NOT_ALLOWED",
+        "RISK_COUNTER_EVIDENCE_UNKNOWN",
+        "RISK_COUNTER_EVIDENCE_DUPLICATED",
+        "RISK_SUPPORTING_EVIDENCE_NOT_ALLOWED",
+        "RISK_SUPPORTING_EVIDENCE_UNKNOWN",
+        "RISK_SUPPORTING_EVIDENCE_DUPLICATED",
+    }:
+        return "EVIDENCE_SELECTION_REPAIR"
+    if error.code == "RISK_NEGATIVE_DECISION_UNSUPPORTED":
+        return "DECISION_SUPPORT_REPAIR"
+    return None
+
+
+def _po_unsupported_negative_candidate_ids(
+    value: dict[str, Any] | None,
+    candidates_by_id: dict[str, DeterministicRiskCandidate],
+) -> tuple[str, ...]:
+    if not isinstance(value, dict) or not isinstance(
+        value.get("candidate_decisions"), list
+    ):
+        return ()
+    result: list[str] = []
+    for item in value["candidate_decisions"]:
+        if not isinstance(item, dict):
+            continue
+        candidate_id = item.get("candidate_id")
+        candidate = candidates_by_id.get(candidate_id)
+        valid_counter_ids = (
+            set(item.get("counter_evidence_source_ids") or [])
+            & set(_candidate_allowed_source_ids(candidate, "Counter"))
+            if candidate is not None
+            else set()
+        )
+        if (
+            candidate is not None
+            and candidate.candidate_strength in {"HARD_RULE", "STRONG_SIGNAL"}
+            and item.get("verdict") == "NO_RISK"
+            and not valid_counter_ids
+        ):
+            result.append(candidate_id)
+    return tuple(result)
+
+
+def _po_conflicting_duplicate_candidate_ids(
+    value: dict[str, Any] | None,
+    candidates_by_id: dict[str, DeterministicRiskCandidate],
+) -> tuple[str, ...]:
+    if not isinstance(value, dict) or not isinstance(
+        value.get("candidate_decisions"), list
+    ):
+        return ()
+    first_by_id: dict[str, dict[str, Any]] = {}
+    conflicts: list[str] = []
+    for item in value["candidate_decisions"]:
+        if not isinstance(item, dict):
+            continue
+        candidate_id = item.get("candidate_id")
+        if not isinstance(candidate_id, str) or candidate_id not in candidates_by_id:
+            continue
+        previous = first_by_id.get(candidate_id)
+        if previous is None:
+            first_by_id[candidate_id] = item
+        elif previous != item and candidate_id not in conflicts:
+            conflicts.append(candidate_id)
+    return tuple(conflicts)
+
+
+def _normalize_po_non_authoritative_evidence_roles(
+    response: CandidateDecisionResponseRaw,
+    candidates_by_id: dict[str, DeterministicRiskCandidate],
+) -> tuple[CandidateDecisionResponseRaw, int]:
+    """Drop only source selections that cannot affect the accepted verdict.
+
+    Primary Evidence is fixed by Python. Supporting Evidence never proves a
+    negative verdict, and Counter Evidence does not substantiate RISK or
+    INSUFFICIENT_EVIDENCE. Unknown, duplicated, or cross-Candidate IDs in
+    those roles can therefore be removed without changing the model's
+    judgment. If that leaves a HARD/STRONG NO_RISK without valid Counter
+    Evidence, the downstream gate requires one bounded re-decision instead of
+    allowing an invalid Source to support the negative verdict.
+    """
+
+    changed = 0
+    decisions: list[CandidateDecisionRaw] = []
+    for decision in response.candidate_decisions:
+        candidate = candidates_by_id[decision.candidate_id]
+
+        def allowed_unique(values: list[str], allowed: list[str]) -> list[str]:
+            nonlocal changed
+            allowed_set = set(allowed)
+            result: list[str] = []
+            for value in values:
+                if value not in allowed_set or value in result:
+                    changed += 1
+                    continue
+                result.append(value)
+            return result
+
+        supporting = allowed_unique(
+            decision.supporting_evidence_source_ids,
+            [
+                *candidate.primary_evidence_source_ids,
+                *_candidate_allowed_source_ids(candidate, "Supporting"),
+            ],
+        )
+        counter = decision.counter_evidence_source_ids
+        if not (
+            decision.verdict == "NO_RISK"
+            and candidate.candidate_strength in {"HARD_RULE", "STRONG_SIGNAL"}
+        ):
+            counter = allowed_unique(
+                counter,
+                _candidate_allowed_source_ids(candidate, "Counter"),
+            )
+        decisions.append(
+            decision.model_copy(
+                update={
+                    "supporting_evidence_source_ids": supporting,
+                    "counter_evidence_source_ids": counter,
+                }
+            )
+        )
+    return response.model_copy(update={"candidate_decisions": decisions}), changed
 
 
 def _materialize_po_candidate_decisions(
@@ -2382,6 +2811,7 @@ def _materialize_po_candidate_decisions(
                 raw.severity_factors,
                 supporting_ids=supporting_ids,
                 catalog=catalog,
+                request=request,
             )
         )
         severity_factors = _merge_po_severity_factors(
@@ -2719,7 +3149,9 @@ def _validate_po_selected_sources(
     if invalid:
         raise DirectReviewError(
             f"RISK_{role.upper()}_EVIDENCE_NOT_ALLOWED",
-            f"{role} Evidence crossed its Candidate boundary: {invalid}",
+            f"{role} Evidence crossed Candidate {candidate.candidate_id} "
+            f"({candidate.check_code}/{candidate.candidate_type}) boundary: "
+            f"{invalid}",
         )
     known = set(catalog.evidence_sources) | set(catalog.absence_sources)
     if any(source_id not in known for source_id in selected):
@@ -3526,6 +3958,7 @@ def _icd_factor_has_required_evidence(
 
 
 def _lre_factor_has_required_evidence(
+    request: GenericReviewRequest,
     factor_code: str,
     *,
     text_sources: list[RiskEvidenceSource],
@@ -3630,6 +4063,7 @@ def _validate_po_semantic_severity_factors(
     *,
     supporting_ids: list[str],
     catalog: PoEvidenceCatalog,
+    request: GenericReviewRequest | None = None,
 ) -> tuple[list[SeverityFactorCode], list[RejectedSeverityFactor]]:
     source_ids = list(
         dict.fromkeys(
@@ -3663,16 +4097,29 @@ def _validate_po_semantic_severity_factors(
             )
             continue
         if candidate.check_code.startswith("PO-"):
-            factor_validator = _po_factor_has_required_evidence
+            valid, reason_code = _po_factor_has_required_evidence(
+                factor_code,
+                text_sources=text_sources,
+                absence_sources=absence_sources,
+            )
         elif candidate.check_code.startswith("ICD-"):
-            factor_validator = _icd_factor_has_required_evidence
+            valid, reason_code = _icd_factor_has_required_evidence(
+                factor_code,
+                text_sources=text_sources,
+                absence_sources=absence_sources,
+            )
         else:
-            factor_validator = _lre_factor_has_required_evidence
-        valid, reason_code = factor_validator(
-            factor_code,
-            text_sources=text_sources,
-            absence_sources=absence_sources,
-        )
+            if request is None:
+                raise DirectReviewError(
+                    "RISK_REVIEW_CONTEXT_REQUIRED",
+                    "LRE severity validation requires the frozen party perspective",
+                )
+            valid, reason_code = _lre_factor_has_required_evidence(
+                request,
+                factor_code,
+                text_sources=text_sources,
+                absence_sources=absence_sources,
+            )
         if valid:
             accepted.append(factor_code)
         else:
@@ -4950,7 +5397,8 @@ def _generic_prompt(
     else:
         if had_legal_evidence:
             request.legal_evidence_prompt_status = "OMITTED_TOKEN_BUDGET"
-        request.legal_evidence = []
+        # Preserve the planner-owned objects for deterministic citation
+        # binding; only the prompt catalog is omitted for this model call.
         request.legal_evidence_input_tokens = 0
     return (
         prompt_prefix
@@ -5100,17 +5548,12 @@ def _po_candidate_prompt(
                         item.candidate_id,
                         item.candidate_type,
                         item.candidate_strength,
-                        item.criticality,
-                        item.facts,
+                        item.trigger_reason,
                         item.trigger_conditions,
                         item.mitigating_conditions,
-                        item.disqualifying_conditions,
-                        item.primary_evidence_requirements,
-                        item.absence_evidence_requirements,
                         item.primary_evidence_source_ids,
                         item.allowed_supporting_evidence_source_ids,
                         item.allowed_counter_evidence_source_ids,
-                        item.severity_rule_id,
                         item.allowed_severity_factors,
                         (
                             item.po003_precondition.model_dump(mode="json")
@@ -5130,11 +5573,7 @@ def _po_candidate_prompt(
                     and item.requires_model_decision
                 ],
                 "allowed_evidence_sources": [
-                    [
-                        source_payload[source_id]["source_id"],
-                        source_payload[source_id]["ir_type"],
-                        source_payload[source_id]["quoted_text"],
-                    ]
+                    [source_payload[source_id]["source_id"]]
                     for source_id in catalog.allowed_source_ids_by_check[
                         check_code
                     ]
@@ -5142,12 +5581,7 @@ def _po_candidate_prompt(
                     and source_id in catalog.evidence_sources
                 ],
                 "allowed_absence_sources": [
-                    [
-                        source_payload[source_id]["source_id"],
-                        source_payload[source_id]["checked_scope"],
-                        source_payload[source_id]["verification_method"],
-                        source_payload[source_id]["missing_target"],
-                    ]
+                    [source_payload[source_id]["source_id"]]
                     for source_id in catalog.allowed_source_ids_by_check[
                         check_code
                     ]
@@ -5163,17 +5597,12 @@ def _po_candidate_prompt(
             "candidate_id",
             "candidate_type",
             "candidate_strength",
-            "criticality",
-            "facts",
+            "trigger_reason",
             "trigger_conditions",
             "mitigating_conditions",
-            "disqualifying_conditions",
-            "primary_evidence_requirements",
-            "absence_evidence_requirements",
             "primary_evidence_source_ids",
             "allowed_supporting_evidence_source_ids",
             "allowed_counter_evidence_source_ids",
-            "severity_rule_id",
             "allowed_severity_factors",
             "candidate_precondition",
             "allowed_control_codes",
@@ -5193,28 +5622,6 @@ def _po_candidate_prompt(
                 "counter_evidence_source_ids",
                 "recommended_control_codes",
             ],
-            "severity_factor_policy": {
-                factor_code: {
-                    key: value
-                    for key, value in {
-                        "evidence_types": policy.required_evidence_types,
-                        "text_signals": policy.required_text_signals,
-                        "absence_types": policy.required_absence_source_types,
-                        "disqualifying_signals": (
-                            policy.conflicting_or_disqualifying_signals
-                        ),
-                    }.items()
-                    if value
-                }
-                for factor_code, policy in _candidate_severity_policies(
-                    request.unit_id
-                ).items()
-                if any(
-                    factor_code in candidate.allowed_severity_factors
-                    for candidate in candidates
-                    if candidate.requires_model_decision
-                )
-            },
             "rules": [
                 "每个required_candidate_id必须返回一次且仅一次，并保持输入顺序",
                 "不得返回未知Candidate，不得用Check级结论代替Candidate裁决",
@@ -5261,17 +5668,32 @@ def _po_candidate_prompt(
             ],
         },
         "source_legends": {
-            "allowed_evidence_sources": [
-                "source_id",
-                "ir_type",
-                "quoted_text",
-            ],
-            "allowed_absence_sources": [
-                "source_id",
+            "allowed_evidence_sources": ["source_id"],
+            "allowed_absence_sources": ["source_id"],
+            "source_catalog_text": ["TEXT_QUOTE", "ir_type", "quoted_text"],
+            "source_catalog_absence": [
+                "ABSENCE",
                 "checked_scope",
                 "verification_method",
                 "missing_target",
             ],
+        },
+        "source_catalog": {
+            source_id: (
+                [
+                    "TEXT_QUOTE",
+                    source["ir_type"],
+                    source["quoted_text"],
+                ]
+                if source_id in catalog.evidence_sources
+                else [
+                    "ABSENCE",
+                    source["checked_scope"],
+                    source["verification_method"],
+                    source["missing_target"],
+                ]
+            )
+            for source_id, source in source_payload.items()
         },
     }
     prompt_prefix = "逐项裁决当前Batch中的全部RiskCandidate。仅返回JSON：\n"
@@ -5303,7 +5725,8 @@ def _po_candidate_prompt(
     else:
         if had_legal_evidence:
             request.legal_evidence_prompt_status = "OMITTED_TOKEN_BUDGET"
-        request.legal_evidence = []
+        # Preserve the planner-owned objects for deterministic citation
+        # binding; only the prompt catalog is omitted for this model call.
         request.legal_evidence_input_tokens = 0
     return prompt_prefix + json.dumps(
         payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
@@ -7239,7 +7662,22 @@ def _build_po_candidates(
     """Generate deterministic PO hypotheses; only the model may decide risk."""
     candidates: list[DeterministicRiskCandidate] = []
     specs = {item.check_code: item for item in request.assigned_check_specs}
+    policies = {
+        item.check_code: item for item in request.check_evidence_policies
+    }
     for check_code, spec in specs.items():
+        policy = policies.get(check_code)
+        if policy is not None and not (
+            policy.allowed_evidence_source_ids
+            or policy.allowed_absence_source_ids
+        ):
+            # A later shard may contain only sibling-Check material. The
+            # first shard owns the domain-wide Absence Source, so this Check
+            # contributes no Candidate in the current shard.
+            continue
+        absence_available = bool(
+            policy and policy.allowed_absence_source_ids
+        )
         matched_for_check = False
         role_filtered_for_check = False
         allowed_item_ids = {
@@ -7288,7 +7726,11 @@ def _build_po_candidates(
         missing_types = set(spec.required_ir_types) - {
             item.ir_type for item in ir_refs.values()
         }
-        if check_code == "PO-003" and not matched_for_check:
+        if (
+            check_code == "PO-003"
+            and not matched_for_check
+            and absence_available
+        ):
             candidates.append(
                 _po_candidate(
                     request,
@@ -7302,7 +7744,11 @@ def _build_po_candidates(
                 )
             )
             matched_for_check = True
-        if check_code == "PO-004" and "acceptance_terms" in missing_types:
+        if (
+            check_code == "PO-004"
+            and "acceptance_terms" in missing_types
+            and absence_available
+        ):
             candidates.append(
                 _po_candidate(
                     request,
@@ -7316,7 +7762,11 @@ def _build_po_candidates(
                 )
             )
             matched_for_check = True
-        if check_code == "PO-006" and not matched_for_check:
+        if (
+            check_code == "PO-006"
+            and not matched_for_check
+            and absence_available
+        ):
             candidates.append(
                 _po_candidate(
                     request,
@@ -7330,7 +7780,11 @@ def _build_po_candidates(
                 )
             )
             matched_for_check = True
-        if check_code == "PO-007" and not matched_for_check:
+        if (
+            check_code == "PO-007"
+            and not matched_for_check
+            and absence_available
+        ):
             candidates.append(
                 _po_candidate(
                     request,
@@ -7349,23 +7803,21 @@ def _build_po_candidates(
                 ref
                 for ref, item in ir_refs.items()
                 if item.ir_type in spec.required_ir_types
+                and item.item_id in allowed_item_ids
             )
-            candidates.append(
-                _po_candidate(
-                    request,
-                    check_code,
-                    "PROJECTED_IR_REVIEW" if refs else "MISSING_EXPECTED_IR",
-                    (
-                        "存在本检查所需IR，须按判定规则和Evidence完成裁决"
-                        if refs
-                        else "未发现本检查预期IR，须核对是否属于真实缺失"
-                    ),
-                    spec.required_ir_types,
-                    refs,
-                    ir_refs,
-                    anchor_ref_by_id,
+            if refs:
+                candidates.append(
+                    _po_candidate(
+                        request,
+                        check_code,
+                        "PROJECTED_IR_REVIEW",
+                        "存在本检查所需IR，须按判定规则和Evidence完成裁决",
+                        spec.required_ir_types,
+                        refs,
+                        ir_refs,
+                        anchor_ref_by_id,
+                    )
                 )
-            )
     return candidates
 
 
@@ -7448,17 +7900,24 @@ def _po_candidate(
     ir_refs: dict[str, CommercialIrItem],
     anchor_ref_by_id: dict[str, str],
 ) -> DeterministicRiskCandidate:
+    allowed_source_ids = {
+        item.source_id
+        for item in request.evidence_sources
+        if check_code in item.allowed_check_codes
+    }
+    source_by_binding = {
+        (item.ir_item_id, item.anchor_id): item.source_id
+        for item in request.evidence_sources
+        if item.source_id in allowed_source_ids
+    }
     evidence_refs = sorted(
         {
             anchor_ref_by_id[anchor.anchor_id]
             for ref in refs
             for anchor in ir_refs[ref].source_anchors
+            if (ir_refs[ref].item_id, anchor.anchor_id) in source_by_binding
         }
     )
-    source_by_binding = {
-        (item.ir_item_id, item.anchor_id): item.source_id
-        for item in request.evidence_sources
-    }
     primary_source_ids = list(
         dict.fromkeys(
             source_by_binding[(ir_refs[ref].item_id, anchor.anchor_id)]
@@ -7741,15 +8200,54 @@ def _po_partition_primary_source_ids(
         "DELIVERY_SCHEDULE_REVIEW": (
             r"交付",
             r"完成.{0,8}(项目|任务|服务|工作)",
+            r"进度",
+            r"工期",
         ),
     }
     patterns = core_patterns.get(candidate_type)
     if patterns is None:
         return list(primary_source_ids), []
     sources = {item.source_id: item for item in request.evidence_sources}
+    core_candidates = list(primary_source_ids)
+    if candidate_type == "DELIVERY_SCHEDULE_REVIEW":
+        delivery_sources = [
+            source_id
+            for source_id in primary_source_ids
+            if source_id in sources
+            and sources[source_id].ir_type == "delivery_terms"
+        ]
+        if delivery_sources:
+            # Prefer the dedicated delivery IR as Core Evidence. Other
+            # obligation/right rows may mention "工期" only as a consequence
+            # of change or cooperation and remain contextual evidence. Keep
+            # a non-delivery row only when it independently states the same
+            # delivery/completion act, preserving intentional shared roots.
+            shared_delivery_sources = [
+                source_id
+                for source_id in primary_source_ids
+                if source_id in sources
+                and sources[source_id].ir_type != "delivery_terms"
+                and re.search(
+                    r"(交付|完成.{0,8}(项目|任务|服务|工作))",
+                    " ".join(
+                        filter(
+                            None,
+                            (
+                                sources[source_id].subject,
+                                sources[source_id].predicate,
+                                sources[source_id].object,
+                                sources[source_id].quoted_text,
+                            ),
+                        )
+                    ),
+                )
+            ]
+            core_candidates = list(
+                dict.fromkeys([*delivery_sources, *shared_delivery_sources])
+            )
     core = [
         source_id
-        for source_id in primary_source_ids
+        for source_id in core_candidates
         if source_id in sources
         and any(
             re.search(
@@ -8004,6 +8502,8 @@ def _generic_repair_payload(
 def _parse_generic_output(
     content: str,
     expected_codes: tuple[str, ...],
+    *,
+    assigned_check_specs: list[GenericCheckSpec] | None = None,
 ) -> GenericParsedOutput:
     raw_object: dict[str, Any] | None = None
     try:
@@ -8015,13 +8515,18 @@ def _parse_generic_output(
         try:
             response = GenericModelResponseRaw.model_validate(raw_object)
         except ValidationError as original_error:
-            normalized = _normalize_generic_schema(raw_object, expected_codes)
-            if normalized is None:
+            normalized_result = _normalize_generic_schema(
+                raw_object,
+                expected_codes,
+                assigned_check_specs=assigned_check_specs,
+            )
+            if normalized_result is None:
                 raise original_error
+            normalized, normalization_type = normalized_result
             response = GenericModelResponseRaw.model_validate(normalized)
             normalization = SchemaNormalizationRecord(
                 applied=True,
-                normalization_type="TOP_LEVEL_CHECKS_TO_CHECK_RESULTS",
+                normalization_type=normalization_type,
             )
         codes = [item.check_code for item in response.check_results]
         if tuple(codes) != expected_codes:
@@ -8046,24 +8551,103 @@ def _parse_generic_output(
 def _normalize_generic_schema(
     value: dict[str, Any],
     expected_codes: tuple[str, ...],
-) -> dict[str, Any] | None:
-    if set(value) != {"checks"} or not isinstance(value["checks"], list):
+    *,
+    assigned_check_specs: list[GenericCheckSpec] | None = None,
+) -> tuple[dict[str, Any], SchemaNormalizationType] | None:
+    normalized = json.loads(json.dumps(value, ensure_ascii=False))
+    top_level_changed = False
+    evidence_changed = False
+    specs_by_code = {
+        item.check_code: item for item in (assigned_check_specs or [])
+    }
+    if set(normalized) == {"checks"} and isinstance(
+        normalized["checks"],
+        list,
+    ):
+        normalized = {"check_results": normalized["checks"]}
+        top_level_changed = True
+    elif set(normalized) != {"check_results"} or not isinstance(
+        normalized["check_results"],
+        list,
+    ):
+        return None
+    for check in normalized["check_results"]:
+        if not isinstance(check, dict):
+            continue
+        check_code = check.get("check_code")
+        spec = specs_by_code.get(check_code) if isinstance(check_code, str) else None
+        check_evidence_type = check.pop("evidence_type", None)
+        if check_evidence_type is not None:
+            if check_evidence_type not in {
+                "CONTRACT",
+                "CONTRACT_TEXT",
+                "TEXT_QUOTE",
+                "CONTEXT",
+            }:
+                return None
+            evidence_changed = True
+        redundant_category = check.pop("category", None)
+        redundant_risk_type = check.pop("risk_type", None)
+        if redundant_category is not None or redundant_risk_type is not None:
+            if spec is None:
+                return None
+            if (
+                redundant_category is not None
+                and redundant_category not in spec.allowed_categories
+            ) or (
+                redundant_risk_type is not None
+                and redundant_risk_type not in spec.allowed_risk_types
+            ):
+                return None
+            evidence_changed = True
+        findings = check.get("findings", [])
+        if isinstance(findings, dict):
+            findings = [findings]
+            check["findings"] = findings
+            evidence_changed = True
+        if not isinstance(findings, list):
+            continue
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            evidence = finding.get("evidence")
+            if isinstance(evidence, dict):
+                evidence = [evidence]
+                finding["evidence"] = evidence
+                evidence_changed = True
+            if not isinstance(evidence, list):
+                continue
+            for item in evidence:
+                if not isinstance(item, dict):
+                    continue
+                for redundant_field in ("evidence_text", "quoted_text"):
+                    if redundant_field in item:
+                        item.pop(redundant_field)
+                        evidence_changed = True
+                ir_ref = item.get("ir_ref")
+                evidence_ref = item.get("evidence_ref")
+                if (
+                    isinstance(ir_ref, str)
+                    and isinstance(evidence_ref, str)
+                    and re.fullmatch(r"A[0-9]{3}", ir_ref)
+                    and re.fullmatch(r"I[0-9]{3}", evidence_ref)
+                ):
+                    item["ir_ref"], item["evidence_ref"] = evidence_ref, ir_ref
+                    evidence_changed = True
+    if not top_level_changed and not evidence_changed:
         return None
     try:
-        checks = [
-            GenericModelCheckResultRaw.model_validate(item)
-            for item in value["checks"]
-        ]
-    except (TypeError, ValidationError):
-        return None
-    if tuple(item.check_code for item in checks) != expected_codes:
-        return None
-    normalized = {"check_results": value["checks"]}
-    try:
-        GenericModelResponseRaw.model_validate(normalized)
+        response = GenericModelResponseRaw.model_validate(normalized)
     except ValidationError:
         return None
-    return normalized
+    if tuple(item.check_code for item in response.check_results) != expected_codes:
+        return None
+    normalization_type: SchemaNormalizationType = (
+        "TOP_LEVEL_CHECKS_TO_CHECK_RESULTS"
+        if top_level_changed and not evidence_changed
+        else "KNOWN_GENERIC_SCHEMA_NORMALIZATION"
+    )
+    return normalized, normalization_type
 
 
 def _materialize_generic(
@@ -9312,6 +9896,7 @@ def _emit_generic_attempt_artifact(
     repair_type: Literal[
         "SCHEMA_REPAIR",
         "EVIDENCE_SELECTION_REPAIR",
+        "DECISION_SUPPORT_REPAIR",
     ] | None,
     repair_reason: str | None,
     before_snapshot: dict[str, Any] | None,
@@ -9418,6 +10003,21 @@ def _apply_prompt_budget(
         )
         for metric in result.call_metrics
     ]
+    if not budgets:
+        # A deterministic zero-candidate Batch legitimately completes without
+        # a provider call.  Preserve a real prompt-budget record instead of
+        # treating the absence of model usage as an execution failure.
+        budgets.append(
+            evaluate_prompt_budget(
+                unit_id=result.unit_id,
+                batch_id=result.batch_id,
+                estimated_business_context_tokens=(
+                    context.estimated_input_tokens + legal_evidence_input_tokens
+                ),
+                provider_prompt_tokens=None,
+                provider_cached_tokens=None,
+            )
+        )
     budget = summarize_prompt_budgets(budgets)
     if budget.budget_status == "HARD_LIMIT_EXCEEDED":
         raise DirectReviewError(
@@ -9474,6 +10074,48 @@ def _commercial_batch(
     )
 
 
+def _empty_context_batch(context: Any) -> ReviewBatchResult:
+    """Complete a redundant evidence-free shard without asking a model.
+
+    Absence evidence is attached only to the first shard of a split Check. A
+    later shard can contain projected IR that is deterministically outside the
+    Check's evidence policy. It carries no new legal fact and must not fail the
+    whole domain or manufacture a model decision.
+    """
+
+    check_results = [
+        CheckCoverageResult(
+            check_code=spec.check_code,
+            status="REVIEWED",
+            reason_code="NO_RISK_IDENTIFIED",
+            decision_note=(
+                "当前分片没有属于本检查项的可用Evidence Source，"
+                "未新增风险裁决；完整缺失性检查由首个分片承载。"
+            ),
+            finding_local_ids=[],
+        )
+        for spec in context.check_specs
+    ]
+    return ReviewBatchResult(
+        unit_id=_value(context.unit_id),
+        domain=_value(context.unit_id),
+        batch_id=context.batch_id,
+        status="COMPLETED",
+        check_results=check_results,
+        findings=[],
+        warnings=["RISK_EMPTY_CONTEXT_SHARD_SKIPPED"],
+        model_call_count=0,
+        repair_count=0,
+        tool_call_count=0,
+        duration_ms=0,
+        trace_ids=[],
+        call_metrics=[],
+        reason_code_enrichment_count=len(check_results),
+        reason_code_rule_version="1.0",
+        ignored_model_reason_code_count=0,
+    )
+
+
 def _failed_batch_result(
     context: Any,
     error: BaseException,
@@ -9491,6 +10133,13 @@ def _failed_batch_result(
     code = getattr(error, "code", error.__class__.__name__)
     message = str(error) or error.__class__.__name__
     note = f"{code}: {message}"[:1000]
+    attempt_notes = list(
+        dict.fromkeys(
+            str(item.validation_error)[:1000]
+            for item in (getattr(error, "attempt_diagnostics", None) or [])
+            if getattr(item, "validation_error", None)
+        )
+    )
     check_results = [
         CheckCoverageResult(
             check_code=spec.check_code,
@@ -9508,7 +10157,7 @@ def _failed_batch_result(
         status="FAILED",
         check_results=check_results,
         findings=[],
-        warnings=[note],
+        warnings=list(dict.fromkeys([note, *attempt_notes])),
         model_call_count=0,
         repair_count=0,
         tool_call_count=0,
@@ -9879,7 +10528,11 @@ async def execute_base_risk_review_bundle(
     commercial_reviewer: CommercialFinancialDirectReviewer | None = None,
     attempt_artifact_sink: GenericAttemptArtifactSink | None = None,
     cancel_event: asyncio.Event | None = None,
-    batch_timeout_seconds: float = 60.0,
+    # Seven domains share one model gateway.  A 60-second per-batch wall clock
+    # is too small under bounded parallel load and can discard an otherwise
+    # valid strict-schema response.  This remains a physical safety timeout;
+    # it does not relax any evidence or output validation.
+    batch_timeout_seconds: float = 180.0,
     allow_dynamic_batch_count: bool = False,
     legal_evidence_bundle: LegalEvidenceBundle | None = None,
 ) -> BaseRiskReviewBundle:
@@ -9993,6 +10646,11 @@ async def execute_base_risk_review_bundle(
                             sink=attempt_artifact_sink,
                         )
                         return _commercial_batch(context, result)
+                    if (
+                        not context.evidence_sources
+                        and not context.absence_evidence_sources
+                    ):
+                        return _empty_context_batch(context)
                     request = generic_request_from_context(
                         context,
                         allow_absence_only_evidence_catalog=(
@@ -10592,6 +11250,89 @@ def _merge_equivalent_same_root_findings(
             for finding in group
             for root in roots_by_finding.get(finding.finding_local_id, [])
         ]
+        if not roots:
+            # Formation and commercial review units deliberately do not emit
+            # CanonicalRiskRoot metadata. Context shards can still produce the
+            # same visible risk twice, so merge that duplicate deterministically
+            # instead of imposing a root invariant those units do not own.
+            if len(
+                {
+                    (
+                        finding.perspective,
+                        finding.our_party,
+                        finding.counterparty,
+                        finding.source_unit_id,
+                    )
+                    for finding in group
+                }
+            ) != 1:
+                raise DirectReviewError(
+                    "RISK_UNIT_DUPLICATE_MERGE_INVALID",
+                    "Duplicate Finding disagrees on party perspective or domain",
+                )
+            duplicate_ids = {finding.finding_local_id for finding in group}
+            finding_id = group[0].finding_local_id
+            representative = group[0]
+            evidence_by_identity: dict[tuple[object, ...], EvidenceCandidate] = {}
+            for finding in group:
+                for evidence in finding.evidence_candidates:
+                    identity = (
+                        evidence.evidence_type,
+                        evidence.source_ir_item_id,
+                        evidence.anchor_id,
+                        evidence.block_id,
+                        evidence.char_start,
+                        evidence.char_end,
+                        evidence.checked_scope,
+                        evidence.verification_note,
+                    )
+                    evidence_by_identity.setdefault(identity, evidence)
+            evidence_candidates = [
+                evidence.model_copy(
+                    update={
+                        "evidence_local_id": _stable_id(
+                            "evidence",
+                            {
+                                "finding_id": finding_id,
+                                "index": index,
+                                "identity": identity,
+                            },
+                        ),
+                        "finding_local_id": finding_id,
+                    }
+                )
+                for index, (identity, evidence) in enumerate(
+                    sorted(evidence_by_identity.items(), key=lambda item: repr(item[0])),
+                    1,
+                )
+            ]
+            merged_findings = [
+                finding
+                for finding in merged_findings
+                if finding.finding_local_id not in duplicate_ids
+            ]
+            merged_findings.append(
+                representative.model_copy(
+                    update={
+                        "finding_local_id": finding_id,
+                        "evidence_candidates": evidence_candidates,
+                        "legal_evidence_ids": sorted(
+                            {
+                                evidence_id
+                                for finding in group
+                                for evidence_id in finding.legal_evidence_ids
+                            }
+                        ),
+                    }
+                )
+            )
+            replacements.update(
+                {
+                    finding.finding_local_id: (finding_id,)
+                    for finding in group
+                }
+            )
+            continue
         if len(roots) != len(group):
             raise DirectReviewError(
                 "RISK_UNIT_DUPLICATE_MERGE_INVALID",
@@ -10698,6 +11439,13 @@ def _merge_equivalent_same_root_findings(
                 update={
                     "finding_local_id": finding_id,
                     "evidence_candidates": evidence_candidates,
+                    "legal_evidence_ids": sorted(
+                        {
+                            evidence_id
+                            for finding in group
+                            for evidence_id in finding.legal_evidence_ids
+                        }
+                    ),
                 }
             )
         )
@@ -10951,6 +11699,22 @@ def _replace_finding_ids(
     )
 
 
+def _merge_fva_assessments(
+    values: list[FvaAssessmentResult],
+) -> list[FvaAssessmentResult]:
+    """Collapse context-shard FVA-002 states to one unit-level decision."""
+
+    if not values:
+        return []
+    priority = {
+        "NO_VISIBLE_ISSUE": 0,
+        "EXTERNAL_VERIFICATION_REQUIRED": 1,
+        "TEXTUAL_AUTHORITY_RISK": 2,
+    }
+    selected = max(values, key=lambda item: priority[item.assessment_type])
+    return [selected.model_copy()]
+
+
 def _merge_unit_result(unit, by_batch: dict[str, ReviewBatchResult]) -> BaseReviewUnitResult:
     batches = [by_batch[batch_id] for batch_id in unit.batch_ids]
     expected_codes = tuple(item.check_code for item in unit.check_specs)
@@ -11140,7 +11904,13 @@ def _merge_unit_result(unit, by_batch: dict[str, ReviewBatchResult]) -> BaseRevi
                 if any(batch.status != "COMPLETED" for batch in batches)
                 or any(
                     item.status == "FAILED"
-                    or item.reason_code == "INSUFFICIENT_EVIDENCE"
+                    or (
+                        item.reason_code == "INSUFFICIENT_EVIDENCE"
+                        and not (
+                            _value(unit.unit_id) == "formation_validity_authority"
+                            and item.check_code == "FVA-002"
+                        )
+                    )
                     for item in checks
                 )
                 else "COMPLETED"
@@ -11245,11 +12015,13 @@ def _merge_unit_result(unit, by_batch: dict[str, ReviewBatchResult]) -> BaseRevi
         call_metrics=[
             metric for batch in batches for metric in batch.call_metrics
         ],
-        fva_assessments=[
-            assessment
-            for batch in batches
-            for assessment in batch.fva_assessments
-        ],
+        fva_assessments=_merge_fva_assessments(
+            [
+                assessment
+                for batch in batches
+                for assessment in batch.fva_assessments
+            ]
+        ),
     )
 
 

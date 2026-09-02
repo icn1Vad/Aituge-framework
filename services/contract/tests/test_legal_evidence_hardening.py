@@ -113,6 +113,48 @@ def test_safety_budget_can_never_produce_ready_or_usable_bundle() -> None:
     assert bundle.usable is False
 
 
+def test_keyword_query_uses_legal_concepts_instead_of_full_prompt() -> None:
+    issue = LegalEvidenceIssue(
+        issue_id="legal-issue-" + "9" * 32,
+        domain="commercial_financial",
+        query="合同事实：" + "通用背景" * 1500,
+        question="价款调整和验收条件应适用哪些规则",
+        contract_object="技术服务",
+        evidence_need=["价款调整", "验收条件", "合同"],
+        required_concepts=["价款调整", "验收条件"],
+    )
+
+    query = AdaptiveLegalEvidencePlanner._keyword_query(issue)
+
+    assert query == "价款调整 验收条件 技术服务"
+    assert "通用背景" not in query
+
+
+def test_low_relevance_full_page_stops_as_zero_evidence_not_safety_failure() -> None:
+    candidates = [
+        _candidate(
+            _unit(f"unit-{index}", f"一般行政说明{index}", article_no=f"第{index}条"),
+            1 - index * 0.001,
+        )
+        for index in range(24)
+    ]
+    reranker = StaticLegalReranker(
+        {candidate.unit.unit_id: 0.60 - index * 0.001 for index, candidate in enumerate(candidates)}
+    )
+
+    bundle = AdaptiveLegalEvidencePlanner(
+        InMemoryLegalEvidenceRepository(
+            release=_release(),
+            keyword_pages=[candidates],
+        ),
+        reranker=reranker,
+    ).plan(_request("候选证据中没有的概念"))
+
+    assert bundle.status == "NO_RELEVANT_EVIDENCE"
+    assert bundle.evidence == []
+    assert bundle.stop_reason == "CANDIDATES_EXHAUSTED"
+
+
 def test_unresolved_issue_can_never_produce_ready_or_usable_bundle() -> None:
     repository = InMemoryLegalEvidenceRepository(
         release=_release(),
@@ -322,7 +364,7 @@ def test_embedding_profile_mismatch_disables_vector_and_marks_degraded() -> None
     assert bundle.evidence[0].retrieval_channels == ["KEYWORD"]
 
 
-def test_provider_groups_45_checks_into_7_domain_issues_with_contract_facts() -> None:
+def test_provider_creates_one_traceable_legal_issue_per_check_with_contract_facts() -> None:
     value = risk_plan_input()
     provider = PlannerLegalEvidenceProvider(
         planner=object(),  # type: ignore[arg-type]
@@ -332,7 +374,7 @@ def test_provider_groups_45_checks_into_7_domain_issues_with_contract_facts() ->
     request = provider._request(value)
 
     all_check_codes = [code for issue in request.issues for code in issue.check_codes]
-    assert len(request.issues) == 7
+    assert len(request.issues) == 45
     assert len(all_check_codes) == len(set(all_check_codes)) == 45
     assert {issue.domain for issue in request.issues} == {
         "formation_validity_authority",
@@ -346,6 +388,16 @@ def test_provider_groups_45_checks_into_7_domain_issues_with_contract_facts() ->
     assert any(value.source_blocks[0].text in issue.query for issue in request.issues)
     assert all(f"我方：{value.our_party}" in issue.query for issue in request.issues)
     assert all("合同事实：" in issue.query for issue in request.issues)
+    assert all("法律议题：" in issue.query for issue in request.issues)
+    assert all(len(issue.check_codes) == 1 for issue in request.issues)
+    assert all(issue.question and issue.source_domain == issue.domain for issue in request.issues)
+    assert all(issue.question != provider.registry.check(issue.check_codes[0]).review_question for issue in request.issues)
+    assert all(issue.evidence_need for issue in request.issues)
+    assert all(len(issue.required_concepts) <= 3 for issue in request.issues)
+    assert all(
+        "条件前后冲突" not in issue.required_concepts for issue in request.issues
+    )
+    assert all(issue.parties == [value.our_party, value.counterparty] for issue in request.issues)
 
 
 class _SnapshotRepository:

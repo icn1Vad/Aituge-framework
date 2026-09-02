@@ -1,0 +1,8 @@
+ARG BASE_IMAGE=ghcr.io/ai-tuge/python-contract:2026.08.24-caranteetest-stable-dfa4ff0@sha256:99ffb08f8600d383c748f8169563c5a7cab63e0836103f734201506f318d69cd
+FROM ${BASE_IMAGE}
+
+# Fast, deterministic developer build: reuse the frozen dependency image and
+# replace only the application source. The ordinary Dockerfile remains the
+# authoritative clean build and CI path.
+COPY services/contract/src/ /app/src/
+COPY services/contract/capabilities/ /app/services/contract/capabilities/

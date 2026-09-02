@@ -20,6 +20,16 @@ class LegalEvidenceRepository(Protocol):
 
     def active_release(self) -> LegalEvidenceRelease | None: ...
 
+    def exact_search(
+        self,
+        *,
+        release_id: str,
+        references: list[tuple[str, str | None]],
+        jurisdiction: str | None,
+        as_of_date: str,
+        limit: int,
+    ) -> list[LegalSearchCandidate]: ...
+
     def keyword_search(
         self,
         *,

@@ -7,6 +7,7 @@ import pytest
 from contract.api.models import (
     ContractProfile,
     LegalEvidenceReference,
+    LegalEvidenceVersionSnapshotReference,
     PublicReviewResultData,
     ReviewResultData,
     ReviewSummary,
@@ -108,13 +109,25 @@ def test_legal_evidence_ids_survive_compatibility_and_public_projection() -> Non
         ),
         findings=finalized.final_findings,
         evidences=finalized.final_evidence,
-        legal_evidence_release_id="release-legal-test",
-        legal_evidence_bundle_hash="sha256:" + "2" * 64,
+            legal_evidence_release_id="release-legal-test",
+            legal_evidence_bundle_hash="sha256:" + "2" * 64,
+            legal_evidence_version_snapshot=LegalEvidenceVersionSnapshotReference(
+                legal_release_id="release-legal-test",
+                legal_projection_version="legal-evidence-projection-v4",
+                relation_extractor_version="legal-relation-extractor-v2",
+                embedding_model_version="embedding-test-v1",
+                reranker_version="reranker-test-v1",
+                planner_version="adaptive-legal-planner-v2",
+                review_as_of_date="2026-09-02",
+                contract_date="2026-08-01",
+            ),
         legal_evidences=[
             LegalEvidenceReference(
                 evidence_id=raw["legal_evidence_ids"][0],
                 release_id="release-legal-test",
                 unit_id="unit-legal-test",
+                instrument_id="instrument-legal-test",
+                version_id="version-legal-test",
                 source_node_ids=["node-legal-test"],
                 title="中华人民共和国民法典",
                 article_no="第五百零九条",
@@ -128,6 +141,19 @@ def test_legal_evidence_ids_survive_compatibility_and_public_projection() -> Non
                 content_hash="3" * 64,
                 check_codes=["CF-005"],
                 issue_ids=["legal-issue-" + "4" * 32],
+                retrieval_channels=["KEYWORD"],
+                relevance_score=0.9,
+                applicability_decisions=[
+                    {
+                        "issue_id": "legal-issue-" + "4" * 32,
+                        "outcome": "UNKNOWN_METADATA",
+                        "jurisdiction_decision": "MATCH",
+                        "temporal_decision": "UNKNOWN",
+                        "review_as_of_date": "2026-09-02",
+                        "contract_date": "2026-08-01",
+                        "reasons": ["法规时效元数据尚未核验"],
+                    }
+                ],
                 cautions=["LEGAL_VALIDITY_UNVERIFIED"],
             )
         ],

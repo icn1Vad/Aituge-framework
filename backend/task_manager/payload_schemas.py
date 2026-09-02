@@ -202,7 +202,13 @@ def validate_stage_payload(
     if schema is None:
         raise ValueError(f"Unknown stage schema '{schema_name}'.")
     try:
-        return schema.model_validate(payload).model_dump(exclude_none=True)
+        # Stage artifacts are persisted and hashed as JSON immediately after
+        # validation. Preserve the schema check while returning JSON-native
+        # values (dates, datetimes, UUIDs, enums) rather than Python objects.
+        return schema.model_validate(payload).model_dump(
+            mode="json",
+            exclude_none=True,
+        )
     except ValidationError as exc:
         raise ValueError(
             f"Stage payload does not match schema '{schema_name}': {exc.errors()}"

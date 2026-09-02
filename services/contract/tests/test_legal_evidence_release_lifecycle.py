@@ -382,4 +382,4 @@ def test_indexer_propagates_source_expected_count_and_cannot_seal_partial_projec
 
     assert target.expected_count == 2
     assert target.stage_projection_version == PROJECTION_VERSION
-    assert PROJECTION_VERSION == "legal-evidence-projection-v3"
+    assert PROJECTION_VERSION == "legal-evidence-projection-v5"

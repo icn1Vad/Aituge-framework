@@ -15,16 +15,23 @@ class InMemoryLegalEvidenceRepository:
     """In-memory Adapter for tests at the planner Interface."""
 
     release: LegalEvidenceRelease | None = None
+    exact_results: list[LegalSearchCandidate] = field(default_factory=list)
     keyword_pages: list[list[LegalSearchCandidate]] = field(default_factory=list)
     vector_pages: list[list[LegalSearchCandidate]] = field(default_factory=list)
     relations: dict[str, list[tuple[LegalRelation, LegalRetrievalUnit]]] = field(
         default_factory=dict
     )
     keyword_error: Exception | None = None
+    exact_error: Exception | None = None
     vector_error: Exception | None = None
 
     def active_release(self) -> LegalEvidenceRelease | None:
         return self.release
+
+    def exact_search(self, **_kwargs):
+        if self.exact_error:
+            raise self.exact_error
+        return list(self.exact_results)
 
     @staticmethod
     def _page(

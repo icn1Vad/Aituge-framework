@@ -105,6 +105,18 @@ class Settings(BaseSettings):
         max_length=128,
         validation_alias="LEGAL_EVIDENCE_DEFAULT_JURISDICTION",
     )
+    legal_evidence_issue_wall_time_seconds: float = Field(
+        default=120,
+        gt=0,
+        le=600,
+        validation_alias="LEGAL_EVIDENCE_ISSUE_WALL_TIME_SECONDS",
+    )
+    legal_evidence_total_wall_time_seconds: float = Field(
+        default=600,
+        gt=0,
+        le=1800,
+        validation_alias="LEGAL_EVIDENCE_TOTAL_WALL_TIME_SECONDS",
+    )
     legal_embedding_base_url: str = Field(
         default="", validation_alias="LEGAL_EMBEDDING_BASE_URL"
     )

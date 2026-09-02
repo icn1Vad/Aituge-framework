@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections import defaultdict
 from datetime import UTC, date, datetime
 from typing import Protocol
 
@@ -18,7 +17,11 @@ from contract.legal_evidence.models import (
     LegalEvidencePlanSnapshot,
     LegalEvidenceSnapshotCompatibilityError,
 )
-from contract.legal_evidence.planner import AdaptiveLegalEvidencePlanner
+from contract.legal_evidence.planner import (
+    PLANNER_VERSION,
+    AdaptiveLegalEvidencePlanner,
+    LegalEvidencePlannerSafety,
+)
 from contract.legal_evidence.postgres_repository import PostgresLegalEvidenceRepository
 from contract.legal_evidence.reranking import OpenAICompatibleLegalReranker
 from contract.risk.models import RiskReviewPlanInput
@@ -37,6 +40,17 @@ _DATE_PATTERN = re.compile(
 _CONTRACT_DATE_PREDICATES = ("签订", "签署", "订立", "合同日期", "生效")
 _MAX_QUERY_CHARACTERS = 8000
 _MAX_FACT_CHARACTERS = 4200
+_ISSUE_TERM_SPLIT = re.compile(r"[、，,；;和及与或/（）()：:\s]+")
+_NON_EVIDENCE_TERMS = {
+    "检查",
+    "风险",
+    "实质风险",
+    "我方",
+    "合同",
+    "机制",
+    "条件",
+    "后果",
+}
 
 
 class LegalEvidenceProvider(Protocol):
@@ -118,24 +132,26 @@ class PlannerLegalEvidenceProvider:
         return bundle
 
     def _request(self, value: RiskReviewPlanInput) -> LegalEvidencePlanRequest:
-        contract_text = "\n".join(block.text for block in value.source_blocks)
         contract_date = self._verified_contract_date(value)
         review_as_of_date = datetime.now(UTC).date()
         issues: list[LegalEvidenceIssue] = []
-        checks_by_domain: dict[str, list] = defaultdict(list)
         for check in self.registry.checks:
-            checks_by_domain[str(check.domain)].append(check)
-        for domain, checks in checks_by_domain.items():
-            check_text = "\n".join(
-                f"[{check.check_code}] {check.title}：{check.review_question}"
-                for check in checks
-            )
+            domain = str(check.domain)
+            check_text = f"[{check.check_code}] {check.title}：{check.review_question}"
             domain_concepts = [
                 concept for concept in _LEGAL_CONCEPTS if concept in check_text
             ]
-            fact_text = self._domain_contract_facts(
+            evidence_need = self._evidence_need(check.title, domain_concepts)
+            facts = self._issue_contract_facts(
                 value,
-                concepts=domain_concepts,
+                concepts=evidence_need,
+            )
+            fact_text = "\n".join(facts) if facts else "未抽取到直接相关合同条款。"
+            question = self._legal_question(
+                value,
+                check_title=check.title,
+                review_question=check.review_question,
+                facts=facts,
             )
             # Put the legal questions before excerpts.  The reranker has a
             # stricter query-size limit than PostgreSQL FTS; placing a long
@@ -147,20 +163,28 @@ class PlannerLegalEvidenceProvider:
                 f"审查域：{domain}\n"
                 f"合同日期：{contract_date.isoformat() if contract_date else '未核实'}\n"
                 f"审查基准日期：{review_as_of_date.isoformat()}\n"
-                f"法律问题：\n{check_text}\n"
+                f"审查目标：\n{check_text}\n"
+                f"法律议题：\n{question}\n"
                 f"合同事实：\n{fact_text}"
             )[:_MAX_QUERY_CHARACTERS]
-            required = [
-                concept
-                for concept in _LEGAL_CONCEPTS
-                if concept in contract_text and concept in check_text
-            ]
-            check_codes = [check.check_code for check in checks]
+            # Coverage terms are concrete legal concepts, not a fixed desired
+            # evidence count.  The planner may satisfy them with one source,
+            # several graph-connected sources, or no reliable source at all.
+            # Coverage is a legal-sufficiency decision, not a requirement that
+            # statutory text repeat every audit label verbatim.  Expressions
+            # such as "条件前后冲突" and "执行机制缺失" describe the review
+            # operation; they are useful retrieval hints but are not legal
+            # concepts that a source must literally contain.  Prefer the
+            # controlled legal vocabulary and retain at most the first two
+            # concrete title terms when the vocabulary has no match.
+            required = domain_concepts or evidence_need[:2]
+            check_codes = [check.check_code]
             identity = {
                 "review_id": value.review_id,
                 "generation_id": value.generation_id,
                 "domain": domain,
-                "check_codes": check_codes,
+                "check_code": check.check_code,
+                "facts": facts,
             }
             issues.append(
                 LegalEvidenceIssue(
@@ -170,6 +194,12 @@ class PlannerLegalEvidenceProvider:
                     ).hexdigest()[:32],
                     domain=domain,
                     query=query,
+                    question=question,
+                    facts=facts,
+                    parties=[value.our_party, value.counterparty],
+                    contract_object=value.contract_type,
+                    source_domain=domain,
+                    evidence_need=evidence_need,
                     check_codes=check_codes,
                     required_concepts=required,
                 )
@@ -183,15 +213,46 @@ class PlannerLegalEvidenceProvider:
             jurisdiction=self.default_jurisdiction or None,
             contract_date=contract_date,
             review_as_of_date=review_as_of_date,
+            planner_version=PLANNER_VERSION,
+            reranker_version=self._reranker_version(),
             issues=issues,
         )
 
     @staticmethod
-    def _domain_contract_facts(
+    def _evidence_need(title: str, concepts: list[str]) -> list[str]:
+        terms = [
+            item.strip()
+            for item in _ISSUE_TERM_SPLIT.split(title)
+            if len(item.strip()) >= 2 and item.strip() not in _NON_EVIDENCE_TERMS
+        ]
+        return list(dict.fromkeys([*concepts, *terms]))[:12]
+
+    @staticmethod
+    def _legal_question(
+        value: RiskReviewPlanInput,
+        *,
+        check_title: str,
+        review_question: str,
+        facts: list[str],
+    ) -> str:
+        if facts:
+            fact_summary = "；".join(facts)[:1200]
+            return (
+                f"在{value.our_party}与{value.counterparty}的{value.contract_type}合同中，"
+                f"基于“{fact_summary}”，关于{check_title}的权利义务、强制性规则和法律后果如何判断？"
+            )
+        return (
+            f"在{value.our_party}与{value.counterparty}的{value.contract_type}合同中，"
+            f"当前事实抽取未定位到与“{check_title}”直接相关的明确条款；"
+            f"应适用哪些法定默认规则、强制性要求或举证规则来完成以下审查目标：{review_question}"
+        )
+
+    @staticmethod
+    def _issue_contract_facts(
         value: RiskReviewPlanInput,
         *,
         concepts: list[str],
-    ) -> str:
+    ) -> list[str]:
         selected: list[str] = []
         used = 0
         for block in value.source_blocks:
@@ -207,11 +268,19 @@ class PlannerLegalEvidenceProvider:
             fragment = fragment[:remaining]
             selected.append(fragment)
             used += len(fragment)
-        if selected:
-            return "\n".join(selected)
-        # No relevant clause is itself a useful fact for missing-term checks;
-        # do not fill the query with unrelated contract prose.
-        return "未在合同原文中抽取到与本审查域直接相关的条款。"
+            if len(selected) >= 8:
+                break
+        return selected
+
+    def _reranker_version(self) -> str | None:
+        reranker = getattr(self.planner, "reranker", None)
+        if reranker is None:
+            return None
+        registration = str(getattr(reranker, "registration_id", "") or "")
+        model = str(getattr(reranker, "model", "") or "")
+        return ":".join(item for item in (registration, model) if item) or type(
+            reranker
+        ).__name__
 
     @staticmethod
     def _verified_contract_date(value: RiskReviewPlanInput) -> date | None:
@@ -270,6 +339,14 @@ def build_legal_evidence_provider(settings: Settings) -> LegalEvidenceProvider:
             repository,
             embedding_provider=embedding,
             reranker=reranker,
+            safety=LegalEvidencePlannerSafety(
+                maximum_wall_time_seconds=(
+                    settings.legal_evidence_issue_wall_time_seconds
+                ),
+                maximum_total_wall_time_seconds=(
+                    settings.legal_evidence_total_wall_time_seconds
+                ),
+            ),
         ),
         repository,
         default_jurisdiction=settings.legal_evidence_default_jurisdiction,

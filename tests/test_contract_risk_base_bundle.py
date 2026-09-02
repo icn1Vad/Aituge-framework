@@ -53,12 +53,14 @@ from services.contract.capabilities.risk_review_bundle import (
     CandidateSeverityFactors,
     CanonicalRiskRoot,
     DeterministicRiskCandidate,
+    FvaAssessmentResult,
     GenericAttemptArtifact,
     GenericBaseDirectReviewer,
     GenericCheckSpec,
     GenericModelFindingDraft,
     GenericReviewRequest,
     ReviewBatchResult,
+    _apply_prompt_budget,
     _build_generic_candidates,
     _candidate_allowed_control_codes,
     _candidate_allowed_source_ids,
@@ -72,8 +74,10 @@ from services.contract.capabilities.risk_review_bundle import (
     _lre_factor_has_required_evidence,
     _materialize_po_candidate_decisions,
     _merge_equivalent_same_root_findings,
+    _merge_fva_assessments,
     _merge_lre_cross_batch_roots,
     _parse_po_candidate_output,
+    _parse_generic_output,
     _po_candidate_prompt,
     _po_candidates_share_canonical_root,
     _po_canonical_root_groups,
@@ -210,7 +214,7 @@ def test_generic_legal_catalog_budget_omission_is_explicit(monkeypatch) -> None:
 
     _generic_prompt(request)
 
-    assert request.legal_evidence == []
+    assert len(request.legal_evidence) == 1
     assert request.legal_evidence_prompt_status == "OMITTED_TOKEN_BUDGET"
 
 
@@ -716,6 +720,103 @@ def _po_catalog(request: GenericReviewRequest):
     )
 
 
+def test_po_candidate_uses_only_anchors_allowed_by_its_check_policy() -> None:
+    request = _po_request()
+    target_source = next(
+        item
+        for item in request.evidence_sources
+        if "PO-001" in item.allowed_check_codes
+    )
+    target_item = next(
+        item
+        for item in request.projected_ir_items
+        if item.item_id == target_source.ir_item_id
+    )
+    extra_anchor_id = "anchor-po-cross-check-only"
+    extra_quote = "本段仅允许用于另一个履约检查。"
+    extra_excerpt = request.source_excerpts[0].__class__.model_validate(
+        {
+            "anchor_id": extra_anchor_id,
+            "block_id": "block-po-cross-check-only",
+            "block_no": len(request.source_excerpts) + 1,
+            "page_number": None,
+            "char_start": 0,
+            "char_end": len(extra_quote),
+            "quoted_text": extra_quote,
+            "quoted_text_hash": (
+                "sha256:" + hashlib.sha256(extra_quote.encode("utf-8")).hexdigest()
+            ),
+            "heading_path": ["履行条款"],
+        }
+    )
+    extra_source = target_source.__class__.model_validate(
+        {
+            **target_source.model_dump(mode="json"),
+            "source_id": "risk-es-" + "f" * 32,
+            "anchor_id": extra_anchor_id,
+            "block_id": extra_excerpt.block_id,
+            "char_start": 0,
+            "char_end": len(extra_quote),
+            "quoted_text": extra_quote,
+            "quoted_text_hash": extra_excerpt.quoted_text_hash,
+            "allowed_check_codes": ["PO-002"],
+        }
+    )
+    updated_items = [
+        item.model_copy(
+            update={
+                "source_anchors": [
+                    *item.source_anchors,
+                    item.source_anchors[0].__class__(anchor_id=extra_anchor_id),
+                ]
+            }
+        )
+        if item.item_id == target_item.item_id
+        else item
+        for item in request.projected_ir_items
+    ]
+    updated_policies = [
+        policy.model_copy(
+            update={
+                "allowed_evidence_source_ids": [
+                    *policy.allowed_evidence_source_ids,
+                    extra_source.source_id,
+                ]
+            }
+        )
+        if policy.check_code == "PO-002"
+        else policy
+        for policy in request.check_evidence_policies
+    ]
+    request = request.model_copy(
+        update={
+            "projected_ir_items": updated_items,
+            "source_excerpts": [*request.source_excerpts, extra_excerpt],
+            "evidence_sources": [*request.evidence_sources, extra_source],
+            "check_evidence_policies": updated_policies,
+        }
+    )
+
+    catalog, ir_refs, anchor_refs = _po_catalog(request)
+    extra_ref = next(
+        ref for ref, excerpt in anchor_refs.items() if excerpt.anchor_id == extra_anchor_id
+    )
+    candidates = _build_generic_candidates(
+        request,
+        ir_refs,
+        {item.anchor_id: ref for ref, item in anchor_refs.items()},
+    )
+
+    assert catalog.evidence_sources[extra_source.source_id].allowed_check_codes == [
+        "PO-002"
+    ]
+    assert all(
+        extra_ref not in candidate.candidate_evidence_refs
+        for candidate in candidates
+        if candidate.check_code == "PO-001"
+    )
+
+
 def _icd_catalog(request: GenericReviewRequest):
     _text, ir_refs, anchor_refs = _generic_prompt(request)
     candidates = _build_generic_candidates(
@@ -1199,6 +1300,15 @@ def test_icd_prompt_uses_candidate_decision_only() -> None:
         "counterparty",
         "primary_evidence_source_ids",
     }.isdisjoint(fields)
+    assert payload["source_catalog"]
+    assert all(
+        len(source_ref) == 1
+        for check in payload["assigned_checks"]
+        for source_ref in [
+            *check["allowed_evidence_sources"],
+            *check["allowed_absence_sources"],
+        ]
+    )
 
 
 def test_icd_absence_risk_materializes_one_python_finding() -> None:
@@ -2102,10 +2212,177 @@ def test_po_strong_negative_decision_requires_counter_evidence(
                 request,
                 tenant_id="tenant-1",
                 model_id="deepseek-v4-flash",
+                allow_evidence_selection_repair=False,
             )
         )
     assert raised.value.code == "RISK_NEGATIVE_DECISION_UNSUPPORTED"
     assert len(runtime.calls) == 1
+
+
+def test_po_exact_duplicate_candidate_decision_is_deduplicated() -> None:
+    request = _po_request()
+    payload = _po_candidate_payload(request)
+    payload["candidate_decisions"].insert(
+        1,
+        json.loads(json.dumps(payload["candidate_decisions"][0])),
+    )
+    _prompt_text, ir_refs, anchor_refs = _generic_prompt(request)
+    candidates = [
+        item
+        for item in _build_generic_candidates(
+            request,
+            ir_refs,
+            {item.anchor_id: ref for ref, item in anchor_refs.items()},
+        )
+        if item.requires_model_decision
+    ]
+
+    response, normalized = _parse_po_candidate_output(
+        json.dumps(payload, ensure_ascii=False),
+        expected_ids=tuple(item.candidate_id for item in candidates),
+        candidates_by_id={item.candidate_id: item for item in candidates},
+    )
+
+    assert len(response.candidate_decisions) == len(candidates)
+    assert len(normalized["candidate_decisions"]) == len(candidates)
+
+
+def test_po_invalid_model_control_is_replaced_by_candidate_registry_default() -> None:
+    request = _po_request()
+    payload = _po_candidate_payload(request, risk_check_code="PO-004")
+    _prompt_text, ir_refs, anchor_refs = _generic_prompt(request)
+    candidates = [
+        item
+        for item in _build_generic_candidates(
+            request,
+            ir_refs,
+            {item.anchor_id: ref for ref, item in anchor_refs.items()},
+        )
+        if item.requires_model_decision
+    ]
+    target = next(
+        item
+        for item in candidates
+        if item.check_code == "PO-004"
+        and next(
+            decision
+            for decision in payload["candidate_decisions"]
+            if decision["candidate_id"] == item.candidate_id
+        )["verdict"]
+        == "RISK"
+    )
+    decision = next(
+        item
+        for item in payload["candidate_decisions"]
+        if item["candidate_id"] == target.candidate_id
+    )
+    decision["recommended_control_codes"] = ["NOT_A_REGISTERED_CONTROL"]
+
+    response, _normalized = _parse_po_candidate_output(
+        json.dumps(payload, ensure_ascii=False),
+        expected_ids=tuple(item.candidate_id for item in candidates),
+        candidates_by_id={item.candidate_id: item for item in candidates},
+    )
+
+    normalized_decision = next(
+        item
+        for item in response.candidate_decisions
+        if item.candidate_id == target.candidate_id
+    )
+    assert normalized_decision.recommended_control_codes == [
+        _PO_ALLOWED_CONTROL_CODES[target.candidate_type][0]
+    ]
+
+
+def test_po_conflicting_duplicate_gets_one_targeted_redecision() -> None:
+    request = _po_request()
+    repaired = _po_candidate_payload(request)
+    first = json.loads(json.dumps(repaired))
+    duplicate = json.loads(json.dumps(first["candidate_decisions"][0]))
+    duplicate["decision_summary"] = "同一候选的冲突重复裁决。"
+    first["candidate_decisions"].insert(1, duplicate)
+    runtime = FakeRuntime(
+        [
+            _completion(
+                json.dumps(first, ensure_ascii=False),
+                "performance_obligations",
+            ),
+            _completion(
+                json.dumps(repaired, ensure_ascii=False),
+                "performance_obligations",
+                repair_no=1,
+            ),
+        ]
+    )
+
+    result = asyncio.run(
+        GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
+            request,
+            tenant_id="tenant-1",
+            model_id="deepseek-v4-flash",
+        )
+    )
+
+    repair_payload = json.loads(runtime.calls[1]["messages"][0]["content"])
+    assert result.status == "COMPLETED"
+    assert result.repair_count == 1
+    assert repair_payload["task"] == "DECISION_SUPPORT_REPAIR"
+    assert repair_payload["target_candidate_ids"] == [
+        duplicate["candidate_id"]
+    ]
+
+
+def test_po_unsupported_negative_decision_gets_one_controlled_support_repair() -> None:
+    request = _po_request()
+    repaired = _po_candidate_payload(request)
+    first = json.loads(json.dumps(repaired))
+    _prompt_text, ir_refs, anchor_refs = _generic_prompt(request)
+    candidates = _build_generic_candidates(
+        request,
+        ir_refs,
+        {item.anchor_id: ref for ref, item in anchor_refs.items()},
+    )
+    target = next(
+        item
+        for item in candidates
+        if item.candidate_strength == "STRONG_SIGNAL"
+        and item.allowed_counter_evidence_source_ids
+    )
+    first_decision = next(
+        item
+        for item in first["candidate_decisions"]
+        if item["candidate_id"] == target.candidate_id
+    )
+    first_decision["counter_evidence_source_ids"] = []
+    runtime = FakeRuntime(
+        [
+            _completion(
+                json.dumps(first, ensure_ascii=False),
+                "performance_obligations",
+            ),
+            _completion(
+                json.dumps(repaired, ensure_ascii=False),
+                "performance_obligations",
+                repair_no=1,
+            ),
+        ]
+    )
+
+    result = asyncio.run(
+        GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
+            request,
+            tenant_id="tenant-1",
+            model_id="deepseek-v4-flash",
+        )
+    )
+
+    assert result.status == "COMPLETED"
+    assert result.repair_count == 1
+    assert result.evidence_selection_repair_count == 1
+    assert len(runtime.calls) == 2
+    repair_payload = json.loads(runtime.calls[1]["messages"][0]["content"])
+    assert repair_payload["task"] == "DECISION_SUPPORT_REPAIR"
+    assert repair_payload["target_candidate_ids"] == [target.candidate_id]
 
 
 def test_po_semantic_no_risk_is_explicit_and_creates_no_finding() -> None:
@@ -2313,6 +2590,26 @@ def test_po_delivery_schedule_factor_requires_literal_core_evidence() -> None:
         "SCHEDULE_IMPACT"
         not in delivery_candidate(unscheduled).deterministic_severity_factors
     )
+
+
+@pytest.mark.parametrize("delivery_object", ["项目进度", "项目工期"])
+def test_po_delivery_trigger_always_has_matching_core_evidence(
+    delivery_object: str,
+) -> None:
+    request = _po_request(delivery_object=delivery_object)
+    _prompt, ir_refs, anchor_refs = _generic_prompt(request)
+
+    candidate = next(
+        item
+        for item in _build_generic_candidates(
+            request,
+            ir_refs,
+            {item.anchor_id: ref for ref, item in anchor_refs.items()},
+        )
+        if item.candidate_type == "DELIVERY_SCHEDULE_REVIEW"
+    )
+
+    assert candidate.core_primary_evidence_source_ids
 
 
 def test_po_independent_scope_and_delivery_candidates_remain_two_roots() -> None:
@@ -2655,7 +2952,7 @@ def test_po_control_code_materializes_suggestion_without_domain_leakage() -> Non
     assert finding.risk_type == "PO-005_RISK"
 
 
-def test_po_unknown_or_cross_candidate_control_code_is_rejected() -> None:
+def test_po_unknown_or_cross_candidate_control_code_is_normalized() -> None:
     request = _po_request()
     payload = _po_candidate_payload(
         request,
@@ -2678,17 +2975,23 @@ def test_po_unknown_or_cross_candidate_control_code_is_rejected() -> None:
         ]
     )
 
-    with pytest.raises(DirectReviewError) as raised:
-        asyncio.run(
-            GenericBaseDirectReviewer(
-                runtime_factory=lambda _tenant: runtime
-            ).review(
-                request,
-                tenant_id="tenant-1",
-                model_id="deepseek-v4-flash",
-            )
+    result = asyncio.run(
+        GenericBaseDirectReviewer(
+            runtime_factory=lambda _tenant: runtime
+        ).review(
+            request,
+            tenant_id="tenant-1",
+            model_id="deepseek-v4-flash",
         )
-    assert raised.value.code == "RISK_CONTROL_CODE_NOT_ALLOWED"
+    )
+
+    decision = next(
+        item
+        for item in result.candidate_decisions
+        if item.candidate_id == target["candidate_id"]
+    )
+    assert decision.verdict == "RISK"
+    assert decision.recommended_control_codes == ["ADD_WRITTEN_CHANGE_PROCEDURE"]
     assert len(runtime.calls) == 1
 
 
@@ -3639,6 +3942,137 @@ def test_po_acceptance_mode_stops_before_evidence_selection_repair() -> None:
     assert len(runtime.calls) == 1
 
 
+def test_generic_known_single_evidence_and_redundant_text_are_normalized() -> None:
+    payload = _payload()
+    finding = payload["check_results"][0]["findings"][0]
+    evidence = finding["evidence"][0]
+    evidence["evidence_text"] = "模型重复输出的原文不会成为新的证据来源。"
+    evidence["quoted_text"] = "模型重复输出的展示文本也不会成为新的证据来源。"
+    evidence["ir_ref"], evidence["evidence_ref"] = (
+        evidence["evidence_ref"],
+        evidence["ir_ref"],
+    )
+    finding["evidence"] = evidence
+
+    parsed = _parse_generic_output(
+        json.dumps(payload, ensure_ascii=False),
+        FVA_CODES,
+    )
+
+    assert parsed.normalization.applied is True
+    assert (
+        parsed.normalization.normalization_type
+        == "KNOWN_GENERIC_SCHEMA_NORMALIZATION"
+    )
+    assert len(parsed.response.check_results[0].findings[0].evidence) == 1
+    normalized_evidence = parsed.response.check_results[0].findings[0].evidence[0]
+    assert normalized_evidence.ir_ref.startswith("I")
+    assert normalized_evidence.evidence_ref.startswith("A")
+
+
+def test_generic_known_check_level_compatibility_fields_are_normalized() -> None:
+    request = _request()
+    payload = _payload()
+    first = payload["check_results"][0]
+    first["evidence_type"] = "CONTRACT_TEXT"
+    first["category"] = request.assigned_check_specs[0].allowed_categories[0]
+    first["risk_type"] = request.assigned_check_specs[0].allowed_risk_types[0]
+
+    parsed = _parse_generic_output(
+        json.dumps(payload, ensure_ascii=False),
+        FVA_CODES,
+        assigned_check_specs=request.assigned_check_specs,
+    )
+
+    assert parsed.normalization.applied is True
+    assert parsed.normalization.normalization_type == (
+        "KNOWN_GENERIC_SCHEMA_NORMALIZATION"
+    )
+    result = parsed.response.model_dump(mode="json")
+    assert "evidence_type" not in result["check_results"][0]
+    assert "category" not in result["check_results"][0]
+    assert "risk_type" not in result["check_results"][0]
+
+
+def test_generic_unknown_check_level_compatibility_value_is_rejected() -> None:
+    request = _request()
+    payload = _payload()
+    payload["check_results"][0]["evidence_type"] = "REMOTE_DATABASE"
+
+    with pytest.raises(DirectReviewError) as raised:
+        _parse_generic_output(
+            json.dumps(payload, ensure_ascii=False),
+            FVA_CODES,
+            assigned_check_specs=request.assigned_check_specs,
+        )
+
+    assert raised.value.code == "RISK_DIRECT_SCHEMA_INVALID"
+
+
+def test_po_invalid_strong_counter_triggers_controlled_redecision() -> None:
+    request = _po_request()
+    catalog, _ir_refs, _anchor_refs = _po_catalog(request)
+    wrong_source_id = next(
+        source_id
+        for source_id in catalog.allowed_source_ids_by_check["PO-006"]
+        if source_id
+        not in set(catalog.allowed_source_ids_by_check["PO-002"])
+    )
+    invalid_payload = _po_candidate_payload(request)
+    corrected_payload = _po_candidate_payload(
+        request,
+        risk_check_code="PO-002",
+    )
+    target_id = next(
+        candidate.candidate_id
+        for candidate in _build_generic_candidates(
+            request,
+            _generic_prompt(request)[1],
+            {
+                excerpt.anchor_id: ref
+                for ref, excerpt in _generic_prompt(request)[2].items()
+            },
+        )
+        if candidate.check_code == "PO-002"
+    )
+    invalid_decision = next(
+        item
+        for item in invalid_payload["candidate_decisions"]
+        if item["candidate_id"] == target_id
+    )
+    invalid_decision["counter_evidence_source_ids"] = [wrong_source_id]
+    runtime = FakeRuntime(
+        [
+            _completion(
+                json.dumps(invalid_payload, ensure_ascii=False),
+                "performance_obligations",
+            ),
+            _completion(
+                json.dumps(corrected_payload, ensure_ascii=False),
+                "performance_obligations",
+                repair_no=1,
+            ),
+        ]
+    )
+
+    result = asyncio.run(
+        GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
+            request,
+            tenant_id="tenant-1",
+            model_id="deepseek-v4-flash",
+        )
+    )
+
+    assert result.status == "COMPLETED"
+    assert result.model_call_count == 2
+    assert result.repair_count == 1
+    assert result.schema_repair_count == 0
+    assert result.evidence_selection_repair_count == 1
+    repair_payload = json.loads(runtime.calls[1]["messages"][-1]["content"])
+    assert repair_payload["task"] == "DECISION_SUPPORT_REPAIR"
+    assert repair_payload["target_candidate_ids"] == [target_id]
+
+
 def test_canonical_risk_key_includes_level_and_sorted_anchors() -> None:
     finding = FindingDraft.model_validate(
         {
@@ -3734,6 +4168,7 @@ def test_fva002_external_verification_is_not_a_finding() -> None:
     assert fva002.status == "REVIEWED"
     assert fva002.reason_code == "INSUFFICIENT_EVIDENCE"
     assert fva002.finding_local_ids == []
+    assert result.status == "COMPLETED"
     assert result.fva_assessments[0].assessment_type == (
         "EXTERNAL_VERIFICATION_REQUIRED"
     )
@@ -5488,6 +5923,31 @@ def test_equivalent_same_root_findings_are_merged_without_losing_evidence() -> N
     ]
     assert len(merged_roots[0].primary_evidence_source_ids) == 2
 
+    no_root_a = finding(finding_a_id, "a").model_copy(
+        update={"legal_evidence_ids": ["legal-evidence-" + "1" * 32]}
+    )
+    no_root_b = finding(finding_b_id, "b").model_copy(
+        update={"legal_evidence_ids": ["legal-evidence-" + "2" * 32]}
+    )
+    no_root_findings, no_roots, no_root_replacements = (
+        _merge_equivalent_same_root_findings(
+            [no_root_a, no_root_b],
+            [],
+        )
+    )
+    assert len(no_root_findings) == 1
+    assert no_roots == []
+    assert no_root_replacements == {
+        finding_a_id: (finding_a_id,),
+        finding_b_id: (finding_a_id,),
+    }
+    assert len(no_root_findings[0].evidence_candidates) == 2
+    assert no_root_findings[0].legal_evidence_ids == [
+        "legal-evidence-" + "1" * 32,
+        "legal-evidence-" + "2" * 32,
+    ]
+
+
     retained_findings, retained_roots, retained_replacements = (
         _merge_equivalent_same_root_findings(
             [finding(finding_a_id, "a"), finding(finding_b_id, "b")],
@@ -5526,3 +5986,63 @@ def test_equivalent_same_root_findings_are_merged_without_losing_evidence() -> N
         item.finding_local_id for item in shared_roots
     } == {item.finding_local_id for item in shared_findings}
     assert len(shared_replacements[finding_a_id]) == 2
+
+
+def test_fva_context_shards_merge_to_one_strictest_assessment() -> None:
+    merged = _merge_fva_assessments(
+        [
+            FvaAssessmentResult(
+                check_code="FVA-002",
+                assessment_type="NO_VISIBLE_ISSUE",
+                external_verification_required=False,
+            ),
+            FvaAssessmentResult(
+                check_code="FVA-002",
+                assessment_type="EXTERNAL_VERIFICATION_REQUIRED",
+                external_verification_required=True,
+            ),
+            FvaAssessmentResult(
+                check_code="FVA-002",
+                assessment_type="TEXTUAL_AUTHORITY_RISK",
+                external_verification_required=False,
+            ),
+        ]
+    )
+
+    assert len(merged) == 1
+    assert merged[0].assessment_type == "TEXTUAL_AUTHORITY_RISK"
+    assert merged[0].external_verification_required is False
+
+
+def test_icd_batch_without_model_candidates_completes_without_calling_model() -> None:
+    request = _icd_request().model_copy(
+        update={
+            "projected_ir_items": [],
+            "source_excerpts": [],
+            "evidence_sources": [],
+            "absence_evidence_sources": [],
+            "present_ir_types": [],
+            "missing_ir_types": [],
+        }
+    )
+    runtime = FakeRuntime([])
+
+    result = asyncio.run(
+        GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
+            request,
+            tenant_id="tenant-1",
+            model_id="deepseek-v4-flash",
+        )
+    )
+
+    assert result.status == "COMPLETED"
+    assert result.model_call_count == 0
+    assert result.findings == []
+    assert len(result.check_results) == 6
+    assert all(item.status == "REVIEWED" for item in result.check_results)
+    assert runtime.calls == []
+
+    budgeted = _apply_prompt_budget(request, result)
+    assert budgeted.prompt_budget is not None
+    assert budgeted.prompt_budget.budget_status == "PROVIDER_USAGE_UNAVAILABLE"
+    assert budgeted.prompt_budget.provider_prompt_tokens is None

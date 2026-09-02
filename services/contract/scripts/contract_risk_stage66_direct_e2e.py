@@ -289,9 +289,42 @@ def _require_complete_review_phase(
         if getattr(item, "status", None) != "COMPLETED"
     )
     detail = ",".join(incomplete) if incomplete else "unknown"
+    diagnostics: list[str] = []
+    for item in units:
+        if getattr(item, "status", None) == "COMPLETED":
+            continue
+        unit_id = str(getattr(item, "unit_id", "unknown"))
+        warnings = [
+            str(value).strip()
+            for value in (getattr(item, "warnings", None) or [])
+            if str(value).strip()
+        ]
+        failed_by_note: dict[str, list[str]] = {}
+        for check in (getattr(item, "check_results", None) or []):
+            if (
+                getattr(check, "status", None) != "FAILED"
+                and getattr(check, "reason_code", None) != "INSUFFICIENT_EVIDENCE"
+            ):
+                continue
+            note = str(getattr(check, "decision_note", "") or "").strip()
+            failed_by_note.setdefault(note[:900], []).append(
+                str(getattr(check, "check_code", "unknown"))
+            )
+        failed_checks = [
+            f"{','.join(codes)}={note}"
+            for note, codes in failed_by_note.items()
+        ]
+        evidence = list(dict.fromkeys([*warnings, *failed_checks]))
+        if evidence:
+            diagnostics.append(f"{unit_id}[{'; '.join(evidence)}]")
+    diagnostic_suffix = (
+        "; diagnostics=" + " | ".join(diagnostics)
+        if diagnostics
+        else ""
+    )
     raise DirectE2EError(
         "RISK_REVIEW_PARTIAL_FAILED",
-        f"{phase} review phase did not complete: {detail}",
+        f"{phase} review phase did not complete: {detail}{diagnostic_suffix}"[:4000],
     )
 
 

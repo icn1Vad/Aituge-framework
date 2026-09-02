@@ -29,6 +29,9 @@ def normalize_result_for_hash(value: Mapping[str, Any]) -> dict[str, Any]:
         normalized["legal_evidence_bundle_hash"] = copy.deepcopy(
             value.get("legal_evidence_bundle_hash")
         )
+        normalized["legal_evidence_version_snapshot"] = copy.deepcopy(
+            value.get("legal_evidence_version_snapshot")
+        )
         normalized["legal_evidences"] = sorted(
             copy.deepcopy(value["legal_evidences"]),
             key=lambda item: item["evidence_id"],

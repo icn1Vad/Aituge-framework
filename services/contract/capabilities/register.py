@@ -13,8 +13,12 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, model_validator
 from aituge_model.config import ModelRuntimeProvider
+from contract.api.models import (
+    LegalEvidenceReference,
+    LegalEvidenceVersionSnapshotReference,
+)
 
 from task_manager.pipeline.errors import StageExecutionError
 from task_manager.pipeline.stage_registry import StageExecutionContext, StageServiceResult
@@ -52,6 +56,7 @@ except ModuleNotFoundError as exc:  # standalone capability mount in the runtime
 
 CAPABILITY_ID = "contract-review"
 logger = logging.getLogger(__name__)
+_JSON_VALUE_ADAPTER = TypeAdapter(Any)
 CAPABILITY_DIR = Path(__file__).resolve().parent
 TASK_TYPE = "contract.review.run"
 PIPELINE_ID = "contract-review-pipeline-v1"
@@ -78,6 +83,15 @@ FROZEN_ASYNC_ERROR_CODES = {
     "RESULT_INVALID",
     "EVIDENCE_INVALID",
 }
+
+
+def _json_safe(value: Any) -> Any:
+    """Normalize nested Python/Pydantic values for persistence and HTTP JSON."""
+    # ``dump_python(mode="json")`` may retain values hidden below fields typed
+    # as ``Any`` by nested third-party models. Going through Pydantic's JSON
+    # serializer gives this boundary an executable guarantee: either every
+    # value is JSON encodable, or serialization fails here before persistence.
+    return json.loads(_JSON_VALUE_ADAPTER.dump_json(value))
 
 LegalEvidencePolicy = Literal["OFF", "OPTIONAL", "REQUIRED"]
 LEGAL_EVIDENCE_POLICIES = frozenset({"OFF", "OPTIONAL", "REQUIRED"})
@@ -292,11 +306,14 @@ class Finding(StrictModel):
     impact_to_our_party: str = Field(min_length=1, max_length=10_000)
     suggestion: str = Field(min_length=1, max_length=10_000)
     evidence_ids: list[str] = Field(min_length=1)
+    legal_evidence_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def unique_evidence_ids(self) -> "Finding":
         if len(self.evidence_ids) != len(set(self.evidence_ids)):
             raise ValueError("evidence_ids must be unique")
+        if len(self.legal_evidence_ids) != len(set(self.legal_evidence_ids)):
+            raise ValueError("legal_evidence_ids must be unique")
         return self
 
 
@@ -485,31 +502,6 @@ class EvidenceVerificationStageResult(StrictModel):
     relationships: list[None] = Field(default_factory=list, max_length=0)
 
 
-class LegalEvidenceReference(StrictModel):
-    evidence_id: str = Field(pattern=r"^legal-evidence-[0-9a-f]{32}$")
-    release_id: str = Field(min_length=1, max_length=160)
-    unit_id: str = Field(min_length=1, max_length=160)
-    source_node_ids: list[str] = Field(min_length=1)
-    title: str = Field(min_length=1, max_length=1000)
-    article_no: str | None = Field(default=None, max_length=160)
-    heading_path: list[str] = Field(default_factory=list)
-    content: str = Field(min_length=1)
-    jurisdiction: str | None = Field(default=None, max_length=128)
-    authority_level: str | None = Field(default=None, max_length=128)
-    issuing_authority: str | None = Field(default=None, max_length=1000)
-    effective_from: date | None = None
-    effective_to: date | None = None
-    validity_status: Literal[
-        "ACTIVE", "NOT_YET_EFFECTIVE", "EXPIRED", "REPEALED", "UNKNOWN"
-    ] | None = None
-    metadata_verification_status: Literal["VERIFIED", "UNVERIFIED", "REJECTED"]
-    official_source_url: str | None = Field(default=None, max_length=4000)
-    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    check_codes: list[str] = Field(min_length=1, max_length=45)
-    issue_ids: list[str] = Field(min_length=1)
-    cautions: list[str] = Field(default_factory=list, max_length=20)
-
-
 class FinalizeReviewStageResult(StrictModel):
     result_type: Literal["FINAL_REVIEW_STAGE_V1"]
     schema_version: Literal["1.0"]
@@ -525,6 +517,7 @@ class FinalizeReviewStageResult(StrictModel):
         default=None,
         pattern=r"^sha256:[0-9a-f]{64}$",
     )
+    legal_evidence_version_snapshot: LegalEvidenceVersionSnapshotReference | None = None
     legal_evidences: list[LegalEvidenceReference] = Field(default_factory=list)
     relationships: list[None] = Field(default_factory=list, max_length=0)
 
@@ -934,6 +927,22 @@ def _window_contract_ir_handler(base_url: str, token: str, model_id: str):
                 model_id=model_id,
             )
         except WindowPipelineError as exc:
+            window_diagnostics = [
+                {
+                    "window_id": item.get("window_id"),
+                    "attempt_error_codes": [
+                        attempt.get("error_code")
+                        for attempt in item.get("attempts", [])
+                    ],
+                }
+                for item in exc.details.get("windows", [])
+                if item.get("status") == "FAILED"
+            ]
+            logger.error(
+                "Contract IR window pipeline failed: code=%s diagnostics=%s",
+                exc.code,
+                window_diagnostics,
+            )
             raise StageExecutionError(
                 str(exc),
                 code="FRAMEWORK_RUN_FAILED",
@@ -1001,6 +1010,16 @@ def _apply_legal_evidence_policy(policy: LegalEvidencePolicy, data: Any):
     if data.usable:
         if data.bundle is None:
             raise ValueError("Usable legal-evidence response is missing its bundle")
+        # The bundle model deliberately represents unresolved issues: no
+        # reliable authority is a valid result and must not force the planner
+        # to invent a citation.  REQUIRED means that planning, version
+        # freezing and at least one independently complete check mapping must
+        # be available.  It remains fail-closed for infrastructure/channel
+        # degradation, conflicts and physical safety truncation.
+        non_blocking = {"BUNDLE_STATUS_DEGRADED", "UNRESOLVED_ISSUES"}
+        blocking = [reason for reason in reasons if reason not in non_blocking]
+        if policy == "REQUIRED" and blocking:
+            raise _required_legal_evidence_error(blocking)
         return data.bundle, reasons
     if policy == "REQUIRED":
         raise _required_legal_evidence_error(reasons)
@@ -1022,6 +1041,7 @@ def _direct_contract_review_handler(
     token: str,
     model_id: str,
     legal_evidence_policy: LegalEvidencePolicy = "OFF",
+    legal_evidence_timeout_seconds: float = 900,
 ):
     """Run the accepted Direct structured review as the formal final stage.
 
@@ -1183,7 +1203,10 @@ def _direct_contract_review_handler(
             legal_evidence_reasons = ["POLICY_OFF"]
         else:
             try:
-                async with httpx.AsyncClient(base_url=base_url, timeout=60) as client:
+                async with httpx.AsyncClient(
+                    base_url=base_url,
+                    timeout=legal_evidence_timeout_seconds,
+                ) as client:
                     legal_response = await client.post(
                         f"/v1/internal/contract-reviews/{value.review_id}/legal-evidence",
                         headers={
@@ -1240,7 +1263,10 @@ def _direct_contract_review_handler(
         formal["result_type"] = "FINAL_REVIEW_STAGE_V1"
         validated = FinalizeReviewStageResult.model_validate(formal)
         return StageServiceResult(
-            output=validated.model_dump(mode="json"),
+            # TaskManager persists stage artifacts before invoking the result
+            # sink, so this boundary must be JSON-native independently of the
+            # later HTTP callback normalization.
+            output=_json_safe(validated.model_dump()),
             summary=(
                 f"Direct structured review completed: "
                 f"{len(validated.findings)} findings, "
@@ -1326,7 +1352,11 @@ def _callback_envelope(delivery: ResultSinkDelivery) -> tuple[str, dict[str, Any
         callback_type = "STAGE_RESULT"
         stage_id = delivery.stage_id
         sequence = STAGE_SEQUENCE[stage_id]
-        result = delivery.output
+        # Result-sink payloads cross a strict HTTP/JSON boundary. Stage outputs can
+        # legitimately contain Python-native values (for example legal
+        # applicability dates) after model validation, so normalize the complete
+        # value instead of relying on httpx's stdlib JSON encoder.
+        result = _json_safe(delivery.output)
         error = None
     else:
         callback_type = "RUN_SUCCEEDED"
@@ -1724,6 +1754,13 @@ async def register(registry, settings) -> None:
     legal_evidence_policy = _normalize_legal_evidence_policy(
         settings.get("LEGAL_EVIDENCE_POLICY")
     )
+    legal_evidence_timeout_seconds = float(
+        settings.get("LEGAL_EVIDENCE_REQUEST_TIMEOUT_SECONDS") or "900"
+    )
+    if not 1 <= legal_evidence_timeout_seconds <= 1800:
+        raise ValueError(
+            "LEGAL_EVIDENCE_REQUEST_TIMEOUT_SECONDS must be between 1 and 1800"
+        )
     internal_headers = {
         "X-Internal-Service": "aituge-framework",
         "X-Internal-Token": callback_token,
@@ -1844,6 +1881,7 @@ async def register(registry, settings) -> None:
             callback_token,
             model_id,
             legal_evidence_policy,
+            legal_evidence_timeout_seconds,
         ),
     )
     registry.register_stage_handler(

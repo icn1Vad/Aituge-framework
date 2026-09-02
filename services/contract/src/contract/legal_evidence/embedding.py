@@ -55,13 +55,15 @@ class OpenAICompatibleLegalEmbeddingProvider:
         response = None
         for attempt in range(1, self.maximum_attempts + 1):
             try:
+                headers = {
+                    "X-Aituge-Model-Component-ID": self.registration_id,
+                    "X-Request-ID": f"legal-evidence-embedding-{uuid.uuid4()}",
+                }
+                if self.api_key:
+                    headers["Authorization"] = f"Bearer {self.api_key}"
                 response = httpx.post(
                     endpoint,
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "X-Aituge-Model-Component-ID": self.registration_id,
-                        "X-Request-ID": f"legal-evidence-embedding-{uuid.uuid4()}",
-                    },
+                    headers=headers,
                     json={
                         "model": self.model,
                         "input": [text[: self.maximum_input_chars] for text in texts],

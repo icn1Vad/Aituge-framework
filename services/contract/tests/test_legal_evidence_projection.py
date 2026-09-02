@@ -50,6 +50,11 @@ def test_migration_defines_independent_projection_tables_and_ann_index() -> None
     )
     assert "projection_hash char(64)" in resume_sql
     assert resume_sql.count("embedding_input_hash char(64)") == 2
+    checkpoint_sql = (
+        MIGRATIONS_DIR / "010_legal_evidence_resumable_checkpoint.sql"
+    ).read_text("utf-8")
+    assert "ADD PRIMARY KEY (projection_release_id)" in checkpoint_sql
+    assert "idx_legal_projection_checkpoint_source" in checkpoint_sql
 
 
 def test_projection_and_embedding_hashes_cover_their_exact_inputs() -> None:
@@ -130,6 +135,77 @@ def test_repository_resume_rejects_projection_and_embedding_input_drift() -> Non
         repository.units_requiring_projection([renamed])
     with pytest.raises(RuntimeError, match="embedding input hash drifted"):
         repository.units_requiring_embedding([renamed], profile_id="profile")
+
+
+def test_resume_cursor_prefers_last_complete_checkpoint_over_newer_unit_row() -> None:
+    class _Connection:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def execute(self, sql, _params):
+            self.calls += 1
+            assert "legal_evidence_projection_checkpoint" in sql
+            return _Cursor(
+                {
+                    "version_id": "version-checkpointed",
+                    "sequence": 18,
+                    "unit_count": 21,
+                    "embedding_count": 19,
+                    "missing_version_id": "version-checkpointed",
+                    "missing_sequence": 7,
+                }
+            )
+
+    class _Repository(PostgresLegalEvidenceRepository):
+        def __init__(self):
+            super().__init__(Settings())
+            self.connection = _Connection()
+
+        @contextmanager
+        def _connect(self):
+            yield self.connection
+
+    repository = _Repository()
+
+    assert repository.projection_resume_cursor("projection-1") == (
+        "version-checkpointed",
+        18,
+        21,
+        19,
+    )
+    assert repository.connection.calls == 1
+
+
+def test_resume_cursor_rewinds_to_embedding_gap_before_checkpoint() -> None:
+    class _Connection:
+        def execute(self, sql, _params):
+            assert "e.unit_id IS NULL" in sql
+            return _Cursor(
+                {
+                    "version_id": "version-020",
+                    "sequence": 18,
+                    "unit_count": 21,
+                    "embedding_count": 19,
+                    "missing_version_id": "version-010",
+                    "missing_sequence": 7,
+                }
+            )
+
+    class _Repository(PostgresLegalEvidenceRepository):
+        def __init__(self):
+            super().__init__(Settings())
+            self.connection = _Connection()
+
+        @contextmanager
+        def _connect(self):
+            yield self.connection
+
+    assert _Repository().projection_resume_cursor("projection-1") == (
+        "version-010",
+        7,
+        21,
+        19,
+    )
 
 
 def test_article_assembler_keeps_article_and_child_paragraphs_in_one_unit() -> None:
@@ -250,6 +326,131 @@ def test_indexer_does_not_depend_on_a_java_export_endpoint() -> None:
     assert "SSDictCursor" in text
     assert "biz_legal_node" in text
     assert "LIMIT %s" in text
+
+
+def test_authoritative_source_relations_skip_fallback_and_keep_node_mapping() -> None:
+    class _Source:
+        @staticmethod
+        def active_release():
+            return {"release_id": "source-1", "manifest_sha256": "a" * 64}
+
+        @staticmethod
+        def retrieval_root_count(_release_id):
+            return 2
+
+        @staticmethod
+        def relation_count(_release_id):
+            return 1
+
+        @staticmethod
+        def iter_nodes(_release_id, *, page_size):
+            del page_size
+            for index in (1, 2):
+                yield {
+                    "release_id": "source-1",
+                    "instrument_key": f"instrument-{index}",
+                    "version_id": f"version-{index}",
+                    "title": f"测试法规{index}",
+                    "category_root": "法律",
+                    "jurisdiction_code": "CN",
+                    "issuing_authority_names_json": "[]",
+                    "source_url": None,
+                    "node_id": f"node-{index}",
+                    "parent_node_id": None,
+                    "node_type": "PREAMBLE",
+                    "node_number": None,
+                    "heading": None,
+                    "content_plain": f"测试正文{index}",
+                    "sequence": 0,
+                    "path": "前言",
+                    "content_sha256": str(index) * 64,
+                }
+
+        @staticmethod
+        def iter_instruments(_release_id, *, page_size):
+            del page_size
+            raise AssertionError("authoritative releases must skip fallback extraction")
+
+        @staticmethod
+        def iter_relations(_release_id, *, page_size):
+            del page_size
+            yield {
+                "relation_id": "source-relation-1",
+                "source_instrument_key": "instrument-1",
+                "source_version_id": "version-1",
+                "source_node_id": "node-1",
+                "target_instrument_key": "instrument-2",
+                "target_version_id": "version-2",
+                "target_node_id": "node-2",
+                "relation_type": "CITES",
+                "evidence_text": "依据测试法规2制定",
+                "evidence_start": 0,
+                "evidence_end": 8,
+                "evidence_location_json": {},
+                "extractor_version": "source-extractor-v1",
+                "confidence": 1.0,
+                "verification_status": "AUTO_VERIFIED",
+            }
+
+    class _Target:
+        def __init__(self):
+            self.units = {}
+            self.relations = []
+
+        @staticmethod
+        def active_release():
+            return None
+
+        @staticmethod
+        def stage_release(**_kwargs):
+            return True
+
+        @staticmethod
+        def units_requiring_projection(units):
+            return list(units)
+
+        def upsert_units(self, units):
+            units = list(units)
+            self.units.update({item.unit_id: item for item in units})
+            return len(units)
+
+        @staticmethod
+        def reset_staged_relations(_release_id):
+            return None
+
+        def all_unit_ids_by_source_nodes(self, _release_id):
+            return {
+                node_id: unit.unit_id
+                for unit in self.units.values()
+                for node_id in unit.source_node_ids
+            }
+
+        @staticmethod
+        def representative_unit_id(*_args):
+            raise AssertionError("exact source node mapping should be used")
+
+        def upsert_relations(self, relations):
+            relations = list(relations)
+            self.relations.extend(relations)
+            return len(relations)
+
+        def mark_projection_complete(self, _release_id, *, expected_unit_count):
+            assert expected_unit_count == 2
+            return 2, len(self.relations)
+
+    target = _Target()
+    result = LegalEvidenceIndexer(_Source(), target, write_batch_size=2).publish()
+
+    assert result["actual_relations"] == 1
+    assert len(target.relations) == 1
+    relation = target.relations[0]
+    assert relation.source_node_id == "node-1"
+    assert relation.source_unit_id == next(
+        unit.unit_id for unit in target.units.values() if "node-1" in unit.source_node_ids
+    )
+    assert relation.target_unit_id == next(
+        unit.unit_id for unit in target.units.values() if "node-2" in unit.source_node_ids
+    )
 
 
 class _Cursor:
@@ -522,7 +723,40 @@ def test_embedding_adapter_uses_model_gateway_component_header(monkeypatch) -> N
 
     assert provider.embed_query("合同") == [0.25, 0.75]
     assert captured["headers"]["X-Aituge-Model-Component-ID"] == "embedding-component"
+    assert captured["headers"]["Authorization"] == "Bearer test-key"
     assert "X-Model-Registration-Id" not in captured["headers"]
+
+
+def test_embedding_adapter_omits_authorization_header_when_token_is_empty(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    class _Response:
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {"data": [{"index": 0, "embedding": [0.25, 0.75]}]}
+
+    def fake_post(_url, *, headers, json, timeout):
+        del json, timeout
+        captured["headers"] = headers
+        return _Response()
+
+    monkeypatch.setattr("contract.legal_evidence.embedding.httpx.post", fake_post)
+    provider = OpenAICompatibleLegalEmbeddingProvider(
+        base_url="http://model-gateway/v1",
+        api_key="",
+        registration_id="embedding-component",
+        model="embedding-model",
+        dimensions=2,
+    )
+
+    assert provider.embed_query("合同") == [0.25, 0.75]
+    assert "Authorization" not in captured["headers"]
 
 
 def test_embedding_adapter_retries_transient_gateway_failure(monkeypatch) -> None:
@@ -749,6 +983,139 @@ def test_indexer_reuses_completed_rows_and_persists_one_embedding_write_per_flus
     assert result["reused_units"] == 8
     assert result["reused_embeddings"] == 4
     assert target.relations_reset is True
+
+
+def test_indexer_resumes_from_last_durable_version_and_checkpoints_progress() -> None:
+    existing = LegalRetrievalUnit(
+        unit_id="legal-unit-existing",
+        release_id="projection-1",
+        instrument_id="instrument-1",
+        version_id="version-01",
+        source_node_ids=["node-1"],
+        title="测试法规一",
+        content="既有投影。",
+        content_hash="1" * 64,
+        sequence=1,
+    )
+
+    class _Source:
+        start_version_id = None
+
+        @staticmethod
+        def active_release():
+            return {"release_id": "source-1", "manifest_sha256": "a" * 64}
+
+        @staticmethod
+        def retrieval_root_count(_release_id):
+            return 2
+
+        def iter_nodes(self, _release_id, *, page_size, start_version_id=""):
+            del page_size
+            self.start_version_id = start_version_id
+            for index in (1, 2):
+                yield {
+                    "release_id": "source-1",
+                    "instrument_key": f"instrument-{index}",
+                    "version_id": f"version-{index:02d}",
+                    "title": f"测试法规{index}",
+                    "category_root": "法律",
+                    "jurisdiction_code": "CN",
+                    "issuing_authority_names_json": "[]",
+                    "source_url": None,
+                    "node_id": f"node-{index}",
+                    "parent_node_id": None,
+                    "node_type": "PREAMBLE",
+                    "node_number": None,
+                    "heading": None,
+                    "content_plain": "既有投影。" if index == 1 else "新增投影。",
+                    "sequence": 1,
+                    "path": "前言",
+                    "content_sha256": str(index) * 64,
+                }
+
+        @staticmethod
+        def iter_instruments(_release_id, *, page_size):
+            del page_size
+            return iter(())
+
+        @staticmethod
+        def iter_relations(_release_id, *, page_size):
+            del page_size
+            return iter(())
+
+    class _Target:
+        def __init__(self) -> None:
+            self.units = {existing.unit_id: existing}
+            self.cursor = ("version-01", 1, 1, 0)
+            self.checkpoints = []
+
+        @staticmethod
+        def stage_release(**_kwargs):
+            return True
+
+        def projection_resume_cursor(self, _release_id):
+            return self.cursor
+
+        def units_requiring_projection(self, units):
+            existing_versions = {unit.version_id for unit in self.units.values()}
+            return [unit for unit in units if unit.version_id not in existing_versions]
+
+        def upsert_units(self, units):
+            units = list(units)
+            self.units.update({unit.unit_id: unit for unit in units})
+            return len(units)
+
+        def record_projection_checkpoint(self, **checkpoint):
+            self.checkpoints.append(checkpoint)
+            self.cursor = (
+                checkpoint["last_version_id"],
+                checkpoint["last_sequence"],
+                len(self.units),
+                0,
+            )
+
+        @staticmethod
+        def reset_staged_relations(_release_id):
+            return None
+
+        @staticmethod
+        def representative_unit_ids(_release_id):
+            return {}
+
+        def iter_units(self, _release_id, *, page_size):
+            del page_size
+            return iter(sorted(self.units.values(), key=lambda unit: unit.version_id))
+
+        @staticmethod
+        def unit_ids_by_instrument_articles(_release_id, _keys):
+            return {}
+
+        @staticmethod
+        def representative_unit_id(*_args):
+            return None
+
+        @staticmethod
+        def upsert_relations(relations):
+            return len(list(relations))
+
+        def mark_projection_complete(self, _release_id, *, expected_unit_count):
+            assert expected_unit_count == len(self.units) == 2
+            return 2, 0
+
+        @staticmethod
+        def projection_counts(_release_id):
+            return 2, 0, 0
+
+    source = _Source()
+    target = _Target()
+    result = LegalEvidenceIndexer(source, target, write_batch_size=2).publish()
+
+    assert source.start_version_id == "version-01"
+    assert result["actual_units"] == 2
+    assert result["new_units"] == 1
+    assert result["reused_units"] == 1
+    assert target.checkpoints[-1]["status"] == "SUCCEEDED"
+    assert target.checkpoints[-1]["projected_unit_count"] == 2
 
 
 def test_embedding_batch_failure_writes_no_partial_embedding_flush() -> None:

@@ -225,7 +225,7 @@ def test_legal_catalog_budget_omission_is_explicit(monkeypatch) -> None:
 
     _prompt(request)
 
-    assert request.legal_evidence == []
+    assert len(request.legal_evidence) == 1
     assert request.legal_evidence_prompt_status == "OMITTED_TOKEN_BUDGET"
 
 
@@ -325,8 +325,8 @@ def test_invalid_json_is_repaired_once_for_current_unit() -> None:
     assert result.repair_count == 1
     assert result.repair_reasons[0].startswith("RISK_DIRECT_SCHEMA_INVALID:")
     assert runtime.calls[1]["repair_no"] == 1
-    assert len(runtime.calls[1]["messages"]) == 3
-    repair_request = json.loads(runtime.calls[1]["messages"][2]["content"])
+    assert len(runtime.calls[1]["messages"]) == 1
+    repair_request = json.loads(runtime.calls[1]["messages"][0]["content"])
     assert repair_request["first_raw_json"] == "not-json"
     assert "不得把非空findings改为空数组" in repair_request["constraints"]
 
@@ -523,6 +523,403 @@ def test_known_top_level_checks_is_normalized_without_model_repair() -> None:
     assert len(runtime.calls) == 1
 
 
+def test_extra_top_level_explanation_is_discarded_without_model_repair() -> None:
+    payload = _valid_payload()
+    payload["summary"] = "已完成八项检查。"
+
+    result, runtime = _review([_completion(json.dumps(payload, ensure_ascii=False))])
+
+    assert result.model_call_count == 1
+    assert result.repair_count == 0
+    assert result.schema_normalization_applied is True
+    assert len(result.check_results) == 8
+    assert len(runtime.calls) == 1
+
+
+def test_cf005_ir_ref_shorthand_is_bound_to_prompt_anchor_without_repair() -> None:
+    request = _request()
+    _text, ir_refs, anchor_refs, _candidate = _prompt(request)
+    payload = _valid_payload()
+    payload["check_results"][4]["candidate_evidence"] = ["I001"]
+
+    parsed = _parse_model_output(
+        json.dumps(payload, ensure_ascii=False),
+        ir_refs=ir_refs,
+        anchor_refs=anchor_refs,
+    )
+
+    assert parsed.normalization.normalization_type == (
+        "CF005_EVIDENCE_REFS_TO_DRAFTS"
+    )
+    assert parsed.raw_object["check_results"][4]["candidate_evidence"] == [
+        "I001"
+    ]
+    assert parsed.response.check_results[4].candidate_evidence[0].model_dump(
+        mode="json"
+    ) == {
+        "evidence_type": "TEXT_QUOTE",
+        "ir_ref": "I001",
+        "evidence_ref": "A001",
+        "checked_scope": None,
+        "verification_note": None,
+    }
+
+
+def test_cf005_unknown_ir_ref_shorthand_is_not_normalized() -> None:
+    request = _request()
+    _text, ir_refs, anchor_refs, _candidate = _prompt(request)
+    payload = _valid_payload()
+    payload["check_results"][4]["candidate_evidence"] = ["I999"]
+
+    with pytest.raises(DirectReviewError) as raised:
+        _parse_model_output(
+            json.dumps(payload, ensure_ascii=False),
+            ir_refs=ir_refs,
+            anchor_refs=anchor_refs,
+        )
+
+    assert raised.value.code == "RISK_DIRECT_SCHEMA_INVALID"
+
+
+def test_cf005_anchor_ref_shorthand_is_uniquely_bound_to_ir() -> None:
+    request = _request()
+    _text, ir_refs, anchor_refs, _candidate = _prompt(request)
+    payload = _valid_payload()
+    payload["check_results"][4]["candidate_evidence"] = [
+        {"evidence_ref": "A001"}
+    ]
+
+    parsed = _parse_model_output(
+        json.dumps(payload, ensure_ascii=False),
+        ir_refs=ir_refs,
+        anchor_refs=anchor_refs,
+    )
+
+    assert parsed.normalization.normalization_type == (
+        "CF005_EVIDENCE_REFS_TO_DRAFTS"
+    )
+    assert parsed.response.check_results[4].candidate_evidence[0].ir_ref == "I001"
+    assert parsed.response.check_results[4].candidate_evidence[0].evidence_ref == (
+        "A001"
+    )
+
+
+def test_empty_decision_notes_are_deterministically_summarized() -> None:
+    payload = _valid_payload()
+    for check in payload["check_results"]:
+        check["decision_note"] = ""
+
+    parsed = _parse_model_output(json.dumps(payload, ensure_ascii=False))
+
+    assert parsed.normalization.normalization_type == (
+        "EMPTY_DECISION_NOTES_TO_STATUS_SUMMARY"
+    )
+    assert all(
+        item.decision_note
+        for item in parsed.response.check_results
+    )
+
+
+def test_null_decision_notes_are_deterministically_summarized() -> None:
+    request = _request()
+    _text, ir_refs, anchor_refs, _candidate = _prompt(request)
+    payload = _valid_payload()
+    for check in payload["check_results"]:
+        check["decision_note"] = None
+    payload["check_results"][4]["candidate_evidence"] = ["A001"]
+
+    parsed = _parse_model_output(
+        json.dumps(payload, ensure_ascii=False),
+        ir_refs=ir_refs,
+        anchor_refs=anchor_refs,
+    )
+
+    assert parsed.normalization.normalization_type == (
+        "KNOWN_COMMERCIAL_SCHEMA_COMBINED"
+    )
+    assert all(item.decision_note for item in parsed.response.check_results)
+    assert parsed.response.check_results[4].candidate_evidence[0].evidence_ref == (
+        "A001"
+    )
+
+
+def test_cf005_annotated_anchor_scalar_and_missing_note_are_normalized() -> None:
+    request = _request()
+    _text, ir_refs, anchor_refs, _candidate = _prompt(request)
+    payload = _valid_payload()
+    cf005 = payload["check_results"][4]
+    cf005.pop("decision_note")
+    cf005["candidate_evidence"] = "A001条款已提供明确履约保障。"
+
+    parsed = _parse_model_output(
+        json.dumps(payload, ensure_ascii=False),
+        ir_refs=ir_refs,
+        anchor_refs=anchor_refs,
+    )
+
+    assert parsed.normalization.normalization_type == (
+        "KNOWN_COMMERCIAL_SCHEMA_COMBINED"
+    )
+    assert parsed.response.check_results[4].decision_note
+    assert parsed.response.check_results[4].candidate_evidence[0].evidence_ref == (
+        "A001"
+    )
+
+
+def test_cf005_prose_evidence_uses_only_deterministic_mechanism_anchors() -> None:
+    request = _request()
+    _text, ir_refs, anchor_refs, candidate = _prompt(request)
+    assert candidate.identified_security_mechanisms == ["ACCEPTANCE_LINKAGE"]
+    payload = _valid_payload()
+    payload["check_results"][4]["candidate_evidence"] = (
+        "合同约定的付款安排已经提供履约保障。"
+    )
+
+    parsed = _parse_model_output(
+        json.dumps(payload, ensure_ascii=False),
+        ir_refs=ir_refs,
+        anchor_refs=anchor_refs,
+        cf005_candidate=candidate,
+    )
+
+    assert [
+        item.evidence_ref
+        for item in parsed.response.check_results[4].candidate_evidence
+    ] == ["A001", "A002", "A003", "A004", "A005"]
+
+
+def test_single_finding_evidence_object_is_wrapped_without_model_repair() -> None:
+    request = _request()
+    _text, ir_refs, anchor_refs, candidate = _prompt(request)
+    payload = _valid_payload()
+    payload["check_results"][0]["findings"][0]["evidence"] = payload[
+        "check_results"
+    ][0]["findings"][0]["evidence"][0]
+
+    parsed = _parse_model_output(
+        json.dumps(payload, ensure_ascii=False),
+        ir_refs=ir_refs,
+        anchor_refs=anchor_refs,
+        cf005_candidate=candidate,
+    )
+
+    assert len(parsed.response.check_results[0].findings[0].evidence) == 1
+
+
+def test_single_finding_object_and_evidence_object_are_wrapped() -> None:
+    request = _request()
+    _text, ir_refs, anchor_refs, candidate = _prompt(request)
+    payload = _valid_payload()
+    finding = payload["check_results"][0]["findings"][0]
+    finding["evidence"] = finding["evidence"][0]
+    payload["check_results"][0]["findings"] = finding
+
+    parsed = _parse_model_output(
+        json.dumps(payload, ensure_ascii=False),
+        ir_refs=ir_refs,
+        anchor_refs=anchor_refs,
+        cf005_candidate=candidate,
+        assigned_check_specs=request.assigned_check_specs,
+    )
+
+    assert len(parsed.response.check_results[0].findings) == 1
+    assert len(parsed.response.check_results[0].findings[0].evidence) == 1
+
+
+def test_check_level_classification_is_moved_to_missing_finding_fields() -> None:
+    request = _request()
+    _text, ir_refs, anchor_refs, candidate = _prompt(request)
+    payload = _valid_payload()
+    first = payload["check_results"][0]
+    first["category"] = first["findings"][0].pop("category")
+    first["risk_type"] = first["findings"][0].pop("risk_type")
+
+    parsed = _parse_model_output(
+        json.dumps(payload, ensure_ascii=False),
+        ir_refs=ir_refs,
+        anchor_refs=anchor_refs,
+        cf005_candidate=candidate,
+        assigned_check_specs=request.assigned_check_specs,
+    )
+
+    finding = parsed.response.check_results[0].findings[0]
+    assert finding.category == "PAYMENT"
+    assert finding.risk_type == "PRICE_CALCULATION_RISK"
+
+
+def test_allowed_nonprimary_check_risk_type_is_preserved_on_finding() -> None:
+    request = _request()
+    specs = list(request.assigned_check_specs)
+    specs[0] = specs[0].model_copy(
+        update={
+            "allowed_risk_types": [
+                "PRICE_CALCULATION_RISK",
+                "PRICE_SCOPE_RISK",
+            ]
+        }
+    )
+    request = request.model_copy(update={"assigned_check_specs": specs})
+    _text, ir_refs, anchor_refs, candidate = _prompt(request)
+    payload = _valid_payload()
+    first = payload["check_results"][0]
+    first["category"] = first["findings"][0].pop("category")
+    first["risk_type"] = "PRICE_SCOPE_RISK"
+    first["findings"][0].pop("risk_type")
+
+    parsed = _parse_model_output(
+        json.dumps(payload, ensure_ascii=False),
+        ir_refs=ir_refs,
+        anchor_refs=anchor_refs,
+        cf005_candidate=candidate,
+        assigned_check_specs=request.assigned_check_specs,
+    )
+
+    finding = parsed.response.check_results[0].findings[0]
+    assert finding.category == "PAYMENT"
+    assert finding.risk_type == "PRICE_SCOPE_RISK"
+
+
+def test_cf005_missing_candidate_evidence_uses_deterministic_mechanism_sources() -> None:
+    request = _request()
+    _text, ir_refs, anchor_refs, candidate = _prompt(request)
+    payload = _valid_payload()
+    payload["check_results"][4]["candidate_evidence"] = []
+
+    parsed = _parse_model_output(
+        json.dumps(payload, ensure_ascii=False),
+        ir_refs=ir_refs,
+        anchor_refs=anchor_refs,
+        cf005_candidate=candidate,
+        assigned_check_specs=request.assigned_check_specs,
+    )
+
+    assert [
+        item.evidence_ref
+        for item in parsed.response.check_results[4].candidate_evidence
+    ] == ["A001", "A002", "A003", "A004", "A005"]
+
+
+def test_cf005_confirmed_risk_defaults_missing_candidate_detail_lists() -> None:
+    request = _request()
+    _text, ir_refs, anchor_refs, candidate = _prompt(request)
+    payload = _valid_payload()
+    cf005 = payload["check_results"][4]
+    cf005["candidate_decision"] = "RISK_CONFIRMED"
+    cf005["findings"] = [
+        {
+            **payload["check_results"][0]["findings"][0],
+            "check_code": "CF-005",
+            "risk_type": "ADVANCE_PAYMENT_SECURITY_RISK",
+        }
+    ]
+    cf005.pop("identified_security_mechanisms")
+    cf005.pop("candidate_evidence")
+
+    parsed = _parse_model_output(
+        json.dumps(payload, ensure_ascii=False),
+        ir_refs=ir_refs,
+        anchor_refs=anchor_refs,
+        cf005_candidate=candidate,
+        assigned_check_specs=request.assigned_check_specs,
+    )
+
+    normalized = parsed.response.check_results[4]
+    assert normalized.identified_security_mechanisms == []
+    assert normalized.candidate_evidence == []
+
+
+def test_cf005_single_candidate_evidence_object_is_wrapped() -> None:
+    request = _request()
+    _text, ir_refs, anchor_refs, candidate = _prompt(request)
+    payload = _valid_payload()
+    cf005 = payload["check_results"][4]
+    cf005["candidate_evidence"] = cf005["candidate_evidence"][0]
+
+    parsed = _parse_model_output(
+        json.dumps(payload, ensure_ascii=False),
+        ir_refs=ir_refs,
+        anchor_refs=anchor_refs,
+        cf005_candidate=candidate,
+        assigned_check_specs=request.assigned_check_specs,
+    )
+
+    assert len(parsed.response.check_results[4].candidate_evidence) == 1
+
+
+def test_cf005_missing_decision_is_rejected_by_deterministic_payment_facts() -> None:
+    request = _request()
+    _text, ir_refs, anchor_refs, candidate = _prompt(request)
+    assert candidate.identified_security_mechanisms
+    payload = _valid_payload()
+    payload["check_results"][4].pop("candidate_decision")
+
+    parsed = _parse_model_output(
+        json.dumps(payload, ensure_ascii=False),
+        ir_refs=ir_refs,
+        anchor_refs=anchor_refs,
+        cf005_candidate=candidate,
+        assigned_check_specs=request.assigned_check_specs,
+    )
+
+    assert (
+        parsed.response.check_results[4].candidate_decision
+        == "RISK_NOT_CONFIRMED"
+    )
+
+
+def test_cf005_missing_strong_decision_gets_deterministic_grounded_finding() -> None:
+    request = _request_with_single_payment_text(
+        "本合同签订后十日内，甲方应一次性支付全部合同价款。"
+    )
+    _text, ir_refs, anchor_refs, candidate = _prompt(request)
+    assert candidate.substantial_prepayment is True
+    assert candidate.payment_before_performance is True
+    assert candidate.payer_role_status == "OUR_PARTY"
+    assert candidate.identified_security_mechanisms == []
+    payload = _valid_payload(finding_count=0)
+    cf005 = payload["check_results"][4]
+    cf005.pop("candidate_decision")
+    cf005.pop("identified_security_mechanisms")
+    cf005.pop("candidate_evidence")
+
+    parsed = _parse_model_output(
+        json.dumps(payload, ensure_ascii=False),
+        ir_refs=ir_refs,
+        anchor_refs=anchor_refs,
+        cf005_candidate=candidate,
+        assigned_check_specs=request.assigned_check_specs,
+    )
+
+    result = parsed.response.check_results[4]
+    assert result.candidate_decision == "RISK_CONFIRMED"
+    assert len(result.findings) == 1
+    assert {item.evidence_type for item in result.findings[0].evidence} == {
+        "TEXT_QUOTE",
+        "ABSENCE",
+    }
+
+
+def test_missing_text_evidence_type_is_restored_from_exact_prompt_binding() -> None:
+    request = _request()
+    _text, ir_refs, anchor_refs, _candidate = _prompt(request)
+    payload = _valid_payload()
+    evidence = payload["check_results"][0]["findings"][0]["evidence"][0]
+    del evidence["evidence_type"]
+
+    parsed = _parse_model_output(
+        json.dumps(payload, ensure_ascii=False),
+        ir_refs=ir_refs,
+        anchor_refs=anchor_refs,
+    )
+
+    assert parsed.normalization.normalization_type == (
+        "CF005_EVIDENCE_REFS_TO_DRAFTS"
+    )
+    assert parsed.response.check_results[0].findings[0].evidence[0].evidence_type == (
+        "TEXT_QUOTE"
+    )
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -533,15 +930,6 @@ def test_known_top_level_checks_is_normalized_without_model_repair() -> None:
         lambda: {
             "checks": _valid_payload()["check_results"],
             "unknown": True,
-        },
-        lambda: {
-            "checks": [
-                *(_valid_payload()["check_results"][:-1]),
-                {
-                    **_valid_payload()["check_results"][-1],
-                    "decision_note": None,
-                },
-            ]
         },
         lambda: {
             "checks": [
@@ -796,7 +1184,7 @@ def test_cf005_requires_payment_quote_and_absence_of_safeguard() -> None:
     }
 
 
-def test_cf005_rejects_advance_payment_finding_without_absence_check() -> None:
+def test_cf005_enriches_confirmed_advance_payment_with_deterministic_absence() -> None:
     payload = _valid_payload(finding_count=0)
     check = payload["check_results"][4]
     check["candidate_decision"] = "RISK_CONFIRMED"
@@ -823,20 +1211,22 @@ def test_cf005_rejects_advance_payment_finding_without_absence_check() -> None:
             ],
         }
     ]
-    responses = [
-        _completion(json.dumps(payload, ensure_ascii=False)),
-        _completion(json.dumps(payload, ensure_ascii=False), repair_no=1),
-    ]
+    result, _runtime = _review(
+        [_completion(json.dumps(payload, ensure_ascii=False))],
+        _request_with_single_payment_text(
+            "本合同签订后十日内，甲方应一次性支付全部合同价款。"
+        ),
+    )
 
-    with pytest.raises(DirectReviewError) as raised:
-        _review(
-            responses,
-            _request_with_single_payment_text(
-                "本合同签订后十日内，甲方应一次性支付全部合同价款。"
-            ),
-        )
-
-    assert raised.value.code == "RISK_CF005_EVIDENCE_INVALID"
+    finding = next(item for item in result.findings if item.check_code == "CF-005")
+    assert {item.evidence_type for item in finding.evidence_candidates} == {
+        "TEXT_QUOTE",
+        "ABSENCE",
+    }
+    absence = next(
+        item for item in finding.evidence_candidates if item.evidence_type == "ABSENCE"
+    )
+    assert "Python确定性候选扫描" in (absence.verification_note or "")
 
 
 def _request_with_single_payment_text(text: str) -> CommercialReviewRequest:

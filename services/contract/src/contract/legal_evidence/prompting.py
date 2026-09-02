@@ -3,7 +3,11 @@ from __future__ import annotations
 from contract.application.idempotency import canonical_json
 from contract.legal_evidence.models import LegalEvidence
 
-_LEGAL_PROMPT_SAFETY_TOKENS = 512
+# The model gateway/provider may add registration, structured-output and repair
+# wrappers that are not visible to this caller. Production observations show
+# that a legal catalog can make a repair request substantially larger than the
+# first request, so keep conservative headroom under the audited 7k hard limit.
+_LEGAL_PROMPT_SAFETY_TOKENS = 3072
 
 
 def deterministic_token_upper_bound(value: str) -> int:

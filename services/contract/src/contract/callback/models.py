@@ -11,6 +11,7 @@ from contract.api.models import (
     Evidence,
     EvidenceType,
     Finding,
+    LegalEvidenceVersionSnapshotReference,
     ReviewSummary,
     LegalEvidenceReference,
     StrictModel,
@@ -243,6 +244,7 @@ class FinalizeReviewStageResult(StrictModel):
         default=None,
         pattern=r"^sha256:[0-9a-f]{64}$",
     )
+    legal_evidence_version_snapshot: LegalEvidenceVersionSnapshotReference | None = None
     legal_evidences: list[LegalEvidenceReference] = Field(default_factory=list)
     relationships: list[None] = Field(default_factory=list, max_length=0)
 

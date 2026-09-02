@@ -61,7 +61,9 @@ def _count(sql: str, params: tuple[object, ...]) -> int:
     not DATABASE_URL,
     reason="CONTRACT_TEST_DATABASE_URL is not configured",
 )
-def test_projection_resume_hashes_relation_rebuild_and_release_lock() -> None:
+def test_projection_resume_hashes_relation_rebuild_and_release_lock(
+    request: pytest.FixtureRequest,
+) -> None:
     """Exercise the publication invariants against a real PostgreSQL server."""
 
     settings = Settings(
@@ -70,10 +72,20 @@ def test_projection_resume_hashes_relation_rebuild_and_release_lock() -> None:
     )
     run_migrations(settings)
     repository = PostgresLegalEvidenceRepository(settings)
+    previous_active = repository.active_release()
 
     suffix = uuid.uuid4().hex
     release_id = f"legal-index-integration-{suffix}"
     profile_id = f"embedding-profile-integration-{suffix}"
+
+    def restore_previous_active_release() -> None:
+        if previous_active is not None and previous_active.release_id != release_id:
+            repository.activate_release(previous_active.release_id)
+
+    # Publishing is intentionally immutable, so the integration release remains
+    # as a RETIRED audit record. Always restore the release that was active when
+    # the test started instead of leaving test data selected for real queries.
+    request.addfinalizer(restore_previous_active_release)
 
     with (
         repository.projection_lock(release_id),
@@ -109,6 +121,27 @@ def test_projection_resume_hashes_relation_rebuild_and_release_lock() -> None:
     assert repository.units_requiring_projection(units) == units
     assert repository.upsert_units(units) == 2
     assert repository.units_requiring_projection(units) == []
+    assert repository.unit_ids_by_source_nodes(
+        release_id,
+        {first.source_node_ids[0], second.source_node_ids[0], "missing-node"},
+    ) == {
+        first.source_node_ids[0]: first.unit_id,
+        second.source_node_ids[0]: second.unit_id,
+    }
+    repository.record_projection_checkpoint(
+        source_release_id=f"source-integration-{suffix}",
+        projection_release_id=release_id,
+        last_version_id=second.version_id,
+        last_sequence=second.sequence,
+        projected_unit_count=2,
+        status="RUNNING",
+    )
+    assert repository.projection_resume_cursor(release_id) == (
+        second.version_id,
+        second.sequence,
+        2,
+        0,
+    )
 
     for drifted in (
         first.model_copy(update={"title": "更名后的法规"}),
@@ -193,6 +226,20 @@ def test_projection_resume_hashes_relation_rebuild_and_release_lock() -> None:
             WHERE version = '008_legal_evidence_resume_hashes'
             """
         ).fetchone()
+        checkpoint_migration = conn.execute(
+            """
+            SELECT count(*) FROM contract_schema_migration
+            WHERE version = '010_legal_evidence_resumable_checkpoint'
+            """
+        ).fetchone()
+        checkpoint = conn.execute(
+            """
+            SELECT source_release_id, projection_release_id, status
+            FROM legal_evidence_projection_checkpoint
+            WHERE projection_release_id = %s
+            """,
+            (release_id,),
+        ).fetchone()
         old_edges = conn.execute(
             """
             SELECT count(*) FROM legal_evidence_relation
@@ -203,4 +250,10 @@ def test_projection_resume_hashes_relation_rebuild_and_release_lock() -> None:
 
     assert row == ("ACTIVE", "READY", 2, 1)
     assert migration == (1,)
+    assert checkpoint_migration == (1,)
+    assert checkpoint == (
+        f"source-integration-{suffix}",
+        release_id,
+        "RUNNING",
+    )
     assert old_edges == (0,)

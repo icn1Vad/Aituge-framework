@@ -1129,7 +1129,9 @@ def _batch_prompt_details(
     )
     if not legal_catalog:
         status = "OMITTED_TOKEN_BUDGET" if effective_evidence else "NOT_REQUESTED"
-        return baseline_prompt, [], 0, status
+        # The model does not receive the catalog, but the deterministic
+        # Check-to-Evidence-ID binding remains available to materialization.
+        return baseline_prompt, effective_evidence, 0, status
     payload["legal_evidence_catalog"] = legal_catalog
     payload["legal_evidence_input_tokens"] = legal_tokens
     payload["output_contract"]["legal_evidence_rules"] = [
@@ -1541,7 +1543,7 @@ async def execute_horizontal_unit(
     model_id: str,
     runtime_factory: Callable[[str], HorizontalLlmCompleter] = LlmRuntime,
     framework_run_id: str | None = None,
-    timeout_seconds: float = 60.0,
+    timeout_seconds: float = 180.0,
     legal_evidence: list[LegalEvidence] | None = None,
 ) -> HorizontalUnitResult:
     started = time.perf_counter()
@@ -1711,7 +1713,7 @@ async def execute_horizontal_phase(
     model_id: str,
     runtime_factory: Callable[[str], HorizontalLlmCompleter] = LlmRuntime,
     framework_run_id: str | None = None,
-    timeout_seconds: float = 60.0,
+    timeout_seconds: float = 180.0,
     legal_evidence_by_domain: dict[str, list[LegalEvidence]] | None = None,
 ) -> tuple[list[HorizontalUnitResult], int]:
     active = 0

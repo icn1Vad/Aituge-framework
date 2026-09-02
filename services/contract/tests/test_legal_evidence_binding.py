@@ -9,6 +9,7 @@ from contract.legal_evidence.models import (
     LegalDomain,
     LegalEvidence,
     LegalEvidenceBundle,
+    LegalEvidenceConflict,
     LegalEvidenceIssue,
     LegalEvidencePlanSnapshot,
     LegalRetrievalUnit,
@@ -129,6 +130,68 @@ def test_generic_contract_words_fail_closed_without_binding() -> None:
     assert result.evidence[0].check_codes == []
     assert result.binding_status == "NONE"
     assert result.unmapped_issue_ids == [result.issues[0].issue_id]
+    assert result.usable is False
+
+
+def test_completed_issue_remains_usable_when_an_independent_issue_is_unresolved() -> None:
+    source = _bundle(
+        ["付款期限届满后应当及时支付价款。", "经营者应当开具增值税发票。"],
+        domain="commercial_financial",
+        check_codes=["CF-002", "CF-003"],
+    )
+    second_issue_id = "legal-issue-" + "2" * 32
+    second_issue = source.issues[0].model_copy(
+        update={"issue_id": second_issue_id, "check_codes": ["CF-003"]}
+    )
+    source = source.model_copy(
+        update={
+            "status": "DEGRADED",
+            "issues": [
+                source.issues[0].model_copy(update={"check_codes": ["CF-002"]}),
+                second_issue,
+            ],
+            "evidence": [
+                source.evidence[0].model_copy(
+                    update={"issue_ids": [source.issues[0].issue_id]}
+                ),
+                source.evidence[1].model_copy(update={"issue_ids": [second_issue_id]}),
+            ],
+            "unresolved_issue_ids": [second_issue_id],
+        }
+    )
+
+    result = LegalEvidenceCheckBinder().bind(source)
+
+    assert result.evidence[0].check_codes == ["CF-002"]
+    assert result.evidence[1].check_codes == []
+    assert result.binding_status == "PARTIAL"
+    assert result.unmapped_issue_ids == [second_issue_id]
+    assert result.usable is True
+
+
+def test_conflicted_evidence_is_retained_for_trace_but_never_bound_to_a_finding() -> None:
+    source = _bundle(
+        "约定的违约金过分高于损失的，人民法院可以调整违约金。",
+        domain="liability_remedies_exit",
+        check_codes=["LRE-002"],
+    )
+    source = source.model_copy(
+        update={
+            "status": "DEGRADED",
+            "conflicts": [
+                LegalEvidenceConflict(
+                    conflict_type="RELATION",
+                    evidence_ids=[source.evidence[0].evidence_id],
+                    reason="一般规则与例外规则尚未消解",
+                )
+            ],
+        }
+    )
+
+    result = LegalEvidenceCheckBinder().bind(source)
+
+    assert result.evidence[0].check_codes == []
+    assert "LEGAL_RELATION_CONFLICT_UNRESOLVED" in result.evidence[0].cautions
     assert result.usable is False
 
 

@@ -1435,6 +1435,16 @@
             ],
             "title": "Legal Evidence Release Id"
           },
+          "legal_evidence_version_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LegalEvidenceVersionSnapshotReference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "legal_evidences": {
             "items": {
               "$ref": "#/components/schemas/LegalEvidenceReference"
@@ -2336,10 +2346,89 @@
         "type": "object"
       },
       "JsonValue": {},
+      "LegalApplicabilityDecisionReference": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract Date"
+          },
+          "issue_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Issue Id",
+            "type": "string"
+          },
+          "jurisdiction_decision": {
+            "enum": [
+              "MATCH",
+              "UNKNOWN"
+            ],
+            "title": "Jurisdiction Decision",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "APPLICABLE",
+              "REVIEW_DATE_ONLY",
+              "UNKNOWN_METADATA"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Reasons",
+            "type": "array"
+          },
+          "review_as_of_date": {
+            "format": "date",
+            "title": "Review As Of Date",
+            "type": "string"
+          },
+          "temporal_decision": {
+            "enum": [
+              "MATCH",
+              "NOT_EFFECTIVE_AT_CONTRACT_DATE",
+              "UNKNOWN"
+            ],
+            "title": "Temporal Decision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "issue_id",
+          "outcome",
+          "jurisdiction_decision",
+          "temporal_decision",
+          "review_as_of_date"
+        ],
+        "title": "LegalApplicabilityDecisionReference",
+        "type": "object"
+      },
       "LegalEvidenceReference": {
         "additionalProperties": false,
         "description": "Durable, self-contained legal source referenced by a Finding.",
         "properties": {
+          "applicability_decisions": {
+            "items": {
+              "$ref": "#/components/schemas/LegalApplicabilityDecisionReference"
+            },
+            "minItems": 1,
+            "title": "Applicability Decisions",
+            "type": "array"
+          },
           "article_no": {
             "anyOf": [
               {
@@ -2429,6 +2518,12 @@
             "title": "Heading Path",
             "type": "array"
           },
+          "instrument_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Instrument Id",
+            "type": "string"
+          },
           "issue_ids": {
             "items": {
               "maxLength": 160,
@@ -2484,11 +2579,51 @@
             ],
             "title": "Official Source Url"
           },
+          "relation_paths": {
+            "items": {
+              "$ref": "#/components/schemas/LegalEvidenceRelationPathReference"
+            },
+            "title": "Relation Paths",
+            "type": "array"
+          },
           "release_id": {
             "maxLength": 160,
             "minLength": 1,
             "title": "Release Id",
             "type": "string"
+          },
+          "relevance_score": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Relevance Score",
+            "type": "number"
+          },
+          "rerank_score": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerank Score"
+          },
+          "retrieval_channels": {
+            "items": {
+              "enum": [
+                "EXACT",
+                "KEYWORD",
+                "VECTOR",
+                "RELATION"
+              ],
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Retrieval Channels",
+            "type": "array"
           },
           "source_node_ids": {
             "items": {
@@ -2529,21 +2664,145 @@
               }
             ],
             "title": "Validity Status"
+          },
+          "version_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Version Id",
+            "type": "string"
           }
         },
         "required": [
           "evidence_id",
           "release_id",
           "unit_id",
+          "instrument_id",
+          "version_id",
           "source_node_ids",
           "title",
           "content",
           "metadata_verification_status",
           "content_hash",
           "check_codes",
-          "issue_ids"
+          "issue_ids",
+          "retrieval_channels",
+          "relevance_score",
+          "applicability_decisions"
         ],
         "title": "LegalEvidenceReference",
+        "type": "object"
+      },
+      "LegalEvidenceRelationPathReference": {
+        "additionalProperties": false,
+        "properties": {
+          "relation_ids": {
+            "items": {
+              "maxLength": 160,
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Relation Ids",
+            "type": "array"
+          },
+          "source_unit_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Source Unit Id",
+            "type": "string"
+          },
+          "target_unit_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Target Unit Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_unit_id",
+          "target_unit_id",
+          "relation_ids"
+        ],
+        "title": "LegalEvidenceRelationPathReference",
+        "type": "object"
+      },
+      "LegalEvidenceVersionSnapshotReference": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract Date"
+          },
+          "embedding_model_version": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Model Version"
+          },
+          "legal_projection_version": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Legal Projection Version",
+            "type": "string"
+          },
+          "legal_release_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Legal Release Id",
+            "type": "string"
+          },
+          "planner_version": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Planner Version",
+            "type": "string"
+          },
+          "relation_extractor_version": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Relation Extractor Version",
+            "type": "string"
+          },
+          "reranker_version": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reranker Version"
+          },
+          "review_as_of_date": {
+            "format": "date",
+            "title": "Review As Of Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "legal_release_id",
+          "legal_projection_version",
+          "relation_extractor_version",
+          "planner_version",
+          "review_as_of_date"
+        ],
+        "title": "LegalEvidenceVersionSnapshotReference",
         "type": "object"
       },
       "LiabilityTerminationStageResult": {
@@ -3218,6 +3477,16 @@
             ],
             "title": "Legal Evidence Release Id"
           },
+          "legal_evidence_version_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LegalEvidenceVersionSnapshotReference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "legal_evidences": {
             "items": {
               "$ref": "#/components/schemas/LegalEvidenceReference"
@@ -3381,6 +3650,16 @@
               }
             ],
             "title": "Legal Evidence Release Id"
+          },
+          "legal_evidence_version_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LegalEvidenceVersionSnapshotReference"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "legal_evidences": {
             "items": {

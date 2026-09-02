@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from contract.application.idempotency import canonical_json
 from contract.legal_evidence.models import LegalDomain, LegalEvidenceBundle
 
-LEGAL_EVIDENCE_CHECK_BINDING_VERSION = "legal-check-binding-v1"
+LEGAL_EVIDENCE_CHECK_BINDING_VERSION = "legal-check-binding-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,11 +332,22 @@ class LegalEvidenceCheckBinder:
 
     def bind(self, bundle: LegalEvidenceBundle) -> LegalEvidenceBundle:
         issue_by_id = {issue.issue_id: issue for issue in bundle.issues}
+        unresolved_issue_ids = set(bundle.unresolved_issue_ids)
+        conflicted_evidence_ids = {
+            evidence_id
+            for conflict in bundle.conflicts
+            for evidence_id in conflict.evidence_ids
+        }
         bound_evidence = []
         for evidence in bundle.evidence:
             eligible_codes: set[str] = set()
             eligible_domains: dict[str, LegalDomain] = {}
             for issue_id in evidence.issue_ids:
+                # An incomplete issue cannot safely lend its partially found
+                # sources to a Finding. Other independently completed issues
+                # in the same frozen bundle may still be useful.
+                if issue_id in unresolved_issue_ids:
+                    continue
                 issue = issue_by_id.get(issue_id)
                 if issue is None:
                     continue
@@ -354,12 +365,16 @@ class LegalEvidenceCheckBinder:
                 check_code
                 for check_code in eligible_codes
                 if (
+                    evidence.evidence_id not in conflicted_evidence_ids
+                    and
                     (profile := self._profiles.get(check_code)) is not None
                     and profile.domain == eligible_domains.get(check_code)
                     and profile.matches(searchable_text)
                 )
             )
             cautions = set(evidence.cautions)
+            if evidence.evidence_id in conflicted_evidence_ids:
+                cautions.add("LEGAL_RELATION_CONFLICT_UNRESOLVED")
             if evidence.unit.metadata_verification_status != "VERIFIED":
                 cautions.add("LEGAL_METADATA_UNVERIFIED")
             if evidence.unit.validity_status in {None, "UNKNOWN"}:

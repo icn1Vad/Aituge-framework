@@ -1,4 +1,6 @@
 import asyncio
+import json
+from datetime import date
 from types import SimpleNamespace
 
 import httpx
@@ -854,7 +856,10 @@ def test_contract_result_sink_emits_three_frozen_callback_shapes(monkeypatch) ->
             ResultSinkDelivery(
                 task,
                 definition,
-                {"result_type": "PARSE_CONTRACT_STAGE_V1"},
+                {
+                    "result_type": "PARSE_CONTRACT_STAGE_V1",
+                    "applicability_date": date(2026, 8, 31),
+                },
                 "parse_contract",
                 "completed",
                 None,
@@ -896,7 +901,11 @@ def test_contract_result_sink_emits_three_frozen_callback_shapes(monkeypatch) ->
         "RUN_FAILED",
     ]
     assert calls[0][2]["stage_id"] == "parse_contract"
-    assert calls[0][2]["result"] == {"result_type": "PARSE_CONTRACT_STAGE_V1"}
+    assert calls[0][2]["result"] == {
+        "result_type": "PARSE_CONTRACT_STAGE_V1",
+        "applicability_date": "2026-08-31",
+    }
+    assert json.loads(json.dumps(calls[0][2])) == calls[0][2]
     assert calls[1][2]["stage_id"] is None and calls[1][2]["result"] is None
     assert calls[1][2]["error"] is None
     assert calls[2][2]["result"] is None

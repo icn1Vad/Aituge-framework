@@ -90,13 +90,31 @@ class MySqlLegalSource:
             row = cursor.fetchone()
         return int((row or {}).get("unit_count") or 0)
 
+    def relation_count(self, release_id: str) -> int:
+        """Return the authoritative deterministic edge count for a release."""
+        with self._connect() as conn, conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT count(*) AS relation_count
+                FROM biz_legal_relation
+                WHERE release_id = %s
+                """,
+                (release_id,),
+            )
+            row = cursor.fetchone()
+        return int((row or {}).get("relation_count") or 0)
+
     def iter_nodes(
         self,
         release_id: str,
         *,
         page_size: int = 1000,
+        start_version_id: str = "",
     ) -> Iterator[dict[str, Any]]:
-        last_version_id = ""
+        # A resumed projection replays only its current version from sequence
+        # zero. This restores chapter/section context and the assembler's last
+        # buffered article without rereading every earlier version.
+        last_version_id = start_version_id
         last_sequence = -1
         with self._connect() as conn, conn.cursor() as cursor:
             while True:
@@ -105,13 +123,15 @@ class MySqlLegalSource:
                     SELECT n.release_id, i.instrument_key, v.version_id,
                            i.title, i.category_root, i.jurisdiction_code, i.jurisdiction_name,
                            i.issuing_authority_names_json, v.source_url,
+                           v.effective_from, v.effective_to, v.validity_status,
+                           v.metadata_verification_status,
                            n.node_id, n.parent_node_id, n.node_type,
                            n.node_number, n.heading, n.content_plain,
                            n.sequence, n.path, n.content_sha256
-                    FROM biz_legal_node n
-                    JOIN biz_legal_version v
+                    FROM biz_legal_node n FORCE INDEX (uk_legal_node_sequence)
+                    STRAIGHT_JOIN biz_legal_version v
                       ON v.release_id = n.release_id AND v.version_id = n.version_id
-                    JOIN biz_legal_instrument i
+                    STRAIGHT_JOIN biz_legal_instrument i
                       ON i.release_id = v.release_id AND i.instrument_key = v.instrument_key
                     WHERE n.release_id = %s
                       AND (n.version_id > %s OR (n.version_id = %s AND n.sequence > %s))
@@ -146,7 +166,9 @@ class MySqlLegalSource:
                     """
                     SELECT relation_id, release_id, source_instrument_key,
                            source_version_id, target_instrument_key,
-                           target_version_id, relation_type, evidence_text,
+                           source_node_id, target_version_id, target_node_id,
+                           relation_type, evidence_text, evidence_start,
+                           evidence_end, extractor_version, verification_status,
                            evidence_location_json, confidence
                     FROM biz_legal_relation
                     WHERE release_id = %s AND relation_id > %s
