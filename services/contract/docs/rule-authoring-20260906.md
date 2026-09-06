@@ -1,5 +1,10 @@
 # Rule authoring: implementation and verification checkpoint
 
+This is the initial checkpoint. Its pending-draft and fixed-release limitations
+are superseded by [the dynamic snapshot follow-up](rule-dynamic-snapshot-20260906.md).
+The current branch saves confirmed authoring rules as active and freezes current
+database rules for each new Java review task.
+
 Scope: conversational rule input, a user-confirmed rule card, related-rule
 candidate retrieval, and saving a private pending rule to the existing Java
 library. This is not publication/activation, graph-edge maintenance, or a new

@@ -22,12 +22,14 @@ class JavaRuleLibrarySnapshot(StrictModel):
     snapshot_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     tenant_id: str = Field(min_length=1, max_length=160)
     as_of_date: date
-    rules: list[ReviewRuleSnapshot] = Field(default_factory=list, max_length=10000)
+    rules: list[ReviewRuleSnapshot] = Field(default_factory=list, max_length=50000)
 
     @model_validator(mode="after")
     def validate_scope(self) -> JavaRuleLibrarySnapshot:
         if any(rule.tenant_id not in {"0", self.tenant_id} for rule in self.rules):
             raise ValueError("Rule snapshot contains a foreign tenant")
+        if len({rule.rule_id for rule in self.rules}) != len(self.rules):
+            raise ValueError("Rule snapshot contains duplicate rule IDs")
         return self
 
     def planning_request(

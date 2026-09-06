@@ -233,19 +233,30 @@ def test_registered_ai_handler_reuses_preflight_but_keeps_human_confirmation(mon
                     "review_id": "review-1", "document_id": "document-1", "generation_id": "generation-1",
                     "blocks": [raw_block.model_dump()]}})
     monkeypatch.setattr(party_ai.httpx, "AsyncClient", Client)
-    context = SimpleNamespace(task=SimpleNamespace(tenant_id="tenant-1", input_payload_json=task_input),
+    context = SimpleNamespace(task=SimpleNamespace(tenant_id="tenant-1", task_type=capability.PARTY_RESOLUTION_TASK_TYPE, input_payload_json=task_input),
         run=SimpleNamespace(id="run-1"), artifacts={"parse_contract": SimpleNamespace(content_json={
             "result_type": "PARSE_CONTRACT_STAGE_V1", "document_id": "document-1", "generation_id": "generation-1",
             "block_count": 1, "ir_hash": "sha256:" + "0" * 64})})
-    handler = capability._direct_party_resolution_handler("http://unused", "fake", model_id="fake", cache_directory=tmp_path)
+    class FrozenRules:
+        calls = 0
+        async def task_shadow(self, task_id, tenant_id):
+            self.calls += 1
+            assert context.task.task_type == capability.TASK_TYPE
+            return SimpleNamespace(snapshot=SimpleNamespace(rules=[]))
+    rules = FrozenRules()
+    handler = capability._direct_party_resolution_handler("http://unused", "fake", model_id="fake", cache_directory=tmp_path,
+                                                          rule_library_execution=rules)
     first = asyncio.run(handler(context))
     assert first.output["party_a"]["name"] == "晨星公司"
+    assert rules.calls == 0  # Preflight has no Java review task yet.
+    context.task.task_type = capability.TASK_TYPE
     task_input.update(perspective="PARTY_B", confirmed_party_a_name="晨星公司",
                       confirmed_party_b_name="人工确认公司" if corrected else "海川公司")
     second = asyncio.run(handler(context))
     assert second.output["our_party"] == task_input["confirmed_party_b_name"]
     assert second.output["party_b"]["name_status"] == "USER_CONFIRMED"
     assert runtime.calls == 1 and second.metadata["cache_hit"]
+    assert rules.calls == 1
     assert rule_role_arguments(second.metadata, "PARTY_B")["business_role"] == (None if corrected else "委托方")
 
 
@@ -261,3 +272,22 @@ def test_ai_flag_registers_separate_bounded_stage_without_changing_legacy(tmp_pa
     assert pipeline["timeout_seconds"] == 25
     assert pipeline["stages"][1]["timeout_seconds"] == 18
     assert pipeline["stages"][1]["retry_policy"]["max_attempts"] == 1
+
+
+def test_java_snapshot_registration_needs_no_local_release_and_keeps_preflight_independent(tmp_path):
+    from capability_mount import CapabilitySettings
+    from test_contract_capability import CapturingRegistry
+    from services.contract.capabilities import register as capability
+    values = {"CONTRACT_SERVICE_BASE_URL": "http://unused", "CONTRACT_RESULT_SINK_INTERNAL_TOKEN": "fake",
+        "CONTRACT_PARTY_AI_ENABLED": "true", "CONTRACT_PARTY_AI_CACHE_DIR": str(tmp_path),
+        "RULE_LIBRARY_REVIEW_MODE": "ACTIVE", "RULE_LIBRARY_REVIEW_CACHE_DIR": str(tmp_path / "rules"),
+        "RULE_LIBRARY_JAVA_BASE_URL": "http://java", "RULE_LIBRARY_JAVA_INTERNAL_TOKEN": "fake"}
+    registry = CapturingRegistry()
+    asyncio.run(capability.register(registry, CapabilitySettings(values)))
+    review = next(p for p in registry.pipelines if p["pipeline_id"] == capability.PIPELINE_ID)
+    preflight = next(p for p in registry.pipelines if p["pipeline_id"] == capability.PARTY_RESOLUTION_PIPELINE_ID)
+    assert review["stages"][1]["timeout_seconds"] == 50
+    assert preflight["stages"][1]["timeout_seconds"] == 18
+    del values["RULE_LIBRARY_JAVA_BASE_URL"]
+    with pytest.raises(ValueError):
+        asyncio.run(capability.register(CapturingRegistry(), CapabilitySettings(values)))
