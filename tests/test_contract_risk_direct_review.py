@@ -265,12 +265,12 @@ def test_direct_review_succeeds_with_all_checks_zero_tools_and_one_call() -> Non
     assert "checks" not in prompt_payload
 
 
-def test_provider_prompt_hard_limit_stops_before_schema_repair() -> None:
+def test_large_provider_prompt_preserves_valid_result_without_schema_repair() -> None:
     runtime = FakeRuntime(
         [
             _completion(
                 json.dumps(_valid_payload(), ensure_ascii=False),
-                prompt_tokens=7001,
+                prompt_tokens=17694,
             ),
             _completion(
                 json.dumps(_valid_payload(), ensure_ascii=False),
@@ -282,17 +282,18 @@ def test_provider_prompt_hard_limit_stops_before_schema_repair() -> None:
         runtime_factory=lambda _tenant: runtime
     )
 
-    with pytest.raises(DirectReviewError) as raised:
-        asyncio.run(
-            reviewer.review(
-                _request(),
-                tenant_id="tenant-1",
-                model_id="deepseek-v4-flash",
-                framework_run_id="run-1",
-            )
+    result = asyncio.run(
+        reviewer.review(
+            _request(),
+            tenant_id="tenant-1",
+            model_id="deepseek-v4-flash",
+            framework_run_id="run-1",
         )
-
-    assert raised.value.code == "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED"
+    )
+    assert result.status == "COMPLETED"
+    assert result.findings
+    assert result.prompt_tokens == 17694
+    assert result.repair_count == 0
     assert len(runtime.calls) == 1
     assert len(runtime.responses) == 1
 
@@ -303,6 +304,15 @@ def test_direct_review_does_not_apply_legacy_four_finding_cap() -> None:
     )
 
     assert len(result.findings) == 5
+
+
+def test_valid_7035_token_response_is_preserved_without_another_call() -> None:
+    result, runtime = _review(
+        [_completion(json.dumps(_valid_payload(finding_count=5), ensure_ascii=False), prompt_tokens=7035)]
+    )
+    assert len(result.findings) == 5
+    assert len(runtime.calls) == 1
+    assert result.prompt_tokens == 7035
 
 
 def test_empty_findings_are_valid_when_all_checks_are_covered() -> None:
@@ -341,7 +351,7 @@ def test_persistently_invalid_json_fails_after_one_repair() -> None:
     [
         (
             lambda body: body["check_results"].pop(),
-            "RISK_DIRECT_SCHEMA_INVALID",
+            "RISK_CHECK_COVERAGE_INVALID",
         ),
         (
             lambda body: body["check_results"].__setitem__(
@@ -604,66 +614,41 @@ def test_cf005_anchor_ref_shorthand_is_uniquely_bound_to_ir() -> None:
     )
 
 
-def test_empty_decision_notes_are_deterministically_summarized() -> None:
+def test_empty_decision_notes_require_explanation_repair_not_fake_no_risk() -> None:
     payload = _valid_payload()
     for check in payload["check_results"]:
         check["decision_note"] = ""
-
-    parsed = _parse_model_output(json.dumps(payload, ensure_ascii=False))
-
-    assert parsed.normalization.normalization_type == (
-        "EMPTY_DECISION_NOTES_TO_STATUS_SUMMARY"
-    )
-    assert all(
-        item.decision_note
-        for item in parsed.response.check_results
-    )
+    with pytest.raises(DirectReviewError) as error:
+        _parse_model_output(json.dumps(payload, ensure_ascii=False))
+    assert error.value.check_codes == list(COMMERCIAL_CHECK_CODES)
+    assert all(check["decision_note"] == "" for check in error.value.normalized_output["check_results"])
 
 
-def test_null_decision_notes_are_deterministically_summarized() -> None:
+def test_null_notes_do_not_hide_successful_reference_normalization() -> None:
     request = _request()
     _text, ir_refs, anchor_refs, _candidate = _prompt(request)
     payload = _valid_payload()
     for check in payload["check_results"]:
         check["decision_note"] = None
     payload["check_results"][4]["candidate_evidence"] = ["A001"]
-
-    parsed = _parse_model_output(
-        json.dumps(payload, ensure_ascii=False),
-        ir_refs=ir_refs,
-        anchor_refs=anchor_refs,
-    )
-
-    assert parsed.normalization.normalization_type == (
-        "KNOWN_COMMERCIAL_SCHEMA_COMBINED"
-    )
-    assert all(item.decision_note for item in parsed.response.check_results)
-    assert parsed.response.check_results[4].candidate_evidence[0].evidence_ref == (
-        "A001"
-    )
+    with pytest.raises(DirectReviewError) as error:
+        _parse_model_output(json.dumps(payload, ensure_ascii=False), ir_refs=ir_refs, anchor_refs=anchor_refs)
+    normalized = error.value.normalized_output
+    assert normalized["check_results"][4]["candidate_evidence"][0]["evidence_ref"] == "A001"
+    assert normalized["check_results"][0]["decision_note"] is None
 
 
-def test_cf005_annotated_anchor_scalar_and_missing_note_are_normalized() -> None:
+def test_cf005_reference_is_normalized_but_missing_note_remains_explicit() -> None:
     request = _request()
     _text, ir_refs, anchor_refs, _candidate = _prompt(request)
     payload = _valid_payload()
     cf005 = payload["check_results"][4]
     cf005.pop("decision_note")
     cf005["candidate_evidence"] = "A001条款已提供明确履约保障。"
-
-    parsed = _parse_model_output(
-        json.dumps(payload, ensure_ascii=False),
-        ir_refs=ir_refs,
-        anchor_refs=anchor_refs,
-    )
-
-    assert parsed.normalization.normalization_type == (
-        "KNOWN_COMMERCIAL_SCHEMA_COMBINED"
-    )
-    assert parsed.response.check_results[4].decision_note
-    assert parsed.response.check_results[4].candidate_evidence[0].evidence_ref == (
-        "A001"
-    )
+    with pytest.raises(DirectReviewError) as error:
+        _parse_model_output(json.dumps(payload, ensure_ascii=False), ir_refs=ir_refs, anchor_refs=anchor_refs)
+    assert error.value.check_codes == ["CF-005"]
+    assert error.value.normalized_output["check_results"][4]["candidate_evidence"][0]["evidence_ref"] == "A001"
 
 
 def test_cf005_prose_evidence_uses_only_deterministic_mechanism_anchors() -> None:
@@ -863,40 +848,22 @@ def test_cf005_missing_decision_is_rejected_by_deterministic_payment_facts() -> 
 
     assert (
         parsed.response.check_results[4].candidate_decision
-        == "RISK_NOT_CONFIRMED"
+        == "TRIGGER_NOT_MET"
     )
 
 
-def test_cf005_missing_strong_decision_gets_deterministic_grounded_finding() -> None:
-    request = _request_with_single_payment_text(
-        "本合同签订后十日内，甲方应一次性支付全部合同价款。"
-    )
+def test_cf005_missing_strong_decision_does_not_manufacture_a_finding() -> None:
+    request = _request_with_single_payment_text("本合同签订后十日内，甲方应一次性支付全部合同价款。")
     _text, ir_refs, anchor_refs, candidate = _prompt(request)
-    assert candidate.substantial_prepayment is True
-    assert candidate.payment_before_performance is True
-    assert candidate.payer_role_status == "OUR_PARTY"
-    assert candidate.identified_security_mechanisms == []
     payload = _valid_payload(finding_count=0)
-    cf005 = payload["check_results"][4]
-    cf005.pop("candidate_decision")
-    cf005.pop("identified_security_mechanisms")
-    cf005.pop("candidate_evidence")
-
-    parsed = _parse_model_output(
-        json.dumps(payload, ensure_ascii=False),
-        ir_refs=ir_refs,
-        anchor_refs=anchor_refs,
-        cf005_candidate=candidate,
-        assigned_check_specs=request.assigned_check_specs,
-    )
-
-    result = parsed.response.check_results[4]
-    assert result.candidate_decision == "RISK_CONFIRMED"
-    assert len(result.findings) == 1
-    assert {item.evidence_type for item in result.findings[0].evidence} == {
-        "TEXT_QUOTE",
-        "ABSENCE",
-    }
+    for key in ("candidate_decision", "identified_security_mechanisms", "candidate_evidence"):
+        payload["check_results"][4].pop(key)
+    with pytest.raises(DirectReviewError) as error:
+        _parse_model_output(json.dumps(payload, ensure_ascii=False), ir_refs=ir_refs,
+                            anchor_refs=anchor_refs, cf005_candidate=candidate,
+                            assigned_check_specs=request.assigned_check_specs)
+    assert error.value.check_codes == ["CF-005"]
+    assert error.value.normalized_output["check_results"][4]["findings"] == []
 
 
 def test_missing_text_evidence_type_is_restored_from_exact_prompt_binding() -> None:

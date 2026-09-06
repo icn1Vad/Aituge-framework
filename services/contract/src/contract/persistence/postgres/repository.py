@@ -120,12 +120,12 @@ class ContractRepository:
                   party_resolution_id, model_pack_id, document_id, idempotency_key, request_id, request_fingerprint,
                   file_sha256, perspective, our_party_name, contract_type,
                   review_attitude, execution_mode, confirmed_party_a_name,
-                  confirmed_party_b_name, status, schema_version
+                  confirmed_party_b_name, status, schema_version, rule_review_standard
                 ) VALUES (
                   %s, %s, %s, %s, %s, %s, %s,
                   %s, %s, %s, %s,
                   %s, %s, %s, %s,
-                  %s, %s, %s, %s, 'CREATED', %s
+                  %s, %s, %s, %s, 'CREATED', %s, %s
                 )
                 ON CONFLICT DO NOTHING
                 RETURNING *
@@ -151,6 +151,7 @@ class ContractRepository:
                     value.confirmed_party_a_name,
                     value.confirmed_party_b_name,
                     value.schema_version,
+                    value.rule_review_standard,
                 ),
             ).fetchone()
             reused = row is None

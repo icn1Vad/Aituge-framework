@@ -119,8 +119,10 @@ class FakeFrameworkGateway:
 
 
 @pytest.mark.skipif(not DATABASE_URL, reason="CONTRACT_TEST_DATABASE_URL is not configured")
-def test_transient_dispatch_is_resumed_with_frozen_framework_keys(tmp_path: Path) -> None:
+@pytest.mark.parametrize("standard", ["neutral", "strong", "weak"])
+def test_transient_dispatch_is_resumed_with_frozen_framework_keys(tmp_path: Path, standard: str) -> None:
     service, gateway, context, request, upload, tenant_id = _runtime(tmp_path)
+    request = request.model_copy(update={"rule_review_standard": standard})
     gateway.unavailable_creates = 1
     try:
         created = service.create_review(upload=upload, request=request, context=context)
@@ -143,6 +145,8 @@ def test_transient_dispatch_is_resumed_with_frozen_framework_keys(tmp_path: Path
             )
             conn.commit()
         assert restarted_service.dispatch_pending_attempts() == 1
+        assert gateway.requests[-1].rule_review_standard == standard
+        assert gateway.requests[-1].review_attitude == "NEUTRAL"
         resumed = restarted_service.get_status(created.review_id, context=context)
         assert resumed.status == ReviewStatus.RUNNING
         assert resumed.framework_attempt_no == 1
@@ -522,6 +526,7 @@ def _stage_request(
             our_party_name=execution.our_party_name,
             contract_type=execution.contract_type,
             review_attitude=execution.review_attitude,
+            rule_review_standard=execution.rule_review_standard,
         ),
     )
 

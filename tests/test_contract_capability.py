@@ -150,8 +150,8 @@ def test_contract_capability_registers_frozen_pipeline_and_internal_tools() -> N
         if item["pipeline_id"] == "contract-party-resolution-pipeline-v1"
     )
     party_stages = {item["stage_id"]: item for item in party_pipeline["stages"]}
-    assert party_pipeline["timeout_seconds"] == 5
-    assert party_stages["parse_contract"]["timeout_seconds"] == 2
+    assert party_pipeline["timeout_seconds"] == 10
+    assert party_stages["parse_contract"]["timeout_seconds"] == 5
     assert party_stages["resolve_parties"]["stage_type"] == "finalizer"
     assert party_stages["resolve_parties"]["service_handler"] == (
         "contract_party_resolution_direct_v1"
@@ -188,8 +188,10 @@ def test_legacy_ir_execution_path_is_removed() -> None:
     )
 
 
+@pytest.mark.parametrize("shadow_enabled", [False, True])
+@pytest.mark.parametrize("execution_enabled", [False, True])
 def test_direct_final_stage_builds_formal_result_without_legacy_review_stages(
-    monkeypatch,
+    monkeypatch, shadow_enabled, execution_enabled,
 ) -> None:
     import services.contract.scripts.contract_risk_stage66_direct_e2e as direct_script
 
@@ -265,6 +267,21 @@ def test_direct_final_stage_builds_formal_result_without_legacy_review_stages(
             }
 
     captured = {}
+    observer = object() if shadow_enabled else None
+    observation = {"mode": "SHADOW", "affects_findings": False, "model_calls": 0}
+
+    class RuleExecution:
+        async def run(self, value, tenant_id, model_id, *, standard):
+            assert standard == "neutral"
+            from contract.evidence_planning.review_result import RuleReviewResult
+            captured["rule_execution"] = (value.review_id, tenant_id, model_id)
+            return RuleReviewResult(
+                mode="PREVIEW", status="NO_APPLICABLE_RULES", review_id=value.review_id,
+                generation_id=value.generation_id, tenant_id=tenant_id, perspective="PARTY_A",
+                business_role=None, review_standard="neutral", snapshot_hash="sha256:" + "a" * 64,
+                bundle_hash="sha256:" + "b" * 64, input_hash="sha256:" + "c" * 64,
+                source_version="test-snapshot", model_id=model_id,
+            )
 
     async def fake_execute_one(**kwargs):
         captured.update(kwargs)
@@ -274,6 +291,7 @@ def test_direct_final_stage_builds_formal_result_without_legacy_review_stages(
                 "total_repairs": 0,
                 "total_tool_calls": 0,
                 "core_result_signature": "sha256:" + "2" * 64,
+                **({"rule_library_shadow": observation} if shadow_enabled else {}),
             },
             {},
             Payload(),
@@ -340,6 +358,8 @@ def test_direct_final_stage_builds_formal_result_without_legacy_review_stages(
             "http://ai-contract:18200",
             "callback-secret",
             "contract-model",
+            rule_library_shadow=observer,
+            rule_library_execution=RuleExecution() if execution_enabled else None,
         )(context)
     )
 
@@ -350,6 +370,21 @@ def test_direct_final_stage_builds_formal_result_without_legacy_review_stages(
     assert result.metadata["check_count"] == 45
     assert captured["allow_dynamic_base_batch_count"] is True
     assert captured["diagnostic_allow_oracle_drift"] is True
+    assert "rule_library_shadow" not in result.output
+    if execution_enabled:
+        assert captured["rule_execution"] == ("review-1", "tenant-1", "contract-model")
+        assert result.output["rule_review"]["status"] == "NO_APPLICABLE_RULES"
+        assert result.metadata["rule_library_recorded_usage"]["model_calls"] == 0
+    else:
+        assert "rule_execution" not in captured
+        assert result.output.get("rule_review") is None
+        assert "rule_library_recorded_usage" not in result.metadata
+    if shadow_enabled:
+        assert captured["rule_library_shadow"] is observer
+        assert result.metadata["rule_library_shadow"] == observation
+    else:
+        assert "rule_library_shadow" not in captured
+        assert "rule_library_shadow" not in result.metadata
 
 
 def test_legacy_react_review_stages_and_skills_are_not_registered() -> None:

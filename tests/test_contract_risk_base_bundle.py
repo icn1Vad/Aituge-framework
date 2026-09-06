@@ -3008,7 +3008,12 @@ def test_po_insufficient_evidence_is_scoped_to_candidate_and_check() -> None:
             _completion(
                 json.dumps(payload, ensure_ascii=False),
                 "performance_obligations",
-            )
+            ),
+            _completion(
+                json.dumps(payload, ensure_ascii=False),
+                "performance_obligations",
+                repair_no=1,
+            ),
         ]
     )
 
@@ -3033,6 +3038,8 @@ def test_po_insufficient_evidence_is_scoped_to_candidate_and_check() -> None:
         if item.check_code == decision.check_code
     )
     assert result.status == "PARTIAL_FAILED"
+    assert result.model_call_count == 2
+    assert result.repair_count == 1
     assert decision.verdict == "INSUFFICIENT_EVIDENCE"
     assert decision.reason_code == "INSUFFICIENT_EVIDENCE"
     assert check.status == "REVIEWED"
@@ -3358,6 +3365,48 @@ def test_po_direct_reviewer_uses_only_source_id_and_derives_final_evidence() -> 
     assert runtime.calls[0]["temperature"] == 0
     assert runtime.calls[0]["thinking_override"] is False
     assert "tools" not in runtime.calls[0]
+
+
+def test_po_insufficient_decision_gets_one_bounded_evidence_aware_repair() -> None:
+    request = _po_request()
+    first_payload = _po_candidate_payload(request)
+    target = first_payload["candidate_decisions"][0]
+    target["verdict"] = "INSUFFICIENT_EVIDENCE"
+    target["decision_summary"] = "需要进一步核对合同机制是否完整。"
+    target["severity_factors"] = []
+    target["supporting_evidence_source_ids"] = []
+    target["counter_evidence_source_ids"] = []
+    target["recommended_control_codes"] = []
+    repaired_payload = _po_candidate_payload(request)
+    runtime = FakeRuntime(
+        [
+            _completion(
+                json.dumps(first_payload, ensure_ascii=False),
+                "performance_obligations",
+            ),
+            _completion(
+                json.dumps(repaired_payload, ensure_ascii=False),
+                "performance_obligations",
+                repair_no=1,
+            ),
+        ]
+    )
+
+    result = asyncio.run(
+        GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
+            request,
+            tenant_id="tenant-1",
+            model_id="deepseek-v4-flash",
+        )
+    )
+
+    assert result.status == "COMPLETED"
+    assert result.model_call_count == 2
+    assert result.repair_count == 1
+    assert result.evidence_selection_repair_count == 1
+    repair_payload = json.loads(runtime.calls[1]["messages"][0]["content"])
+    assert repair_payload["task"] == "DECISION_SUPPORT_REPAIR"
+    assert repair_payload["target_candidate_ids"] == [target["candidate_id"]]
 
 
 def test_po_technical_fields_and_primary_evidence_are_deterministic() -> None:
@@ -4886,7 +4935,7 @@ def test_fixed_fixture_builds_seven_batches_and_parallel_complete_bundle() -> No
     assert bundle.identity.schema_version == "1.0"
     assert len(bundle.metrics.batch_metrics) == 7
     assert len(bundle.metrics.unit_metrics) == 5
-    assert bundle.metrics.prompt_budget_policy_version == "2.0"
+    assert bundle.metrics.prompt_budget_policy_version == "3.0"
     assert bundle.metrics.prompt_budget_warning_count == 0
     assert bundle.metrics.prompt_budget_hard_failure_count == 0
     assert bundle.metrics.max_provider_prompt_tokens == 100
@@ -4983,7 +5032,7 @@ def test_provider_prompt_soft_warning_does_not_fail_base_bundle() -> None:
 
 
 @pytest.mark.skipif(not os.getenv(FIXTURE_ENV), reason=f"{FIXTURE_ENV} is not configured")
-def test_provider_prompt_hard_limit_is_scoped_to_affected_batch() -> None:
+def test_large_provider_prompt_does_not_fail_a_valid_batch() -> None:
     value = load_fixed_risk_plan_input(Path(os.environ[FIXTURE_ENV]))
     plan = RiskReviewPlanBuilder().build(value)
     tracker = ConcurrencyTracker()
@@ -4992,20 +5041,19 @@ def test_provider_prompt_hard_limit_is_scoped_to_affected_batch() -> None:
         plan,
         generic=FakeGenericReviewer(
             tracker,
-            prompt_tokens_by_unit={"formation_validity_authority": 7001},
+            prompt_tokens_by_unit={"formation_validity_authority": 17694},
         ),
         commercial=FakeCommercialReviewer(tracker),
     )
 
-    assert bundle.status == "PARTIAL_FAILED"
+    assert bundle.status == "COMPLETED"
     failed = [
         item for item in bundle.batch_results if item.status == "FAILED"
     ]
-    assert len(failed) == 1
-    assert failed[0].unit_id == "formation_validity_authority"
-    assert all(item.status == "FAILED" for item in failed[0].check_results)
-    assert bundle.metrics.failed_batch_ids == [failed[0].batch_id]
-    assert bundle.metrics.prompt_budget_hard_failure_count == 1
+    assert failed == []
+    assert bundle.metrics.failed_batch_ids == []
+    assert bundle.metrics.prompt_budget_hard_failure_count == 0
+    assert bundle.metrics.prompt_budget_warning_count == 1
 
 
 @pytest.mark.skipif(not os.getenv(FIXTURE_ENV), reason=f"{FIXTURE_ENV} is not configured")

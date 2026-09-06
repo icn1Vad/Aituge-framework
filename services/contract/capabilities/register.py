@@ -19,6 +19,7 @@ from contract.api.models import (
     LegalEvidenceReference,
     LegalEvidenceVersionSnapshotReference,
 )
+from contract.evidence_planning.review_result import RuleReviewResult
 
 from task_manager.pipeline.errors import StageExecutionError
 from task_manager.pipeline.stage_registry import StageExecutionContext, StageServiceResult
@@ -116,6 +117,7 @@ class ContractTaskInput(StrictModel):
     confirmed_party_b_name: str | None = Field(default=None, min_length=1, max_length=500)
     contract_type: Literal["AUTO"]
     review_attitude: Literal["NEUTRAL"]
+    rule_review_standard: Literal["neutral", "strong", "weak"] = "neutral"
 
     @model_validator(mode="after")
     def validate_confirmed_parties(self) -> "ContractTaskInput":
@@ -503,6 +505,7 @@ class EvidenceVerificationStageResult(StrictModel):
 
 
 class FinalizeReviewStageResult(StrictModel):
+    rule_review: RuleReviewResult | None = None
     result_type: Literal["FINAL_REVIEW_STAGE_V1"]
     schema_version: Literal["1.0"]
     review_id: str = Field(min_length=1, max_length=160)
@@ -703,8 +706,12 @@ def _confirmed_party_value(name: str, role: str) -> PartyValue:
     )
 
 
-def _direct_party_resolution_handler(base_url: str, token: str):
-    """Resolve explicitly labelled contract parties without an LLM call."""
+def _direct_party_resolution_handler(base_url: str, token: str, *, model_id=None,
+                                     cache_directory=None, role_options=()):
+    """Use the opt-in source-backed AI stage, or preserve the legacy deployment."""
+    if model_id is not None:
+        from services.contract.capabilities.party_ai import ai_party_resolution_handler
+        return ai_party_resolution_handler(base_url, token, model_id, cache_directory, role_options)
 
     async def execute(context: StageExecutionContext) -> StageServiceResult:
         from contract.party import extract_party_evidence
@@ -1042,6 +1049,8 @@ def _direct_contract_review_handler(
     model_id: str,
     legal_evidence_policy: LegalEvidencePolicy = "OFF",
     legal_evidence_timeout_seconds: float = 900,
+    rule_library_shadow=None,
+    rule_library_execution=None,
 ):
     """Run the accepted Direct structured review as the formal final stage.
 
@@ -1249,6 +1258,7 @@ def _direct_contract_review_handler(
                 allow_dynamic_base_batch_count=True,
                 diagnostic_allow_oracle_drift=True,
                 legal_evidence_bundle=legal_evidence_bundle,
+                **({"rule_library_shadow": rule_library_shadow} if rule_library_shadow is not None else {}),
             )
         except Exception as exc:
             code = getattr(exc, "code", "FRAMEWORK_RUN_FAILED")
@@ -1259,6 +1269,15 @@ def _direct_contract_review_handler(
             ) from exc
 
         formal = payload.model_dump(mode="json")
+        rule_result = None
+        if rule_library_execution is not None:
+            from services.contract.capabilities.party_ai import rule_role_arguments
+            rule_result = await rule_library_execution.run(
+                value, str(context.task.tenant_id), model_id,
+                standard=task_input.rule_review_standard,
+                **rule_role_arguments(getattr(party_artifact, "metadata_json", None) or {}, task_input.perspective),
+            )
+            formal["rule_review"] = rule_result.model_dump(mode="json")
         formal.pop("result_hash", None)
         formal["result_type"] = "FINAL_REVIEW_STAGE_V1"
         validated = FinalizeReviewStageResult.model_validate(formal)
@@ -1273,6 +1292,14 @@ def _direct_contract_review_handler(
                 f"{summary.get('total_model_calls', 0)} model calls."
             ),
             metadata={
+                # Frozen usage belongs to this result; cache replay is not another charge.
+                **({"rule_library_recorded_usage": {
+                    "model_calls": rule_result.model_calls,
+                    "prompt_tokens": rule_result.prompt_tokens,
+                    "completion_tokens": rule_result.completion_tokens,
+                }} if rule_result is not None else {}),
+                **({"rule_library_shadow": summary["rule_library_shadow"]}
+                   if "rule_library_shadow" in summary else {}),
                 "risk_review_engine": "direct",
                 "review_unit_count": 7,
                 "check_count": 45,
@@ -1766,6 +1793,32 @@ async def register(registry, settings) -> None:
         "X-Internal-Token": callback_token,
     }
 
+    rule_library_shadow = None
+    rule_library_execution = None
+    rule_mode = settings.get("RULE_LIBRARY_REVIEW_MODE") or "OFF"
+    if rule_mode != "OFF":
+        from contract.rule_evidence.execution import RuleLibraryExecution
+        rule_library_execution = RuleLibraryExecution(
+            settings.require("RULE_LIBRARY_REVIEW_SNAPSHOT_DIR"),
+            settings.require("RULE_LIBRARY_REVIEW_CACHE_DIR"),
+            mode=rule_mode,
+            standard=settings.get("RULE_LIBRARY_REVIEW_STANDARD") or "neutral",
+            max_calls=int(settings.get("RULE_LIBRARY_REVIEW_MAX_CALLS") or "4"),
+        )
+    rule_snapshot_directory = settings.get("RULE_LIBRARY_SHADOW_SNAPSHOT_DIR")
+    party_ai_enabled = settings.get("CONTRACT_PARTY_AI_ENABLED") == "true"
+    party_ai_options = {}
+    if party_ai_enabled:
+        party_ai_options = {
+            "model_id": model_id,
+            "cache_directory": settings.require("CONTRACT_PARTY_AI_CACHE_DIR"),
+            "role_options": sorted({r.party_stance for r in rule_library_execution.shadow.snapshot.rules
+                                    if r.party_stance}) if rule_library_execution else [],
+        }
+    if rule_snapshot_directory:
+        from contract.rule_evidence.shadow import RuleLibraryShadow
+        rule_library_shadow = RuleLibraryShadow(rule_snapshot_directory)
+
     registry.register_skill_root(CAPABILITY_DIR / "skills")
     for tool_name, path, model, description in (
         ("contract_get_document", "/v1/internal/contract-tools/document", ContractDocumentToolInput,
@@ -1868,7 +1921,7 @@ async def register(registry, settings) -> None:
     registry.register_stage_handler(name="contract_stage_gateway_v1", handler=gateway_handler)
     registry.register_stage_handler(
         name="contract_party_resolution_direct_v1",
-        handler=_direct_party_resolution_handler(base_url, callback_token),
+        handler=_direct_party_resolution_handler(base_url, callback_token, **party_ai_options),
     )
     registry.register_stage_handler(
         name="contract_ir_window_v1",
@@ -1882,6 +1935,8 @@ async def register(registry, settings) -> None:
             model_id,
             legal_evidence_policy,
             legal_evidence_timeout_seconds,
+            rule_library_shadow,
+            rule_library_execution,
         ),
     )
     registry.register_stage_handler(
@@ -1973,7 +2028,7 @@ async def register(registry, settings) -> None:
             "output_model": PartyResolutionStageResult,
             "artifact_type": "contract_party_resolution",
             "service_handler": "contract_party_resolution_direct_v1",
-            "timeout_seconds": 3,
+            "timeout_seconds": 18 if party_ai_enabled else 3,
             "retry_policy": {"max_attempts": 1, "retry_on": []},
         },
     ]
@@ -1987,19 +2042,19 @@ async def register(registry, settings) -> None:
             "input_adapter": "task_input",
             "artifact_type": "contract_parse_result",
             "service_handler": "contract_stage_gateway_v1",
-            "timeout_seconds": 2,
+            "timeout_seconds": 5,
             "retry_policy": {"max_attempts": 1, "retry_on": []},
         },
         {
             "stage_id": "resolve_parties",
-            "name": "Resolve explicitly labelled contract parties without a model",
+            "name": "Resolve parties from source excerpts" if party_ai_enabled else "Resolve explicitly labelled contract parties without a model",
             "stage_type": "finalizer",
             "depends_on": ["parse_contract"],
             "input_model": PipelineContextInput,
             "output_model": PartyResolutionStageResult,
             "artifact_type": "contract_party_resolution",
             "service_handler": "contract_party_resolution_direct_v1",
-            "timeout_seconds": 3,
+            "timeout_seconds": 18 if party_ai_enabled else 3,
             "retry_policy": {"max_attempts": 1, "retry_on": []},
         },
     ]
@@ -2061,7 +2116,7 @@ async def register(registry, settings) -> None:
         task_type=PARTY_RESOLUTION_TASK_TYPE,
         description="Parse a contract and resolve PARTY_A and PARTY_B without starting risk review.",
         final_artifact_type="contract_party_resolution",
-        timeout_seconds=5,
+        timeout_seconds=25 if party_ai_enabled else 10,
         resumable=False,
         max_parallelism=1,
         stages=party_resolution_stages,

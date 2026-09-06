@@ -35,6 +35,7 @@ class ReviewCreate:
     contract_type: str
     review_attitude: str
     schema_version: str
+    rule_review_standard: str = "neutral"
     model_pack_id: str = "api-rerank"
     execution_mode: str = "FULL_REVIEW"
     party_resolution_id: str | None = None

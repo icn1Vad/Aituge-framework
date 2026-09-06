@@ -51,6 +51,7 @@ class AttemptReservation:
     execution_mode: str
     confirmed_party_a_name: str | None
     confirmed_party_b_name: str | None
+    rule_review_standard: str = "neutral"
     request_fingerprint: str = ""
     previous_task_id: str | None = None
     previous_run_id: str | None = None
@@ -273,6 +274,7 @@ class ReviewStateRepository:
                   review.confirmed_party_b_name,
                   review.contract_type,
                   review.review_attitude,
+                  review.rule_review_standard,
                   review.schema_version,
                   attempt.attempt_no,
                   attempt.framework_task_id,
@@ -342,6 +344,7 @@ class ReviewStateRepository:
                             "confirmed_party_b_name": row["confirmed_party_b_name"],
                             "contract_type": row["contract_type"],
                             "review_attitude": row["review_attitude"],
+                            "rule_review_standard": row["rule_review_standard"],
                             "schema_version": row["schema_version"],
                         },
                         row["attempt_no"],
@@ -1228,6 +1231,7 @@ class ReviewStateRepository:
             confirmed_party_b_name=review["confirmed_party_b_name"],
             contract_type=review["contract_type"],
             review_attitude=review["review_attitude"],
+            rule_review_standard=review.get("rule_review_standard", "neutral"),
             schema_version=review["schema_version"],
             request_fingerprint=attempt.get("request_fingerprint")
             or ReviewStateRepository._framework_request_fingerprint(review, attempt_no),
@@ -1255,6 +1259,7 @@ class ReviewStateRepository:
             confirmed_party_b_name=review["confirmed_party_b_name"],
             contract_type=review["contract_type"],
             review_attitude=review["review_attitude"],
+            rule_review_standard=review.get("rule_review_standard", "neutral"),
             schema_version=review["schema_version"],
         )
 

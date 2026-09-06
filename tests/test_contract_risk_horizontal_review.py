@@ -453,19 +453,21 @@ async def test_completeness_five_replays_keep_absence_and_suppress_base_duplicat
 
 
 @pytest.mark.asyncio
-async def test_provider_hard_limit_fails_before_materialization() -> None:
+async def test_large_provider_prompt_preserves_horizontal_materialization() -> None:
     value = _fixture()
     plan = build_horizontal_plan(value, _base_bundle())
-    with pytest.raises(HorizontalReviewError) as error:
-        await execute_horizontal_unit(
-            value,
-            plan,
-            "missing_ambiguity_completeness",
-            tenant_id="0",
-            model_id="test-model",
-            runtime_factory=_runtime_factory(7001),
-        )
-    assert error.value.code == "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED"
+    result = await execute_horizontal_unit(
+        value,
+        plan,
+        "missing_ambiguity_completeness",
+        tenant_id="0",
+        model_id="test-model",
+        runtime_factory=_runtime_factory(17694),
+    )
+    assert result.status == "COMPLETED"
+    assert result.findings
+    assert result.model_call_count == 1
+    assert result.batch_metrics[0].prompt_budget.budget_status == "SOFT_WARNING"
 
 
 @pytest.mark.asyncio

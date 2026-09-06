@@ -55,7 +55,13 @@ CASES = (
         domain="liability_remedies_exit",
         question="约定违约金过分高于实际损失时能否请求人民法院适当减少",
         required_concepts=("违约金", "过分高于", "适当减少"),
-        expected_references=(("中华人民共和国民法典", "第五百八十五条"),),
+        expected_references=(
+            ("中华人民共和国民法典", "第五百八十五条"),
+            (
+                "最高人民法院关于适用《中华人民共和国民法典》合同编通则若干问题的解释",
+                "第六十五条",
+            ),
+        ),
     ),
     EvaluationCase(
         case_id="personal-information-transfer",
@@ -69,7 +75,10 @@ CASES = (
         domain="performance_obligations",
         question="房屋租赁期间出租人的维修义务以及承租人自行维修后的费用承担",
         required_concepts=("维修义务", "维修费用"),
-        expected_references=(("中华人民共和国民法典", "第七百一十二条"),),
+        expected_references=(
+            ("中华人民共和国民法典", "第七百一十二条"),
+            ("中华人民共和国民法典", "第七百一十三条"),
+        ),
     ),
     EvaluationCase(
         case_id="construction-permit",
@@ -395,6 +404,19 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         bundle_refs = {
             (item.unit.title, item.unit.article_no or "") for item in bundle.evidence
         }
+        normalized_evidence_text = re.sub(
+            r"\s+",
+            "",
+            "\n".join(item.unit.content for item in bundle.evidence),
+        )
+        covered_concepts = [
+            concept
+            for concept in case.required_concepts
+            if re.sub(r"\s+", "", concept) in normalized_evidence_text
+        ]
+        concept_coverage_complete = len(covered_concepts) == len(
+            case.required_concepts
+        )
         initial_unit_ids = {
             item.unit.unit_id for item in (*exact, *keyword, *vector_hits)
         }
@@ -404,7 +426,11 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             if "RELATION" in item.retrieval_channels
             and item.unit.unit_id not in initial_unit_ids
         ]
-        expected_hit = bool(expected & bundle_refs) if expected else not bundle.evidence
+        expected_hit = (
+            bool(expected & bundle_refs) and concept_coverage_complete
+            if expected
+            else not bundle.evidence
+        )
         traceable = all(
             item.unit.release_id == release.release_id
             and bool(item.unit.version_id)
@@ -445,6 +471,8 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                     for item in bundle.applicability_decisions
                 ],
                 "expected_hit": expected_hit,
+                "covered_concepts": covered_concepts,
+                "concept_coverage_complete": concept_coverage_complete,
                 "exact_expected_hit": bool(expected & exact_refs),
                 "keyword_expected_hit": bool(expected & keyword_refs),
                 "vector_expected_hit": bool(expected & vector_refs),

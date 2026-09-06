@@ -81,6 +81,7 @@ def test_create_execution_uses_scoped_headers_and_frozen_idempotency_keys() -> N
                 "confirmed_party_b_name": None,
                 "contract_type": "AUTO",
                 "review_attitude": "NEUTRAL",
+                "rule_review_standard": "neutral",
             }
             return httpx.Response(
                 200,

@@ -20,6 +20,14 @@ class FakeRuntime:
         self.calls.append({"messages": messages, **kwargs})
         return self.responses.pop(0)
 
+    async def complete_with_usage(self, messages, **kwargs):
+        # The production reviewer uses the usage-bearing protocol, including
+        # when testing malformed JSON and its one permitted repair.
+        self.calls.append({"messages": messages, **kwargs})
+        return await FakeUsageRuntime(self.responses.pop(0), 1200).complete_with_usage(
+            messages, **kwargs
+        )
+
 
 class FakeUsageRuntime:
     def __init__(self, response: str, prompt_tokens: int) -> None:
@@ -163,7 +171,7 @@ def test_usage_metrics_use_provider_tokens_and_do_not_double_count_cache() -> No
     assert metric["prompt_budget"]["budget_status"] == "SOFT_WARNING"
 
 
-def test_provider_hard_limit_skips_without_schema_repair() -> None:
+def test_large_provider_prompt_preserves_valid_consolidation_without_repair() -> None:
     artifacts = _artifacts()
     candidate = build_candidate_pairs(artifacts)[0]
     runtime = FakeUsageRuntime(
@@ -174,7 +182,7 @@ def test_provider_hard_limit_skips_without_schema_repair() -> None:
                 ]
             }
         ),
-        prompt_tokens=7_001,
+        prompt_tokens=17_694,
     )
     engine = FindingConsolidationEngine(runtime_factory=lambda _tenant: runtime)
 
@@ -186,11 +194,11 @@ def test_provider_hard_limit_skips_without_schema_repair() -> None:
         )
     )
 
-    assert run["artifact"]["status"] == "SKIPPED"
+    assert run["artifact"]["status"] == "COMPLETED"
     assert run["artifact"]["model_call_count"] == 1
     assert len(runtime.calls) == 1
     assert run["call_metrics"][0]["prompt_budget"]["budget_status"] == (
-        "HARD_LIMIT_EXCEEDED"
+        "SOFT_WARNING"
     )
 
 

@@ -24,6 +24,7 @@ class FrameworkExecutionRequest:
     contract_type: str
     review_attitude: str
     schema_version: str
+    rule_review_standard: str = "neutral"
     model_pack_id: str = "api-rerank"
     execution_mode: str = "FULL_REVIEW"
     party_resolution_id: str | None = None
@@ -54,6 +55,7 @@ class FrameworkExecutionRequest:
             our_party_name=self.our_party_name,
             contract_type=self.contract_type,
             review_attitude=self.review_attitude,
+            rule_review_standard=self.rule_review_standard,
             schema_version=self.schema_version,
             execution_mode=self.execution_mode,
             confirmed_party_a_name=self.confirmed_party_a_name,

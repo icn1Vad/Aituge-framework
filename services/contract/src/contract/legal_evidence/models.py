@@ -307,6 +307,32 @@ class LegalEvidenceVersionSnapshot(StrictModel):
     contract_date: date | None = None
 
 
+class LegalEvidencePlanningMetrics(StrictModel):
+    """Operational measurements kept outside the semantic bundle hash.
+
+    Durations naturally vary between retries.  Call and input-size counters make
+    model cost explainable without pretending that character counts are vendor
+    token counts.
+    """
+
+    total_duration_ms: int = Field(ge=0)
+    issue_count: int = Field(ge=0)
+    resolved_issue_count: int = Field(ge=0)
+    unresolved_issue_count: int = Field(ge=0)
+    embedding_call_count: int = Field(ge=0)
+    embedding_input_characters: int = Field(ge=0)
+    exact_search_call_count: int = Field(ge=0)
+    keyword_search_call_count: int = Field(ge=0)
+    vector_search_call_count: int = Field(ge=0)
+    reranker_call_count: int = Field(ge=0)
+    reranker_candidate_count: int = Field(ge=0)
+    reranker_input_characters: int = Field(ge=0)
+    relation_lookup_count: int = Field(ge=0)
+    relation_neighbor_count: int = Field(ge=0)
+    selected_evidence_count: int = Field(ge=0)
+    relation_expanded_evidence_count: int = Field(ge=0)
+
+
 class LegalEvidenceBundle(StrictModel):
     bundle_version: Literal["1.0"] = "1.0"
     bundle_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
@@ -351,6 +377,7 @@ class LegalEvidenceBundle(StrictModel):
     ]
     examined_candidate_count: int = Field(ge=0)
     round_count: int = Field(ge=0)
+    planning_metrics: LegalEvidencePlanningMetrics | None = None
 
     @model_validator(mode="after")
     def validate_binding_diagnostics(self) -> LegalEvidenceBundle:

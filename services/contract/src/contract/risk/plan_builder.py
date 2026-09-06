@@ -49,6 +49,7 @@ from contract.risk.playbooks import (
     build_default_registry,
 )
 from contract.risk.po_source_policy import po_item_matches_check
+from contract.risk.review_ledger import CheckTaskScope
 
 
 ZERO_HASH = "sha256:" + "0" * 64
@@ -401,10 +402,7 @@ class RiskReviewPlanBuilder:
         if not checks:
             return [], []
         _soft_limit, hard_limit = self._input_limits(unit_id)
-        groups = (
-            [checks]
-            if unit_id == "commercial_financial"
-            else self._partition_checks(
+        groups = self._partition_checks(
                 value=value,
                 unit_id=unit_id,
                 checks=checks,
@@ -412,14 +410,13 @@ class RiskReviewPlanBuilder:
                 excerpts=excerpts,
                 candidates=candidates,
                 hard_limit=hard_limit,
-            )
         )
 
         contexts: list[RiskReviewContext] = []
         batches: list[ReviewBatchSpec] = []
         for group in groups:
             ir_types = self._ir_types(group)
-            full_projected = self._select_items(all_items, ir_types, candidates)
+            full_projected = self._select_check_items(value, group, all_items, excerpts, candidates)
             full_excerpts = self._select_excerpts(
                 full_projected,
                 excerpts,
@@ -454,6 +451,30 @@ class RiskReviewPlanBuilder:
                 ),
             )
             for shard_index, context_slice in enumerate(slices, start=1):
+                # A text slice is not a new assignment of the entire domain.
+                # Only give it checks for which it contains selected evidence.
+                shard_item_ids = {item.item_id for item in context_slice.projected}
+                scopes = []
+                assigned_checks = []
+                for check in group:
+                    check_items = self._select_check_items(value, (check,), all_items, excerpts, candidates)
+                    expected_ids = {item.item_id for item in check_items}
+                    provided_items = [item for item in check_items if item.item_id in shard_item_ids]
+                    if not provided_items and expected_ids:
+                        continue
+                    if not expected_ids and shard_index != 1:
+                        continue
+                    assigned_checks.append(check)
+                    scopes.append(CheckTaskScope(
+                        check_code=check.check_code,
+                        expected_item_ids=sorted(expected_ids),
+                        provided_item_ids=sorted(item.item_id for item in provided_items),
+                        expected_anchor_ids=sorted({a.anchor_id for item in check_items for a in item.source_anchors}),
+                        provided_anchor_ids=sorted({a.anchor_id for item in provided_items for a in item.source_anchors}),
+                    ))
+                if not assigned_checks:
+                    continue
+                assigned = tuple(assigned_checks)
                 batch_id = self._stable_id(
                     "risk-batch",
                     {
@@ -461,7 +482,7 @@ class RiskReviewPlanBuilder:
                         "generation_id": value.generation_id,
                         "attempt_no": value.attempt_no,
                         "unit_id": unit_id,
-                        "check_codes": [item.check_code for item in group],
+                        "check_codes": [item.check_code for item in assigned],
                         "shard_index": shard_index,
                         "shard_count": len(slices),
                         "projected_item_ids": [
@@ -471,7 +492,7 @@ class RiskReviewPlanBuilder:
                 )
                 batch = ReviewBatchSpec(
                     batch_id=batch_id,
-                    check_codes=[item.check_code for item in group],
+                    check_codes=[item.check_code for item in assigned],
                     required_ir_types=list(ir_types),
                     projected_item_ids=[
                         item.item_id for item in context_slice.projected
@@ -487,15 +508,17 @@ class RiskReviewPlanBuilder:
                         value=value,
                         unit_id=unit_id,
                         batch=batch,
-                        checks=group,
+                        checks=assigned,
                         projected=context_slice.projected,
                         excerpts=context_slice.excerpts,
                         candidates=candidates,
                         total_ir_item_count=len(all_items),
                         coverage_present_ir_types=full_present,
-                        absence_sources=(
-                            full_absence_sources if shard_index == 1 else []
-                        ),
+                        # An absence catalogue cannot be loaned to a shard that
+                        # has not received the evidence needed to evaluate it.
+                        absence_sources=[source for source in full_absence_sources
+                                         if any(scope.complete and scope.check_code == source.check_code for scope in scopes)],
+                        check_task_scopes=scopes,
                     )
                 )
         return contexts, batches
@@ -669,11 +692,18 @@ class RiskReviewPlanBuilder:
         """Find the stable minimum Batch partition for a small domain check set."""
         count = len(checks)
         if count > 12:
-            raise ContractError(
-                "RISK_PLAN_INVALID",
-                f"Too many checks in one deterministic review unit: {unit_id}",
-                status_code=422,
-            )
+            # 12 is an algorithm switch, not a business checklist limit.
+            # Avoid exponential subset search for a larger configured catalogue.
+            groups: list[tuple[CheckSpec, ...]] = []
+            for check in checks:
+                for index, group in enumerate(groups):
+                    candidate_group = (*group, check)
+                    if self._estimate_for_checks(value, candidate_group, all_items, excerpts, candidates) <= hard_limit:
+                        groups[index] = candidate_group
+                        break
+                else:
+                    groups.append((check,))
+            return groups
         estimates: dict[int, int] = {}
         valid_masks: set[int] = set()
         for mask in range(1, 1 << count):
@@ -751,6 +781,7 @@ class RiskReviewPlanBuilder:
         total_ir_item_count: int,
         coverage_present_ir_types: list[IrField] | None = None,
         absence_sources: list[RiskAbsenceEvidenceSource] | None = None,
+        check_task_scopes: list[CheckTaskScope] | None = None,
     ) -> RiskReviewContext:
         present = coverage_present_ir_types or sorted(
             {item.ir_type for item in projected}
@@ -794,6 +825,7 @@ class RiskReviewPlanBuilder:
             contract_type=value.contract_type,
             review_attitude=value.review_attitude,
             check_specs=list(checks),
+            check_task_scopes=check_task_scopes or [],
             definitions=definitions,
             projected_ir_items=other_items,
             clause_catalog=self._clause_catalog(excerpts),
@@ -1105,7 +1137,7 @@ class RiskReviewPlanBuilder:
             max_repairs=1,
             timeout_seconds=30,
             target_input_tokens_min=1000 if horizontal else 2000,
-            target_input_tokens_max=3000 if horizontal else 4000,
+            target_input_tokens_max=min(3000 if horizontal else 4000, soft_limit),
             soft_input_token_limit=soft_limit,
             hard_input_token_limit=hard_limit,
             target_output_token_limit=1500,
@@ -1117,6 +1149,12 @@ class RiskReviewPlanBuilder:
 
     @staticmethod
     def _input_limits(unit_id: RiskDomain) -> tuple[int, int]:
+        # Candidate prompts expand context into decision policies, permitted
+        # evidence IDs and output schemas. Reserve room for that expansion
+        # before the existing deterministic check partitioning/IR sharding.
+        # Source text and check coverage are never truncated to fit.
+        if unit_id in {"performance_obligations", "ip_confidentiality_data", "liability_remedies_exit"}:
+            return (3500, 4000)
         return (4000, 5000) if unit_id in HORIZONTAL_UNIT_IDS else (5000, 6000)
 
     def _estimate_for_checks(
@@ -1127,10 +1165,25 @@ class RiskReviewPlanBuilder:
         excerpts: dict[str, RiskSourceExcerpt],
         candidates: tuple[RiskHorizontalCandidate, ...],
     ) -> int:
-        ir_types = self._ir_types(checks)
-        projected = self._select_items(all_items, ir_types, candidates)
+        projected = self._select_check_items(value, checks, all_items, excerpts, candidates)
         selected_excerpts = self._select_excerpts(projected, excerpts, candidates)
         return self._estimate_context(value, checks, projected, selected_excerpts, candidates)
+
+    def _select_check_items(
+        self, value: RiskReviewPlanInput, checks: tuple[CheckSpec, ...],
+        all_items: tuple[RiskProjectedIrItem, ...], excerpts: dict[str, RiskSourceExcerpt],
+        candidates: tuple[RiskHorizontalCandidate, ...],
+    ) -> tuple[RiskProjectedIrItem, ...]:
+        projected = self._select_items(all_items, self._ir_types(checks), candidates)
+        if candidates or checks[0].domain in HORIZONTAL_UNIT_IDS:
+            return projected
+        # Reuse the existing domain evidence policy BEFORE packing. Previously
+        # irrelevant IR consumed the batch budget and split a single problem's
+        # admissible evidence across otherwise unrelated text shards.
+        sources = self._evidence_sources(value.generation_id, checks[0].domain, checks,
+                                         projected, self._select_excerpts(projected, excerpts))
+        permitted = {source.ir_item_id for source in sources}
+        return tuple(item for item in projected if item.item_id in permitted)
 
     @staticmethod
     def _estimate_context(

@@ -125,10 +125,9 @@ class PlaybookRegistry:
         base = self._manifests["base_neutral"]
         if base.execution_mode != ExecutionMode.DETERMINISTIC:
             raise ValueError("base_neutral must use DETERMINISTIC execution mode")
-        frozen_base_codes = {item.check_code for item in _checks()}
-        if set(base.check_codes) != frozen_base_codes or len(base.check_codes) != 45:
-            raise ValueError("base_neutral must cover the frozen 45 checks exactly once")
         for manifest in self._manifests.values():
+            if len(manifest.check_codes) != len(set(manifest.check_codes)):
+                raise ValueError("Playbook check codes must be unique")
             for code in manifest.check_codes:
                 check = self._checks.get(code)
                 if check is None:

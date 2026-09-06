@@ -5,8 +5,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-PROMPT_BUDGET_POLICY_VERSION = "2.0"
+PROMPT_BUDGET_POLICY_VERSION = "3.0"
 PROVIDER_PROMPT_TARGET_TOKENS = 6000
+# Historical reference for comparable metrics and prompt sizing, not a gate.
 PROVIDER_PROMPT_HARD_LIMIT_TOKENS = 7000
 
 PromptBudgetStatus = Literal[
@@ -20,9 +21,12 @@ PromptBudgetStatus = Literal[
 class PromptBudgetResult(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    policy_version: Literal["2.0"] = PROMPT_BUDGET_POLICY_VERSION
+    policy_version: Literal["2.0", "3.0"] = PROMPT_BUDGET_POLICY_VERSION
     target_tokens: Literal[6000] = PROVIDER_PROMPT_TARGET_TOKENS
     hard_limit_tokens: Literal[7000] = PROVIDER_PROMPT_HARD_LIMIT_TOKENS
+    accounting_policy_version: Literal["2.1", "3.0"] = "3.0"
+    accounting_tolerance_tokens: Literal[0, 350] = 0
+    hard_limit_enforced: Literal[False] = False
     estimated_business_context_tokens: int | None = Field(default=None, ge=0)
     client_estimated_prompt_tokens: int | None = Field(default=None, ge=0)
     client_tokenizer_name: str | None = Field(default=None, min_length=1, max_length=160)
@@ -88,10 +92,8 @@ def evaluate_prompt_budget(
         0,
         provider_prompt_tokens - PROVIDER_PROMPT_HARD_LIMIT_TOKENS,
     )
-    if tokens_over_hard_limit:
-        status: PromptBudgetStatus = "HARD_LIMIT_EXCEEDED"
-    elif tokens_over_target:
-        status = "SOFT_WARNING"
+    if tokens_over_target:
+        status: PromptBudgetStatus = "SOFT_WARNING"
     else:
         status = "WITHIN_TARGET"
     return PromptBudgetResult(

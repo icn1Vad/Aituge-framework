@@ -90,6 +90,9 @@ def build_request_fingerprint(
         "review_attitude": request.review_attitude,
         "schema_version": request.schema_version,
     }
+    # Preserve legacy neutral fingerprints; distinguish explicit non-neutral tasks.
+    if request.rule_review_standard != "neutral":
+        payload["rule_review_standard"] = request.rule_review_standard
     digest = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
     return "sha256:" + digest, payload
 
@@ -129,6 +132,7 @@ def build_framework_request_fingerprint(
     contract_type: str,
     review_attitude: str,
     schema_version: str,
+    rule_review_standard: str = "neutral",
     execution_mode: str = FULL_REVIEW_EXECUTION_MODE,
     confirmed_party_a_name: str | None = None,
     confirmed_party_b_name: str | None = None,
@@ -162,6 +166,8 @@ def build_framework_request_fingerprint(
             "schema_version": schema_version,
         },
     }
+    if rule_review_standard != "neutral":
+        payload["input"]["rule_review_standard"] = rule_review_standard
     digest = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
     return "sha256:" + digest
 

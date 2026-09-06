@@ -99,7 +99,7 @@ def test_plan_is_fully_deterministic_and_projects_only_relevant_ir() -> None:
     assert all(context.coverage_summary.projected_ir_item_count < total_ir_items for context in first.contexts)
     assert all(context.context_hash.startswith("sha256:") for context in first.contexts)
     assert all(context.plan_id == first.plan_id for context in first.contexts)
-    assert all(context.clause_catalog for context in first.contexts)
+    assert all(context.clause_catalog or context.absence_evidence_sources for context in first.contexts)
     unit_by_id = {unit.unit_id: unit for unit in first.review_units}
     assert all(
         context.estimated_input_tokens <= unit_by_id[context.unit_id].hard_input_token_limit
@@ -236,7 +236,11 @@ def test_strict_models_reject_invalid_enum_values() -> None:
         ExecutionMode("AGENT")
 
 
-def test_oversized_commercial_context_is_sharded_without_losing_items() -> None:
+@pytest.mark.parametrize("unit_id,field,prefix,limit", [
+    ("commercial_financial", "payment_terms", "CF", 6000),
+    ("performance_obligations", "obligations", "PO", 4000),
+])
+def test_oversized_commercial_context_is_sharded_without_losing_items(unit_id, field, prefix, limit) -> None:
     value = risk_plan_input()
     semantic_ir = value.stage_result.semantic_ir.model_dump(mode="json")
     payment_items = []
@@ -268,7 +272,7 @@ def test_oversized_commercial_context_is_sharded_without_losing_items() -> None:
                 text=text,
             )
         )
-    semantic_ir["payment_terms"] = payment_items
+    semantic_ir[field] = payment_items
     stage_result = type(value.stage_result).model_validate(
         {
             **value.stage_result.model_dump(mode="json"),
@@ -287,26 +291,28 @@ def test_oversized_commercial_context_is_sharded_without_losing_items() -> None:
     commercial = next(
         unit
         for unit in plan.review_units
-        if unit.unit_id == "commercial_financial"
+        if unit.unit_id == unit_id
     )
     contexts = [
         context
         for context in plan.contexts
-        if context.unit_id == "commercial_financial"
+        if context.unit_id == unit_id
     ]
     assert len(commercial.batch_ids) == len(contexts) > 1
-    assert all(
-        [check.check_code for check in context.check_specs]
-        == [f"CF-{index:03d}" for index in range(1, 9)]
-        for context in contexts
-    )
-    assert all(context.estimated_input_tokens <= 6000 for context in contexts)
+    if unit_id == "commercial_financial":
+        assert any(len(context.check_specs) < 8 for context in contexts)
+        assert all(len(context.check_task_scopes) == len(context.check_specs) for context in contexts)
+    assert {spec.check_code for context in contexts for spec in context.check_specs} == {
+        spec.check_code for spec in commercial.check_specs
+    }
+    assert all(context.estimated_input_tokens <= limit for context in contexts)
     projected_ids = [
         item.item_id
         for context in contexts
         for item in [*context.definitions, *context.projected_ir_items]
     ]
     for expected in (f"item-payment-{index:02d}" for index in range(1, 13)):
-        assert projected_ids.count(expected) == 1
-    assert contexts[0].absence_evidence_sources
-    assert all(not context.absence_evidence_sources for context in contexts[1:])
+        assert expected in projected_ids
+    for context in contexts:
+        scopes = {scope.check_code: scope for scope in context.check_task_scopes}
+        assert all(scopes[source.check_code].complete for source in context.absence_evidence_sources)

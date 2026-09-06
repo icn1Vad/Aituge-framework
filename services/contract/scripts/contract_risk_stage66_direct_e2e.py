@@ -264,16 +264,6 @@ def _stage_metric(
     )
 
 
-def _budget_failures(metrics: list[Any] | list[dict[str, Any]]) -> list[str]:
-    failures = []
-    for item in metrics:
-        raw = item.model_dump(mode="json") if hasattr(item, "model_dump") else item
-        budget = raw.get("prompt_budget") or {}
-        if budget.get("budget_status") == "HARD_LIMIT_EXCEEDED":
-            failures.append(str(raw.get("batch_id") or "unknown"))
-    return failures
-
-
 def _require_complete_review_phase(
     phase: str,
     status: str,
@@ -442,10 +432,17 @@ async def _execute_one(
     allow_dynamic_base_batch_count: bool = False,
     diagnostic_allow_oracle_drift: bool = False,
     legal_evidence_bundle=None,
+    rule_library_shadow=None,
 ) -> tuple[dict[str, Any], dict[str, Any], ReviewResultData, Any, Any]:
     run_id = f"{run_id_prefix}-{run_index}"
     started = time.perf_counter()
     plan = RiskReviewPlanBuilder().build(value)
+    rule_shadow_result = None
+    if rule_library_shadow is not None:
+        from contract.rule_evidence.shadow import observe_rule_library
+        rule_shadow_result = await asyncio.to_thread(
+            observe_rule_library, rule_library_shadow, plan, value, tenant_id
+        )
 
     base_started = time.perf_counter()
     base = await execute_base_risk_review_bundle(
@@ -458,11 +455,19 @@ async def _execute_one(
         allow_dynamic_batch_count=allow_dynamic_base_batch_count,
         legal_evidence_bundle=legal_evidence_bundle,
     )
+    from services.contract.capabilities.review_output_diagnostics import write_private_diagnostic
+    write_private_diagnostic("base_phase", {"review_id": value.review_id, "tenant_id": tenant_id,
+                                          "framework_run_id": run_id},
+                             {"bundle": base.model_dump(mode="json")})
     _require_complete_review_phase("base", base.status, list(base.units))
     base_wall = round((time.perf_counter() - base_started) * 1000)
 
     horizontal_build_started = time.perf_counter()
-    horizontal_plan = build_horizontal_plan(value, base)
+    horizontal_plan = build_horizontal_plan(value, base, assigned_check_codes=[
+        check.check_code for unit in plan.review_units
+        if unit.unit_id in {"cross_clause_consistency", "missing_ambiguity_completeness"}
+        for check in unit.check_specs
+    ])
     horizontal_build_wall = round(
         (time.perf_counter() - horizontal_build_started) * 1000
     )
@@ -490,6 +495,13 @@ async def _execute_one(
         if all(item.status == "COMPLETED" for item in horizontal_units)
         else "PARTIAL_FAILED"
     )
+    from services.contract.capabilities.horizontal_review import build_horizontal_review_records
+    write_private_diagnostic("horizontal_phase", {
+        "review_id": value.review_id, "tenant_id": tenant_id, "framework_run_id": run_id,
+    }, {
+        "review_records": [record.model_dump(mode="json") for record in build_horizontal_review_records(value, horizontal_plan, horizontal_units)],
+        "units": [unit.model_dump(mode="json") for unit in horizontal_units],
+    })
     _require_complete_review_phase(
         "horizontal",
         horizontal_status,
@@ -517,12 +529,6 @@ async def _execute_one(
     ] + [
         metric for unit in horizontal_units for metric in unit.batch_metrics
     ]
-    budget_failures = _budget_failures(review_calls)
-    if budget_failures:
-        raise DirectE2EError(
-            "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED",
-            ",".join(budget_failures),
-        )
 
     compatibility_started = time.perf_counter()
     projection = LegacyRiskArtifactAdapter().adapt(
@@ -549,12 +555,6 @@ async def _execute_one(
     consolidation = FindingConsolidationArtifact.model_validate(
         merge_run["artifact"]
     )
-    merge_budget_failures = _budget_failures(merge_run["call_metrics"])
-    if merge_budget_failures:
-        raise DirectE2EError(
-            "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED",
-            ",".join(merge_budget_failures),
-        )
     blocks = [item.model_dump(mode="json") for item in value.source_blocks]
     verify_started = time.perf_counter()
     compatible = finalize_legacy_compatible_result(
@@ -646,6 +646,7 @@ async def _execute_one(
         key: len(value["findings"]) for key, value in artifacts.items()
     }
     summary = {
+        **({"rule_library_shadow": rule_shadow_result} if rule_shadow_result is not None else {}),
         "run_index": run_index,
         "run_id": run_id,
         "input_hash": stable_hash(

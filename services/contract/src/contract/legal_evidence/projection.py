@@ -9,12 +9,19 @@ from typing import Any, Literal
 
 from contract.legal_evidence.models import LegalRetrievalUnit
 
-RELATION_EXTRACTOR_VERSION = "legal-relation-extractor-v2"
+RELATION_EXTRACTOR_VERSION = "legal-relation-extractor-v3"
 
-_ARTICLE_REF = re.compile(r"(?:本法|本条例|本规定|本办法)?(第[零〇一二三四五六七八九十百千万0-9]+条)")
+_ARTICLE_REF = re.compile(
+    r"(?P<internal_scope>本法|本条例|本规定|本办法)?"
+    r"(?P<article>第[零〇一二三四五六七八九十百千万0-9]+条)"
+)
 _NAMED_INSTRUMENT_REF = re.compile(r"《\s*([^》]{1,200}?)\s*》")
 _NAMED_ARTICLE_REF = re.compile(
     r"《\s*[^》]{1,200}?\s*》\s*(第[零〇一二三四五六七八九十百千万0-9]+条)"
+)
+_UNBRACKETED_LEGAL_TITLE_SUFFIX = re.compile(
+    r"[\u4e00-\u9fffA-Za-z0-9·（）()]{2,80}"
+    r"(?:法|条例|规定|办法|解释|规则|细则|决定|通知)\s*$"
 )
 _RELATION_HINTS: tuple[
     tuple[Literal[
@@ -38,6 +45,21 @@ def normalize_instrument_alias(value: str) -> str:
     return re.sub(r"[\s《》〈〉]", "", value).strip()
 
 
+def deterministic_instrument_aliases(value: str) -> set[str]:
+    """Return exact statutory aliases, including a unique national short name."""
+
+    normalized = normalize_instrument_alias(value)
+    if not normalized:
+        return set()
+    values = {normalized}
+    national_prefix = "中华人民共和国"
+    if normalized.startswith(national_prefix):
+        short = normalized[len(national_prefix) :]
+        if len(short) >= 2:
+            values.add(short)
+    return values
+
+
 @dataclass(frozen=True, slots=True)
 class NamedInstrumentReference:
     title: str
@@ -52,6 +74,69 @@ class NamedInstrumentReference:
     target_article_no: str | None = None
     extractor_version: str = RELATION_EXTRACTOR_VERSION
     verification_status: Literal["AUTO_VERIFIED", "CANDIDATE"] = "AUTO_VERIFIED"
+    article_start: int | None = None
+    article_end: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExactInstrumentAliasIndex:
+    aliases: frozenset[str]
+    lengths: tuple[int, ...]
+    maximum_length: int
+
+    @classmethod
+    def build(cls, values: Iterable[str]) -> ExactInstrumentAliasIndex:
+        aliases = frozenset(
+            normalized
+            for value in values
+            if (normalized := normalize_instrument_alias(value))
+        )
+        lengths = tuple(sorted({len(value) for value in aliases}, reverse=True))
+        return cls(
+            aliases=aliases,
+            lengths=lengths,
+            maximum_length=max(lengths, default=0),
+        )
+
+
+def _relation_classification(
+    local_relation_context: str,
+) -> tuple[
+    Literal[
+        "CITES", "BASED_ON", "IMPLEMENTS", "INTERPRETS", "AMENDS",
+        "REPEALS", "REPLACES", "SUPPLEMENTS",
+    ],
+    Literal["AUTO_VERIFIED", "CANDIDATE"],
+]:
+    relation_type: Literal[
+        "CITES", "BASED_ON", "IMPLEMENTS", "INTERPRETS", "AMENDS",
+        "REPEALS", "REPLACES", "SUPPLEMENTS",
+    ] = "CITES"
+    verification_status: Literal["AUTO_VERIFIED", "CANDIDATE"] = "AUTO_VERIFIED"
+    for candidate, hints in _RELATION_HINTS:
+        matched_hint = next(
+            (
+                hint
+                for hint in hints
+                if re.search(
+                    rf"(?:{re.escape(hint)}.{{0,10}}《法规》|"
+                    rf"《法规》.{{0,10}}{re.escape(hint)})",
+                    local_relation_context,
+                )
+            ),
+            None,
+        )
+        if matched_hint:
+            if re.search(
+                rf"(?:不|未|并非|不得).{{0,3}}{re.escape(matched_hint)}",
+                local_relation_context,
+            ):
+                break
+            relation_type = candidate
+            if candidate not in {"BASED_ON", "IMPLEMENTS"}:
+                verification_status = "CANDIDATE"
+            break
+    return relation_type, verification_status
 
 
 def extract_named_instrument_references(content: str) -> list[NamedInstrumentReference]:
@@ -74,35 +159,12 @@ def extract_named_instrument_references(content: str) -> list[NamedInstrumentRef
         article_match = re.match(
             r"\s*(第[零〇一二三四五六七八九十百千万0-9]+条)", suffix
         )
-        relation_type = "CITES"
         local_prefix = content[max(0, match.start() - 20) : match.start()]
         local_suffix = content[match.end() : min(len(content), match.end() + 20)]
         local_relation_context = local_prefix + "《法规》" + local_suffix
-        verification_status: Literal["AUTO_VERIFIED", "CANDIDATE"] = "AUTO_VERIFIED"
-        for candidate, hints in _RELATION_HINTS:
-            matched_hint = next(
-                (
-                    hint
-                    for hint in hints
-                    if re.search(
-                        rf"(?:{re.escape(hint)}.{{0,10}}《法规》|《法规》.{{0,10}}{re.escape(hint)})",
-                        local_relation_context,
-                    )
-                ),
-                None,
-            )
-            if matched_hint:
-                if re.search(
-                    rf"(?:不|未|并非|不得).{{0,3}}{re.escape(matched_hint)}",
-                    local_relation_context,
-                ):
-                    break
-                relation_type = candidate
-                if candidate not in {"BASED_ON", "IMPLEMENTS"}:
-                    # The title link is exact, but legal effects such as repeal,
-                    # amendment and replacement require later verification.
-                    verification_status = "CANDIDATE"
-                break
+        relation_type, verification_status = _relation_classification(
+            local_relation_context
+        )
         identity = (normalized, relation_type, context)
         if identity in seen:
             continue
@@ -117,6 +179,84 @@ def extract_named_instrument_references(content: str) -> list[NamedInstrumentRef
                 evidence_end=end,
                 target_article_no=(article_match.group(1) if article_match else None),
                 verification_status=verification_status,
+                article_start=(
+                    match.end() + article_match.start(1) if article_match else None
+                ),
+                article_end=(
+                    match.end() + article_match.end(1) if article_match else None
+                ),
+            )
+        )
+    return references
+
+
+def extract_unbracketed_named_article_references(
+    content: str,
+    known_aliases: Iterable[str] | ExactInstrumentAliasIndex,
+) -> list[NamedInstrumentReference]:
+    """Extract exact ``法规简称第X条`` references without fuzzy matching."""
+
+    alias_index = (
+        known_aliases
+        if isinstance(known_aliases, ExactInstrumentAliasIndex)
+        else ExactInstrumentAliasIndex.build(known_aliases)
+    )
+    if not alias_index.aliases:
+        return []
+    bracketed_spans = {
+        (value.article_start, value.article_end)
+        for value in extract_named_instrument_references(content)
+        if value.article_start is not None and value.article_end is not None
+    }
+    references: list[NamedInstrumentReference] = []
+    seen: set[tuple[str, str, int]] = set()
+    for match in _ARTICLE_REF.finditer(content):
+        if match.group("internal_scope"):
+            continue
+        article_span = match.span("article")
+        if article_span in bracketed_spans:
+            continue
+        prefix_start = max(0, match.start() - alias_index.maximum_length * 2)
+        prefix = normalize_instrument_alias(content[prefix_start : match.start()])
+        alias = next(
+            (
+                candidate
+                for length in alias_index.lengths
+                if len(prefix) >= length
+                and (candidate := prefix[-length:]) in alias_index.aliases
+            ),
+            None,
+        )
+        if alias is None:
+            continue
+        local_start = max(0, match.start() - len(alias) - 20)
+        local_end = min(len(content), match.end() + 20)
+        local_context = (
+            content[local_start : match.start() - len(alias)]
+            + "《法规》"
+            + content[match.end() : local_end]
+        )
+        relation_type, verification_status = _relation_classification(local_context)
+        identity = (alias, relation_type, match.start())
+        if identity in seen:
+            continue
+        seen.add(identity)
+        evidence_start = max(0, match.start() - len(alias) - 32)
+        evidence_end = min(len(content), match.end() + 32)
+        references.append(
+            NamedInstrumentReference(
+                title=alias,
+                normalized_title=alias,
+                relation_type=relation_type,
+                evidence_text=re.sub(
+                    r"\s+", " ", content[evidence_start:evidence_end]
+                ).strip(),
+                evidence_start=evidence_start,
+                evidence_end=evidence_end,
+                target_article_no=match.group("article"),
+                verification_status=verification_status,
+                article_start=article_span[0],
+                article_end=article_span[1],
             )
         )
     return references
@@ -146,7 +286,7 @@ def instrument_aliases(row: dict[str, Any]) -> set[str]:
     return {
         normalized
         for value in values
-        if (normalized := normalize_instrument_alias(value))
+        for normalized in deterministic_instrument_aliases(value)
     }
 
 
@@ -165,18 +305,36 @@ def unique_instrument_aliases(
     return unique, ambiguous
 
 
-def extract_internal_reference_spans(content: str) -> list[InternalArticleReference]:
+def extract_internal_reference_spans(
+    content: str,
+    *,
+    known_instrument_aliases: Iterable[str] = (),
+) -> list[InternalArticleReference]:
     """Extract explicit internal article references with traceable character spans."""
     external_article_spans = [
         match.span(1) for match in _NAMED_ARTICLE_REF.finditer(content)
     ]
+    external_article_spans.extend(
+        (reference.article_start, reference.article_end)
+        for reference in extract_unbracketed_named_article_references(
+            content, known_instrument_aliases
+        )
+        if reference.article_start is not None and reference.article_end is not None
+    )
     values: list[InternalArticleReference] = []
     seen: set[str] = set()
     for match in _ARTICLE_REF.finditer(content):
-        span = match.span(1)
+        span = match.span("article")
         if any(span[0] >= start and span[1] <= end for start, end in external_article_spans):
             continue
-        article_no = match.group(1)
+        if (
+            not match.group("internal_scope")
+            and _UNBRACKETED_LEGAL_TITLE_SUFFIX.search(content[: match.start()])
+        ):
+            # Unknown/ambiguous shorthand is safer left unresolved than linked
+            # to an unrelated article in the current instrument.
+            continue
+        article_no = match.group("article")
         if article_no in seen:
             continue
         seen.add(article_no)

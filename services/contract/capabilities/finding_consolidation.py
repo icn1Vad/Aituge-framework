@@ -59,10 +59,6 @@ class ModelDecisionEnvelope(StrictModel):
     decisions: list[ModelDecision]
 
 
-class PromptBudgetHardLimitError(RuntimeError):
-    """Provider input exceeded the frozen hard limit; this is not repairable."""
-
-
 class LlmCompleter(Protocol):
     async def complete_with_usage(
         self,
@@ -257,14 +253,6 @@ class FindingConsolidationEngine:
                 }
                 if call_metrics is not None:
                     call_metrics.append(metric)
-                if budget.budget_status == "HARD_LIMIT_EXCEEDED":
-                    await finalize_completion_validation_failed(
-                        completion_result,
-                        "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED",
-                    )
-                    raise PromptBudgetHardLimitError(
-                        "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED"
-                    )
                 envelope = _parse_model_output(completion_result.content)
                 actual_ids = [item.pair_id for item in envelope.decisions]
                 if len(actual_ids) != len(set(actual_ids)) or set(actual_ids) != set(expected):
@@ -287,8 +275,6 @@ class FindingConsolidationEngine:
                         completion_result,
                         "MODEL_OUTPUT_PROCESSING_CANCELLED",
                     )
-                raise
-            except PromptBudgetHardLimitError:
                 raise
             except (ValueError, ValidationError) as exc:
                 if completion_result is not None:

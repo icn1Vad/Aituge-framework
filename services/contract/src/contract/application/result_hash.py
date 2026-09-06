@@ -22,6 +22,8 @@ RESULT_HASH_FIELDS = (
 
 def normalize_result_for_hash(value: Mapping[str, Any]) -> dict[str, Any]:
     normalized = {field: copy.deepcopy(value[field]) for field in RESULT_HASH_FIELDS}
+    if value.get("rule_review") is not None:
+        normalized["rule_review"] = copy.deepcopy(value["rule_review"])
     if value.get("legal_evidences"):
         normalized["legal_evidence_release_id"] = copy.deepcopy(
             value.get("legal_evidence_release_id")

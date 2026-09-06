@@ -125,6 +125,7 @@ class FrameworkHttpGateway(FrameworkGateway):
                 "confirmed_party_b_name": request.confirmed_party_b_name,
                 "contract_type": request.contract_type,
                 "review_attitude": request.review_attitude,
+                "rule_review_standard": request.rule_review_standard,
             },
             "stream": False,
             "metadata": {

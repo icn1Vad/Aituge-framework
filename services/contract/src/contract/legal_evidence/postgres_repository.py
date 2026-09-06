@@ -618,16 +618,24 @@ class PostgresLegalEvidenceRepository:
             copied = conn.execute(
                 """
                 WITH requested(unit_id, content_hash, embedding_input_hash) AS (
-                  SELECT * FROM unnest(%s::text[], %s::text[], %s::text[])
+                  SELECT * FROM unnest(%s::text[], %s::char(64)[], %s::char(64)[])
                 ), compatible_source AS (
-                  SELECT DISTINCT ON (e.content_hash, e.embedding_input_hash)
-                         e.content_hash, e.embedding_input_hash,
+                  SELECT requested_hash.content_hash,
+                         requested_hash.embedding_input_hash,
                          e.embedding_profile_id, e.provider, e.model,
                          e.dimensions, e.embedding
-                  FROM legal_evidence_embedding e
-                  WHERE e.release_id = %s
-                    AND e.embedding_profile_id = %s
-                  ORDER BY e.content_hash, e.embedding_input_hash, e.unit_id
+                  FROM requested requested_hash
+                  JOIN LATERAL (
+                    SELECT source.embedding_profile_id, source.provider,
+                           source.model, source.dimensions, source.embedding
+                    FROM legal_evidence_embedding source
+                    WHERE source.release_id = %s
+                      AND source.embedding_profile_id = %s
+                      AND source.content_hash = requested_hash.content_hash
+                      AND source.embedding_input_hash = requested_hash.embedding_input_hash
+                    ORDER BY source.unit_id
+                    LIMIT 1
+                  ) e ON true
                 )
                 INSERT INTO legal_evidence_embedding (
                   release_id, unit_id, embedding_profile_id, provider,

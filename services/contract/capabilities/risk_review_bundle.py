@@ -32,6 +32,7 @@ from contract.risk.models import (
     RiskReviewPlan,
 )
 from contract.risk.po_source_policy import PO_SOURCE_PATTERN_RULES
+from contract.risk.review_ledger import CheckTaskScope, CheckReviewRecord, build_review_records
 from pydantic import BaseModel, Field, ValidationError, ValidationInfo, model_validator
 from service.conversation.llm_runner import LlmCompletionResult, LlmRuntime
 from task_manager.output_parser import parse_json_output
@@ -41,6 +42,7 @@ from services.contract.capabilities.model_observation import (
     finalize_completion_success,
     finalize_completion_validation_failed,
 )
+from services.contract.capabilities.review_output_diagnostics import write_private_diagnostic
 from services.contract.capabilities.party_roles import (
     contract_party_roles,
     text_names_role,
@@ -283,7 +285,8 @@ class GenericReviewRequest(StrictModel):
     counterparty: str = Field(min_length=1, max_length=500)
     contract_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=80)
     review_attitude: Literal["NEUTRAL"]
-    assigned_check_specs: list[GenericCheckSpec] = Field(min_length=1, max_length=8)
+    assigned_check_specs: list[GenericCheckSpec] = Field(min_length=1)
+    check_task_scopes: list[CheckTaskScope] = Field(default_factory=list)
     definitions: list[CommercialIrItem] = Field(default_factory=list)
     projected_ir_items: list[CommercialIrItem] = Field(default_factory=list)
     # An absence-only first shard can legitimately contain no source excerpt.
@@ -314,9 +317,9 @@ class GenericReviewRequest(StrictModel):
     ) -> "GenericReviewRequest":
         if self.unit_id not in GENERIC_UNIT_IDS:
             raise ValueError("Generic Direct Reviewer supports only the four new base units")
-        expected = set(UNIT_CHECK_CODES[self.unit_id])
+        expected_prefix = UNIT_CHECK_CODES[self.unit_id][0].split("-")[0] + "-"
         codes = [item.check_code for item in self.assigned_check_specs]
-        if len(codes) != len(set(codes)) or not set(codes).issubset(expected):
+        if len(codes) != len(set(codes)) or any(not code.startswith(expected_prefix) for code in codes):
             raise ValueError("Batch Check codes must be unique and belong to its Unit")
         item_ids = [item.item_id for item in [*self.definitions, *self.projected_ir_items]]
         anchor_ids = [item.anchor_id for item in self.source_excerpts]
@@ -460,8 +463,8 @@ class GenericModelFindingDraft(StrictModel):
     issue: str = Field(min_length=1, max_length=2000)
     impact_to_our_party: str = Field(min_length=1, max_length=2000)
     suggestion: str = Field(min_length=1, max_length=2000)
-    evidence: list[GenericModelEvidenceDraft] = Field(default_factory=list, max_length=20)
-    evidence_source_ids: list[str] = Field(default_factory=list, max_length=20)
+    evidence: list[GenericModelEvidenceDraft] = Field(default_factory=list)
+    evidence_source_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_candidate_ids(self) -> "GenericModelFindingDraft":
@@ -506,7 +509,7 @@ class GenericModelCheckResultRaw(StrictModel):
 
 
 class GenericModelResponseRaw(StrictModel):
-    check_results: list[GenericModelCheckResultRaw] = Field(min_length=1, max_length=8)
+    check_results: list[GenericModelCheckResultRaw] = Field(min_length=1)
 
 
 class GenericModelCheckResult(StrictModel):
@@ -580,7 +583,7 @@ class Po003CandidatePrecondition(StrictModel):
     adverse_consequence_to_our_party: bool
     relief_or_adjustment_missing: bool
     model_review_required: bool
-    supporting_source_ids: list[str] = Field(default_factory=list, max_length=20)
+    supporting_source_ids: list[str] = Field(default_factory=list)
     unmet_conditions: list[str] = Field(default_factory=list, max_length=4)
 
 
@@ -588,13 +591,13 @@ class IcdPerspectivePrecondition(StrictModel):
     counterparty_protects_our_party: bool
     adverse_burden_on_our_party: bool
     model_review_required: bool
-    supporting_source_ids: list[str] = Field(default_factory=list, max_length=20)
+    supporting_source_ids: list[str] = Field(default_factory=list)
     decision_reason: str = Field(min_length=1, max_length=500)
 
 
 class SeverityFactorPolicy(StrictModel):
     factor_code: SeverityFactorCode
-    allowed_check_codes: list[str] = Field(min_length=1, max_length=8)
+    allowed_check_codes: list[str] = Field(min_length=1)
     allowed_candidate_types: list[str] = Field(min_length=1, max_length=15)
     required_evidence_types: list[Literal["TEXT_QUOTE", "ABSENCE"]] = Field(
         min_length=1,
@@ -619,7 +622,7 @@ class RejectedSeverityFactor(StrictModel):
         "REQUIRED_TEXT_SIGNAL_MISSING",
         "VALID_ABSENCE_SOURCE_MISSING",
     ]
-    evidence_source_ids: list[str] = Field(default_factory=list, max_length=40)
+    evidence_source_ids: list[str] = Field(default_factory=list)
 
 
 class DeterministicRiskCandidate(StrictModel):
@@ -691,14 +694,13 @@ class DeterministicRiskCandidate(StrictModel):
         default_factory=list,
         max_length=20,
     )
-    primary_evidence_source_ids: list[str] = Field(default_factory=list, max_length=20)
+    # Source cardinality is not a validity rule; preserve the complete source set.
+    primary_evidence_source_ids: list[str] = Field(default_factory=list)
     allowed_supporting_evidence_source_ids: list[str] = Field(
         default_factory=list,
-        max_length=40,
     )
     allowed_counter_evidence_source_ids: list[str] = Field(
         default_factory=list,
-        max_length=40,
     )
     severity_rule_id: str = Field(
         default="GENERIC_SEMANTIC_V1",
@@ -722,11 +724,9 @@ class DeterministicRiskCandidate(StrictModel):
     )
     core_primary_evidence_source_ids: list[str] = Field(
         default_factory=list,
-        max_length=20,
     )
     context_primary_evidence_source_ids: list[str] = Field(
         default_factory=list,
-        max_length=20,
     )
     deterministic_severity_factors: list[SeverityFactorCode] = Field(
         default_factory=list,
@@ -863,11 +863,9 @@ class CandidateDecisionRaw(StrictModel):
     severity_factors: list[SeverityFactorCode] = Field(default_factory=list, max_length=20)
     supporting_evidence_source_ids: list[str] = Field(
         default_factory=list,
-        max_length=40,
     )
     counter_evidence_source_ids: list[str] = Field(
         default_factory=list,
-        max_length=40,
     )
     recommended_control_codes: list[
         Literal[
@@ -974,14 +972,12 @@ class CandidateDecision(StrictModel):
         "INSUFFICIENT_EVIDENCE",
     ]
     risk_level: Literal["HIGH", "MEDIUM", "LOW", "INFO"] | None = None
-    primary_evidence_source_ids: list[str] = Field(min_length=1, max_length=20)
+    primary_evidence_source_ids: list[str] = Field(min_length=1)
     supporting_evidence_source_ids: list[str] = Field(
         default_factory=list,
-        max_length=40,
     )
     counter_evidence_source_ids: list[str] = Field(
         default_factory=list,
-        max_length=40,
     )
     decision_summary: str = Field(min_length=1, max_length=1200)
     severity_factors: CandidateSeverityFactors
@@ -1017,15 +1013,13 @@ class CanonicalRiskRoot(StrictModel):
     risk_type: str = Field(min_length=1, max_length=160)
     root_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$")
     source_candidate_ids: list[str] = Field(min_length=1, max_length=20)
-    primary_evidence_source_ids: list[str] = Field(min_length=1, max_length=40)
-    core_primary_evidence_source_ids: list[str] = Field(min_length=1, max_length=40)
+    primary_evidence_source_ids: list[str] = Field(min_length=1)
+    core_primary_evidence_source_ids: list[str] = Field(min_length=1)
     context_primary_evidence_source_ids: list[str] = Field(
         default_factory=list,
-        max_length=40,
     )
     supporting_evidence_source_ids: list[str] = Field(
         default_factory=list,
-        max_length=80,
     )
     severity_factors: CandidateSeverityFactors
     recommended_control_codes: list[str] = Field(default_factory=list, max_length=30)
@@ -1097,7 +1091,7 @@ class ReviewBatchResult(StrictModel):
     domain: str = Field(pattern=BASE_UNIT_ID_PATTERN)
     batch_id: str = Field(pattern=r"^risk-batch-[0-9a-f]{32}$")
     status: Literal["COMPLETED", "PARTIAL_FAILED", "FAILED"]
-    check_results: list[CheckCoverageResult] = Field(min_length=1, max_length=8)
+    check_results: list[CheckCoverageResult] = Field(min_length=1)
     findings: list[FindingDraft] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     model_call_count: int = Field(ge=0, le=2)
@@ -1123,9 +1117,9 @@ class ReviewBatchResult(StrictModel):
         default_factory=list,
         max_length=2,
     )
-    reason_code_enrichment_count: int = Field(ge=0, le=8)
+    reason_code_enrichment_count: int = Field(ge=0)
     reason_code_rule_version: Literal["1.0"]
-    ignored_model_reason_code_count: int = Field(ge=0, le=8)
+    ignored_model_reason_code_count: int = Field(ge=0)
     deterministic_enrichment_count: int = Field(default=0, ge=0)
     check_code_enrichment_count: int = Field(default=0, ge=0)
     category_enrichment_count: int = Field(default=0, ge=0)
@@ -1155,7 +1149,7 @@ class BaseReviewUnitResult(StrictModel):
     domain: str = Field(pattern=BASE_UNIT_ID_PATTERN)
     status: Literal["COMPLETED", "PARTIAL_FAILED", "FAILED"]
     batch_ids: list[str] = Field(min_length=1, max_length=32)
-    check_results: list[CheckCoverageResult] = Field(min_length=5, max_length=8)
+    check_results: list[CheckCoverageResult] = Field(min_length=1)
     findings: list[FindingDraft] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     model_call_count: int = Field(ge=0, le=64)
@@ -1233,7 +1227,7 @@ class BaseBundleBatchMetric(StrictModel):
 class BaseBundleUnitMetric(StrictModel):
     unit_id: str = Field(pattern=BASE_UNIT_ID_PATTERN)
     status: Literal["COMPLETED", "PARTIAL_FAILED", "FAILED"]
-    check_count: int = Field(ge=1, le=8)
+    check_count: int = Field(ge=1)
     candidate_count: int = Field(ge=0)
     root_count: int = Field(ge=0)
     finding_count: int = Field(ge=0)
@@ -1269,7 +1263,7 @@ class BaseBundleMetrics(StrictModel):
     cached_tokens: int | None = Field(default=None, ge=0)
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
-    prompt_budget_policy_version: Literal["2.0"] = PROMPT_BUDGET_POLICY_VERSION
+    prompt_budget_policy_version: Literal["2.0", "3.0"] = PROMPT_BUDGET_POLICY_VERSION
     prompt_budget_warning_count: int = Field(
         default=0,
         ge=0,
@@ -1310,6 +1304,7 @@ class BaseRiskReviewBundle(StrictModel):
     identity: BaseBundleIdentity
     plan_id: str = Field(pattern=r"^risk-plan-[0-9a-f]{32}$")
     plan_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    review_records: list[CheckReviewRecord] = Field(default_factory=list)
     status: Literal["COMPLETED", "PARTIAL_FAILED"]
     units: list[BaseReviewUnitResult] = Field(min_length=5, max_length=5)
     batch_results: list[ReviewBatchResult] = Field(
@@ -1329,8 +1324,11 @@ class BaseRiskReviewBundle(StrictModel):
         codes = [
             item.check_code for unit in self.units for item in unit.check_results
         ]
-        if tuple(codes) != EXPECTED_BASE_CHECK_CODES:
-            raise ValueError("Base Bundle must cover all 34 base Check codes exactly once")
+        if len(codes) != len(set(codes)):
+            raise ValueError("Base Bundle must record each configured Check once")
+        batch_codes = {check.check_code for batch in self.batch_results for check in batch.check_results}
+        if set(codes) != batch_codes:
+            raise ValueError("Base Bundle checks must match its executed batches")
         batch_ids = [item.batch_id for item in self.batch_results]
         if len(batch_ids) != len(set(batch_ids)):
             raise ValueError("Base Bundle Batch IDs must be unique")
@@ -1984,6 +1982,8 @@ async def _review_po_candidate_batch(
                         },
                         "constraints": [
                             "只重新裁决target_candidate_ids；其他CandidateDecision所有字段必须保持不变",
+                            "对INSUFFICIENT_EVIDENCE目标必须重新核对Primary、Supporting、Counter和Absence Evidence；合同机制缺失或不完整本身满足Candidate触发条件时应判RISK",
+                            "只有Source Catalog确实无法证明触发事实或其反面时才可保留INSUFFICIENT_EVIDENCE，并在decision_summary逐项说明缺少什么Source",
                             "target为HARD_RULE或STRONG_SIGNAL时，NO_RISK必须引用合法且能推翻Primary触发条件的Counter Evidence",
                             "没有有效Counter且Primary已满足触发条件时应判RISK，并填写合法severity_factors和recommended_control_codes",
                             "不得仅因Counter列表为空而判INSUFFICIENT_EVIDENCE",
@@ -2068,6 +2068,20 @@ async def _review_po_candidate_batch(
             )
             evidence_role_normalization_count += normalized_role_count
             current_snapshot = _po_decision_snapshot(parsed_object)
+            insufficient_candidate_ids = _po_insufficient_candidate_ids(
+                parsed_object,
+                candidates_by_id,
+            )
+            if repair_no == 0 and insufficient_candidate_ids:
+                raise DirectReviewError(
+                    "RISK_CANDIDATE_INSUFFICIENT_EVIDENCE",
+                    (
+                        "Candidate decisions require one bounded evidence-aware "
+                        f"re-decision: {list(insufficient_candidate_ids)}"
+                    ),
+                    repairable=True,
+                    structured_output=parsed_object,
+                )
             semantic_preservation_passed: bool | None = None
             if repair_no:
                 _validate_po_decision_semantic_preservation(
@@ -2153,6 +2167,10 @@ async def _review_po_candidate_batch(
                 parsed_object,
                 candidates_by_id,
             )
+            insufficient_candidate_ids = _po_insufficient_candidate_ids(
+                parsed_object,
+                candidates_by_id,
+            )
             if (
                 next_repair_type == "EVIDENCE_SELECTION_REPAIR"
                 and unsupported_negative_ids
@@ -2163,7 +2181,11 @@ async def _review_po_candidate_batch(
             next_repair_target_ids = (
                 tuple(
                     dict.fromkeys(
-                        [*unsupported_negative_ids, *conflicting_duplicate_ids]
+                        [
+                            *unsupported_negative_ids,
+                            *conflicting_duplicate_ids,
+                            *insufficient_candidate_ids,
+                        ]
                     )
                 )
                 if next_repair_type == "DECISION_SUPPORT_REPAIR"
@@ -2570,7 +2592,10 @@ def _po_candidate_repair_type(
         "RISK_SUPPORTING_EVIDENCE_DUPLICATED",
     }:
         return "EVIDENCE_SELECTION_REPAIR"
-    if error.code == "RISK_NEGATIVE_DECISION_UNSUPPORTED":
+    if error.code in {
+        "RISK_NEGATIVE_DECISION_UNSUPPORTED",
+        "RISK_CANDIDATE_INSUFFICIENT_EVIDENCE",
+    }:
         return "DECISION_SUPPORT_REPAIR"
     return None
 
@@ -2603,6 +2628,24 @@ def _po_unsupported_negative_candidate_ids(
         ):
             result.append(candidate_id)
     return tuple(result)
+
+
+def _po_insufficient_candidate_ids(
+    value: dict[str, Any] | None,
+    candidates_by_id: dict[str, DeterministicRiskCandidate],
+) -> tuple[str, ...]:
+    if not isinstance(value, dict) or not isinstance(
+        value.get("candidate_decisions"), list
+    ):
+        return ()
+    return tuple(
+        item["candidate_id"]
+        for item in value["candidate_decisions"]
+        if isinstance(item, dict)
+        and isinstance(item.get("candidate_id"), str)
+        and item["candidate_id"] in candidates_by_id
+        and item.get("verdict") == "INSUFFICIENT_EVIDENCE"
+    )
 
 
 def _po_conflicting_duplicate_candidate_ids(
@@ -4828,6 +4871,7 @@ def generic_request_from_context(
                 project_item(item) for item in payload["projected_ir_items"]
             ],
             "source_excerpts": payload["source_excerpts"],
+            "check_task_scopes": payload.get("check_task_scopes", []),
             "evidence_sources": payload.get("evidence_sources", []),
             "absence_evidence_sources": payload.get(
                 "absence_evidence_sources",
@@ -4956,6 +5000,7 @@ def _generic_prompt(
             for item in candidates
         ]
     output_rules = [
+        "只记录本批实际分配的检查，不补齐其他检查；局部未见不等于全文缺失，无依据不可判无风险",
         "每个required_check_code恰好返回一次，不得返回其他check_code",
         "无实质风险时status=REVIEWED且findings=[]",
         "有Finding时status必须为REVIEWED，category/risk_type必须等于Check允许值",
@@ -5006,6 +5051,7 @@ def _generic_prompt(
             "contract_type": request.contract_type,
             "review_attitude": request.review_attitude,
         },
+        "check_task_records": [scope.prompt_record() for scope in request.check_task_scopes],
         "unit": {
             "unit_id": request.unit_id,
             "name": UNIT_NAMES[request.unit_id],
@@ -5518,6 +5564,7 @@ def _po_candidate_prompt(
         counterparty=request.counterparty,
     )
     payload = {
+        "check_task_records": [scope.prompt_record() for scope in request.check_task_scopes],
         "review_context": {
             "perspective": request.perspective,
             "our_party": request.our_party,
@@ -7362,8 +7409,7 @@ def _lre_candidate(
         if include_absence
         else []
     )
-    primary_text_limit = max(0, 20 - len(absence_primary_ids))
-    text_primary_ids = all_text_source_ids[:primary_text_limit]
+    text_primary_ids = all_text_source_ids
     primary_source_ids = list(
         dict.fromkeys([*text_primary_ids, *absence_primary_ids])
     )
@@ -8701,10 +8747,10 @@ def _materialize_generic(
         by_code[check.check_code] = check
         if "reason_code" in check.model_fields_set:
             ignored_reason_codes += 1
-    if tuple(by_code) != expected_codes:
+    if set(by_code) != set(expected_codes):
         raise DirectReviewError(
             "RISK_CHECK_COVERAGE_INVALID",
-            "Batch Check coverage is incomplete or out of order",
+            "Batch output must record every assigned Check without adding unassigned Checks",
             repairable=True,
             structured_output=response.model_dump(mode="json", exclude_unset=True),
         )
@@ -10019,15 +10065,6 @@ def _apply_prompt_budget(
             )
         )
     budget = summarize_prompt_budgets(budgets)
-    if budget.budget_status == "HARD_LIMIT_EXCEEDED":
-        raise DirectReviewError(
-            "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED",
-            (
-                f"{result.unit_id}/{result.batch_id} provider prompt token count "
-                f"{budget.provider_prompt_tokens} exceeded hard limit "
-                f"{budget.hard_limit_tokens}"
-            ),
-        )
     warnings = list(result.warnings)
     if budget.budget_status == "SOFT_WARNING":
         warnings.append("RISK_PROMPT_TOKEN_TARGET_EXCEEDED")
@@ -10074,6 +10111,22 @@ def _commercial_batch(
     )
 
 
+def _record_scope_limits(context: Any, result: ReviewBatchResult) -> ReviewBatchResult:
+    """A local negative is an observation, never a whole-contract clearance."""
+    partial_codes = {scope.check_code for scope in context.check_task_scopes if not scope.complete}
+    if not partial_codes:
+        return result
+    checks = [check.model_copy(update={
+        "reason_code": "INSUFFICIENT_EVIDENCE",
+        "decision_note": "[局部审查，待跨批汇总] " + check.decision_note[:950],
+    }) if check.check_code in partial_codes and not check.finding_local_ids and check.status != "FAILED"
+        else check for check in result.check_results]
+    return result.model_copy(update={
+        "check_results": checks,
+        "warnings": list(dict.fromkeys([*result.warnings, "RISK_CHECK_SCOPE_PARTIAL"])),
+    })
+
+
 def _empty_context_batch(context: Any) -> ReviewBatchResult:
     """Complete a redundant evidence-free shard without asking a model.
 
@@ -10087,10 +10140,10 @@ def _empty_context_batch(context: Any) -> ReviewBatchResult:
         CheckCoverageResult(
             check_code=spec.check_code,
             status="REVIEWED",
-            reason_code="NO_RISK_IDENTIFIED",
+            reason_code="INSUFFICIENT_EVIDENCE",
             decision_note=(
                 "当前分片没有属于本检查项的可用Evidence Source，"
-                "未新增风险裁决；完整缺失性检查由首个分片承载。"
+                "本分片未作风险裁决，不能据此认定合同无风险或全局缺失。"
             ),
             finding_local_ids=[],
         )
@@ -10133,6 +10186,12 @@ def _failed_batch_result(
     code = getattr(error, "code", error.__class__.__name__)
     message = str(error) or error.__class__.__name__
     note = f"{code}: {message}"[:1000]
+    attempts = list(getattr(error, "attempt_diagnostics", None) or [])
+    metrics = [LlmCallMetric.model_validate({
+        **{name: getattr(item, name, None) for name in LlmCallMetric.model_fields
+           if name not in {"review_unit_id"}}, "review_unit_id": _value(context.unit_id),
+    }) for item in attempts]
+    diagnostic_id = getattr(error, "diagnostic_id", None)
     attempt_notes = list(
         dict.fromkeys(
             str(item.validation_error)[:1000]
@@ -10157,14 +10216,18 @@ def _failed_batch_result(
         status="FAILED",
         check_results=check_results,
         findings=[],
-        warnings=list(dict.fromkeys([note, *attempt_notes])),
-        model_call_count=0,
-        repair_count=0,
+        warnings=list(dict.fromkeys([*([f"LOCAL_DIAGNOSTIC:{diagnostic_id}"] if diagnostic_id else []), note, *attempt_notes])),
+        model_call_count=len(metrics),
+        repair_count=max(0, len(metrics) - 1),
+        prompt_tokens=_sum_optional(item.prompt_tokens for item in metrics),
+        cached_tokens=_sum_optional(item.cached_tokens for item in metrics),
+        completion_tokens=_sum_optional(item.completion_tokens for item in metrics),
+        total_tokens=_sum_optional(item.total_tokens for item in metrics),
         tool_call_count=0,
         duration_ms=max(duration_ms, 0),
-        trace_ids=[],
-        call_metrics=[],
-        attempt_diagnostics=[],
+        trace_ids=[item.trace_id for item in metrics],
+        call_metrics=metrics,
+        attempt_diagnostics=attempts,
         reason_code_enrichment_count=len(check_results),
         reason_code_rule_version="1.0",
         ignored_model_reason_code_count=0,
@@ -10304,10 +10367,10 @@ def _validate_base_bundle_inputs(
     base_contexts = [
         item for item in plan.contexts if _value(item.unit_id) in BASE_UNIT_IDS
     ]
-    if not allow_dynamic_batch_count and len(base_contexts) != 7:
+    if not base_contexts:
         raise DirectReviewError(
             "RISK_BASE_BATCH_COVERAGE_INVALID",
-            "Base Bundle requires exactly seven executable Batch Contexts",
+            "Base Bundle requires executable contexts from its frozen Plan",
         )
     base_units = [
         item for item in plan.review_units if _value(item.unit_id) in BASE_UNIT_IDS
@@ -10327,9 +10390,7 @@ def _validate_base_bundle_inputs(
         batch_id for unit in base_units for batch_id in unit.batch_ids
     ]
     context_by_batch = {item.batch_id: item for item in base_contexts}
-    if set(ordered_batch_ids) != set(context_by_batch) or (
-        not allow_dynamic_batch_count and len(context_by_batch) != 7
-    ):
+    if set(ordered_batch_ids) != set(context_by_batch) or len(ordered_batch_ids) != len(set(ordered_batch_ids)):
         raise DirectReviewError(
             "RISK_BASE_BATCH_COVERAGE_INVALID",
             "Base Unit Batch IDs do not match Plan Contexts",
@@ -10626,6 +10687,8 @@ async def execute_base_risk_review_bundle(
             try:
                 async def invoke() -> ReviewBatchResult:
                     nonlocal effective_legal_tokens
+                    if not context.source_excerpts and _value(context.unit_id) == "commercial_financial":
+                        return _empty_context_batch(context)
                     if _value(context.unit_id) == "commercial_financial":
                         request: CommercialReviewRequest = (
                             commercial_request_from_context(
@@ -10672,6 +10735,7 @@ async def execute_base_risk_review_bundle(
                     invoke(),
                     timeout=batch_timeout_seconds,
                 )
+                result = _record_scope_limits(context, result)
                 result = _apply_prompt_budget(
                     context,
                     result,
@@ -10714,6 +10778,18 @@ async def execute_base_risk_review_bundle(
             finally:
                 finished_at[batch_id] = time.perf_counter()
                 active -= 1
+                recorded = results.get(batch_id)
+                write_private_diagnostic("check_batch_record", {
+                    "review_id": plan.review_id, "tenant_id": tenant_id,
+                    "framework_run_id": framework_run_id, "batch_id": batch_id,
+                }, {
+                    "plan_id": plan.plan_id, "plan_hash": plan.plan_hash,
+                    "context_hash": context.context_hash, "generation_id": plan.generation_id,
+                    "execution_status": states[batch_id],
+                    "assigned_checks": [{"check_code": s.check_code, "question": s.review_question} for s in context.check_specs],
+                    "scopes": [scope.model_dump(mode="json") for scope in context.check_task_scopes],
+                    "result": recorded.model_dump(mode="json") if recorded is not None else None,
+                })
 
     tasks = {
         batch_id: asyncio.create_task(run_batch(batch_id))
@@ -10955,6 +11031,7 @@ async def execute_base_risk_review_bundle(
         identity=identity,
         plan_id=plan.plan_id,
         plan_hash=plan.plan_hash,
+        review_records=build_review_records(plan, [by_batch[item] for item in ordered_batch_ids]),
         status=bundle_status,
         units=unit_results,
         batch_results=[by_batch[item] for item in ordered_batch_ids],
@@ -11742,6 +11819,9 @@ def _merge_unit_result(unit, by_batch: dict[str, ReviewBatchResult]) -> BaseRevi
         elif finding_ids:
             status = "REVIEWED"
             reason_code = "RISK_IDENTIFIED"
+        elif any(value.status == "FAILED" for value in values):
+            status = "FAILED"
+            reason_code = "CHECK_FAILED"
         elif any(value.status == "REVIEWED" for value in values):
             status = "REVIEWED"
             reason_code = (

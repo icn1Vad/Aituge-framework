@@ -19,16 +19,18 @@ from contract.legal_evidence.models import (
 from contract.legal_evidence.mysql_source import MySqlLegalSource
 from contract.legal_evidence.postgres_repository import PostgresLegalEvidenceRepository
 from contract.legal_evidence.projection import (
+    ExactInstrumentAliasIndex,
     LegalArticleAssembler,
     NamedInstrumentReference,
     RELATION_EXTRACTOR_VERSION,
     extract_internal_reference_spans,
     extract_named_instrument_references,
+    extract_unbracketed_named_article_references,
     unique_instrument_aliases,
 )
 from contract.persistence.postgres.migrate import run_migrations
 
-PROJECTION_VERSION = "legal-evidence-projection-v5"
+PROJECTION_VERSION = "legal-evidence-projection-v6"
 _KNOWN_RELATIONS = {
     "CITES",
     "BASED_ON",
@@ -424,6 +426,7 @@ class LegalEvidenceIndexer:
                 )
             )
             representative_units = self.target.representative_unit_ids(release_id)
+        exact_alias_index = ExactInstrumentAliasIndex.build(unique_aliases)
 
         relations: list[LegalRelation] = []
         relation_reviews: list[LegalRelationReviewItem] = []
@@ -534,7 +537,10 @@ class LegalEvidenceIndexer:
                 unit.article_no: unit.unit_id for unit in units if unit.article_no
             }
             for unit in units:
-                for reference in extract_internal_reference_spans(unit.content):
+                for reference in extract_internal_reference_spans(
+                    unit.content,
+                    known_instrument_aliases=exact_alias_index,
+                ):
                     target_unit_id = article_units.get(reference.article_no)
                     if not target_unit_id or target_unit_id == unit.unit_id:
                         continue
@@ -549,7 +555,13 @@ class LegalEvidenceIndexer:
                         extractor_version=reference.extractor_version,
                     )
                     internal_reference_count += 1
-                for reference in extract_named_instrument_references(unit.content):
+                references = [
+                    *extract_named_instrument_references(unit.content),
+                    *extract_unbracketed_named_article_references(
+                        unit.content, exact_alias_index
+                    ),
+                ]
+                for reference in references:
                     named_reference_count += 1
                     target_instrument = unique_aliases.get(reference.normalized_title)
                     if target_instrument is None:

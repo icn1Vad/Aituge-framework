@@ -133,6 +133,31 @@ def test_generic_contract_words_fail_closed_without_binding() -> None:
     assert result.usable is False
 
 
+def test_instrument_and_chapter_headings_cannot_bind_an_unrelated_article() -> None:
+    source = _bundle(
+        "增值税法所称全部价款不包括代收的政府性基金或者车辆购置税。",
+        domain="commercial_financial",
+        check_codes=["CF-003"],
+    )
+    evidence = source.evidence[0].model_copy(
+        update={
+            "unit": source.evidence[0].unit.model_copy(
+                update={
+                    "title": "中华人民共和国增值税发票管理条例",
+                    "heading_path": ["第三章 纳税义务与发票开具"],
+                }
+            )
+        }
+    )
+
+    result = LegalEvidenceCheckBinder().bind(
+        source.model_copy(update={"evidence": [evidence]})
+    )
+
+    assert result.evidence[0].check_codes == []
+    assert result.binding_status == "NONE"
+
+
 def test_completed_issue_remains_usable_when_an_independent_issue_is_unresolved() -> None:
     source = _bundle(
         ["付款期限届满后应当及时支付价款。", "经营者应当开具增值税发票。"],

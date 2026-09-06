@@ -15,6 +15,8 @@ from pydantic import (
     model_validator,
 )
 
+from contract.evidence_planning.review_result import RuleReviewResult
+
 SCHEMA_VERSION = "1.0"
 Identifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
 HashValue = Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
@@ -122,6 +124,7 @@ class CreateReviewRequest(StrictModel):
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)
     ] | None = None
     contract_type: Literal["AUTO"]
+    rule_review_standard: Literal["neutral", "strong", "weak"] = "neutral"
     review_attitude: Literal["NEUTRAL"]
     schema_version: Literal["1.0"]
 
@@ -510,6 +513,7 @@ class LegalEvidenceVersionSnapshotReference(StrictModel):
 
 
 class ReviewResultData(StrictModel):
+    rule_review: RuleReviewResult | None = None
     schema_version: Literal["1.0"] = "1.0"
     review_id: Identifier
     business_task_id: Identifier
@@ -527,6 +531,11 @@ class ReviewResultData(StrictModel):
 
     @model_validator(mode="after")
     def validate_result_links_and_counts(self) -> "ReviewResultData":
+        if self.rule_review is not None:
+            if self.rule_review.review_id != self.review_id:
+                raise ValueError("Rule review identity must match the contract review")
+            if self.rule_review.perspective != self.contract_profile.perspective.value:
+                raise ValueError("Rule review perspective must match the contract review")
         finding_by_id = {finding.finding_id: finding for finding in self.findings}
         evidence_by_id = {evidence.evidence_id: evidence for evidence in self.evidences}
         legal_evidence_by_id = {
@@ -619,6 +628,7 @@ class PublicFinding(StrictModel):
 
 class PublicReviewResultData(StrictModel):
     """Result projection exposed to Java and browsers without risk classification."""
+    rule_review: RuleReviewResult | None = None
 
     schema_version: Literal["1.0"] = "1.0"
     review_id: Identifier
@@ -638,6 +648,7 @@ class PublicReviewResultData(StrictModel):
     @classmethod
     def from_internal(cls, value: ReviewResultData) -> "PublicReviewResultData":
         return cls(
+            rule_review=value.rule_review,
             schema_version=value.schema_version,
             review_id=value.review_id,
             business_task_id=value.business_task_id,

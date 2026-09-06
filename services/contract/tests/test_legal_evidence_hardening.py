@@ -23,10 +23,12 @@ from contract.legal_evidence.planner import (
 from contract.legal_evidence.projection import (
     extract_internal_references,
     extract_named_instrument_references,
+    extract_unbracketed_named_article_references,
 )
 from contract.legal_evidence.provider import PlannerLegalEvidenceProvider
 from contract.legal_evidence.testing import (
     InMemoryLegalEvidenceRepository,
+    StaticLegalEmbeddingProvider,
     StaticLegalReranker,
 )
 from contract.persistence.postgres.migrate import MIGRATIONS_DIR
@@ -364,7 +366,7 @@ def test_embedding_profile_mismatch_disables_vector_and_marks_degraded() -> None
     assert bundle.evidence[0].retrieval_channels == ["KEYWORD"]
 
 
-def test_provider_creates_one_traceable_legal_issue_per_check_with_contract_facts() -> None:
+def test_provider_creates_stable_traceable_topic_issues_covering_all_checks() -> None:
     value = risk_plan_input()
     provider = PlannerLegalEvidenceProvider(
         planner=object(),  # type: ignore[arg-type]
@@ -374,7 +376,7 @@ def test_provider_creates_one_traceable_legal_issue_per_check_with_contract_fact
     request = provider._request(value)
 
     all_check_codes = [code for issue in request.issues for code in issue.check_codes]
-    assert len(request.issues) == 45
+    assert len(request.issues) == 17
     assert len(all_check_codes) == len(set(all_check_codes)) == 45
     assert {issue.domain for issue in request.issues} == {
         "formation_validity_authority",
@@ -389,15 +391,55 @@ def test_provider_creates_one_traceable_legal_issue_per_check_with_contract_fact
     assert all(f"我方：{value.our_party}" in issue.query for issue in request.issues)
     assert all("合同事实：" in issue.query for issue in request.issues)
     assert all("法律议题：" in issue.query for issue in request.issues)
-    assert all(len(issue.check_codes) == 1 for issue in request.issues)
+    assert all(issue.check_codes for issue in request.issues)
     assert all(issue.question and issue.source_domain == issue.domain for issue in request.issues)
     assert all(issue.question != provider.registry.check(issue.check_codes[0]).review_question for issue in request.issues)
     assert all(issue.evidence_need for issue in request.issues)
-    assert all(len(issue.required_concepts) <= 3 for issue in request.issues)
+    assert all(issue.required_concepts for issue in request.issues)
     assert all(
         "条件前后冲突" not in issue.required_concepts for issue in request.issues
     )
     assert all(issue.parties == [value.our_party, value.counterparty] for issue in request.issues)
+    assert [
+        issue.check_codes
+        for issue in request.issues
+        if issue.domain == "liability_remedies_exit"
+    ] == [
+        ["LRE-001", "LRE-002", "LRE-003", "LRE-004"],
+        ["LRE-005", "LRE-006"],
+        ["LRE-007"],
+        ["LRE-008"],
+    ]
+
+    repeated = provider._request(value)
+    assert repeated.stable_hash == request.stable_hash
+    assert [issue.issue_id for issue in repeated.issues] == [
+        issue.issue_id for issue in request.issues
+    ]
+
+
+def test_topic_issue_plan_reduces_query_embedding_calls_from_forty_five_to_seventeen() -> None:
+    value = risk_plan_input()
+    request = PlannerLegalEvidenceProvider(
+        planner=object(),  # type: ignore[arg-type]
+        repository=object(),  # type: ignore[arg-type]
+    )._request(value)
+    repository = InMemoryLegalEvidenceRepository(
+        release=_release(embedding_profile_id="test-profile"),
+    )
+
+    bundle = AdaptiveLegalEvidencePlanner(
+        repository,
+        embedding_provider=StaticLegalEmbeddingProvider([0.25, 0.75]),
+    ).plan(request)
+
+    assert len(request.issues) == 17
+    assert sum(len(issue.check_codes) for issue in request.issues) == 45
+    assert bundle.planning_metrics is not None
+    assert bundle.planning_metrics.issue_count == 17
+    assert bundle.planning_metrics.embedding_call_count == 17
+    assert bundle.planning_metrics.keyword_search_call_count == 17
+    assert bundle.planning_metrics.vector_search_call_count == 17
 
 
 class _SnapshotRepository:
@@ -482,6 +524,21 @@ def test_external_named_article_is_not_duplicated_as_internal_reference() -> Non
 
     assert named[0].target_article_no == "第五百八十五条"
     assert internal == ["第三条"]
+
+
+def test_unbracketed_named_article_is_not_misclassified_as_internal() -> None:
+    content = "增值税法第十七条所称全部价款，不包括代收税费。"
+
+    named = extract_unbracketed_named_article_references(
+        content,
+        {"中华人民共和国增值税法", "增值税法", "增值税法实施条例"},
+    )
+    internal = extract_internal_references(content)
+
+    assert [(item.normalized_title, item.target_article_no) for item in named] == [
+        ("增值税法", "第十七条")
+    ]
+    assert internal == []
 
 
 def test_semantic_amendment_and_repeal_edges_remain_candidates() -> None:

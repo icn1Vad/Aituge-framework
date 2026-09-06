@@ -377,6 +377,7 @@ class FrameworkCallbackRepository:
             == review["confirmed_party_b_name"]
             and task.contract_type == review["contract_type"]
             and task.review_attitude == review["review_attitude"]
+            and task.rule_review_standard == review.get("rule_review_standard", "neutral")
         )
 
     def get_attempt_parse_generation(

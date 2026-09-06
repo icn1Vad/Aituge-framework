@@ -28,7 +28,13 @@ BATCH_ID = "risk-batch-" + "1" * 32
         (6001, "SOFT_WARNING"),
         (6145, "SOFT_WARNING"),
         (7000, "SOFT_WARNING"),
-        (7001, "HARD_LIMIT_EXCEEDED"),
+        (7001, "SOFT_WARNING"),
+        (7035, "SOFT_WARNING"),
+        (7350, "SOFT_WARNING"),
+        (7351, "SOFT_WARNING"),
+        (7489, "SOFT_WARNING"),
+        (14000, "SOFT_WARNING"),
+        (17694, "SOFT_WARNING"),
     ),
 )
 def test_provider_prompt_budget_boundaries(
@@ -45,7 +51,11 @@ def test_provider_prompt_budget_boundaries(
         provider_cached_tokens=min(provider_prompt_tokens, 4096),
     )
 
-    assert value.policy_version == "2.0"
+    assert value.policy_version == "3.0"
+    assert value.accounting_policy_version == "3.0"
+    assert value.accounting_tolerance_tokens == 0
+    assert value.hard_limit_enforced is False
+    assert value.tokens_over_hard_limit == max(0, provider_prompt_tokens - 7000)
     assert value.budget_status == expected
     assert value.provider_prompt_tokens == provider_prompt_tokens
     assert value.estimated_business_context_tokens == 9000

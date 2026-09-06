@@ -9,6 +9,7 @@ from pydantic import Field, model_validator
 from contract.api.models import FindingCategory, Perspective, StrictModel
 from contract.callback.models import ExtractContractIrStageResult
 from contract.ir.models import SourceAnchor
+from contract.risk.review_ledger import CheckTaskScope
 
 
 RiskDomain = Literal[
@@ -90,7 +91,7 @@ class EvidenceRequirement(StrictModel):
 
 class SpecialistReviewerSpec(StrictModel):
     specialist_id: str = Field(min_length=1, max_length=160)
-    trigger_check_codes: list[str] = Field(min_length=1, max_length=45)
+    trigger_check_codes: list[str] = Field(min_length=1)
     maximum_invocations: Literal[1] = 1
 
 
@@ -137,7 +138,7 @@ class PlaybookManifest(StrictModel):
     applicability: ApplicabilitySpec = Field(default_factory=ApplicabilitySpec)
     required_ir_types: list[IrField] = Field(default_factory=list)
     target_domains: list[RiskDomain] = Field(min_length=1)
-    check_codes: list[str] = Field(min_length=1, max_length=100)
+    check_codes: list[str] = Field(min_length=1)
     risk_level_rule_ids: list[str] = Field(min_length=1)
     evidence_policy_id: str = Field(min_length=1, max_length=160)
     deterministic_validator_ids: list[str] = Field(default_factory=list)
@@ -367,6 +368,7 @@ class RiskReviewContext(StrictModel):
     contract_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=80)
     review_attitude: Literal["NEUTRAL"] = "NEUTRAL"
     check_specs: list[CheckSpec] = Field(min_length=1)
+    check_task_scopes: list[CheckTaskScope] = Field(default_factory=list)
     definitions: list[RiskProjectedIrItem] = Field(default_factory=list)
     projected_ir_items: list[RiskProjectedIrItem] = Field(default_factory=list)
     clause_catalog: list[RiskClauseCatalogItem] = Field(default_factory=list)

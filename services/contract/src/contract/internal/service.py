@@ -461,6 +461,19 @@ class ContractInternalService:
         result_hash, _canonical = compute_result_hash(raw)
         raw["result_hash"] = result_hash
         validated = ReviewResultData.model_validate(raw)
+        if validated.rule_review is not None:
+            rules = validated.rule_review
+            generation = self.callback_repository.get_attempt_parse_generation(
+                review["id"], review.get("active_attempt_no"))
+            if (rules.tenant_id != str(review["tenant_id"]) or generation is None
+                    or rules.generation_id != generation["id"]):
+                raise ContractError("EVIDENCE_INVALID", "Rule review tenant or generation mismatch", status_code=422)
+            blocks = {row["block_id"]: row["text"] for row in self._attempt_blocks(review)}
+            for decision in rules.decisions:
+                for citation in decision.citations:
+                    text = blocks.get(citation.block_id)
+                    if text is None or text[citation.char_start:citation.char_end] != citation.quoted_text:
+                        raise ContractError("EVIDENCE_INVALID", "Rule review quote is not in the frozen contract", status_code=422)
         self._validate_evidence(
             review,
             validated.findings,

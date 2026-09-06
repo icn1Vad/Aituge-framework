@@ -139,6 +139,12 @@ def test_same_unit_from_keyword_and_vector_preserves_both_channels() -> None:
     ).plan(_request("违约金"))
 
     assert bundle.evidence[0].retrieval_channels == ["KEYWORD", "VECTOR"]
+    assert bundle.planning_metrics is not None
+    assert bundle.planning_metrics.issue_count == 1
+    assert bundle.planning_metrics.embedding_call_count == 1
+    assert bundle.planning_metrics.keyword_search_call_count == 1
+    assert bundle.planning_metrics.vector_search_call_count == 1
+    assert bundle.planning_metrics.selected_evidence_count == 1
 
 
 def test_uncorroborated_vector_only_hit_is_not_promoted_to_legal_evidence() -> None:
@@ -215,6 +221,243 @@ def test_low_reranker_score_rejects_uncorroborated_keyword_hit() -> None:
     assert bundle.status == "NO_RELEVANT_EVIDENCE"
     assert bundle.evidence == []
     assert bundle.unresolved_issue_ids == ["legal-issue-" + "1" * 32]
+
+
+def test_low_reranker_score_rejects_generic_literal_concept_hit() -> None:
+    unrelated = _unit(
+        "unit-generic-literal",
+        "劳动者违反服务期约定解除劳动合同的，应当支付违约金。",
+    ).model_copy(
+        update={"title": "最高人民法院关于审理劳动争议案件的解释（二）"}
+    )
+    repository = InMemoryLegalEvidenceRepository(
+        release=LegalEvidenceRelease(
+            release_id="release-1",
+            source_release_id="mysql-release-1",
+            status="ACTIVE",
+            projection_version="legal-projection-v1",
+        ),
+        vector_pages=[
+            [LegalSearchCandidate(unit=unrelated, score=0.82, channel="VECTOR")]
+        ],
+    )
+
+    bundle = AdaptiveLegalEvidencePlanner(
+        repository,
+        embedding_provider=StaticLegalEmbeddingProvider([0.1, 0.2]),
+        reranker=StaticLegalReranker({unrelated.unit_id: 0.418}),
+    ).plan(_request("解除"))
+
+    assert bundle.status == "NO_RELEVANT_EVIDENCE"
+    assert bundle.evidence == []
+
+
+def test_business_service_issue_rejects_labor_specific_instrument() -> None:
+    labor = _unit(
+        "unit-labor-subject",
+        "劳动者违反服务期约定提前解除劳动合同的，应当承担相应责任。",
+    ).model_copy(
+        update={"title": "最高人民法院关于审理劳动争议案件适用法律问题的解释（二）"}
+    )
+    request = _request("解除").model_copy(
+        update={
+            "contract_type": "软件技术服务合同",
+            "issues": [
+                _request("解除").issues[0].model_copy(
+                    update={
+                        "query": "企业之间的软件服务合同解除与违约责任",
+                        "question": "甲方能否解除软件服务合同",
+                        "facts": ["乙方未按期交付软件"],
+                        "contract_object": "软件技术服务",
+                    }
+                )
+            ],
+        }
+    )
+    repository = InMemoryLegalEvidenceRepository(
+        release=LegalEvidenceRelease(
+            release_id="release-1",
+            source_release_id="mysql-release-1",
+            status="ACTIVE",
+            projection_version="legal-projection-v1",
+            embedding_profile_id="test-profile",
+        ),
+        vector_pages=[[LegalSearchCandidate(unit=labor, score=0.9, channel="VECTOR")]],
+    )
+
+    bundle = AdaptiveLegalEvidencePlanner(
+        repository,
+        embedding_provider=StaticLegalEmbeddingProvider([0.1, 0.2]),
+        reranker=StaticLegalReranker({labor.unit_id: 0.95}),
+    ).plan(request)
+
+    assert bundle.status == "NO_RELEVANT_EVIDENCE"
+    assert bundle.evidence == []
+
+
+def test_employment_issue_accepts_labor_specific_instrument() -> None:
+    labor = _unit(
+        "unit-labor-applicable",
+        "劳动者违反服务期约定提前解除劳动合同的，应当承担相应责任。",
+    ).model_copy(
+        update={"title": "最高人民法院关于审理劳动争议案件适用法律问题的解释（二）"}
+    )
+    request = _request("解除").model_copy(
+        update={
+            "contract_type": "劳动合同",
+            "issues": [
+                _request("解除").issues[0].model_copy(
+                    update={
+                        "query": "用人单位与劳动者的劳动合同解除及服务期责任",
+                        "question": "劳动者提前解除劳动合同应承担什么责任",
+                        "facts": ["员工在服务期内提出离职"],
+                        "contract_object": "劳动合同",
+                    }
+                )
+            ],
+        }
+    )
+    repository = InMemoryLegalEvidenceRepository(
+        release=LegalEvidenceRelease(
+            release_id="release-1",
+            source_release_id="mysql-release-1",
+            status="ACTIVE",
+            projection_version="legal-projection-v1",
+            embedding_profile_id="test-profile",
+        ),
+        vector_pages=[[LegalSearchCandidate(unit=labor, score=0.9, channel="VECTOR")]],
+    )
+
+    bundle = AdaptiveLegalEvidencePlanner(
+        repository,
+        embedding_provider=StaticLegalEmbeddingProvider([0.1, 0.2]),
+        reranker=StaticLegalReranker({labor.unit_id: 0.95}),
+    ).plan(request)
+
+    assert [item.unit.unit_id for item in bundle.evidence] == [labor.unit_id]
+
+
+def test_private_business_issue_rejects_government_data_specific_rule() -> None:
+    government_data = _unit(
+        "unit-government-data",
+        "国家机关委托他人建设电子政务系统、加工政务数据，应监督受托方履行数据安全义务。",
+    ).model_copy(update={"title": "中华人民共和国数据安全法"})
+    request = _request("数据").model_copy(
+        update={
+            "contract_type": "软件技术服务合同",
+            "issues": [
+                _request("数据").issues[0].model_copy(
+                    update={
+                        "query": "两家企业的软件服务合同约定业务数据处理",
+                        "question": "企业受托处理业务数据应承担哪些义务",
+                        "facts": ["乙方为甲方处理客户业务数据"],
+                    }
+                )
+            ],
+        }
+    )
+    repository = InMemoryLegalEvidenceRepository(
+        release=LegalEvidenceRelease(
+            release_id="release-1",
+            source_release_id="mysql-release-1",
+            status="ACTIVE",
+            projection_version="legal-projection-v1",
+            embedding_profile_id="test-profile",
+        ),
+        vector_pages=[
+            [LegalSearchCandidate(unit=government_data, score=0.9, channel="VECTOR")]
+        ],
+    )
+
+    bundle = AdaptiveLegalEvidencePlanner(
+        repository,
+        embedding_provider=StaticLegalEmbeddingProvider([0.1, 0.2]),
+        reranker=StaticLegalReranker({government_data.unit_id: 0.95}),
+    ).plan(request)
+
+    assert bundle.evidence == []
+
+
+def test_service_issue_rejects_technology_license_specific_rule() -> None:
+    technology_license = _unit(
+        "unit-technology-license",
+        "技术许可合同的被许可人应当按照约定的范围和期限承担保密义务。",
+    ).model_copy(update={"title": "中华人民共和国民法典"})
+    request = _request("保密").model_copy(
+        update={
+            "contract_type": "软件实施服务合同",
+            "issues": [
+                _request("保密").issues[0].model_copy(
+                    update={
+                        "query": "软件部署、接口开发和运维服务中的保密义务",
+                        "question": "服务商如何保护项目秘密",
+                        "facts": ["乙方提供平台部署和运维服务"],
+                    }
+                )
+            ],
+        }
+    )
+    repository = InMemoryLegalEvidenceRepository(
+        release=LegalEvidenceRelease(
+            release_id="release-1",
+            source_release_id="mysql-release-1",
+            status="ACTIVE",
+            projection_version="legal-projection-v1",
+            embedding_profile_id="test-profile",
+        ),
+        vector_pages=[
+            [LegalSearchCandidate(unit=technology_license, score=0.9, channel="VECTOR")]
+        ],
+    )
+
+    bundle = AdaptiveLegalEvidencePlanner(
+        repository,
+        embedding_provider=StaticLegalEmbeddingProvider([0.1, 0.2]),
+        reranker=StaticLegalReranker({technology_license.unit_id: 0.95}),
+    ).plan(request)
+
+    assert bundle.evidence == []
+
+
+def test_business_confidentiality_issue_rejects_state_secret_rule() -> None:
+    state_secret = _unit(
+        "unit-state-secret",
+        "机关、单位发现国家秘密已经泄露，应当立即采取补救措施并报告。",
+    ).model_copy(update={"title": "中华人民共和国保守国家秘密法实施条例"})
+    request = _request("保密").model_copy(
+        update={
+            "contract_type": "软件技术服务合同",
+            "issues": [
+                _request("保密").issues[0].model_copy(
+                    update={
+                        "query": "两家企业的软件服务合同商业秘密保护",
+                        "question": "服务商应如何承担普通商业保密义务",
+                        "facts": ["双方约定保护履约中知悉的商业秘密"],
+                    }
+                )
+            ],
+        }
+    )
+    repository = InMemoryLegalEvidenceRepository(
+        release=LegalEvidenceRelease(
+            release_id="release-1",
+            source_release_id="mysql-release-1",
+            status="ACTIVE",
+            projection_version="legal-projection-v1",
+            embedding_profile_id="test-profile",
+        ),
+        vector_pages=[
+            [LegalSearchCandidate(unit=state_secret, score=0.9, channel="VECTOR")]
+        ],
+    )
+
+    bundle = AdaptiveLegalEvidencePlanner(
+        repository,
+        embedding_provider=StaticLegalEmbeddingProvider([0.1, 0.2]),
+        reranker=StaticLegalReranker({state_secret.unit_id: 0.95}),
+    ).plan(request)
+
+    assert bundle.evidence == []
 
 
 def test_explicit_instrument_article_uses_exact_channel_and_freezes_versions() -> None:
@@ -378,9 +621,120 @@ def test_relation_expansion_adds_verified_exception_until_all_concepts_are_cover
     assert bundle.coverage[0].complete is True
     assert [item.relation_id for item in bundle.relations] == ["relation-1"]
     assert bundle.evidence[1].relation_path == ["relation-1"]
+    assert bundle.planning_metrics is not None
+    assert bundle.planning_metrics.relation_lookup_count == 2
+    assert bundle.planning_metrics.relation_neighbor_count == 1
+    assert bundle.planning_metrics.relation_expanded_evidence_count == 1
     assert bundle.status == "DEGRADED"
     assert bundle.conflicts[0].conflict_type == "RELATION"
     assert bundle.stop_reason != "COVERAGE_SATISFIED"
+
+
+def test_real_release_internal_reference_expands_technology_contract_evidence() -> None:
+    """Exercise a verified graph edge sampled from the immutable local release."""
+
+    instrument_id = "4168a680-84cc-510c-b75b-8424f8445832"
+    version_id = "c54272b6-7edd-5a92-8822-33e853e6439a"
+    source = _unit(
+        "civil-code-article-858",
+        (
+            "技术开发合同履行过程中，因出现无法克服的技术困难，致使研究开发失败"
+            "或者部分失败的，该风险由当事人约定；没有约定或者约定不明确，依据"
+            "本法第五百一十条的规定仍不能确定的，风险由当事人合理分担。"
+        ),
+        instrument_id=instrument_id,
+        article_no="第八百五十八条",
+    ).model_copy(
+        update={
+            "version_id": version_id,
+            "source_node_ids": ["d6817b26-1f83-59e4-ae3f-7c8351489364"],
+            "title": "中华人民共和国民法典",
+            "heading_path": ["第三编", "第二十章", "第二节", "第八百五十八条"],
+            "effective_from": date(2021, 1, 1),
+            "validity_status": "UNKNOWN",
+            "metadata_verification_status": "VERIFIED",
+        }
+    )
+    target = _unit(
+        "civil-code-article-510",
+        (
+            "合同生效后，当事人就质量、价款或者报酬、履行地点等内容没有约定"
+            "或者约定不明确的，可以协议补充；不能达成补充协议的，按照合同相关"
+            "条款或者交易习惯确定。"
+        ),
+        instrument_id=instrument_id,
+        article_no="第五百一十条",
+    ).model_copy(
+        update={
+            "version_id": version_id,
+            "source_node_ids": [
+                "258c6bab-ecd8-53a9-9891-62fa1504e452",
+                "45ab6ef7-cec2-58a8-8b1c-4da70b4ce7dd",
+            ],
+            "title": "中华人民共和国民法典",
+            "heading_path": ["第三编", "第四章", "第五百一十条"],
+            "effective_from": date(2021, 1, 1),
+            "validity_status": "UNKNOWN",
+            "metadata_verification_status": "VERIFIED",
+        }
+    )
+    relation = LegalRelation(
+        relation_id="8d9d8b6a-6fb9-5a25-a27c-9d4483ad2965",
+        release_id="release-1",
+        source_unit_id=source.unit_id,
+        target_unit_id=target.unit_id,
+        relation_type="INTERNAL_REF",
+        evidence_text=(
+            "技术开发合同履行过程中，因出现无法克服的技术困难，致使研究开发失败"
+            "或者部分失败的，该风险由当事人约定；没有约定或者约定不明确，依据"
+            "本法第五百一十条的规定仍不能确定的，风险由当事人合理分担。"
+        ),
+        source_node_id=source.source_node_ids[0],
+        confidence=1,
+        verification_status="AUTO_VERIFIED",
+    )
+    repository = InMemoryLegalEvidenceRepository(
+        release=LegalEvidenceRelease(
+            release_id="release-1",
+            source_release_id="legal-release-20260902-official-2026-kg-v1",
+            status="ACTIVE",
+            projection_version="legal-projection-v4",
+            relation_extractor_version="legal-etl/1.4.0-graph",
+        ),
+        keyword_pages=[
+            [LegalSearchCandidate(unit=source, score=1, channel="KEYWORD")]
+        ],
+        relations={source.unit_id: [(relation, target)]},
+    )
+    request = _request("技术开发合同", "补充协议").model_copy(
+        update={
+            "issues": [
+                _request("技术开发合同", "补充协议").issues[0].model_copy(
+                    update={
+                        "query": "技术开发失败风险约定不明确时，应依据什么规则补充确定"
+                    }
+                )
+            ]
+        }
+    )
+
+    bundle = AdaptiveLegalEvidencePlanner(repository).plan(request)
+
+    assert [item.unit.article_no for item in bundle.evidence] == [
+        "第八百五十八条",
+        "第五百一十条",
+    ]
+    assert bundle.evidence[1].retrieval_channels == ["RELATION"]
+    assert bundle.evidence[1].relation_path == [relation.relation_id]
+    assert bundle.coverage[0].covered_concepts == ["技术开发合同", "补充协议"]
+    assert bundle.coverage[0].complete is True
+    assert bundle.stop_reason == "COVERAGE_SATISFIED"
+    assert bundle.version_snapshot is not None
+    assert bundle.version_snapshot.legal_release_id == (
+        "legal-release-20260902-official-2026-kg-v1"
+    )
+    assert bundle.planning_metrics is not None
+    assert bundle.planning_metrics.relation_expanded_evidence_count == 1
 
 
 def test_graph_expansion_stops_after_ordinary_edge_adds_no_new_concept() -> None:

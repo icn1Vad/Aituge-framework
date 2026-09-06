@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Literal, Protocol
 
 from contract.legal_evidence.models import LegalEvidence
+from contract.risk.review_ledger import CheckTaskScope
 from contract.legal_evidence.prompting import (
     compact_legal_evidence_catalog,
     legal_evidence_ids_for_check,
@@ -35,6 +36,10 @@ from services.contract.capabilities.prompt_budget import (
     PromptBudgetResult,
     evaluate_prompt_budget,
 )
+from services.contract.capabilities.review_output_diagnostics import (
+    structural_changes, validation_issues, write_private_diagnostic,
+)
+from services.contract.capabilities.commercial_output_repair import build_check_repair, merge_check_repair
 
 COMMERCIAL_UNIT_ID = "commercial_financial"
 COMMERCIAL_CHECK_CODES = tuple(f"CF-{index:03d}" for index in range(1, 9))
@@ -44,14 +49,14 @@ BASE_UNIT_ID_PATTERN = (
     r"missing_ambiguity_completeness)$"
 )
 BASE_CHECK_CODE_PATTERN = (
-    r"^(FVA-00[1-5]|CF-00[1-8]|PO-00[1-7]|ICD-00[1-6]|LRE-00[1-8]|"
-    r"CCC-00[1-5]|MAC-00[1-6])$"
+    r"^(FVA|CF|PO|ICD|LRE|CCC|MAC)-[0-9]{3}$"
 )
 
 _SYSTEM_PROMPT = """你是合同商务财务风险直接审查器。
 只审查输入分配的CF检查，禁止工具和其他领域；严格站在our_party立场，以NEUTRAL标准识别有原文依据的实质风险。
 Finding只代表对our_party不利的风险；有利、中性或一般说明不得生成Finding。每个Check独立审查，不得因其他Check引用同一条款而跳过。
 严格遵守输入的decision_policies和output_contract；不得固定限制Finding数量，不得输出Markdown、分析过程或Python负责的技术字段。
+decision_note必须提供简短、非空的判断依据；这是JSON内的必要字段，不是要求输出思维过程。
 只输出一个JSON对象，第一字符必须是{，最后字符必须是}。"""
 
 
@@ -159,7 +164,7 @@ class StrictModel(BaseModel):
 
 
 class CommercialCheckSpec(StrictModel):
-    check_code: str = Field(pattern=r"^CF-00[1-8]$")
+    check_code: str = Field(pattern=r"^CF-[0-9]{3}$")
     review_question: str = Field(min_length=1, max_length=2000)
     allowed_categories: list[Literal["PAYMENT", "DELIVERY", "ACCEPTANCE"]] = Field(
         min_length=1,
@@ -232,7 +237,8 @@ class CommercialReviewRequest(StrictModel):
     counterparty: str = Field(min_length=1, max_length=500)
     contract_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=80)
     review_attitude: Literal["NEUTRAL"]
-    assigned_check_specs: list[CommercialCheckSpec] = Field(min_length=8, max_length=8)
+    assigned_check_specs: list[CommercialCheckSpec] = Field(min_length=1)
+    check_task_scopes: list[CheckTaskScope] = Field(default_factory=list)
     definitions: list[CommercialIrItem] = Field(default_factory=list)
     projected_ir_items: list[CommercialIrItem] = Field(default_factory=list)
     source_excerpts: list[CommercialSourceExcerpt] = Field(min_length=1)
@@ -248,8 +254,8 @@ class CommercialReviewRequest(StrictModel):
     @model_validator(mode="after")
     def validate_identity_and_coverage(self) -> "CommercialReviewRequest":
         check_codes = [item.check_code for item in self.assigned_check_specs]
-        if tuple(sorted(check_codes)) != COMMERCIAL_CHECK_CODES:
-            raise ValueError("Commercial Direct Review requires exactly CF-001 through CF-008")
+        if len(check_codes) != len(set(check_codes)):
+            raise ValueError("Assigned commercial Check codes must be unique")
         item_ids = [item.item_id for item in [*self.definitions, *self.projected_ir_items]]
         anchor_ids = [item.anchor_id for item in self.source_excerpts]
         if len(item_ids) != len(set(item_ids)):
@@ -286,7 +292,7 @@ class ModelEvidenceDraft(StrictModel):
 
 
 class ModelFindingDraft(StrictModel):
-    check_code: str = Field(pattern=r"^CF-00[1-8]$")
+    check_code: str = Field(pattern=r"^CF-[0-9]{3}$")
     category: Literal["PAYMENT", "DELIVERY", "ACCEPTANCE"]
     risk_type: str = Field(min_length=1, max_length=160)
     risk_level: Literal["HIGH", "MEDIUM", "LOW", "INFO"]
@@ -294,11 +300,11 @@ class ModelFindingDraft(StrictModel):
     issue: str = Field(min_length=1, max_length=2000)
     impact_to_our_party: str = Field(min_length=1, max_length=2000)
     suggestion: str = Field(min_length=1, max_length=2000)
-    evidence: list[ModelEvidenceDraft] = Field(min_length=1, max_length=20)
+    evidence: list[ModelEvidenceDraft] = Field(min_length=1)
 
 
 class ModelCheckCoverageResultRaw(StrictModel):
-    check_code: str = Field(pattern=r"^CF-00[1-8]$")
+    check_code: str = Field(pattern=r"^CF-[0-9]{3}$")
     status: Literal["REVIEWED", "NOT_APPLICABLE", "FAILED"]
     reason_code: str | None = None
     decision_note: str = Field(min_length=1, max_length=1000)
@@ -306,10 +312,11 @@ class ModelCheckCoverageResultRaw(StrictModel):
     candidate_decision: Literal[
         "RISK_CONFIRMED",
         "RISK_NOT_CONFIRMED",
+        "TRIGGER_NOT_MET",
         "INSUFFICIENT_EVIDENCE",
     ] | None = None
     identified_security_mechanisms: list[str] | None = Field(default=None, max_length=20)
-    candidate_evidence: list[ModelEvidenceDraft] | None = Field(default=None, max_length=20)
+    candidate_evidence: list[ModelEvidenceDraft] | None = Field(default=None)
 
     @model_validator(mode="after")
     def validate_candidate_decision(self) -> "ModelCheckCoverageResultRaw":
@@ -331,6 +338,8 @@ class ModelCheckCoverageResultRaw(StrictModel):
                 )
             if self.candidate_decision == "INSUFFICIENT_EVIDENCE" and self.status != "FAILED":
                 raise ValueError("Insufficient CF-005 evidence must fail the required Check")
+            if self.candidate_decision in {"TRIGGER_NOT_MET", "RISK_NOT_CONFIRMED"} and self.findings:
+                raise ValueError("A rejected CF-005 risk cannot contain Findings")
         elif (
             self.candidate_decision is not None
             or bool(self.identified_security_mechanisms)
@@ -341,7 +350,7 @@ class ModelCheckCoverageResultRaw(StrictModel):
 
 
 class ModelCommercialReviewResponseRaw(StrictModel):
-    check_results: list[ModelCheckCoverageResultRaw] = Field(min_length=8, max_length=8)
+    check_results: list[ModelCheckCoverageResultRaw] = Field(min_length=1)
 
 
 ReasonCode = Literal[
@@ -354,7 +363,7 @@ ReasonCode = Literal[
 
 
 class ModelCheckCoverageResult(StrictModel):
-    check_code: str = Field(pattern=r"^CF-00[1-8]$")
+    check_code: str = Field(pattern=r"^CF-[0-9]{3}$")
     status: Literal["REVIEWED", "NOT_APPLICABLE", "FAILED"]
     reason_code: ReasonCode
     decision_note: str = Field(min_length=1, max_length=1000)
@@ -362,15 +371,16 @@ class ModelCheckCoverageResult(StrictModel):
     candidate_decision: Literal[
         "RISK_CONFIRMED",
         "RISK_NOT_CONFIRMED",
+        "TRIGGER_NOT_MET",
         "INSUFFICIENT_EVIDENCE",
         "PERSPECTIVE_REJECTED",
     ] | None = None
     identified_security_mechanisms: list[str] = Field(default_factory=list, max_length=20)
-    candidate_evidence: list[ModelEvidenceDraft] = Field(default_factory=list, max_length=20)
+    candidate_evidence: list[ModelEvidenceDraft] = Field(default_factory=list)
 
 
 class ModelCommercialReviewResponse(StrictModel):
-    check_results: list[ModelCheckCoverageResult] = Field(min_length=8, max_length=8)
+    check_results: list[ModelCheckCoverageResult] = Field(min_length=1)
 
 
 class Cf005Candidate(StrictModel):
@@ -387,6 +397,9 @@ class Cf005Candidate(StrictModel):
     identified_security_mechanisms: list[str]
     candidate_ir_refs: list[str]
     candidate_evidence_refs: list[str]
+    payment_ir_refs: list[str] = Field(default_factory=list)
+    payment_evidence_refs: list[str] = Field(default_factory=list)
+    trigger_absence_verified: bool = False
     requires_model_decision: Literal[True] = True
 
 
@@ -412,8 +425,8 @@ class SchemaNormalizationRecord(StrictModel):
 
 
 class ReasonCodeEnrichmentRecord(StrictModel):
-    enrichment_count: int = Field(ge=0, le=8)
-    ignored_model_reason_code_count: int = Field(ge=0, le=8)
+    enrichment_count: int = Field(ge=0)
+    ignored_model_reason_code_count: int = Field(ge=0)
     rule_version: Literal["1.0"] = "1.0"
 
 
@@ -434,6 +447,11 @@ class LlmAttemptDiagnostic(StrictModel):
     trace_id: str = Field(min_length=1, max_length=160)
     provider_request_id: str | None = Field(default=None, max_length=500)
     finish_reason: str | None = Field(default=None, max_length=160)
+    validation_stage: str | None = None
+    validation_issues: list[dict[str, Any]] = Field(default_factory=list)
+    normalized_output: dict[str, Any] | None = None
+    changed_paths: list[str] = Field(default_factory=list)
+    repair_check_codes: list[str] = Field(default_factory=list)
 
 
 class EvidenceCandidate(StrictModel):
@@ -513,7 +531,7 @@ class ReviewUnitResult(StrictModel):
     unit_id: str = Field(pattern=BASE_UNIT_ID_PATTERN)
     domain: str = Field(pattern=BASE_UNIT_ID_PATTERN)
     status: Literal["COMPLETED", "PARTIAL_FAILED"]
-    check_results: list[CheckCoverageResult] = Field(min_length=1, max_length=8)
+    check_results: list[CheckCoverageResult] = Field(min_length=1)
     findings: list[FindingDraft] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     model_call_count: int = Field(ge=1, le=2)
@@ -531,9 +549,9 @@ class ReviewUnitResult(StrictModel):
     schema_normalization_type: SchemaNormalizationType | None = None
     attempt_diagnostics: list[LlmAttemptDiagnostic] = Field(min_length=1, max_length=2)
     cf005_candidate: Cf005Candidate | None = None
-    reason_code_enrichment_count: int = Field(ge=0, le=8)
+    reason_code_enrichment_count: int = Field(ge=0)
     reason_code_rule_version: Literal["1.0"]
-    ignored_model_reason_code_count: int = Field(ge=0, le=8)
+    ignored_model_reason_code_count: int = Field(ge=0)
 
 
 class LlmCompleter(Protocol):
@@ -565,6 +583,11 @@ class DirectReviewError(RuntimeError):
         self.structured_output = structured_output
         self.attempt_diagnostics: list[LlmAttemptDiagnostic] = []
         self.cf005_candidate: Cf005Candidate | None = None
+        self.validation_stage: str = "BUSINESS"
+        self.validation_issues: list[dict[str, Any]] = []
+        self.normalized_output: dict[str, Any] | None = None
+        self.check_codes: list[str] = []
+        self.diagnostic_id: str | None = None
 
 
 def enforce_provider_prompt_budget(
@@ -580,15 +603,6 @@ def enforce_provider_prompt_budget(
         provider_prompt_tokens=completion.prompt_tokens,
         provider_cached_tokens=completion.cached_tokens,
     )
-    if budget.budget_status == "HARD_LIMIT_EXCEEDED":
-        raise DirectReviewError(
-            "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED",
-            (
-                f"{request.unit_id}/{request.batch_id} provider prompt token "
-                f"count {budget.provider_prompt_tokens} exceeded hard limit "
-                f"{budget.hard_limit_tokens}"
-            ),
-        )
     return budget
 
 
@@ -597,6 +611,7 @@ class ParsedModelOutput:
     response: ModelCommercialReviewResponseRaw
     raw_object: dict[str, Any]
     normalization: SchemaNormalizationRecord
+    normalized_object: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -604,6 +619,30 @@ class CommercialFinancialDirectReviewer:
     runtime_factory: Callable[[str], LlmCompleter] = LlmRuntime
 
     async def review(
+        self, request: CommercialReviewRequest, *, tenant_id: str, model_id: str,
+        framework_run_id: str | None = None,
+    ) -> ReviewUnitResult:
+        identity = {"tenant_id": tenant_id, "review_id": request.review_id,
+                    "generation_id": request.generation_id, "batch_id": request.batch_id,
+                    "framework_run_id": framework_run_id, "model_id": model_id}
+        try:
+            result = await self._review(request, tenant_id=tenant_id, model_id=model_id,
+                                        framework_run_id=framework_run_id)
+        except (Exception, asyncio.CancelledError) as exc:
+            exc.diagnostic_id = write_private_diagnostic("commercial_failed", identity, {
+                "request": request.model_dump(mode="json"), "error_code": getattr(exc, "code", type(exc).__name__),
+                "validation_stage": getattr(exc, "validation_stage", "PROVIDER_OR_RUNTIME"),
+                "issues": getattr(exc, "validation_issues", []),
+                "provider_failure": getattr(exc, "provider_failure", None),
+                "attempts": [item.model_dump(mode="json") for item in getattr(exc, "attempt_diagnostics", [])],
+            })
+            raise
+        write_private_diagnostic("commercial_completed", identity, {
+            "request": request.model_dump(mode="json"), "result": result.model_dump(mode="json"),
+        })
+        return result
+
+    async def _review(
         self,
         request: CommercialReviewRequest,
         *,
@@ -618,6 +657,9 @@ class CommercialFinancialDirectReviewer:
         repair_reasons: list[str] = []
         invalid_content = ""
         invalid_reason = ""
+        repair_baseline = None
+        repair_error = None
+        repair_targets: list[str] = []
         first_semantic_snapshot: dict[str, Any] | None = None
         diagnostics: list[LlmAttemptDiagnostic] = []
         accepted_normalization = SchemaNormalizationRecord(applied=False)
@@ -632,52 +674,16 @@ class CommercialFinancialDirectReviewer:
                 {"role": "user", "content": prompt}
             ]
             if repair_no:
-                repair_payload = {
-                    "task": "REPAIR_JSON_SCHEMA_ONLY",
-                    "first_raw_json": invalid_content,
-                    "exact_validation_error": invalid_reason,
-                    "target_fields": {
-                        "top_level": ["check_results"],
-                        "check_result_required": [
-                            "check_code",
-                            "status",
-                            "decision_note",
-                            "findings",
-                        ],
-                        "check_result_allowed": [
-                            "check_code",
-                            "status",
-                            "decision_note",
-                            "findings",
-                            "candidate_decision",
-                            "identified_security_mechanisms",
-                            "candidate_evidence",
-                        ],
-                        "finding_required": [
-                            "check_code",
-                            "category",
-                            "risk_type",
-                            "risk_level",
-                            "title",
-                            "issue",
-                            "impact_to_our_party",
-                            "suggestion",
-                            "evidence",
-                        ],
-                    },
-                    "constraints": [
-                        "只修复JSON结构和Schema错误，不重新审查合同",
-                        "保留全部原始check_code、status、Finding和Evidence",
-                        "不得新增或删除风险",
-                        "不得改变Finding所属Check、风险根因、风险等级或证据",
-                        "不得把非空findings改为空数组",
-                        "不得把REVIEWED改成NOT_APPLICABLE",
-                        "不得返回示例模板或通过清空结果规避错误",
-                        "删除candidate_ir等任何不在check_result_allowed中的额外字段",
-                        "reason_code由Python生成，删除该字段不会改变业务判断",
-                        "顶层只能是check_results，且必须覆盖CF-001至CF-008各一次",
-                    ],
-                }
+                repair_payload, repair_targets = build_check_repair(
+                    baseline=repair_baseline, error=repair_error,
+                    request_context=json.loads(prompt[prompt.index("{"):]),
+                    check_schema=ModelCheckCoverageResultRaw.model_json_schema(),
+                )
+                if not repair_targets:
+                    # Malformed JSON has no identifiable check; at most this one
+                    # financial batch can be repaired, never the entire review.
+                    repair_payload["first_raw_json"] = invalid_content
+                    repair_payload["exact_validation_error"] = invalid_reason
                 # The repair payload already embeds the rejected JSON and exact
                 # validation error. Re-sending the full business prompt and the
                 # same rejected output as separate messages can more than double
@@ -693,29 +699,43 @@ class CommercialFinancialDirectReviewer:
                         ),
                     }
                 ]
-            completion = await runtime.complete_with_usage(
-                messages=messages,
-                model_id=model_id,
-                system_prompt=_SYSTEM_PROMPT,
-                max_tokens=4000,
-                temperature=0,
-                thinking_override=False,
-                response_format={"type": "json_object"},
-                review_unit_id=COMMERCIAL_UNIT_ID,
-                review_id=request.review_id,
-                framework_run_id=framework_run_id,
-                attempt_no=request.attempt_no,
-                repair_no=repair_no,
-                **deferred_completion_kwargs(
-                    calls[-1] if calls else None,
+            try:
+                completion = await runtime.complete_with_usage(
+                    messages=messages,
+                    model_id=model_id,
+                    system_prompt=_SYSTEM_PROMPT,
+                    max_tokens=4000,
+                    temperature=0,
+                    thinking_override=False,
+                    response_format={"type": "json_object"},
+                    review_unit_id=COMMERCIAL_UNIT_ID,
+                    review_id=request.review_id,
+                    framework_run_id=framework_run_id,
+                    attempt_no=request.attempt_no,
                     repair_no=repair_no,
-                ),
-            )
+                    **deferred_completion_kwargs(
+                        calls[-1] if calls else None,
+                        repair_no=repair_no,
+                    ),
+                )
+            except (Exception, asyncio.CancelledError) as exc:
+                exc.attempt_diagnostics = diagnostics
+                exc.provider_failure = {"repair_no": repair_no, "type": type(exc).__name__,
+                                        "usage_status": "UNKNOWN_NO_COMPLETION_RECEIVED"}
+                raise
             calls.append(completion)
             try:
                 enforce_provider_prompt_budget(completion, request)
+                content_to_parse = completion.content
+                if repair_no and repair_targets:
+                    try:
+                        repaired = parse_json_output(completion.content)
+                        merged = merge_check_repair(repair_baseline, repaired.structured if repaired.ok else None, repair_targets)
+                    except (ValueError, TypeError) as exc:
+                        raise DirectReviewError("RISK_REPAIR_SEMANTICS_CHANGED", str(exc)) from exc
+                    content_to_parse = json.dumps(merged, ensure_ascii=False)
                 parsed = _parse_model_output(
-                    completion.content,
+                    content_to_parse,
                     ir_refs=ir_refs,
                     anchor_refs=anchor_refs,
                     cf005_candidate=cf005_candidate,
@@ -725,7 +745,7 @@ class CommercialFinancialDirectReviewer:
                 if repair_no and first_semantic_snapshot is not None:
                     _validate_semantic_preservation(
                         first_semantic_snapshot,
-                        _semantic_snapshot(parsed.raw_object),
+                        _semantic_snapshot(parsed.normalized_object or parsed.raw_object),
                     )
                     semantic_preservation_passed = True
                 enriched, enrichment = _enrich_reason_codes(parsed.response)
@@ -736,28 +756,32 @@ class CommercialFinancialDirectReviewer:
                     anchor_refs,
                     cf005_candidate,
                 )
+                if completion.completion_tokens is not None and completion.completion_tokens > 4000:
+                    raise DirectReviewError("RISK_OUTPUT_BUDGET_EXCEEDED",
+                                            "Commercial Direct Review exceeded the hard output token limit")
                 diagnostics.append(
                     _attempt_diagnostic(
                         completion,
                         validation_error=None,
                         normalization=parsed.normalization,
                         semantic_preservation_passed=semantic_preservation_passed,
+                        normalized_output=parsed.normalized_object,
+                        repair_check_codes=repair_targets,
                     )
                 )
-                if (
-                    completion.completion_tokens is not None
-                    and completion.completion_tokens > 4000
-                ):
-                    raise DirectReviewError(
-                        "RISK_OUTPUT_BUDGET_EXCEEDED",
-                        "Commercial Direct Review exceeded the hard output token limit",
-                    )
                 accepted_normalization = parsed.normalization
                 accepted_enrichment = enrichment
                 await finalize_completion_success(completion)
                 break
             except DirectReviewError as exc:
                 await finalize_completion_validation_failed(completion, exc.code)
+                if not exc.check_codes:
+                    exc.check_codes = sorted({"CF-" + item for item in re.findall(r"CF[-_](00[1-8])", exc.code + " " + str(exc))})
+                if not exc.validation_issues:
+                    exc.validation_stage = "EVIDENCE" if "EVIDENCE" in exc.code else "BUSINESS"
+                    exc.validation_issues = validation_issues(exc, exc.validation_stage)
+                if exc.normalized_output is None and parsed is not None:
+                    exc.normalized_output = parsed.normalized_object
                 diagnostics.append(
                     _attempt_diagnostic(
                         completion,
@@ -766,6 +790,10 @@ class CommercialFinancialDirectReviewer:
                         semantic_preservation_passed=(
                             False if exc.code == "RISK_REPAIR_SEMANTICS_CHANGED" else None
                         ),
+                        validation_stage=exc.validation_stage,
+                        issues=exc.validation_issues,
+                        normalized_output=exc.normalized_output,
+                        repair_check_codes=repair_targets,
                     )
                 )
                 if not exc.repairable or repair_no == 1:
@@ -774,23 +802,31 @@ class CommercialFinancialDirectReviewer:
                     raise
                 invalid_content = completion.content
                 invalid_reason = f"{exc.code}: {exc}"
+                repair_error = exc
+                repair_baseline = exc.normalized_output or exc.structured_output
                 first_semantic_snapshot = _semantic_snapshot(
-                    exc.structured_output
-                    if exc.structured_output is not None
-                    else (parsed.raw_object if parsed is not None else None)
+                    repair_baseline
                 )
                 repair_reasons.append(invalid_reason)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
                 await finalize_completion_validation_failed(
                     completion,
                     "MODEL_OUTPUT_PROCESSING_CANCELLED",
                 )
+                diagnostics.append(_attempt_diagnostic(completion, validation_error="MODEL_OUTPUT_PROCESSING_CANCELLED",
+                    normalization=SchemaNormalizationRecord(applied=False), semantic_preservation_passed=None,
+                    validation_stage="RUNTIME", normalized_output=parsed.normalized_object if parsed else None))
+                exc.attempt_diagnostics = diagnostics
                 raise
-            except Exception:
+            except Exception as exc:
                 await finalize_completion_validation_failed(
                     completion,
                     "MODEL_OUTPUT_PROCESSING_FAILED",
                 )
+                diagnostics.append(_attempt_diagnostic(completion, validation_error=type(exc).__name__,
+                    normalization=SchemaNormalizationRecord(applied=False), semantic_preservation_passed=None,
+                    validation_stage="RUNTIME", normalized_output=parsed.normalized_object if parsed else None))
+                exc.attempt_diagnostics = diagnostics
                 raise
         else:  # pragma: no cover - the loop either breaks or raises
             raise DirectReviewError("RISK_DIRECT_OUTPUT_INVALID", "Direct review did not return a result")
@@ -898,6 +934,7 @@ def commercial_request_from_context(
                 project_item(item) for item in payload["projected_ir_items"]
             ],
             "source_excerpts": payload["source_excerpts"],
+            "check_task_scopes": payload.get("check_task_scopes", []),
             "estimated_input_tokens": payload["estimated_input_tokens"],
             "legal_evidence": legal_evidence or [],
             "legal_evidence_input_tokens": legal_tokens,
@@ -1066,6 +1103,15 @@ def _build_cf005_candidate(
         identified_security_mechanisms=mechanisms,
         candidate_ir_refs=candidate_ir_refs,
         candidate_evidence_refs=candidate_evidence_refs,
+        payment_ir_refs=sorted(payer_status_by_ref),
+        payment_evidence_refs=sorted({anchor_ref_by_id[anchor.anchor_id]
+                                     for ref in payer_status_by_ref for anchor in ir_refs[ref].source_anchors}),
+        trigger_absence_verified=bool(payer_status_by_ref) and all(
+            payer_status_by_ref[ref] != "AMBIGUOUS" and
+            any(word in text for word in _CF005_AFTER_PERFORMANCE_WORDS)
+            and not any(word in text for word in _CF005_BEFORE_PERFORMANCE_WORDS)
+            for ref, _item, text in relevant if ref in payer_status_by_ref
+        ),
     )
 
 
@@ -1141,8 +1187,10 @@ def _prompt(
                 "boundary": policy.boundary,
             }
             for code, policy in COMMERCIAL_DECISION_POLICIES.items()
+            if code in {spec.check_code for spec in request.assigned_check_specs}
         },
         "cf005_candidate": cf005_candidate.model_dump(mode="json"),
+        "check_task_records": [scope.prompt_record() for scope in request.check_task_scopes],
         "projected_ir": projected,
         "source_excerpts": [
             {
@@ -1152,18 +1200,20 @@ def _prompt(
             for ref, item in anchor_refs.items()
         ],
         "output_contract": {
-            "required_check_codes": list(COMMERCIAL_CHECK_CODES),
+            "required_check_codes": [item.check_code for item in request.assigned_check_specs],
             "check_status_enum": ["REVIEWED", "NOT_APPLICABLE", "FAILED"],
             "risk_level_enum": ["HIGH", "MEDIUM", "LOW", "INFO"],
             "rules": [
-                "check_results必须恰好8项，每个required_check_code恰好出现一次",
+                "只回答本批required_check_codes，每个已分配问题记录一次，不补齐其他检查项、不凑数量",
                 "每项只允许check_code,status,decision_note,findings,candidate_decision,identified_security_mechanisms,candidate_evidence",
                 "candidate_ir、candidate_ir_refs及其他未列字段禁止输出",
                 "reason_code由Python确定性生成，模型禁止输出",
                 "无对我方不利的实质风险时：status=REVIEWED且findings=[]",
                 "有Finding时status必须为REVIEWED，Finding的category/risk_type必须等于该Check允许值",
-                "CF-005必须填写candidate_decision：RISK_CONFIRMED、RISK_NOT_CONFIRMED或INSUFFICIENT_EVIDENCE",
-                "CF-005风险成立必须输出Finding；风险不成立必须填写具体identified_security_mechanisms和candidate_evidence",
+                "每个检查必须有非空decision_note，简述与原文对应的判断理由；无风险也不能省略或填写空字符串",
+                "CF-005必须填写candidate_decision：RISK_CONFIRMED、RISK_NOT_CONFIRMED、TRIGGER_NOT_MET或INSUFFICIENT_EVIDENCE",
+                "CF-005触发条件不成立（明确不是我方付款或无相关大额履约前付款）用TRIGGER_NOT_MET；不要求虚构保障措施；付款方不明不能当成不适用",
+                "CF-005风险成立必须输出Finding；仅因已有保障排除风险时用RISK_NOT_CONFIRMED，并填写具体identified_security_mechanisms和candidate_evidence",
                 "CF-005证据不足必须status=FAILED；其他Check省略三个candidate字段",
                 "TEXT_QUOTE/CONTEXT必须同时提供同一IR允许的ir_ref和evidence_ref，另两个字段必须为null",
                 "ABSENCE的ir_ref/evidence_ref必须为null，checked_scope/verification_note必须为非空字符串",
@@ -1191,8 +1241,8 @@ def _prompt(
     }
     baseline_prompt = (
         "审查Context。仅返回JSON；顶层只能是check_results；"
-        "禁止checks、Markdown、解释、分析、复述和技术字段。"
-        "CF-001至CF-008各返回一次：\n"
+        "禁止checks、Markdown和JSON外的解释分析；JSON内decision_note是必填的简短判断依据。"
+        "只记录本批实际分配的检查及其依据：\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     )
     legal_budget = remaining_legal_prompt_budget(
@@ -1225,8 +1275,8 @@ def _prompt(
         request.legal_evidence_input_tokens = 0
     return (
         "审查Context。仅返回JSON；顶层只能是check_results；"
-        "禁止checks、Markdown、解释、分析、复述和技术字段。"
-        "CF-001至CF-008各返回一次：\n"
+        "禁止checks、Markdown和JSON外的解释分析；JSON内decision_note是必填的简短判断依据。"
+        "只记录本批实际分配的检查及其依据：\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
         ir_refs,
         anchor_refs,
@@ -1235,53 +1285,78 @@ def _prompt(
 
 
 def _parse_model_output(
-    content: str,
-    *,
+    content: str, *,
     ir_refs: dict[str, CommercialIrItem] | None = None,
     anchor_refs: dict[str, CommercialSourceExcerpt] | None = None,
     cf005_candidate: Cf005Candidate | None = None,
     assigned_check_specs: list[CommercialCheckSpec] | None = None,
 ) -> ParsedModelOutput:
-    raw_object: dict[str, Any] | None = None
+    parsed = parse_json_output(content)
+    if not parsed.ok or not isinstance(parsed.structured, dict):
+        error = DirectReviewError("RISK_DIRECT_SCHEMA_INVALID",
+                                  "Commercial Direct Review output is invalid: model did not return one complete JSON object",
+                                  repairable=True)
+        error.validation_stage = "JSON"
+        error.validation_issues = validation_issues(ValueError("Expected one complete JSON object"), "JSON")
+        raise error
+    raw = parsed.structured
+    initial_issues = []
     try:
-        parsed = parse_json_output(content)
-        if not parsed.ok or not isinstance(parsed.structured, dict):
-            raise ValueError("model did not return one complete JSON object")
-        raw_object = parsed.structured
-        try:
-            response = ModelCommercialReviewResponseRaw.model_validate(raw_object)
-            return ParsedModelOutput(
-                response=response,
-                raw_object=raw_object,
-                normalization=SchemaNormalizationRecord(applied=False),
-            )
-        except ValidationError as original_error:
-            normalized_result = _normalize_known_schema_error(
-                raw_object,
-                ir_refs=ir_refs,
-                anchor_refs=anchor_refs,
-                cf005_candidate=cf005_candidate,
-                assigned_check_specs=assigned_check_specs,
-            )
-            if normalized_result is None:
-                raise original_error
-            normalized, normalization_type = normalized_result
-            response = ModelCommercialReviewResponseRaw.model_validate(normalized)
-            return ParsedModelOutput(
-                response=response,
-                raw_object=raw_object,
-                normalization=SchemaNormalizationRecord(
-                    applied=True,
-                    normalization_type=normalization_type,
-                ),
-            )
-    except (ValueError, TypeError, ValidationError, json.JSONDecodeError) as exc:
-        raise DirectReviewError(
-            "RISK_DIRECT_SCHEMA_INVALID",
-            f"Commercial Direct Review output is invalid: {exc}",
-            repairable=True,
-            structured_output=raw_object,
-        ) from exc
+        ModelCommercialReviewResponseRaw.model_validate(raw)
+    except ValidationError as exc:
+        initial_issues = validation_issues(exc, "INITIAL_SCHEMA")
+    reference_issues: list[dict[str, Any]] = []
+    result = _normalize_known_schema_error(
+        raw, ir_refs=ir_refs, anchor_refs=anchor_refs, cf005_candidate=cf005_candidate,
+        assigned_check_specs=assigned_check_specs, issues=reference_issues,
+    )
+    normalized, kind = result if result is not None else (copy.deepcopy(raw), None)
+    current_issues = []
+    try:
+        response = ModelCommercialReviewResponseRaw.model_validate(normalized)
+        # Field(min_length=1) alone accepts whitespace, which is still a missing explanation.
+        for index, check in enumerate(response.check_results):
+            if not check.decision_note.strip():
+                current_issues.append({"stage": "SCHEMA", "path": ["check_results", index, "decision_note"],
+                                       "type": "blank_explanation", "message": "decision_note must contain a nonblank explanation"})
+    except ValidationError as exc:
+        current_issues = validation_issues(exc, "SCHEMA")
+    if result is not None and not current_issues:
+        codes = [check.check_code for check in response.check_results]
+        if len(codes) != len(set(codes)):
+            current_issues.append({"stage": "SCHEMA", "path": ["check_results"],
+                                   "type": "duplicate_check", "message": "Duplicate check codes cannot be normalized"})
+    if current_issues or reference_issues:
+        # Do not rethrow the initial error: preserve original AND post-normalization errors.
+        issues = [*initial_issues, *current_issues, *reference_issues]
+        stage = "SCHEMA" if current_issues else "EVIDENCE"
+        code = "RISK_DIRECT_SCHEMA_INVALID"
+        if not current_issues and reference_issues:
+            first_message = reference_issues[0]["message"]
+            code = ("RISK_EVIDENCE_IR_UNKNOWN" if first_message == "Unknown IR reference" else
+                    "RISK_EVIDENCE_ANCHOR_UNKNOWN" if first_message == "Unknown contract anchor reference" else
+                    "RISK_EVIDENCE_LINK_INVALID")
+        error = DirectReviewError(code,
+                                  "Commercial Direct Review output is invalid: " +
+                                  json.dumps([*current_issues, *reference_issues], ensure_ascii=False),
+                                  repairable=True, structured_output=raw)
+        error.validation_stage = stage
+        error.validation_issues = issues
+        error.normalized_output = normalized
+        error.check_codes = sorted({
+            normalized["check_results"][item["path"][1]].get("check_code")
+            for item in [*current_issues, *reference_issues]
+            if len(item["path"]) > 1 and item["path"][0] == "check_results"
+            and isinstance(item["path"][1], int)
+            and isinstance(normalized.get("check_results"), list)
+            and item["path"][1] < len(normalized["check_results"])
+            and isinstance(normalized["check_results"][item["path"][1]], dict)
+            and re.fullmatch(r"CF-[0-9]{3}", str(normalized["check_results"][item["path"][1]].get("check_code", "")))
+        })
+        raise error
+    return ParsedModelOutput(response=response, raw_object=raw,
+                             normalization=SchemaNormalizationRecord(applied=kind is not None, normalization_type=kind),
+                             normalized_object=normalized)
 
 
 def _normalize_known_schema_error(
@@ -1291,426 +1366,180 @@ def _normalize_known_schema_error(
     anchor_refs: dict[str, CommercialSourceExcerpt] | None = None,
     cf005_candidate: Cf005Candidate | None = None,
     assigned_check_specs: list[CommercialCheckSpec] | None = None,
+    issues: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], SchemaNormalizationType] | None:
-    """Normalize only redundant, deterministically recoverable schema variants.
+    """Format and exact-reference normalization, never create a risk or a verdict note.
 
-    Some providers return Evidence as the IR/Anchor refs already present in
-    the prompt while omitting the redundant ``evidence_type`` field.  The
-    missing side of the binding is recovered only from the exact prompt maps;
-    unknown or cross-boundary refs remain a hard schema failure.
+    Each failed reference is retained AND diagnosed. A missing note cannot hide
+    an independent evidence error. Business conditions run separately in materialize.
     """
-
-    top_level_normalized = False
-    value_keys = set(value)
-    summary_only_extra = (
-        value_keys == {"check_results", "summary"}
-        and isinstance(value.get("summary"), str)
-    )
-    if value_keys == {"checks"} and isinstance(value.get("checks"), list):
-        checks = value["checks"]
-        top_level_normalized = True
-    elif (
-        (value_keys == {"check_results"} or summary_only_extra)
-        and isinstance(value.get("check_results"), list)
-    ):
-        checks = value["check_results"]
-        # Providers occasionally add an explanatory summary beside the
-        # requested payload.  The summary is not authoritative contract data;
-        # discard it and validate only the exact check collection.
-        top_level_normalized = summary_only_extra
-    else:
+    issues = issues if issues is not None else []
+    normalized = copy.deepcopy(value)
+    top_changed = False
+    if set(normalized) == {"checks"} and isinstance(normalized["checks"], list):
+        normalized["check_results"] = normalized.pop("checks")
+        top_changed = True
+    if set(normalized) == {"check_results", "summary"} and isinstance(normalized["summary"], str):
+        normalized.pop("summary")
+        top_changed = True
+    checks = normalized.get("check_results")
+    if not isinstance(checks, list):
         return None
+    evidence_changed = False
+    fields_changed = False
+    specs = {item.check_code: item for item in assigned_check_specs or []}
+    ir_refs, anchor_refs = ir_refs or {}, anchor_refs or {}
 
-    normalized_checks = copy.deepcopy(checks)
-    evidence_refs_normalized = False
-    decision_notes_normalized = False
-    finding_fields_normalized = False
-    specs_by_code = {
-        item.check_code: item for item in (assigned_check_specs or [])
-    }
-    anchor_ref_by_id = {
-        excerpt.anchor_id: ref for ref, excerpt in (anchor_refs or {}).items()
-    }
-    def normalize_text_evidence(shorthand: Any) -> dict[str, Any] | None:
-        if isinstance(shorthand, dict) and shorthand.get("evidence_type"):
-            return shorthand
-        if isinstance(shorthand, dict):
-            allowed_keys = {
-                "ir_ref",
-                "evidence_ref",
-                "checked_scope",
-                "verification_note",
-            }
-            if not set(shorthand).issubset(allowed_keys):
-                return None
-            ir_ref = shorthand.get("ir_ref")
-            evidence_ref = shorthand.get("evidence_ref")
-            if not isinstance(ir_ref, str):
-                ir_ref = None
-            if not isinstance(evidence_ref, str):
-                evidence_ref = None
-            if ir_ref is None and evidence_ref is None:
-                return None
-        elif isinstance(shorthand, str):
-            ref_match = re.match(
-                r"^(?P<ref>[IA][0-9]{3})(?:$|[\s:：,，。;；]|条款)",
-                shorthand,
-            )
-            if ref_match is None:
-                return None
-            exact_ref = ref_match.group("ref")
-            if exact_ref.startswith("I"):
-                ir_ref = exact_ref
-                evidence_ref = None
-            elif exact_ref.startswith("A"):
-                ir_ref = None
-                evidence_ref = exact_ref
-            else:
-                return None
+    def issue(path, message):
+        issues.append({"stage": "EVIDENCE", "path": path,
+                       "type": "reference_binding", "message": message})
+
+    def bind(entry, path):
+        nonlocal evidence_changed
+        if isinstance(entry, dict) and entry.get("evidence_type") == "ABSENCE":
+            return entry
+        explicit = isinstance(entry, dict) and bool(entry.get("evidence_type"))
+        if isinstance(entry, str):
+            match = re.match(r"^(?P<ref>[IA][0-9]{3})(?:$|[\\s:：,，。;；]|条款)", entry)
+            if not match:
+                issue(path, "Evidence shorthand is not an exact source reference")
+                return entry
+            ref = match.group("ref")
+            item = {"ir_ref" if ref.startswith("I") else "evidence_ref": ref}
+        elif isinstance(entry, dict):
+            item = dict(entry)
+            if not explicit and set(item) - {"ir_ref", "evidence_ref", "checked_scope", "verification_note"}:
+                issue(path, "Unknown evidence fields cannot be silently discarded")
+                return entry
         else:
-            return None
+            issue(path, "Evidence must be an object or an exact source reference")
+            return entry
+        ir_ref, anchor_ref = item.get("ir_ref"), item.get("evidence_ref")
+        # Without maps (schema-only callers), keep explicit objects for later binding.
+        if explicit and not ir_refs and not anchor_refs:
+            return entry
+        if ir_ref is not None and (not isinstance(ir_ref, str) or ir_ref not in ir_refs):
+            issue(path, "Unknown IR reference")
+            return entry
+        if anchor_ref is not None and (not isinstance(anchor_ref, str) or anchor_ref not in anchor_refs):
+            issue(path, "Unknown contract anchor reference")
+            return entry
+        if ir_ref and not anchor_ref:
+            anchor_ref = next((ref for ref, anchor in anchor_refs.items()
+                               if anchor.anchor_id in {a.anchor_id for a in ir_refs[ir_ref].source_anchors}), None)
+        if anchor_ref and not ir_ref:
+            ir_ref = next((ref for ref in sorted(ir_refs)
+                           if anchor_refs[anchor_ref].anchor_id in {a.anchor_id for a in ir_refs[ref].source_anchors}), None)
+        if not ir_ref or not anchor_ref or anchor_refs[anchor_ref].anchor_id not in {
+            a.anchor_id for a in ir_refs[ir_ref].source_anchors
+        }:
+            issue(path, "Evidence does not bind to an IR fact and its original contract anchor")
+            return entry
+        if explicit:
+            return entry
+        result = {"evidence_type": "TEXT_QUOTE", "ir_ref": ir_ref, "evidence_ref": anchor_ref}
+        evidence_changed = True
+        return result
 
-        if ir_ref is not None:
-            item = (ir_refs or {}).get(ir_ref)
-            if item is None:
-                return None
-            matching_anchor_refs = list(
-                dict.fromkeys(
-                    anchor_ref_by_id[anchor.anchor_id]
-                    for anchor in item.source_anchors
-                    if anchor.anchor_id in anchor_ref_by_id
-                )
-            )
-            if evidence_ref is not None:
-                excerpt = (anchor_refs or {}).get(evidence_ref)
-                if excerpt is None or excerpt.anchor_id not in {
-                    anchor.anchor_id for anchor in item.source_anchors
-                }:
-                    return None
-            elif matching_anchor_refs:
-                evidence_ref = matching_anchor_refs[0]
-            else:
-                return None
-        else:
-            assert evidence_ref is not None
-            excerpt = (anchor_refs or {}).get(evidence_ref)
-            if excerpt is None:
-                return None
-            matching_ir_refs = [
-                ref
-                for ref, item in (ir_refs or {}).items()
-                if any(
-                    anchor.anchor_id == excerpt.anchor_id
-                    for anchor in item.source_anchors
-                )
-            ]
-            if not matching_ir_refs:
-                return None
-            # The parser can project multiple IR facts from one verbatim
-            # contract span. The Anchor already fixes the exact text; use the
-            # stable first projection as its canonical provenance link.
-            ir_ref = sorted(matching_ir_refs)[0]
-        return {
-            "evidence_type": "TEXT_QUOTE",
-            "ir_ref": ir_ref,
-            "evidence_ref": evidence_ref,
-        }
-
-    def deterministic_cf005_evidence_refs(check: dict[str, Any]) -> list[str]:
-        if cf005_candidate is None:
-            return []
-        declared_mechanisms = {
-            item
-            for item in check.get("identified_security_mechanisms") or []
-            if isinstance(item, str)
-            and item in cf005_candidate.identified_security_mechanisms
-        }
-        mechanism_refs = sorted(
-            ref
-            for ref, excerpt in (anchor_refs or {}).items()
-            if any(
-                keyword in excerpt.quoted_text
-                for mechanism in declared_mechanisms
-                for keyword in _CF005_SECURITY_KEYWORDS.get(mechanism, ())
-            )
-        )
-        return list(
-            dict.fromkeys(
-                mechanism_refs or cf005_candidate.candidate_evidence_refs
-            )
-        )
-
-    def deterministic_strong_cf005_finding(
-        spec: CommercialCheckSpec | None,
-    ) -> dict[str, Any] | None:
-        if (
-            cf005_candidate is None
-            or spec is None
-            or not cf005_candidate.substantial_prepayment
-            or not cf005_candidate.payment_before_performance
-            or cf005_candidate.payer_role_status != "OUR_PARTY"
-            or cf005_candidate.identified_security_mechanisms
-        ):
-            return None
-        evidence: list[dict[str, Any]] = []
-        allowed_anchor_refs = set(cf005_candidate.candidate_evidence_refs)
-        for ir_ref in cf005_candidate.candidate_ir_refs:
-            item = (ir_refs or {}).get(ir_ref)
-            if item is None:
-                continue
-            for anchor in item.source_anchors:
-                evidence_ref = anchor_ref_by_id.get(anchor.anchor_id)
-                if evidence_ref is None or evidence_ref not in allowed_anchor_refs:
-                    continue
-                evidence.append(
-                    {
-                        "evidence_type": "TEXT_QUOTE",
-                        "ir_ref": ir_ref,
-                        "evidence_ref": evidence_ref,
-                    }
-                )
-        if not evidence:
-            return None
-        evidence.append(
-            {
-                "evidence_type": "ABSENCE",
-                "checked_scope": (
-                    "当前CF-005付款条款及其关联履约保障、分期、里程碑和验收机制"
-                ),
-                "verification_note": (
-                    "Python确定性候选扫描未识别履约保函、保证金、托管、分期、"
-                    "里程碑或验收挂钩等保障机制；仅说明当前合同文本。"
-                ),
-            }
-        )
-        return {
-            "check_code": "CF-005",
-            "category": spec.allowed_categories[0],
-            "risk_type": spec.allowed_risk_types[0],
-            "risk_level": "HIGH",
-            "title": "大额履约前付款缺少保障机制",
-            "issue": "当前合同要求我方在主要履约前支付大额价款，且未识别到履约保障。",
-            "impact_to_our_party": "付款后如相对方未按约履行，我方资金回收和履约救济风险较高。",
-            "suggestion": "增加履约保函、保证金、托管或与里程碑及验收挂钩的分期付款机制。",
-            "evidence": evidence,
-        }
-
-    for check in normalized_checks:
+    for index, check in enumerate(checks):
         if not isinstance(check, dict):
             continue
-        check_code = check.get("check_code")
-        spec = specs_by_code.get(check_code) if isinstance(check_code, str) else None
-        redundant_category = check.pop("category", None)
-        redundant_risk_type = check.pop("risk_type", None)
-        if redundant_category is not None or redundant_risk_type is not None:
-            if spec is None:
-                return None
-            if (
-                redundant_category is not None
-                and redundant_category not in spec.allowed_categories
-            ) or (
-                redundant_risk_type is not None
-                and redundant_risk_type not in spec.allowed_risk_types
-            ):
-                return None
-            finding_fields_normalized = True
-        evidence_lists: list[list[Any]] = []
-        if check.get("check_code") == "CF-005":
-            candidate_decision = check.get("candidate_decision")
-            if candidate_decision is None:
-                findings = check.get("findings")
-                if isinstance(findings, dict) or (
-                    isinstance(findings, list) and findings
-                ):
-                    candidate_decision = "RISK_CONFIRMED"
-                elif check.get("status") == "FAILED":
-                    candidate_decision = "INSUFFICIENT_EVIDENCE"
-                elif cf005_candidate is not None and (
-                    cf005_candidate.payer_role_status != "OUR_PARTY"
-                    or not cf005_candidate.substantial_prepayment
-                    or not cf005_candidate.payment_before_performance
-                    or bool(cf005_candidate.identified_security_mechanisms)
-                ):
-                    # These are deterministic facts already computed from the
-                    # exact payment IR.  They disprove the two-part CF-005
-                    # trigger without interpreting the model's prose.
-                    candidate_decision = "RISK_NOT_CONFIRMED"
-                else:
-                    deterministic_finding = deterministic_strong_cf005_finding(spec)
-                    if deterministic_finding is None:
-                        return None
-                    candidate_decision = "RISK_CONFIRMED"
-                    check["status"] = "REVIEWED"
-                    check["decision_note"] = (
-                        "Python确定性强候选门禁确认：我方存在大额履约前付款，"
-                        "且当前合同文本未识别到履约保障机制。"
-                    )
-                    check["findings"] = [deterministic_finding]
-                    finding_fields_normalized = True
-                check["candidate_decision"] = candidate_decision
-                evidence_refs_normalized = True
-            mechanisms = check.get("identified_security_mechanisms")
-            if mechanisms is None:
-                if candidate_decision == "RISK_NOT_CONFIRMED":
-                    if cf005_candidate is None:
-                        return None
-                    mechanisms = list(
-                        cf005_candidate.identified_security_mechanisms
-                    )
-                else:
-                    mechanisms = []
-                check["identified_security_mechanisms"] = mechanisms
-                evidence_refs_normalized = True
-            elif isinstance(mechanisms, str):
-                if (
-                    cf005_candidate is None
-                    or mechanisms
-                    not in cf005_candidate.identified_security_mechanisms
-                ):
-                    return None
-                mechanisms = [mechanisms]
-                check["identified_security_mechanisms"] = mechanisms
-                evidence_refs_normalized = True
-            candidate_evidence = check.get("candidate_evidence")
-            if isinstance(candidate_evidence, dict):
-                candidate_evidence = [candidate_evidence]
-                check["candidate_evidence"] = candidate_evidence
-                evidence_refs_normalized = True
-            elif isinstance(candidate_evidence, str):
-                explicit_ref = re.match(
-                    r"^(?P<ref>[IA][0-9]{3})(?:$|[\s:：,，。;；]|条款)",
-                    candidate_evidence,
-                )
-                if explicit_ref is not None:
-                    candidate_evidence = [candidate_evidence]
-                elif cf005_candidate is not None:
-                    # A prose explanation is not itself Evidence. It can only
-                    # be replaced by every exact source Anchor selected from
-                    # Python's deterministic CF-005 mechanism catalogue. This
-                    # never chooses one ambiguous source or treats prose as a
-                    # quotation.
-                    candidate_evidence = deterministic_cf005_evidence_refs(check)
-                    if not candidate_evidence:
-                        return None
-                else:
-                    return None
-                check["candidate_evidence"] = candidate_evidence
-                evidence_refs_normalized = True
-            elif candidate_decision == "RISK_NOT_CONFIRMED" and not candidate_evidence:
-                candidate_evidence = deterministic_cf005_evidence_refs(check)
-                if not candidate_evidence:
-                    return None
-                check["candidate_evidence"] = candidate_evidence
-                evidence_refs_normalized = True
-            elif candidate_evidence is None:
-                candidate_evidence = []
-                check["candidate_evidence"] = candidate_evidence
-                evidence_refs_normalized = True
-            if isinstance(candidate_evidence, list):
-                evidence_lists.append(candidate_evidence)
-        findings = check.get("findings")
+        code = check.get("check_code")
+        spec = specs.get(code) if isinstance(code, str) else None
+        category, risk_type = check.get("category"), check.get("risk_type")
+        if spec:
+            for key, allowed in (("category", spec.allowed_categories), ("risk_type", spec.allowed_risk_types)):
+                if key in check and check[key] in allowed:
+                    check.pop(key)
+                    fields_changed = True
+        findings = check.get("findings", [])
         if isinstance(findings, dict):
             findings = [findings]
             check["findings"] = findings
-            finding_fields_normalized = True
-        for finding in findings or []:
+            fields_changed = True
+        if code == "CF-005":
+            decision = check.get("candidate_decision")
+            if decision is None:
+                if isinstance(findings, list) and findings:
+                    decision = "RISK_CONFIRMED"
+                elif check.get("status") == "FAILED":
+                    decision = "INSUFFICIENT_EVIDENCE"
+                elif cf005_candidate is not None and _cf005_trigger_not_met(cf005_candidate):
+                    decision = "TRIGGER_NOT_MET"
+                elif cf005_candidate is not None and cf005_candidate.identified_security_mechanisms:
+                    decision = "RISK_NOT_CONFIRMED"
+                # Never manufacture a Finding from a missing model decision.
+            if (decision == "RISK_NOT_CONFIRMED" and cf005_candidate is not None
+                    and _cf005_trigger_not_met(cf005_candidate)
+                    and not check.get("identified_security_mechanisms")):
+                decision = "TRIGGER_NOT_MET"
+            if decision is not None and check.get("candidate_decision") != decision:
+                check["candidate_decision"] = decision
+                fields_changed = True
+            mechanisms = check.get("identified_security_mechanisms")
+            if mechanisms is None and decision is not None:
+                mechanisms = (list(cf005_candidate.identified_security_mechanisms)
+                              if decision == "RISK_NOT_CONFIRMED" and cf005_candidate is not None else [])
+                check["identified_security_mechanisms"] = mechanisms
+                fields_changed = True
+            elif isinstance(mechanisms, str) and cf005_candidate is not None and mechanisms in cf005_candidate.identified_security_mechanisms:
+                mechanisms = [mechanisms]
+                check["identified_security_mechanisms"] = mechanisms
+                fields_changed = True
+            evidence = check.get("candidate_evidence")
+            if isinstance(evidence, dict):
+                evidence = [evidence]
+            elif isinstance(evidence, str) and re.match(r"^[IA][0-9]{3}(?:$|[\\s:：,，。;；]|条款)", evidence):
+                evidence = [evidence]
+            elif (evidence is None or isinstance(evidence, str) or evidence == []) and decision == "RISK_NOT_CONFIRMED":
+                # Recover safeguards only from text containing the named, known mechanism.
+                refs = [ref for ref, anchor in anchor_refs.items()
+                        if any(word in anchor.quoted_text
+                               for mechanism in mechanisms or []
+                               for word in _CF005_SECURITY_KEYWORDS.get(mechanism, ()))]
+                if refs:
+                    evidence = refs
+            elif evidence is None and decision in {"TRIGGER_NOT_MET", "INSUFFICIENT_EVIDENCE", "RISK_CONFIRMED"}:
+                evidence = []
+            if isinstance(evidence, list):
+                evidence = [bind(entry, ["check_results", index, "candidate_evidence", i])
+                            for i, entry in enumerate(evidence)]
+                if check.get("candidate_evidence") != evidence:
+                    check["candidate_evidence"] = evidence
+                    evidence_changed = True
+        for finding_index, finding in enumerate(findings if isinstance(findings, list) else []):
             if not isinstance(finding, dict):
                 continue
-            if spec is not None and finding.get("category") is None:
-                finding["category"] = (
-                    redundant_category or spec.allowed_categories[0]
-                )
-                finding_fields_normalized = True
-            if spec is not None and finding.get("risk_type") is None:
-                finding["risk_type"] = (
-                    redundant_risk_type or spec.allowed_risk_types[0]
-                )
-                finding_fields_normalized = True
-            finding_evidence = finding.get("evidence")
-            if isinstance(finding_evidence, dict):
-                finding_evidence = [finding_evidence]
-                finding["evidence"] = finding_evidence
-                evidence_refs_normalized = True
-            if isinstance(finding_evidence, list):
-                evidence_lists.append(finding_evidence)
-        for evidence_list in evidence_lists:
-            normalized_evidence: list[Any] = []
-            changed = False
-            for shorthand in evidence_list:
-                if isinstance(shorthand, dict) and shorthand.get("evidence_type"):
-                    normalized_evidence.append(shorthand)
-                    continue
-                normalized_item = normalize_text_evidence(shorthand)
-                if normalized_item is None:
-                    return None
-                normalized_evidence.append(normalized_item)
-                changed = True
-            if changed:
-                evidence_list[:] = normalized_evidence
-                evidence_refs_normalized = True
-
-    for check in normalized_checks:
-        if not isinstance(check, dict):
-            continue
-        decision_note = check.get("decision_note")
-        if isinstance(decision_note, str) and decision_note.strip():
-            continue
-        if decision_note is not None and not isinstance(decision_note, str):
-            return None
-        status = check.get("status")
-        findings = check.get("findings")
-        if status == "REVIEWED" and isinstance(findings, list) and findings:
-            summary = "已依据当前批次合同证据识别风险，详见本检查项Finding。"
-        elif status == "REVIEWED":
-            summary = "已审查当前批次合同证据，未识别到本检查项的实质风险。"
-        elif status == "NOT_APPLICABLE":
-            summary = "当前批次合同事实不适用本检查项。"
-        elif status == "FAILED":
-            summary = "当前批次证据不足，无法完成本检查项判断。"
-        else:
-            return None
-        check["decision_note"] = summary
-        decision_notes_normalized = True
-
-    normalized = {"check_results": normalized_checks}
-    try:
-        validated_response = ModelCommercialReviewResponseRaw.model_validate(normalized)
-    except (TypeError, ValidationError):
+            if spec:
+                for key, redundant, allowed in (("category", category, spec.allowed_categories),
+                                                 ("risk_type", risk_type, spec.allowed_risk_types)):
+                    if finding.get(key) is None and (len(allowed) == 1 or redundant in allowed):
+                        finding[key] = redundant if redundant in allowed else allowed[0]
+                        fields_changed = True
+            evidence = finding.get("evidence")
+            if isinstance(evidence, dict):
+                evidence = [evidence]
+                evidence_changed = True
+            if isinstance(evidence, list):
+                finding["evidence"] = [bind(entry, ["check_results", index, "findings", finding_index, "evidence", i])
+                                      for i, entry in enumerate(evidence)]
+    if normalized == value:
         return None
-    codes = [item.check_code for item in validated_response.check_results]
-    if (
-        len(codes) != len(set(codes))
-        or any(code not in COMMERCIAL_CHECK_CODES for code in codes)
-    ):
-        return None
-    if not any(
-        (
-            top_level_normalized,
-            evidence_refs_normalized,
-            decision_notes_normalized,
-            finding_fields_normalized,
-        )
-    ):
-        return None
-    normalization_count = sum(
-        (
-            top_level_normalized,
-            evidence_refs_normalized,
-            decision_notes_normalized,
-            finding_fields_normalized,
-        )
-    )
-    if normalization_count > 1 and top_level_normalized and evidence_refs_normalized and not decision_notes_normalized:
-        normalization_type = "TOP_LEVEL_CHECKS_AND_CF005_EVIDENCE_REFS"
-    elif normalization_count > 1:
-        normalization_type = "KNOWN_COMMERCIAL_SCHEMA_COMBINED"
-    elif top_level_normalized:
-        normalization_type = "TOP_LEVEL_CHECKS_TO_CHECK_RESULTS"
-    elif evidence_refs_normalized:
-        normalization_type = "CF005_EVIDENCE_REFS_TO_DRAFTS"
+    if top_changed and evidence_changed and not fields_changed:
+        kind = "TOP_LEVEL_CHECKS_AND_CF005_EVIDENCE_REFS"
+    elif sum((top_changed, evidence_changed, fields_changed)) > 1 or fields_changed:
+        kind = "KNOWN_COMMERCIAL_SCHEMA_COMBINED"
+    elif top_changed:
+        kind = "TOP_LEVEL_CHECKS_TO_CHECK_RESULTS"
     else:
-        normalization_type = "EMPTY_DECISION_NOTES_TO_STATUS_SUMMARY"
-    return normalized, normalization_type
+        kind = "CF005_EVIDENCE_REFS_TO_DRAFTS"
+    return normalized, kind
+
+
+def _cf005_trigger_not_met(candidate: Cf005Candidate) -> bool:
+    # Unknown payer is NOT evidence of non-applicability.
+    return (candidate.payer_role_status == "COUNTERPARTY" and bool(candidate.candidate_evidence_refs)) or (
+        candidate.trigger_absence_verified and bool(candidate.payment_ir_refs) and bool(candidate.payment_evidence_refs))
 
 
 def _enrich_reason_codes(
@@ -1798,11 +1627,14 @@ def _semantic_snapshot(value: dict[str, Any] | None) -> dict[str, Any] | None:
                 }
             )
         snapshot[check_code] = {
+            # A repair may correct a nonblank explanation. The original and
+            # repaired text remain in attempt diagnostics; only the verdict
+            # and findings stay frozen by this guard. Untargeted checks are
+            # separately protected by merge_check_repair.
             "protected_check_fields": {
                 key: item[key]
                 for key in (
                     "status",
-                    "decision_note",
                     "candidate_decision",
                     "identified_security_mechanisms",
                     "candidate_evidence",
@@ -1850,6 +1682,10 @@ def _attempt_diagnostic(
     validation_error: str | None,
     normalization: SchemaNormalizationRecord,
     semantic_preservation_passed: bool | None,
+    validation_stage: str | None = None,
+    issues: list[dict[str, Any]] | None = None,
+    normalized_output: dict[str, Any] | None = None,
+    repair_check_codes: list[str] | None = None,
 ) -> LlmAttemptDiagnostic:
     return LlmAttemptDiagnostic(
         repair_no=value.repair_no,
@@ -1868,6 +1704,12 @@ def _attempt_diagnostic(
         trace_id=value.trace_id,
         provider_request_id=value.provider_request_id,
         finish_reason=value.finish_reason,
+        validation_stage=validation_stage,
+        validation_issues=issues or [],
+        normalized_output=normalized_output,
+        changed_paths=structural_changes(parse_json_output(value.content).structured, normalized_output)
+            if normalized_output is not None else [],
+        repair_check_codes=repair_check_codes or [],
     )
 
 
@@ -1887,31 +1729,39 @@ def _materialize(
                 repairable=True,
             )
         by_code[check.check_code] = check
-    if tuple(sorted(by_code)) != COMMERCIAL_CHECK_CODES:
+    assigned_codes = [item.check_code for item in request.assigned_check_specs]
+    if set(by_code) != set(assigned_codes):
         raise DirectReviewError(
             "RISK_CHECK_COVERAGE_INVALID",
-            "Commercial Direct Review must cover exactly CF-001 through CF-008",
+            "Commercial Direct Review must record each assigned Check exactly once",
             repairable=True,
         )
-    cf005_check, cf005_warning = _suppress_cf005_perspective_conflict(
-        by_code["CF-005"],
-        cf005_candidate,
-    )
-    cf005_check = _enrich_cf005_confirmed_absence(
-        cf005_check,
-        cf005_candidate,
-    )
-    by_code["CF-005"] = cf005_check
-    _validate_cf005_candidate_decision(
-        cf005_check,
-        cf005_candidate,
-        ir_refs,
-        anchor_refs,
-    )
+    cf005_warning = None
+    partial_codes = {scope.check_code for scope in request.check_task_scopes if not scope.complete}
+    for code in partial_codes & by_code.keys():
+        check = by_code[code]
+        if check.findings:
+            if any(e.evidence_type == "ABSENCE" for f in check.findings for e in f.evidence):
+                raise DirectReviewError("RISK_PARTIAL_SCOPE_ABSENCE_INVALID",
+                                        "A partial evidence scope cannot prove global absence", repairable=True)
+        else:
+            # Preserve the observation but do not certify its global negative.
+            by_code[code] = check.model_copy(update={
+                "status": "REVIEWED", "reason_code": "INSUFFICIENT_EVIDENCE",
+                "decision_note": "[局部证据，尚不能作全局结论] " + check.decision_note[:950],
+                **({"candidate_decision": "INSUFFICIENT_EVIDENCE"} if code == "CF-005" else {}),
+            })
+    if "CF-005" in by_code:
+        cf005_check, cf005_warning = _suppress_cf005_perspective_conflict(
+            by_code["CF-005"], cf005_candidate,
+        )
+        cf005_check = _enrich_cf005_confirmed_absence(cf005_check, cf005_candidate)
+        by_code["CF-005"] = cf005_check
+        _validate_cf005_candidate_decision(cf005_check, cf005_candidate, ir_refs, anchor_refs)
     specs = {item.check_code: item for item in request.assigned_check_specs}
     findings: list[FindingDraft] = []
     coverage: list[CheckCoverageResult] = []
-    for check_code in COMMERCIAL_CHECK_CODES:
+    for check_code in assigned_codes:
         check = by_code[check_code]
         local_ids: list[str] = []
         for model_finding in check.findings:
@@ -2035,6 +1885,12 @@ def _suppress_cf005_perspective_conflict(
     """
     if not check.findings or candidate.payer_role_status == "OUR_PARTY":
         return check, None
+    if candidate.payer_role_status == "AMBIGUOUS":
+        return (check.model_copy(update={
+            "status": "FAILED", "reason_code": "INSUFFICIENT_EVIDENCE",
+            "decision_note": "付款方无法由当前合同事实确定，不能确认对我方的预付款风险，需补充核验。",
+            "findings": [], "candidate_decision": "INSUFFICIENT_EVIDENCE",
+        }), "RISK_CF005_PAYER_UNRESOLVED")
     payer_description = (
         "合同价款付款方是相对方"
         if candidate.payer_role_status == "COUNTERPARTY"
@@ -2065,6 +1921,17 @@ def _validate_cf005_candidate_decision(
 ) -> None:
     if check.candidate_decision == "PERSPECTIVE_REJECTED":
         return
+    if check.candidate_decision == "INSUFFICIENT_EVIDENCE":
+        # Remains FAILED and the complete-review gate still blocks final success.
+        return
+    if check.candidate_decision == "TRIGGER_NOT_MET":
+        if not _cf005_trigger_not_met(candidate):
+            raise DirectReviewError(
+                "RISK_CF005_APPLICABILITY_INVALID",
+                "CF-005 trigger rejection requires verified payer or payment-condition facts; unknown is not inapplicable",
+                repairable=True,
+            )
+        return
     if check.findings and candidate.payer_role_status != "OUR_PARTY":
         raise DirectReviewError(
             "RISK_CF005_PAYER_PERSPECTIVE_INVALID",
@@ -2085,6 +1952,9 @@ def _validate_cf005_candidate_decision(
             repairable=True,
         )
     if check.candidate_decision == "RISK_NOT_CONFIRMED":
+        if not check.identified_security_mechanisms or not check.candidate_evidence:
+            raise DirectReviewError("RISK_CF005_SAFEGUARD_EVIDENCE_INVALID",
+                                    "CF-005 safeguard rejection requires a named safeguard and its evidence", repairable=True)
         for index, evidence in enumerate(check.candidate_evidence, start=1):
             if evidence.evidence_type == "ABSENCE":
                 raise DirectReviewError(
@@ -2099,6 +1969,14 @@ def _validate_cf005_candidate_decision(
                 ir_refs,
                 anchor_refs,
             )
+        # A semantic IR can describe installment payments while the original text
+        # says first/second delivery followed by 25% payments. Do not introduce a
+        # new lexical business rule requiring the literal word 'installment'.
+        # The known mechanism catalogue and all exact source bindings still apply.
+        if any(mechanism not in candidate.identified_security_mechanisms
+               for mechanism in check.identified_security_mechanisms):
+            raise DirectReviewError("RISK_CF005_SAFEGUARD_EVIDENCE_INVALID",
+                                    "CF-005 named safeguard is outside the source-backed candidate catalogue", repairable=True)
 
 
 def _validate_check_evidence(check_code: str, finding: FindingDraft) -> None:

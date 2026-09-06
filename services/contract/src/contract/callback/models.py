@@ -17,6 +17,7 @@ from contract.api.models import (
     StrictModel,
 )
 from contract.ir.models import IRDefinition, IRSemanticItem
+from contract.evidence_planning.review_result import RuleReviewResult
 
 
 StageId = Literal[
@@ -230,6 +231,7 @@ class EvidenceVerificationStageResult(StrictModel):
 
 
 class FinalizeReviewStageResult(StrictModel):
+    rule_review: "RuleReviewResult | None" = None
     result_type: Literal["FINAL_REVIEW_STAGE_V1"]
     schema_version: Literal["1.0"]
     review_id: str = Field(min_length=1, max_length=160)
@@ -330,6 +332,7 @@ class FrameworkTaskInput(StrictModel):
     confirmed_party_b_name: str | None = Field(default=None, min_length=1, max_length=500)
     contract_type: Literal["AUTO"]
     review_attitude: Literal["NEUTRAL"]
+    rule_review_standard: Literal["neutral", "strong", "weak"] = "neutral"
 
     @model_validator(mode="after")
     def validate_confirmed_parties(self) -> "FrameworkTaskInput":

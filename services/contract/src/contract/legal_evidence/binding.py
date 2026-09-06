@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from contract.application.idempotency import canonical_json
 from contract.legal_evidence.models import LegalDomain, LegalEvidenceBundle
 
-LEGAL_EVIDENCE_CHECK_BINDING_VERSION = "legal-check-binding-v2"
+LEGAL_EVIDENCE_CHECK_BINDING_VERSION = "legal-check-binding-v3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +83,7 @@ LEGAL_EVIDENCE_CHECK_PROFILES = (
         "commercial_financial",
         "CF-003",
         ("增值税发票", "发票开具", "开具发票", "纳税义务", "税费承担", "适用税率"),
+        ("应当", "不得", "必须", "承担", "税率"),
     ),
     _profile(
         "commercial_financial",
@@ -354,13 +355,11 @@ class LegalEvidenceCheckBinder:
                 for check_code in issue.check_codes:
                     eligible_codes.add(check_code)
                     eligible_domains[check_code] = issue.domain
-            searchable_text = "\n".join(
-                (
-                    evidence.unit.title,
-                    *evidence.unit.heading_path,
-                    evidence.unit.content,
-                )
-            )
+            # Bind a Finding only from the article text itself. Instrument and
+            # chapter headings are useful retrieval context, but broad labels
+            # such as "纳税义务" can otherwise make an unrelated article look
+            # like evidence for a specific review check.
+            searchable_text = evidence.unit.content
             check_codes = sorted(
                 check_code
                 for check_code in eligible_codes
@@ -436,7 +435,10 @@ class LegalEvidenceCheckBinder:
         payload["evidence"] = [
             evidence.model_dump(mode="json") for evidence in bound_evidence
         ]
+        semantic_payload = {
+            key: value for key, value in payload.items() if key != "planning_metrics"
+        }
         bundle_hash = "sha256:" + hashlib.sha256(
-            canonical_json(payload).encode("utf-8")
+            canonical_json(semantic_payload).encode("utf-8")
         ).hexdigest()
         return LegalEvidenceBundle(bundle_hash=bundle_hash, **payload)

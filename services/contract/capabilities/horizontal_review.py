@@ -8,6 +8,8 @@ horizontal candidates to the model for a three-way decision.
 
 from __future__ import annotations
 
+from contract.risk.review_ledger import CheckReviewRecord
+
 import asyncio
 import hashlib
 import re
@@ -219,7 +221,7 @@ class HorizontalBatch(StrictModel):
     batch_id: str = Field(pattern=r"^risk-batch-[0-9a-f]{32}$")
     unit_id: HorizontalUnitId
     check_codes: list[str] = Field(min_length=1)
-    candidate_ids: list[str] = Field(min_length=1, max_length=20)
+    candidate_ids: list[str] = Field(min_length=1)
     evidence_source_ids: list[str] = Field(min_length=1, max_length=80)
     estimated_business_context_tokens: int = Field(ge=0)
 
@@ -235,8 +237,8 @@ class HorizontalReviewPlan(StrictModel):
     absence_evidence_sources: list[HorizontalAbsenceEvidenceSource]
     candidates: list[HorizontalCandidate]
     batches: list[HorizontalBatch]
-    check_codes: list[str] = Field(min_length=11, max_length=11)
-    prompt_budget_policy_version: Literal["2.0"] = "2.0"
+    check_codes: list[str] = Field(min_length=1)
+    prompt_budget_policy_version: Literal["2.0", "3.0"] = "3.0"
 
 
 class HorizontalDecisionRaw(StrictModel):
@@ -368,8 +370,58 @@ class ExtendedRiskReviewBundle(StrictModel):
     horizontal_plan_hash: str
     horizontal_units: list[HorizontalUnitResult] = Field(min_length=2, max_length=2)
     findings: list[FindingDraft]
-    check_codes: list[str] = Field(min_length=45, max_length=45)
+    check_codes: list[str] = Field(min_length=1)
+    review_records: list[CheckReviewRecord] = Field(default_factory=list)
     metrics: ExtendedBundleMetrics
+
+
+def build_horizontal_review_records(value, plan, units) -> list[CheckReviewRecord]:
+    """Record candidate-based checks without inventing a global no-risk verdict."""
+    registry = build_default_registry()
+    records = []
+    source_by_id = {source.source_id: source for source in plan.evidence_sources}
+    for unit in units:
+        for check in unit.check_results:
+            candidates = [candidate for candidate in plan.candidates if candidate.check_code == check.check_code]
+            selected = [batch for batch in plan.batches if check.check_code in batch.check_codes]
+            metrics = [metric for metric in unit.batch_metrics if metric.batch_id in {b.batch_id for b in selected}]
+            findings = [finding for finding in unit.findings if finding.check_code == check.check_code]
+            source_ids = {source_id for candidate in candidates for source_id in (
+                candidate.left_evidence_source_ids + candidate.right_evidence_source_ids
+                + candidate.context_evidence_source_ids + candidate.allowed_counter_evidence_source_ids
+                + candidate.allowed_supporting_evidence_source_ids)}
+            expected = sorted({source_by_id[source_id].anchor_id for source_id in source_ids if source_by_id[source_id].anchor_id})
+            failed = check.status == "FAILED" or any(metric.status == "FAILED" for metric in metrics)
+            missing = len(metrics) != len(selected)
+            reasons = []
+            if failed:
+                reasons.append("CHECK_EXECUTION_FAILED")
+            if missing:
+                reasons.append("ASSIGNED_TASK_NOT_RETURNED")
+            if check.reason_code in {"INSUFFICIENT_EVIDENCE", "NO_DETERMINISTIC_CANDIDATES"}:
+                reasons.append(check.reason_code)
+            linked = check.reason_code == "CONFIRMED_BY_BASE_DOMAIN"
+            if findings or linked:
+                judgement = "RISK"
+            elif reasons:
+                judgement = "INSUFFICIENT_EVIDENCE" if check.reason_code == "INSUFFICIENT_EVIDENCE" else "UNRESOLVED"
+            else:
+                judgement = "NO_RISK"
+            records.append(CheckReviewRecord(
+                scope_basis="FROZEN_HORIZONTAL_CANDIDATES",
+                review_id=value.review_id, generation_id=value.generation_id, plan_id=plan.plan_id,
+                unit_id=unit.unit_id, check_code=check.check_code,
+                review_question=registry.check(check.check_code).review_question,
+                batch_ids=[batch.batch_id for batch in selected], context_hashes=[plan.plan_hash],
+                execution_status="FAILED" if failed else "PARTIAL" if missing else "COMPLETED",
+                judgement=judgement, scope_complete=not failed and not missing,
+                expected_anchor_ids=expected, provided_anchor_ids=expected,
+                cited_anchor_ids=sorted({e.anchor_id for f in findings for e in f.evidence_candidates if e.anchor_id}),
+                finding_local_ids=sorted(set(check.finding_local_ids + check.linked_base_finding_ids)),
+                decision_notes=[check.reason_code + ": " + ",".join(check.candidate_ids)],
+                unresolved_reasons=reasons, model_call_count=sum(metric.model_call_count for metric in metrics),
+            ))
+    return records
 
 
 class HorizontalReviewError(RuntimeError):
@@ -713,7 +765,14 @@ def _candidate(
 def build_horizontal_plan(
     value: RiskReviewPlanInput,
     base_bundle: BaseRiskReviewBundle,
+    *,
+    assigned_check_codes: list[str] | None = None,
 ) -> HorizontalReviewPlan:
+    configured = {check.check_code for check in build_default_registry().checks
+                  if check.enabled and check.domain in HORIZONTAL_UNIT_IDS}
+    check_codes = sorted(configured if assigned_check_codes is None else assigned_check_codes)
+    if len(check_codes) != len(set(check_codes)) or not set(check_codes).issubset(configured):
+        raise HorizontalReviewError("HORIZONTAL_CHECK_ASSIGNMENT_INVALID", "Horizontal tasks must reference enabled check implementations")
     roles = contract_party_roles(
         perspective=value.perspective,
         our_party=value.our_party,
@@ -949,7 +1008,8 @@ def build_horizontal_plan(
             )
         )
 
-    candidates = sorted(candidates, key=lambda item: item.candidate_id)
+    candidates = sorted((item for item in candidates if item.check_code in check_codes), key=lambda item: item.candidate_id)
+    absence_sources = [source for source in absence_sources if source.check_code in check_codes]
     source_ids = {item.source_id for item in evidence_sources}
     absence_ids = {item.source_id for item in absence_sources}
     for candidate in candidates:
@@ -1045,7 +1105,7 @@ def build_horizontal_plan(
         "index_hash": index.index_hash,
         "candidates": [item.model_dump(mode="json") for item in candidates],
         "batches": [item.model_dump(mode="json") for item in batches],
-        "check_codes": list(HORIZONTAL_CHECK_CODES),
+        "check_codes": check_codes,
     }
     plan_hash = "sha256:" + hashlib.sha256(
         canonical_json(payload).encode("utf-8")
@@ -1062,7 +1122,7 @@ def build_horizontal_plan(
         ),
         candidates=candidates,
         batches=sorted(batches, key=lambda item: item.batch_id),
-        check_codes=list(HORIZONTAL_CHECK_CODES),
+        check_codes=check_codes,
     )
 
 
@@ -1450,7 +1510,7 @@ def _materialize_unit(
     check_results: list[HorizontalCheckResult] = []
     registry = build_default_registry()
     for check in registry.checks:
-        if check.domain != unit_id:
+        if check.domain != unit_id or check.check_code not in plan.check_codes:
             continue
         check_candidates = [
             item
@@ -1499,7 +1559,7 @@ def _materialize_unit(
         unit_id=unit_id,
         status=(
             "FAILED"
-            if failed_check_count == len(check_results)
+            if check_results and failed_check_count == len(check_results)
             else ("PARTIAL_FAILED" if failed_check_count else "COMPLETED")
         ),
         check_results=check_results,
@@ -1561,7 +1621,7 @@ async def execute_horizontal_unit(
         )
     runtime = runtime_factory(tenant_id)
     prompted_legal_evidence_by_check: dict[str, dict[str, LegalEvidence]] = {
-        check_code: {} for check_code in HORIZONTAL_CHECK_CODES
+        check_code: {} for check_code in plan.check_codes
     }
 
     async def run_batch(
@@ -1616,11 +1676,6 @@ async def execute_horizontal_unit(
                 unit_id=unit_id,
                 batch_id=batch.batch_id,
             )
-            if budget.budget_status == "HARD_LIMIT_EXCEEDED":
-                raise HorizontalReviewError(
-                    "RISK_PROMPT_TOKEN_HARD_LIMIT_EXCEEDED",
-                    f"{batch.batch_id} exceeded the Provider Prompt hard limit",
-                )
             raw = _parse_decisions(completion.content, selected)
             decisions = [
                 _validate_decision(item, candidate)
@@ -1816,10 +1871,13 @@ def build_extended_bundle(
         for item in unit.check_results
     }
     all_checks = sorted(base_checks | set(horizontal_plan.check_codes))
-    if len(base_checks) != 34 or len(all_checks) != 45:
+    horizontal_checks = [check.check_code for unit in horizontal_units for check in unit.check_results]
+    if (len(horizontal_checks) != len(set(horizontal_checks))
+            or set(horizontal_checks) != set(horizontal_plan.check_codes)
+            or base_checks & set(horizontal_checks)):
         raise HorizontalReviewError(
             "EXTENDED_CHECK_COVERAGE_INVALID",
-            "Extended Bundle must cover exactly 34 base and 11 horizontal Checks",
+            "Extended Bundle must record the configured base and horizontal tasks without loss or duplication",
         )
     horizontal_findings = [
         finding for unit in horizontal_units for finding in unit.findings
@@ -1864,6 +1922,7 @@ def build_extended_bundle(
         ),
         review_id=value.review_id,
         generation_id=value.generation_id,
+        review_records=[*base_bundle.review_records, *build_horizontal_review_records(value, horizontal_plan, horizontal_units)],
         base_bundle=base_bundle,
         horizontal_plan_id=horizontal_plan.plan_id,
         horizontal_plan_hash=horizontal_plan.plan_hash,
