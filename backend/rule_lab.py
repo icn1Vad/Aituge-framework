@@ -18,6 +18,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from backend.rule_authoring import AssistRequest, Draft
+from backend.rule_lab_trial import TrialRequest
 
 from contract.application.idempotency import canonical_json
 from contract.risk.playbooks import build_default_registry
@@ -57,7 +58,7 @@ class Case(Strict):
     jurisdiction: str = Field(default="", max_length=128)
     as_of_date: date
     check_codes: list[str] = Field(min_length=1, max_length=8)
-    expected: list[Expected] = Field(min_length=1, max_length=100)
+    expected: list[Expected] = Field(default_factory=list, max_length=100)
 
     @model_validator(mode="after")
     def unique(self):
@@ -204,6 +205,8 @@ async def execute(run, snapshot, *, runtime=None, cache_directory=None, model_id
     unexpected = [item.rule.rule_id for item in bundle.evidence if item.rule.rule_id not in {e.rule_id for e in case.expected}]
     statuses = {a["status"] for a in assertions}
     overall = "FAIL" if "FAIL" in statuses else "BLOCKED" if "BLOCKED" in statuses or (review and review.pending_evidence_ids) else "PASS"
+    if not case.expected:
+        overall = "OBSERVED" if review and review.status in {"COMPLETED", "NO_APPLICABLE_RULES"} else "BLOCKED"
     return dict(run_id=run.run_id, case=case.model_dump(mode="json"), mode=run.mode,
         verdict=overall, real_model_requested=run.mode == "LIVE", assertions=assertions,
         validation_scope="TEST_CASE_EXPECTATIONS_ONLY",
@@ -376,6 +379,34 @@ def create_app(*, cache_directory=None):
             return library_store.get(rule_id)
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from exc
+
+    @app.get("/lab/trial/rules")
+    def trial_rules():
+        if library_store is None:
+            raise HTTPException(400, "测试规则库未配置")
+        with library_store.connect() as db:
+            rows = db.execute("SELECT rule_json,created_at FROM lab_rules ORDER BY created_at DESC LIMIT 100").fetchall()
+        return {"rules": [library_store.view(ReviewRuleSnapshot.model_validate_json(row[0]), row[1]) for row in rows],
+                "library_count": len(snapshots[library_id]["rules"]) if library_id else 0}
+
+    @app.post("/lab/trial")
+    async def try_rule(payload: TrialRequest):
+        from backend.rule_lab_trial import trial
+        from backend.rule_lab_runtime import build_runtime
+        if library_store is None or not config()["live_enabled"]:
+            raise HTTPException(400, "测试规则库或真实 AI 尚未启用")
+        # Read the latest saved data; the trial then retains this exact snapshot.
+        key = reload_library()
+        rule = next((r for r in snapshots[key]["rules"] if r.rule_id == payload.rule_id), None)
+        if rule is None:
+            raise HTTPException(404, "规则不存在，请重新选择已保存的规则")
+        try:
+            return await trial(payload, snapshots[key], rule, build_runtime(library_store.tenant_id),
+                               cache_directory, os.environ["RULE_LAB_MODEL_ID"])
+        except FileExistsError as exc:
+            raise HTTPException(409, "同一次试用仍在运行或状态未知，没有自动重复调用 AI") from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @app.post("/lab/import")
     async def import_rules(request: Request):
