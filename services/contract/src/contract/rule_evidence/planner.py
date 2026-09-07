@@ -237,7 +237,10 @@ class AdaptiveRuleEvidencePlanner:
                 issue_ids=[issue.issue_id],
                 check_codes=[],
                 rule=item.unit,
-                relevance_score=max(0.0, min(1.0, marginal)),
+                # Coverage novelty orders traversal; it is not retrieval relevance.
+                # Persisting the novelty bonus inflated the relative floor to .8,
+                # suppressing a second equally relevant rule on the same topic.
+                relevance_score=max(0.0, min(1.0, item.score)),
                 matched_concepts=matched,
                 retrieval_channels=sorted(item.channels),
                 relation_path=list(item.relation_path),
