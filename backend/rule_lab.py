@@ -17,6 +17,7 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from backend.rule_authoring import AssistRequest, Draft
 
 from contract.application.idempotency import canonical_json
 from contract.risk.playbooks import build_default_registry
@@ -52,6 +53,7 @@ class Case(Strict):
     business_role: str = Field(min_length=1, max_length=80)
     perspective: Literal["PARTY_A", "PARTY_B"] = "PARTY_A"
     standard: Literal["neutral", "strong", "weak"] = "neutral"
+    include_pending: bool = False
     jurisdiction: str = Field(default="", max_length=128)
     as_of_date: date
     check_codes: list[str] = Field(min_length=1, max_length=8)
@@ -73,6 +75,16 @@ class Run(Strict):
     snapshot_id: str
     mode: Literal["RETRIEVAL", "DEMO", "LIVE"] = "RETRIEVAL"
     case: Case
+
+
+class RelatedInput(Strict):
+    draft: Draft
+    searchTerms: list[str] = Field(default_factory=list, max_length=12)
+
+
+class SaveInput(Strict):
+    request_key: str = Field(pattern=r"^[a-zA-Z0-9-]{8,80}$")
+    draft: Draft
 
 
 DEMO_RULES = [ReviewRuleSnapshot(
@@ -154,7 +166,7 @@ async def execute(run, snapshot, *, runtime=None, cache_directory=None, model_id
     plan = fragment_plan(case, run.run_id)
     request = RuleEvidencePlanRequest(review_id=plan.review_id, generation_id=plan.generation_id,
         tenant_id=snapshot["tenant_id"], contract_type=case.contract_type, perspective=case.perspective,
-        business_role=case.business_role, review_standard=case.standard,
+        business_role=case.business_role, review_standard=case.standard, preview_pending=case.include_pending,
         jurisdiction=case.jurisdiction or None, review_as_of_date=case.as_of_date,
         source_version=snapshot["source_version"], frozen_snapshot_hash=snapshot["snapshot_hash"],
         issues=issues_from_plan(plan))
@@ -172,7 +184,7 @@ async def execute(run, snapshot, *, runtime=None, cache_directory=None, model_id
         async def evaluate():
             return await RuleLibraryReviewer(runtime, max_calls=2).review(
                 {"bundle": bundle.model_dump(mode="json"), "business_role": case.business_role},
-                plan, tenant_id=snapshot["tenant_id"], model_id=model_id, mode="ACTIVE")
+                plan, tenant_id=snapshot["tenant_id"], model_id=model_id, mode="PREVIEW" if case.include_pending else "ACTIVE")
         review = await cached_rule_review(cache_directory, {
             "run_id": run.run_id, "bundle": bundle.bundle_hash, "plan": plan.plan_hash,
             "model": model_id, "mode": run.mode}, evaluate) if cache_directory else await evaluate()
@@ -210,6 +222,8 @@ def create_app(*, cache_directory=None):
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
     snapshots = {}
     cache_directory = cache_directory or Path(".local/rule-lab-cache")
+    library_id = None
+    library_store = None
 
     def add_snapshot(rules, tenant_id, source_version, kind, snapshot_hash=None):
         if any(r.tenant_id not in {"0", tenant_id} for r in rules) or len({r.rule_id for r in rules}) != len(rules):
@@ -218,11 +232,29 @@ def create_app(*, cache_directory=None):
         snapshots[key] = dict(rules=rules, tenant_id=tenant_id, source_version=source_version, kind=kind,
             snapshot_id=key, snapshot_hash=snapshot_hash or digest([r.model_dump(mode="json") for r in rules]))
         if len(snapshots) > 8:
-            victim = next(k for k in snapshots if k != demo_id)
+            victim = next(k for k in snapshots if k not in {demo_id, library_id})
             del snapshots[victim]
         return key
 
     demo_id = add_snapshot(DEMO_RULES, "42", "rule-lab-demo-v1", "DEMO")
+
+    def reload_library():
+        nonlocal library_id
+        if library_store is None:
+            raise HTTPException(400, "现有规则来源未配置")
+        rules, manifest = library_store.load()
+        library_id = add_snapshot(rules, library_store.tenant_id, manifest["source_version"] + "+local-test",
+                                  "LOCAL_TEST_LIBRARY")
+        snapshots[library_id]["baseline_count"] = manifest["record_count"]
+        snapshots[library_id]["baseline_hash"] = manifest["snapshot_hash"]
+        snapshots[library_id]["baseline_source"] = manifest.get("source", "existing-rule-export")
+        return library_id
+
+    if os.getenv("RULE_LAB_LIBRARY_DIR"):
+        from backend.rule_lab_library import TestRuleStore
+        library_store = TestRuleStore(os.environ["RULE_LAB_LIBRARY_DIR"],
+            os.getenv("RULE_LAB_DATABASE", ".local/rule-lab/rules.sqlite3"), os.getenv("RULE_LAB_TENANT_ID", "42"))
+        reload_library()
 
     def get_snapshot(key):
         if key not in snapshots:
@@ -248,9 +280,24 @@ def create_app(*, cache_directory=None):
 
     @app.get("/lab/config")
     def config():
+        from backend.rule_lab_runtime import live_status
+        enabled, model_status = live_status()
+        initial_cases = []
+        default_rule_query = ""
+        if library_id:
+            matches = [r for r in snapshots[library_id]["rules"] if r.name == "预付款比例与担保机制"
+                       and r.party_stance == "买受方" and r.review_standard == "neutral" and "采购合同" in r.contract_type_path]
+            if len(matches) == 1:
+                default_rule_query = matches[0].code
+                initial_cases = [Case(name="现有规则 · 40%预付款且无担保", fragment="预付款为合同总价的40%，无需提供银行保函或履约保证金。",
+                    contract_type="采购合同", business_role="买受方", as_of_date=date.today(), check_codes=["CF-005"], include_pending=True,
+                    expected=[Expected(rule_id=matches[0].rule_id, applicable=True, retrieved=True, outcome="RISK")]).model_dump(mode="json")]
         return dict(demo_snapshot_id=demo_id, cases=[c.model_dump(mode="json") for c in demo_cases()],
+            default_snapshot_id=library_id or demo_id, library_snapshot_id=library_id,
+            library_cases=initial_cases, default_rule_query=default_rule_query,
+            model_status=model_status, authoring_enabled=enabled and library_store is not None,
             checks=[{"code": c.check_code, "title": c.title} for c in build_default_registry().checks],
-            live_enabled=os.getenv("RULE_LAB_ENABLE_LIVE") == "1" and bool(os.getenv("RULE_LAB_MODEL_ID")),
+            live_enabled=enabled,
             java_enabled=all(os.getenv(k) for k in ("RULE_LAB_JAVA_URL", "RULE_LAB_JAVA_TOKEN", "RULE_LAB_TENANT_ID")))
 
     @app.get("/lab/snapshots/{key}")
@@ -258,8 +305,77 @@ def create_app(*, cache_directory=None):
         source = get_snapshot(key)
         filtered = [r for r in source["rules"] if q.casefold() in (r.name + r.code + r.content).casefold()]
         start = max(0, offset)
+        from collections import Counter
         return {**{k: v for k, v in source.items() if k != "rules"}, "total": len(source["rules"]),
+                "statuses": dict(Counter(r.status for r in source["rules"])),
                 "matched": len(filtered), "rules": [r.model_dump(mode="json") for r in filtered[start:start + 200]]}
+
+    @app.post("/lab/library/reload")
+    def reload_rules():
+        return {"snapshot_id": reload_library()}
+
+    @app.post("/lab/authoring/assist")
+    async def author_rule(payload: AssistRequest):
+        from backend.rule_authoring import assist, validate_answer
+        from backend.rule_authoring_form import explicit_change
+        from backend.rule_lab_runtime import build_runtime
+        if library_store is None:
+            raise HTTPException(400, "请配置测试规则库")
+        change = explicit_change(payload.draft, payload.messages[-1].content)
+        try:
+            if change:
+                draft, label = change
+                answer = validate_answer(json.dumps(dict(reply=f"已修改{label}，请确认卡片。", draft=draft,
+                    questions=[], searchTerms=[]), ensure_ascii=False), payload)
+                return {**answer.model_dump(), "usage": {"promptTokens": 0, "completionTokens": 0}}
+            return await assist(payload, build_runtime(library_store.tenant_id))
+        except Exception as exc:
+            raise HTTPException(502, "AI 规则编写失败，输入已保留；未自动重试或保存。") from exc
+
+    @app.post("/lab/authoring/related")
+    def related_rules(payload: RelatedInput):
+        from backend.rule_authoring import Candidate, RelatedRequest, rank_related
+        if library_id is None:
+            raise HTTPException(400, "请先加载现有规则库")
+        terms = [s.strip().casefold() for s in payload.searchTerms if s.strip()]
+        if not terms:
+            terms = [payload.draft.name.strip().casefold(), payload.draft.reviewDirection.strip().casefold()]
+        terms = [s for s in terms if s]
+        rules = [r for r in snapshots[library_id]["rules"] if any(t in (r.name + r.review_direction + r.content).casefold() for t in terms)]
+        # Prioritize the confirmed variant before the bounded text-similarity pass.
+        # Otherwise the first 300 rows of the full library can exclude the buyer's
+        # procurement rules in favor of unrelated contract families and roles.
+        def priority(rule):
+            return (int(bool(payload.draft.reviewStandard) and rule.review_standard == payload.draft.reviewStandard),
+                    int(bool(payload.draft.partyStance) and AdaptiveRuleEvidencePlanner._stance_matches(rule.party_stance, payload.draft.partyStance)),
+                    int(bool(set(payload.draft.contractTypePath) & set(rule.contract_type_path))))
+        rules.sort(key=priority, reverse=True)
+        candidates = [Candidate(id=r.rule_id, code=r.code, name=r.name, content=r.content,
+            reviewDirection=r.review_direction, partyStance=r.party_stance or "", reviewStandard=r.review_standard,
+            status=r.status, version=r.version, contractTypePath=r.contract_type_path) for r in rules[:300]]
+        result = rank_related(RelatedRequest(draft=payload.draft, searchTerms=payload.searchTerms, candidates=candidates))
+        result["truncated"] = len(rules) > 300
+        return result
+
+    @app.post("/lab/authoring/save")
+    def save_rule(payload: SaveInput):
+        if library_store is None:
+            raise HTTPException(400, "请配置测试规则库")
+        try:
+            saved = library_store.save(payload.draft, payload.request_key)
+            reload_library()
+            return saved
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/lab/authoring/rules/{rule_id}")
+    def read_saved_rule(rule_id: str):
+        if library_store is None:
+            raise HTTPException(400, "请配置测试规则库")
+        try:
+            return library_store.get(rule_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
 
     @app.post("/lab/import")
     async def import_rules(request: Request):
@@ -304,9 +420,9 @@ def create_app(*, cache_directory=None):
         if value.mode == "LIVE":
             if not config()["live_enabled"]:
                 raise HTTPException(403, "真实模型未启用")
-            from service.conversation.llm_runner import LlmRuntime
+            from backend.rule_lab_runtime import build_runtime
             model_id = os.environ["RULE_LAB_MODEL_ID"]
-            runtime = LlmRuntime(get_snapshot(value.snapshot_id)["tenant_id"], provider_max_retries=0)
+            runtime = build_runtime(get_snapshot(value.snapshot_id)["tenant_id"])
         try:
             return await execute(value, get_snapshot(value.snapshot_id), runtime=runtime,
                                  cache_directory=cache_directory, model_id=model_id)
