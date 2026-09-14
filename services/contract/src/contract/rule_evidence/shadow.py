@@ -77,17 +77,20 @@ class RuleLibraryShadow:
         return (next(iter(titles)) if len(titles) == 1 else None,
                 next(iter(matches)) if len(matches) == 1 else None)
 
-    def evaluate(self, plan, *, tenant_id, contract_type_name=None, business_role=None,
-                 review_standard="neutral", review_as_of_date=None, jurisdiction=None, preview_pending=True):
+    def evaluate(self, plan, *, tenant_id, contract_type_name=None, business_role=None, business_roles=None,
+                 review_standard="neutral", review_as_of_date=None, jurisdiction=None, preview_pending=True,
+                 contract_type_aliases=()):
         started = time.perf_counter()
         issues = issues_from_plan(plan)
         if not issues:
             return {"mode": "SHADOW", "status": "NO_CHECKS", "model_calls": 0}
         selectors = RuleEvidencePlanRequest(
             review_id=plan.review_id, generation_id=plan.generation_id, tenant_id=tenant_id,
-            contract_type=plan.contract_type, contract_type_aliases=[contract_type_name] if contract_type_name else [],
+            contract_type=plan.contract_type, contract_type_aliases=sorted(set([*contract_type_aliases,
+                *([contract_type_name] if contract_type_name else [])])),
             perspective=str(getattr(plan.perspective, "value", plan.perspective)),
-            business_role=business_role, review_standard=review_standard, preview_pending=preview_pending,
+            business_role=business_role, business_roles=business_roles or [],
+            review_standard=review_standard, preview_pending=preview_pending,
             review_as_of_date=review_as_of_date or date.today(), jurisdiction=jurisdiction,
             source_version=self.snapshot.manifest["source_version"], issues=issues,
         )
@@ -97,11 +100,12 @@ class RuleLibraryShadow:
         return {
             "mode": "SHADOW", "status": bundle.status, "plan_hash": plan.plan_hash,
             "contract_type_name": contract_type_name, "business_role": business_role,
+            "business_roles": request.business_roles,
             "review_standard": review_standard, "review_as_of_date": request.review_as_of_date.isoformat(),
             "source_record_count": len(self.snapshot.rules), "eligible_rule_count": len(request.rules),
             "selection_warnings": [name for name, value in
-                                   (("CONTRACT_TYPE_UNRESOLVED", contract_type_name),
-                                    ("BUSINESS_ROLE_UNRESOLVED", business_role)) if not value],
+                                   (("CONTRACT_TYPE_UNRESOLVED", request.contract_type_aliases),
+                                    ("BUSINESS_ROLE_UNRESOLVED", request.business_roles)) if not value],
             "bundle": bundle.model_dump(mode="json"),
             "check_evidence": {code: [item.evidence_id for item in bundle.evidence if code in item.check_codes]
                                for code in sorted({code for issue in issues for code in issue.check_codes})},

@@ -78,6 +78,8 @@ def test_revision_completion_is_hidden_and_authenticated(monkeypatch) -> None:
     assert response.json()["prompt_tokens"] == 100
     assert _Runtime.calls[-1]["tenant_id"] == "tenant-1"
     assert _Runtime.calls[-1]["thinking_override"] is False
+    assert _Runtime.calls[-1]['max_tokens'] is None
+    assert _Runtime.calls[-1]['use_provider_output_default'] is True
     assert _Runtime.calls[-1]["temperature"] == 0
     assert _Runtime.calls[-1]["model_attempt_no"] == 1
     assert (

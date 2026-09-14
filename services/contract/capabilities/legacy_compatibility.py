@@ -156,7 +156,7 @@ class CompatibilityRoutingRecord(StrictModel):
     legacy_stage_id: str = Field(min_length=1, max_length=160)
     legacy_artifact_type: LegacyArtifactType
     routing_rule_id: str = Field(min_length=1, max_length=160)
-    routing_reason: str = Field(min_length=1, max_length=1000)
+    routing_reason: str = Field(min_length=1)
     routing_version: Literal["1.0"] = COMPATIBILITY_ROUTING_VERSION
 
 

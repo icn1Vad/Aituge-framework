@@ -125,9 +125,13 @@ class RiskReviewPlanBuilder:
         self,
         registry: PlaybookRegistry | None = None,
         router: PlaybookRouter | None = None,
+        joint_check_context_limit: int = 24000,
     ) -> None:
         self.registry = registry or build_default_registry()
         self.router = router or PlaybookRouter(self.registry)
+        if joint_check_context_limit <= 0:
+            raise ValueError("joint_check_context_limit must be positive")
+        self.joint_check_context_limit = joint_check_context_limit
 
     def build(self, value: RiskReviewPlanInput) -> RiskReviewPlan:
         route = self.router.route(
@@ -533,150 +537,11 @@ class RiskReviewPlanBuilder:
         candidates: tuple[RiskHorizontalCandidate, ...],
         hard_limit: int,
     ) -> list[_ContextSlice]:
-        estimate = self._estimate_context(
-            value,
-            checks,
-            projected,
-            excerpts,
-            candidates,
-        )
-        if estimate <= hard_limit:
-            return [_ContextSlice(projected, excerpts, estimate)]
-        if candidates:
-            raise ContractError(
-                "RISK_CONTEXT_BUDGET_EXCEEDED",
-                "A horizontal candidate context exceeds its Business Context budget",
-                status_code=422,
-                details={"estimated_tokens": estimate},
-            )
-
-        excerpts_by_anchor = {item.anchor_id: item for item in excerpts}
-        parent = {item.item_id: item.item_id for item in projected}
-
-        def find(item_id: str) -> str:
-            while parent[item_id] != item_id:
-                parent[item_id] = parent[parent[item_id]]
-                item_id = parent[item_id]
-            return item_id
-
-        def union(left: str, right: str) -> None:
-            left_root = find(left)
-            right_root = find(right)
-            if left_root != right_root:
-                parent[right_root] = left_root
-
-        ids_by_anchor: dict[str, list[str]] = defaultdict(list)
-        for item in projected:
-            for anchor in item.source_anchors:
-                ids_by_anchor[anchor.anchor_id].append(item.item_id)
-        for item_ids in ids_by_anchor.values():
-            for item_id in item_ids[1:]:
-                union(item_ids[0], item_id)
-
-        components: dict[str, list[RiskProjectedIrItem]] = defaultdict(list)
-        for item in projected:
-            components[find(item.item_id)].append(item)
-        ordered_components = sorted(
-            components.values(),
-            key=lambda values: min(
-                (
-                    excerpts_by_anchor[anchor.anchor_id].block_no,
-                    excerpts_by_anchor[anchor.anchor_id].char_start,
-                    item.item_id,
-                )
-                for item in values
-                for anchor in item.source_anchors
-            ),
-        )
-
-        result: list[_ContextSlice] = []
-        current: list[RiskProjectedIrItem] = []
-        for component in ordered_components:
-            candidate_items = tuple([*current, *component])
-            candidate_excerpts = self._select_excerpts(
-                candidate_items,
-                excerpts_by_anchor,
-            )
-            candidate_estimate = self._estimate_context(
-                value,
-                checks,
-                candidate_items,
-                candidate_excerpts,
-                (),
-            )
-            if current and candidate_estimate > hard_limit:
-                current_items = tuple(current)
-                current_excerpts = self._select_excerpts(
-                    current_items,
-                    excerpts_by_anchor,
-                )
-                current_estimate = self._estimate_context(
-                    value,
-                    checks,
-                    current_items,
-                    current_excerpts,
-                    (),
-                )
-                result.append(
-                    _ContextSlice(
-                        current_items,
-                        current_excerpts,
-                        current_estimate,
-                    )
-                )
-                current = list(component)
-            else:
-                current = list(candidate_items)
-
-            component_items = tuple(current)
-            component_excerpts = self._select_excerpts(
-                component_items,
-                excerpts_by_anchor,
-            )
-            component_estimate = self._estimate_context(
-                value,
-                checks,
-                component_items,
-                component_excerpts,
-                (),
-            )
-            if component_estimate > hard_limit:
-                raise ContractError(
-                    "RISK_CONTEXT_ATOMIC_COMPONENT_TOO_LARGE",
-                    "One connected Evidence component exceeds the Business Context budget",
-                    status_code=422,
-                    details={
-                        "check_codes": [item.check_code for item in checks],
-                        "estimated_tokens": component_estimate,
-                        "item_ids": [item.item_id for item in component_items],
-                    },
-                )
-        if current:
-            current_items = tuple(current)
-            current_excerpts = self._select_excerpts(
-                current_items,
-                excerpts_by_anchor,
-            )
-            result.append(
-                _ContextSlice(
-                    current_items,
-                    current_excerpts,
-                    self._estimate_context(
-                        value,
-                        checks,
-                        current_items,
-                        current_excerpts,
-                        (),
-                    ),
-                )
-            )
-        if not result:
-            raise ContractError(
-                "RISK_CONTEXT_BUDGET_EXCEEDED",
-                "An empty context exceeds the Business Context budget",
-                status_code=422,
-            )
-        return result
+        # Thresholds only pack independent checks. Never split or reject the
+        # evidence needed for one judgment merely because its text is long.
+        # The runtime/provider remains responsible for its real context capacity.
+        estimate = self._estimate_context(value, checks, projected, excerpts, candidates)
+        return [_ContextSlice(projected, excerpts, estimate)]
 
     def _partition_checks(
         self,
@@ -717,7 +582,7 @@ class RiskReviewPlanBuilder:
             )
             estimates[mask] = estimate
             # A single oversized Check remains a valid partition here. Its
-            # Evidence context is split deterministically by _context_slices.
+            # complete evidence stays together in _context_slices.
             if estimate <= hard_limit or mask & (mask - 1) == 0:
                 valid_masks.add(mask)
 
@@ -737,11 +602,7 @@ class RiskReviewPlanBuilder:
                 subset = (subset - 1) & remaining
 
             if not candidates_for_state:
-                raise ContractError(
-                    "RISK_CONTEXT_BUDGET_EXCEEDED",
-                    f"Checks in {unit_id} cannot be partitioned within the Business Context budget",
-                    status_code=422,
-                )
+                return (first_bit, *solve(remaining ^ first_bit))
 
             def partition_key(masks: tuple[int, ...]) -> tuple[object, ...]:
                 code_groups = tuple(

@@ -305,7 +305,10 @@ def test_oversized_commercial_context_is_sharded_without_losing_items(unit_id, f
     assert {spec.check_code for context in contexts for spec in context.check_specs} == {
         spec.check_code for spec in commercial.check_specs
     }
-    assert all(context.estimated_input_tokens <= limit for context in contexts)
+    assert all(context.estimated_input_tokens <= limit or (
+        len(context.check_specs) == 1 and context.estimated_input_tokens <= 24000
+        and all(scope.complete for scope in context.check_task_scopes)
+    ) for context in contexts)
     projected_ids = [
         item.item_id
         for context in contexts

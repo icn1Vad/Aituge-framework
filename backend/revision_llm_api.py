@@ -36,7 +36,7 @@ class RevisionCompletionRequest(BaseModel):
 
     task: str = Field(pattern="^GENERATE_CONTRACT_REPLACEMENT_TEXT_ONLY$")
     model_id: str = Field(min_length=1, max_length=160)
-    user_prompt: str = Field(min_length=1, max_length=100_000)
+    user_prompt: str = Field(min_length=1)
     defer_terminal: Literal[True]
     logical_call_id: str | None = Field(default=None, min_length=1, max_length=80)
     # Older contract services do not send the observability retry fields. An
@@ -155,7 +155,8 @@ def create_revision_llm_router() -> APIRouter:
             messages=[{"role": "user", "content": payload.user_prompt}],
             model_id=payload.model_id,
             system_prompt=REVISION_SYSTEM_PROMPT,
-            max_tokens=4_000,
+            max_tokens=None,
+            use_provider_output_default=True,
             temperature=0,
             thinking_override=False,
             response_format={"type": "json_object"},

@@ -14,9 +14,10 @@ from typing import Any, Callable, Literal, Protocol
 from contract.legal_evidence.models import LegalEvidence
 from contract.risk.review_ledger import CheckTaskScope
 from contract.legal_evidence.prompting import (
-    compact_legal_evidence_catalog,
-    legal_evidence_ids_for_check,
-    remaining_legal_prompt_budget,
+    review_legal_evidence_catalog,
+    LEGAL_REVIEW_INSTRUCTIONS,
+    selected_legal_evidence_ids as _selected_legal_evidence_ids,
+    merge_legal_reasoning,
 )
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from service.conversation.llm_runner import LlmCompletionResult, LlmRuntime
@@ -39,7 +40,10 @@ from services.contract.capabilities.prompt_budget import (
 from services.contract.capabilities.review_output_diagnostics import (
     structural_changes, validation_issues, write_private_diagnostic,
 )
-from services.contract.capabilities.commercial_output_repair import build_check_repair, merge_check_repair
+from services.contract.capabilities.commercial_output_repair import build_check_repair, merge_check_repair, repair_mode
+from services.contract.capabilities.review_evidence_protocol import (
+    DirectSourceCatalog, SourceSelectionError, configure_direct_prompt, direct_wire_schema,
+)
 
 COMMERCIAL_UNIT_ID = "commercial_financial"
 COMMERCIAL_CHECK_CODES = tuple(f"CF-{index:03d}" for index in range(1, 9))
@@ -57,6 +61,8 @@ _SYSTEM_PROMPT = """你是合同商务财务风险直接审查器。
 Finding只代表对our_party不利的风险；有利、中性或一般说明不得生成Finding。每个Check独立审查，不得因其他Check引用同一条款而跳过。
 严格遵守输入的decision_policies和output_contract；不得固定限制Finding数量，不得输出Markdown、分析过程或Python负责的技术字段。
 decision_note必须提供简短、非空的判断依据；这是JSON内的必要字段，不是要求输出思维过程。
+预付款风险需先确认付款发生在主要履约/交付/验收之前，再判断保障。一次性付清只表示比例，不等于预付款；收到发票只是付款前提，不证明先于验收。
+“安装调试验收合格后付款”属于验收后的付款，不得反向解释为履约前付款。保证金留空可审条款完整性，但不能据此虚构预付款风险。
 只输出一个JSON对象，第一字符必须是{，最后字符必须是}。"""
 
 
@@ -165,12 +171,12 @@ class StrictModel(BaseModel):
 
 class CommercialCheckSpec(StrictModel):
     check_code: str = Field(pattern=r"^CF-[0-9]{3}$")
-    review_question: str = Field(min_length=1, max_length=2000)
+    review_question: str = Field(min_length=1)
     allowed_categories: list[Literal["PAYMENT", "DELIVERY", "ACCEPTANCE"]] = Field(
         min_length=1,
         max_length=1,
     )
-    allowed_risk_types: list[str] = Field(min_length=1, max_length=10)
+    allowed_risk_types: list[str] = Field(min_length=1)
     criticality: Literal["REQUIRED"]
 
 
@@ -233,8 +239,8 @@ class CommercialReviewRequest(StrictModel):
     unit_id: Literal["commercial_financial"]
     batch_id: str = Field(pattern=r"^risk-batch-[0-9a-f]{32}$")
     perspective: Literal["PARTY_A", "PARTY_B"]
-    our_party: str = Field(min_length=1, max_length=500)
-    counterparty: str = Field(min_length=1, max_length=500)
+    our_party: str = Field(min_length=1)
+    counterparty: str = Field(min_length=1)
     contract_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=80)
     review_attitude: Literal["NEUTRAL"]
     assigned_check_specs: list[CommercialCheckSpec] = Field(min_length=1)
@@ -242,7 +248,7 @@ class CommercialReviewRequest(StrictModel):
     definitions: list[CommercialIrItem] = Field(default_factory=list)
     projected_ir_items: list[CommercialIrItem] = Field(default_factory=list)
     source_excerpts: list[CommercialSourceExcerpt] = Field(min_length=1)
-    estimated_input_tokens: int = Field(ge=1, le=6000)
+    estimated_input_tokens: int = Field(ge=1)  # Size telemetry, not a rejection threshold.
     # Evidence count follows legal-issue coverage. Prompt text is bounded by
     # deterministic compression, not by silently dropping evidence records.
     legal_evidence: list[LegalEvidence] = Field(default_factory=list)
@@ -276,8 +282,8 @@ class ModelEvidenceDraft(StrictModel):
     evidence_type: Literal["TEXT_QUOTE", "CONTEXT", "ABSENCE"]
     ir_ref: str | None = Field(default=None, pattern=r"^I[0-9]{3}$")
     evidence_ref: str | None = Field(default=None, pattern=r"^A[0-9]{3}$")
-    checked_scope: str | None = Field(default=None, min_length=1, max_length=500)
-    verification_note: str | None = Field(default=None, min_length=1, max_length=2000)
+    checked_scope: str | None = Field(default=None, min_length=1)
+    verification_note: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def validate_evidence_shape(self) -> "ModelEvidenceDraft":
@@ -292,22 +298,25 @@ class ModelEvidenceDraft(StrictModel):
 
 
 class ModelFindingDraft(StrictModel):
+    legal_evidence_ids: list[str] = Field(default_factory=list)
     check_code: str = Field(pattern=r"^CF-[0-9]{3}$")
     category: Literal["PAYMENT", "DELIVERY", "ACCEPTANCE"]
     risk_type: str = Field(min_length=1, max_length=160)
     risk_level: Literal["HIGH", "MEDIUM", "LOW", "INFO"]
-    title: str = Field(min_length=1, max_length=300)
-    issue: str = Field(min_length=1, max_length=2000)
-    impact_to_our_party: str = Field(min_length=1, max_length=2000)
-    suggestion: str = Field(min_length=1, max_length=2000)
+    title: str = Field(min_length=1)
+    issue: str = Field(min_length=1)
+    impact_to_our_party: str = Field(min_length=1)
+    suggestion: str = Field(min_length=1)
     evidence: list[ModelEvidenceDraft] = Field(min_length=1)
 
 
 class ModelCheckCoverageResultRaw(StrictModel):
+    decision_evidence_source_ids: list[str] = Field(default_factory=list)
+    decision_anchor_ids: list[str] = Field(default_factory=list)
     check_code: str = Field(pattern=r"^CF-[0-9]{3}$")
     status: Literal["REVIEWED", "NOT_APPLICABLE", "FAILED"]
     reason_code: str | None = None
-    decision_note: str = Field(min_length=1, max_length=1000)
+    decision_note: str = Field(min_length=1)
     findings: list[ModelFindingDraft] = Field(default_factory=list)
     candidate_decision: Literal[
         "RISK_CONFIRMED",
@@ -315,7 +324,7 @@ class ModelCheckCoverageResultRaw(StrictModel):
         "TRIGGER_NOT_MET",
         "INSUFFICIENT_EVIDENCE",
     ] | None = None
-    identified_security_mechanisms: list[str] | None = Field(default=None, max_length=20)
+    identified_security_mechanisms: list[str] | None = Field(default=None)
     candidate_evidence: list[ModelEvidenceDraft] | None = Field(default=None)
 
     @model_validator(mode="after")
@@ -363,10 +372,12 @@ ReasonCode = Literal[
 
 
 class ModelCheckCoverageResult(StrictModel):
+    decision_evidence_source_ids: list[str] = Field(default_factory=list)
+    decision_anchor_ids: list[str] = Field(default_factory=list)
     check_code: str = Field(pattern=r"^CF-[0-9]{3}$")
     status: Literal["REVIEWED", "NOT_APPLICABLE", "FAILED"]
     reason_code: ReasonCode
-    decision_note: str = Field(min_length=1, max_length=1000)
+    decision_note: str = Field(min_length=1)
     findings: list[ModelFindingDraft] = Field(default_factory=list)
     candidate_decision: Literal[
         "RISK_CONFIRMED",
@@ -375,7 +386,7 @@ class ModelCheckCoverageResult(StrictModel):
         "INSUFFICIENT_EVIDENCE",
         "PERSPECTIVE_REJECTED",
     ] | None = None
-    identified_security_mechanisms: list[str] = Field(default_factory=list, max_length=20)
+    identified_security_mechanisms: list[str] = Field(default_factory=list)
     candidate_evidence: list[ModelEvidenceDraft] = Field(default_factory=list)
 
 
@@ -400,6 +411,7 @@ class Cf005Candidate(StrictModel):
     payment_ir_refs: list[str] = Field(default_factory=list)
     payment_evidence_refs: list[str] = Field(default_factory=list)
     trigger_absence_verified: bool = False
+    payment_events: list[dict[str, Any]] = Field(default_factory=list)
     requires_model_decision: Literal[True] = True
 
 
@@ -466,8 +478,8 @@ class EvidenceCandidate(StrictModel):
     char_end: int | None = Field(default=None, ge=1)
     quoted_text: str | None = None
     quoted_text_hash: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
-    checked_scope: str | None = Field(default=None, min_length=1, max_length=500)
-    verification_note: str | None = Field(default=None, min_length=1, max_length=2000)
+    checked_scope: str | None = Field(default=None, min_length=1)
+    verification_note: str | None = Field(default=None, min_length=1)
 
 
 class FindingDraft(StrictModel):
@@ -494,22 +506,24 @@ class FindingDraft(StrictModel):
     ]
     risk_type: str = Field(min_length=1, max_length=160)
     risk_level: Literal["HIGH", "MEDIUM", "LOW", "INFO"]
-    title: str = Field(min_length=1, max_length=300)
-    issue: str = Field(min_length=1, max_length=2000)
-    impact_to_our_party: str = Field(min_length=1, max_length=2000)
-    suggestion: str = Field(min_length=1, max_length=2000)
+    title: str = Field(min_length=1)
+    issue: str = Field(min_length=1)
+    impact_to_our_party: str = Field(min_length=1)
+    suggestion: str = Field(min_length=1)
     perspective: Literal["PARTY_A", "PARTY_B"]
-    our_party: str = Field(min_length=1, max_length=500)
-    counterparty: str = Field(min_length=1, max_length=500)
+    our_party: str = Field(min_length=1)
+    counterparty: str = Field(min_length=1)
     evidence_candidates: list[EvidenceCandidate] = Field(min_length=1)
     legal_evidence_ids: list[str] = Field(default_factory=list)
 
 
 class CheckCoverageResult(StrictModel):
+    decision_evidence_source_ids: list[str] = Field(default_factory=list)
+    decision_anchor_ids: list[str] = Field(default_factory=list)
     check_code: str = Field(pattern=BASE_CHECK_CODE_PATTERN)
     status: Literal["REVIEWED", "NOT_APPLICABLE", "FAILED"]
     reason_code: ReasonCode
-    decision_note: str = Field(min_length=1, max_length=1000)
+    decision_note: str = Field(min_length=1)
     finding_local_ids: list[str] = Field(default_factory=list)
 
 
@@ -542,12 +556,12 @@ class ReviewUnitResult(StrictModel):
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
     duration_ms: int = Field(ge=0)
-    trace_ids: list[str] = Field(min_length=1, max_length=2)
-    call_metrics: list[LlmCallMetric] = Field(min_length=1, max_length=2)
-    repair_reasons: list[str] = Field(default_factory=list, max_length=1)
+    trace_ids: list[str] = Field(min_length=1)
+    call_metrics: list[LlmCallMetric] = Field(min_length=1)
+    repair_reasons: list[str] = Field(default_factory=list)
     schema_normalization_applied: bool = False
     schema_normalization_type: SchemaNormalizationType | None = None
-    attempt_diagnostics: list[LlmAttemptDiagnostic] = Field(min_length=1, max_length=2)
+    attempt_diagnostics: list[LlmAttemptDiagnostic] = Field(min_length=1)
     cf005_candidate: Cf005Candidate | None = None
     reason_code_enrichment_count: int = Field(ge=0)
     reason_code_rule_version: Literal["1.0"]
@@ -576,6 +590,7 @@ class DirectReviewError(RuntimeError):
         *,
         repairable: bool = False,
         structured_output: dict[str, Any] | None = None,
+        check_codes: list[str] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -586,8 +601,22 @@ class DirectReviewError(RuntimeError):
         self.validation_stage: str = "BUSINESS"
         self.validation_issues: list[dict[str, Any]] = []
         self.normalized_output: dict[str, Any] | None = None
-        self.check_codes: list[str] = []
+        self.check_codes: list[str] = check_codes or []
         self.diagnostic_id: str | None = None
+
+
+def selected_legal_evidence_ids(evidence, selected, *, prompt_included, check_code=None):
+    """Classify invalid law references as repairable evidence errors, not crashes."""
+    try:
+        return _selected_legal_evidence_ids(evidence, selected, prompt_included=prompt_included)
+    except ValueError as exc:
+        error = DirectReviewError('RISK_LEGAL_EVIDENCE_INVALID', str(exc), repairable=True,
+            check_codes=[check_code] if check_code else [])
+        error.validation_stage = 'EVIDENCE'
+        error.validation_issues = [dict(stage='EVIDENCE', path=['legal_evidence_ids'],
+            type='legal_source_selection', message=str(exc), rejected_value=selected,
+            allowed_legal_evidence_ids=[item.evidence_id for item in evidence] if prompt_included else [])]
+        raise error from exc
 
 
 def enforce_provider_prompt_budget(
@@ -651,6 +680,7 @@ class CommercialFinancialDirectReviewer:
         framework_run_id: str | None = None,
     ) -> ReviewUnitResult:
         prompt, ir_refs, anchor_refs, cf005_candidate = _prompt(request)
+        source_catalog = DirectSourceCatalog.build(request, ir_refs, anchor_refs)
         runtime = self.runtime_factory(tenant_id)
         started = time.perf_counter()
         calls: list[LlmCompletionResult] = []
@@ -677,7 +707,8 @@ class CommercialFinancialDirectReviewer:
                 repair_payload, repair_targets = build_check_repair(
                     baseline=repair_baseline, error=repair_error,
                     request_context=json.loads(prompt[prompt.index("{"):]),
-                    check_schema=ModelCheckCoverageResultRaw.model_json_schema(),
+                    check_schema=direct_wire_schema(ModelCheckCoverageResultRaw.model_json_schema(),
+                        negative_evidence_checks=sorted(code for code, ids in source_catalog.allowed.items() if ids)),
                 )
                 if not repair_targets:
                     # Malformed JSON has no identifiable check; at most this one
@@ -704,7 +735,7 @@ class CommercialFinancialDirectReviewer:
                     messages=messages,
                     model_id=model_id,
                     system_prompt=_SYSTEM_PROMPT,
-                    max_tokens=4000,
+                    max_tokens=None, use_provider_output_default=True,
                     temperature=0,
                     thinking_override=False,
                     response_format={"type": "json_object"},
@@ -732,7 +763,8 @@ class CommercialFinancialDirectReviewer:
                         repaired = parse_json_output(completion.content)
                         merged = merge_check_repair(repair_baseline, repaired.structured if repaired.ok else None, repair_targets)
                     except (ValueError, TypeError) as exc:
-                        raise DirectReviewError("RISK_REPAIR_SEMANTICS_CHANGED", str(exc)) from exc
+                        code = "RISK_CHECK_COVERAGE_INVALID" if "omitted" in str(exc) else "RISK_REPAIR_SEMANTICS_CHANGED"
+                        raise DirectReviewError(code, str(exc)) from exc
                     content_to_parse = json.dumps(merged, ensure_ascii=False)
                 parsed = _parse_model_output(
                     content_to_parse,
@@ -740,12 +772,16 @@ class CommercialFinancialDirectReviewer:
                     anchor_refs=anchor_refs,
                     cf005_candidate=cf005_candidate,
                     assigned_check_specs=request.assigned_check_specs,
+                    source_catalog=source_catalog,
+                    business_request=request,
                 )
                 semantic_preservation_passed: bool | None = None
                 if repair_no and first_semantic_snapshot is not None:
                     _validate_semantic_preservation(
                         first_semantic_snapshot,
-                        _semantic_snapshot(parsed.normalized_object or parsed.raw_object),
+                        _semantic_snapshot(parsed.raw_object),
+                        repair_targets=repair_targets,
+                        mode="REASSESS_TARGET",
                     )
                     semantic_preservation_passed = True
                 enriched, enrichment = _enrich_reason_codes(parsed.response)
@@ -756,9 +792,6 @@ class CommercialFinancialDirectReviewer:
                     anchor_refs,
                     cf005_candidate,
                 )
-                if completion.completion_tokens is not None and completion.completion_tokens > 4000:
-                    raise DirectReviewError("RISK_OUTPUT_BUDGET_EXCEEDED",
-                                            "Commercial Direct Review exceeded the hard output token limit")
                 diagnostics.append(
                     _attempt_diagnostic(
                         completion,
@@ -776,7 +809,7 @@ class CommercialFinancialDirectReviewer:
             except DirectReviewError as exc:
                 await finalize_completion_validation_failed(completion, exc.code)
                 if not exc.check_codes:
-                    exc.check_codes = sorted({"CF-" + item for item in re.findall(r"CF[-_](00[1-8])", exc.code + " " + str(exc))})
+                    exc.check_codes = sorted({"CF-" + item for item in re.findall(r"CF[-_]([0-9]{3})", exc.code + " " + str(exc))})
                 if not exc.validation_issues:
                     exc.validation_stage = "EVIDENCE" if "EVIDENCE" in exc.code else "BUSINESS"
                     exc.validation_issues = validation_issues(exc, exc.validation_stage)
@@ -803,7 +836,8 @@ class CommercialFinancialDirectReviewer:
                 invalid_content = completion.content
                 invalid_reason = f"{exc.code}: {exc}"
                 repair_error = exc
-                repair_baseline = exc.normalized_output or exc.structured_output
+                wire = parse_json_output(content_to_parse)
+                repair_baseline = wire.structured if wire.ok else None
                 first_semantic_snapshot = _semantic_snapshot(
                     repair_baseline
                 )
@@ -835,11 +869,6 @@ class CommercialFinancialDirectReviewer:
         metrics = [_metric(value) for value in calls]
         completion_tokens = _sum_optional(item.completion_tokens for item in calls)
         final_completion_tokens = calls[-1].completion_tokens
-        if final_completion_tokens is not None and final_completion_tokens > 4000:
-            raise DirectReviewError(
-                "RISK_OUTPUT_BUDGET_EXCEEDED",
-                "Commercial Direct Review exceeded the hard output token limit",
-            )
         warnings = list(result[2])
         if request.legal_evidence_prompt_status == "OMITTED_TOKEN_BUDGET":
             warnings.append("LEGAL_EVIDENCE_OMITTED_TOKEN_BUDGET")
@@ -888,7 +917,7 @@ def commercial_request_from_context(
     legal_evidence: list[LegalEvidence] | None = None,
 ) -> CommercialReviewRequest:
     payload = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
-    _, legal_tokens = compact_legal_evidence_catalog(
+    _, legal_tokens = review_legal_evidence_catalog(
         legal_evidence or []
     )
     def project_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -952,7 +981,7 @@ _CF005_RELEVANT_TYPES = {
     "liabilities",
     "termination_terms",
 }
-_CF005_PAYMENT_WORDS = ("支付", "付款", "价款", "费用", "预付")
+_CF005_PAYMENT_WORDS = ("支付", "付款", "付清", "价款", "费用", "预付")
 _CF005_NON_PRICE_PAYMENT_WORDS = (
     "违约金",
     "赔偿",
@@ -968,8 +997,6 @@ _CF005_BEFORE_PERFORMANCE_WORDS = (
     "签订合同",
     "生效后",
     "合同生效",
-    "收到发票",
-    "开具发票",
     "预付",
 )
 _CF005_AFTER_PERFORMANCE_WORDS = (
@@ -1020,98 +1047,59 @@ def _build_cf005_candidate(
     ir_refs: dict[str, CommercialIrItem],
     anchor_ref_by_id: dict[str, str],
 ) -> Cf005Candidate:
-    roles = contract_party_roles(
-        perspective=request.perspective,
-        our_party=request.our_party,
-        counterparty=request.counterparty,
-    )
-    relevant: list[tuple[str, CommercialIrItem, str]] = []
-    all_text_parts: list[str] = []
+    from .payment_facts import payment_events, affirmative
+    roles = contract_party_roles(perspective=request.perspective,
+                                 our_party=request.our_party, counterparty=request.counterparty)
+    excerpts = {item.anchor_id: item.quoted_text for item in request.source_excerpts}
+    events_by_ref = {}
+    texts = []
     for ref, item in ir_refs.items():
         if item.ir_type not in _CF005_RELEVANT_TYPES:
             continue
-        text = "".join(
-            value for value in (item.subject, item.predicate, item.object) if value
-        )
-        relevant.append((ref, item, text))
-        all_text_parts.append(text)
-    all_text = "\n".join(all_text_parts)
-
-    substantial_refs: list[str] = []
-    before_performance_refs: list[str] = []
-    payer_status_by_ref: dict[str, str] = {}
-    for ref, item, text in relevant:
-        has_payment = _cf005_is_price_payment(text)
-        payer_subject = item.subject or ""
-        our_payer = text_names_role(
-            payer_subject, roles.aliases_for_our_party()
-        )
-        counterparty_payer = text_names_role(
-            payer_subject, roles.aliases_for_counterparty()
-        )
-        if our_payer and not counterparty_payer:
-            payer_status = "OUR_PARTY"
-        elif counterparty_payer and not our_payer:
-            payer_status = "COUNTERPARTY"
-        else:
-            payer_status = "AMBIGUOUS"
-        if has_payment:
-            payer_status_by_ref[ref] = payer_status
-        percentages = [
-            float(value)
-            for value in re.findall(r"(?<!\d)(\d{1,3}(?:\.\d+)?)\s*%", text)
-            if float(value) <= 100
-        ]
-        substantial = has_payment and (
-            any(word in text for word in _CF005_PREPAYMENT_WORDS)
-            or any(value >= 70 for value in percentages)
-        )
-        before_performance = has_payment and (
-            any(word in text for word in _CF005_BEFORE_PERFORMANCE_WORDS)
-            and not any(word in text for word in _CF005_AFTER_PERFORMANCE_WORDS)
-        )
-        if substantial:
-            substantial_refs.append(ref)
-        if before_performance:
-            before_performance_refs.append(ref)
-
-    mechanisms = [
-        mechanism
-        for mechanism, keywords in _CF005_SECURITY_KEYWORDS.items()
-        if any(keyword in all_text for keyword in keywords)
-    ]
-    candidate_ir_refs = sorted(set(substantial_refs) | set(before_performance_refs))
-    candidate_payer_statuses = [
-        payer_status_by_ref[ref]
-        for ref in candidate_ir_refs
-        if ref in payer_status_by_ref
-    ]
-    candidate_evidence_refs = sorted(
-        {
-            anchor_ref_by_id[anchor.anchor_id]
-            for ref in candidate_ir_refs
-            for anchor in ir_refs[ref].source_anchors
-        }
-    )
+        text = "\n".join(dict.fromkeys(excerpts[a.anchor_id] for a in item.source_anchors))
+        texts.append(text)
+        events = payment_events(text, roles)
+        if events:
+            events_by_ref[ref] = events
+    # A shared original may have several IR projections. Keep exact bindings,
+    # but do not count the repeated projection as additional payment events.
+    events = list({json.dumps(e, sort_keys=True, ensure_ascii=False): e
+                   for values in events_by_ref.values() for e in values}.values())
+    substantial_refs = [ref for ref, values in events_by_ref.items()
+                        if any(e['large_payment_share'] for e in values)]
+    before_refs = [ref for ref, values in events_by_ref.items()
+                   if any(e['timing']=='BEFORE' for e in values)]
+    mechanisms = [key for key, words in _CF005_SECURITY_KEYWORDS.items()
+                  if any(affirmative(text, word) for text in set(texts) for word in words)]
+    # Explicit multiple payment stages also describe installments without the
+    # literal word 分期. Use original events, never an ungrounded IR predicate.
+    original = '\n'.join(set(texts))
+    if (len(events) >= 2 and re.search(r'首次|首笔|第一[笔期次阶段]', original)
+            and re.search(r'第二[笔期次阶段]|尾款|余款', original)
+            and 'INSTALLMENT_PAYMENT' not in mechanisms):
+        mechanisms.append('INSTALLMENT_PAYMENT')
+    candidate_refs = sorted(set(substantial_refs) | set(before_refs))
+    payment_refs = sorted(events_by_ref)
+    # The advance-payment payer belongs to the triggering event, not every
+    # occurrence of "支付" elsewhere (e.g. a heading or freight reimbursement).
+    payer_events = [e for e in events if e['timing'] == 'BEFORE']
+    if not payer_events:
+        payer_events = [e for e in events if e['large_payment_share']] or events
+    anchor_refs = lambda refs: sorted({anchor_ref_by_id[a.anchor_id] for ref in refs for a in ir_refs[ref].source_anchors})
     return Cf005Candidate(
         substantial_prepayment=bool(substantial_refs),
-        payment_before_performance=bool(before_performance_refs),
-        payer_role_status=_cf005_payer_role_status(candidate_payer_statuses),
-        installment_payment="INSTALLMENT_PAYMENT" in mechanisms,
-        milestone_linked="MILESTONE_PAYMENT" in mechanisms,
-        acceptance_linked="ACCEPTANCE_LINKAGE" in mechanisms,
+        payment_before_performance=bool(before_refs),
+        payer_role_status=_cf005_payer_role_status([e['payer_role_status'] for e in payer_events]),
+        installment_payment='INSTALLMENT_PAYMENT' in mechanisms,
+        milestone_linked='MILESTONE_PAYMENT' in mechanisms,
+        acceptance_linked='ACCEPTANCE_LINKAGE' in mechanisms,
         identified_security_mechanisms=mechanisms,
-        candidate_ir_refs=candidate_ir_refs,
-        candidate_evidence_refs=candidate_evidence_refs,
-        payment_ir_refs=sorted(payer_status_by_ref),
-        payment_evidence_refs=sorted({anchor_ref_by_id[anchor.anchor_id]
-                                     for ref in payer_status_by_ref for anchor in ir_refs[ref].source_anchors}),
-        trigger_absence_verified=bool(payer_status_by_ref) and all(
-            payer_status_by_ref[ref] != "AMBIGUOUS" and
-            any(word in text for word in _CF005_AFTER_PERFORMANCE_WORDS)
-            and not any(word in text for word in _CF005_BEFORE_PERFORMANCE_WORDS)
-            for ref, _item, text in relevant if ref in payer_status_by_ref
-        ),
+        candidate_ir_refs=candidate_refs, candidate_evidence_refs=anchor_refs(candidate_refs),
+        payment_ir_refs=payment_refs, payment_evidence_refs=anchor_refs(payment_refs),
+        payment_events=events,
+        trigger_absence_verified=bool(events)
+        and any(s.check_code=='CF-005' and s.complete for s in request.check_task_scopes)
+        and all(e['timing']=='AFTER' for e in events),
     )
 
 
@@ -1205,7 +1193,7 @@ def _prompt(
             "risk_level_enum": ["HIGH", "MEDIUM", "LOW", "INFO"],
             "rules": [
                 "只回答本批required_check_codes，每个已分配问题记录一次，不补齐其他检查项、不凑数量",
-                "每项只允许check_code,status,decision_note,findings,candidate_decision,identified_security_mechanisms,candidate_evidence",
+                "每项使用required_check_fields；CF-005另外使用cf005_required_fields。字段名与response_schema一致。",
                 "candidate_ir、candidate_ir_refs及其他未列字段禁止输出",
                 "reason_code由Python确定性生成，模型禁止输出",
                 "无对我方不利的实质风险时：status=REVIEWED且findings=[]",
@@ -1239,40 +1227,21 @@ def _prompt(
             ],
         },
     }
-    baseline_prompt = (
-        "审查Context。仅返回JSON；顶层只能是check_results；"
-        "禁止checks、Markdown和JSON外的解释分析；JSON内decision_note是必填的简短判断依据。"
-        "只记录本批实际分配的检查及其依据：\n"
-        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    )
-    legal_budget = remaining_legal_prompt_budget(
-        baseline_prompt=baseline_prompt,
-        system_prompt=_SYSTEM_PROMPT,
-        hard_limit_tokens=PROVIDER_PROMPT_HARD_LIMIT_TOKENS,
-    )
-    had_legal_evidence = bool(request.legal_evidence)
-    legal_catalog, legal_tokens = compact_legal_evidence_catalog(
-        request.legal_evidence,
-        maximum_catalog_tokens=legal_budget,
-    )
+    legal_catalog, legal_tokens = review_legal_evidence_catalog(request.legal_evidence)
     if legal_catalog:
         payload["legal_evidence_catalog"] = legal_catalog
         payload["legal_evidence_input_tokens"] = legal_tokens
         payload["output_contract"]["rules"].extend(
-            [
-                "legal_evidence_catalog仅作法律依据；不能代替合同原文Evidence",
-                "UNVERIFIED的生效日期或状态不得表述为已核实现行有效",
-                "法律Evidence ID由Python确定性绑定，模型禁止输出或编造",
-            ]
+            LEGAL_REVIEW_INSTRUCTIONS
         )
         request.legal_evidence_input_tokens = legal_tokens
         request.legal_evidence_prompt_status = "INCLUDED"
     else:
-        if had_legal_evidence:
-            request.legal_evidence_prompt_status = "OMITTED_TOKEN_BUDGET"
-        # Keep the planner-owned Evidence objects for deterministic Check-to-ID
-        # binding. Only their text catalog is omitted from the model prompt.
+        request.legal_evidence_prompt_status = "NOT_REQUESTED"
+        # No text means no model citation, even if candidates remain in diagnostics.
         request.legal_evidence_input_tokens = 0
+    configure_direct_prompt(payload, DirectSourceCatalog.build(request, ir_refs, anchor_refs),
+                            response_schema=ModelCommercialReviewResponseRaw.model_json_schema())
     return (
         "审查Context。仅返回JSON；顶层只能是check_results；"
         "禁止checks、Markdown和JSON外的解释分析；JSON内decision_note是必填的简短判断依据。"
@@ -1290,6 +1259,8 @@ def _parse_model_output(
     anchor_refs: dict[str, CommercialSourceExcerpt] | None = None,
     cf005_candidate: Cf005Candidate | None = None,
     assigned_check_specs: list[CommercialCheckSpec] | None = None,
+    source_catalog: DirectSourceCatalog | None = None,
+    business_request: CommercialReviewRequest | None = None,
 ) -> ParsedModelOutput:
     parsed = parse_json_output(content)
     if not parsed.ok or not isinstance(parsed.structured, dict):
@@ -1300,6 +1271,23 @@ def _parse_model_output(
         error.validation_issues = validation_issues(ValueError("Expected one complete JSON object"), "JSON")
         raise error
     raw = parsed.structured
+    wire_raw = copy.deepcopy(raw)
+    if source_catalog is not None:
+        try:
+            raw = source_catalog.decode(raw, schema_model=ModelCommercialReviewResponseRaw,
+                normalize=lambda value: (_normalize_known_schema_error(value,
+                    ir_refs=ir_refs, anchor_refs=anchor_refs, cf005_candidate=cf005_candidate,
+                    assigned_check_specs=assigned_check_specs) or (value, None))[0],
+                validate_check=(lambda response: collect_check_business_issues(lambda: _materialize(
+                    scoped_check_request(business_request, response.check_results[0].check_code),
+                    _enrich_reason_codes(response)[0], ir_refs, anchor_refs, cf005_candidate))) if business_request is not None else None)
+        except SourceSelectionError as exc:
+            error = DirectReviewError(exc.code, str(exc), repairable=exc.repairable,
+                structured_output=wire_raw, check_codes=exc.check_codes)
+            error.validation_stage = exc.validation_stage
+            error.validation_issues = exc.issues or validation_issues(exc, error.validation_stage)
+            error.normalized_output = exc.normalized_output
+            raise error from exc
     initial_issues = []
     try:
         ModelCommercialReviewResponseRaw.model_validate(raw)
@@ -1354,9 +1342,26 @@ def _parse_model_output(
             and re.fullmatch(r"CF-[0-9]{3}", str(normalized["check_results"][item["path"][1]].get("check_code", "")))
         })
         raise error
-    return ParsedModelOutput(response=response, raw_object=raw,
+    return ParsedModelOutput(response=response, raw_object=wire_raw,
                              normalization=SchemaNormalizationRecord(applied=kind is not None, normalization_type=kind),
                              normalized_object=normalized)
+
+
+def scoped_check_request(request, code):
+    """Reuse the frozen batch context, validating one independent check at a time."""
+    return request.model_copy(update={
+        'assigned_check_specs': [s for s in request.assigned_check_specs if s.check_code == code],
+        'check_task_scopes': [s for s in request.check_task_scopes if s.check_code == code],
+    })
+
+
+def collect_check_business_issues(validate):
+    try:
+        validate()
+    except DirectReviewError as exc:
+        return [{**item, 'error_code': exc.code, 'repairable': exc.repairable, 'stage': item.get('stage', 'BUSINESS')}
+                for item in (exc.validation_issues or validation_issues(exc, 'BUSINESS'))]
+    return []
 
 
 def _normalize_known_schema_error(
@@ -1425,18 +1430,31 @@ def _normalize_known_schema_error(
             issue(path, "Unknown contract anchor reference")
             return entry
         if ir_ref and not anchor_ref:
-            anchor_ref = next((ref for ref, anchor in anchor_refs.items()
-                               if anchor.anchor_id in {a.anchor_id for a in ir_refs[ir_ref].source_anchors}), None)
+            matches = [ref for ref, anchor in anchor_refs.items()
+                       if anchor.anchor_id in {a.anchor_id for a in ir_refs[ir_ref].source_anchors}]
+            if len(matches) != 1:
+                issue(path, "Missing anchor is ambiguous; select a complete IR/source pair from the catalogue")
+                return entry
+            anchor_ref = matches[0]
         if anchor_ref and not ir_ref:
-            ir_ref = next((ref for ref in sorted(ir_refs)
-                           if anchor_refs[anchor_ref].anchor_id in {a.anchor_id for a in ir_refs[ref].source_anchors}), None)
+            matches = [ref for ref in sorted(ir_refs)
+                       if anchor_refs[anchor_ref].anchor_id in {a.anchor_id for a in ir_refs[ref].source_anchors}]
+            if len(matches) != 1:
+                issue(path, "Missing IR is ambiguous; select a complete IR/source pair from the catalogue")
+                return entry
+            ir_ref = matches[0]
         if not ir_ref or not anchor_ref or anchor_refs[anchor_ref].anchor_id not in {
             a.anchor_id for a in ir_refs[ir_ref].source_anchors
         }:
             issue(path, "Evidence does not bind to an IR fact and its original contract anchor")
             return entry
         if explicit:
-            return entry
+            if item.get("evidence_type") not in {"TEXT_QUOTE", "CONTEXT"}:
+                issue(path, "Unsupported evidence type; IR is an identifier namespace, not an evidence type")
+                return entry
+            item.update(ir_ref=ir_ref, evidence_ref=anchor_ref)
+            evidence_changed |= item != entry
+            return item
         result = {"evidence_type": "TEXT_QUOTE", "ir_ref": ir_ref, "evidence_ref": anchor_ref}
         evidence_changed = True
         return result
@@ -1569,6 +1587,8 @@ def _enrich_reason_codes(
                 "status": check.status,
                 "reason_code": reason_code,
                 "decision_note": check.decision_note,
+                "decision_evidence_source_ids": check.decision_evidence_source_ids,
+                "decision_anchor_ids": check.decision_anchor_ids,
                 "findings": [
                     item.model_dump(mode="json") for item in check.findings
                 ],
@@ -1623,6 +1643,8 @@ def _semantic_snapshot(value: dict[str, Any] | None) -> dict[str, Any] | None:
                         "impact_to_our_party",
                         "suggestion",
                         "evidence",
+                        "primary_evidence_source_ids",
+                        "absence_assessments",
                     )
                 }
             )
@@ -1638,6 +1660,7 @@ def _semantic_snapshot(value: dict[str, Any] | None) -> dict[str, Any] | None:
                     "candidate_decision",
                     "identified_security_mechanisms",
                     "candidate_evidence",
+                    "candidate_evidence_source_ids",
                 )
                 if key in item
             },
@@ -1649,20 +1672,34 @@ def _semantic_snapshot(value: dict[str, Any] | None) -> dict[str, Any] | None:
 def _validate_semantic_preservation(
     before: dict[str, Any] | None,
     after: dict[str, Any] | None,
+    *,
+    repair_targets: list[str] | None = None,
+    mode: str = "FORMAT_ONLY",
 ) -> None:
     if before is None or after is None:
         raise DirectReviewError(
             "RISK_REPAIR_SEMANTICS_UNVERIFIABLE",
             "Repair output cannot be accepted because semantic preservation is unverifiable",
         )
-    if set(before) != set(after):
+    if set(before) - set(after) or (set(after) - set(before)) - set(repair_targets or []):
         raise DirectReviewError(
             "RISK_REPAIR_SEMANTICS_CHANGED",
             "Repair changed the set of check codes",
         )
     for check_code in sorted(before):
-        previous = before[check_code]
-        current = after[check_code]
+        previous = copy.deepcopy(before[check_code])
+        current = copy.deepcopy(after[check_code])
+        if check_code in (repair_targets or []):
+            if mode == "REASSESS_TARGET":
+                # Business correction is not format repair. Accepted siblings
+                # are protected by merge_check_repair; this target is validated
+                # again by materialize, not against its known-wrong verdict.
+                continue
+            if mode == "REBIND_EVIDENCE":
+                for snapshot in (previous, current):
+                    snapshot["protected_check_fields"].pop("candidate_evidence", None)
+                    for finding in snapshot["findings"]:
+                        finding.pop("evidence", None)
         for field, previous_value in previous["protected_check_fields"].items():
             if current["protected_check_fields"].get(field) != previous_value:
                 raise DirectReviewError(
@@ -1734,28 +1771,58 @@ def _materialize(
         raise DirectReviewError(
             "RISK_CHECK_COVERAGE_INVALID",
             "Commercial Direct Review must record each assigned Check exactly once",
-            repairable=True,
+            repairable=not bool(set(by_code) - set(assigned_codes)),
+            check_codes=sorted(set(assigned_codes) - set(by_code)),
         )
     cf005_warning = None
+    warnings = []
+    specs_by_code = {s.check_code:s for s in request.assigned_check_specs}
+    issues = []
+    for ci, check in enumerate(response.check_results):
+        spec = specs_by_code[check.check_code]
+        for fi, finding in enumerate(check.findings):
+            for field, valid in (('check_code', {check.check_code}), ('category', set(spec.allowed_categories)), ('risk_type', set(spec.allowed_risk_types))):
+                if getattr(finding,field) not in valid:
+                    issues.append(dict(stage='BUSINESS', check_code=check.check_code,
+                        path=['check_results',ci,'findings',fi,field], type='unassigned_finding_field',
+                        message=f'{field} must belong to this check', rejected_value=getattr(finding,field), allowed_values=sorted(valid)))
+    if issues:
+        code = 'RISK_FINDING_CHECK_INVALID' if all(i['path'][-1]=='check_code' for i in issues) else 'RISK_FINDING_TYPE_INVALID'
+        error = DirectReviewError(code, 'Finding fields do not match the assigned check',
+                                  repairable=True, check_codes=sorted({i['check_code'] for i in issues}))
+        error.validation_issues = issues
+        raise error
+    # Resolve the frozen party perspective BEFORE absence/safeguard gates.
+    # Otherwise an irrelevant reversed-payer finding can fail the entire batch.
+    if "CF-005" in by_code:
+        by_code["CF-005"], cf005_warning = _suppress_cf005_perspective_conflict(
+            by_code["CF-005"], cf005_candidate,
+        )
     partial_codes = {scope.check_code for scope in request.check_task_scopes if not scope.complete}
     for code in partial_codes & by_code.keys():
         check = by_code[code]
-        if check.findings:
-            if any(e.evidence_type == "ABSENCE" for f in check.findings for e in f.evidence):
-                raise DirectReviewError("RISK_PARTIAL_SCOPE_ABSENCE_INVALID",
-                                        "A partial evidence scope cannot prove global absence", repairable=True)
-        else:
+        if any(e.evidence_type == "ABSENCE" for f in check.findings for e in f.evidence):
+            # Quarantine unsupported global claims as observations, never as
+            # verified Findings or a global no-risk result. Raw output remains
+            # in private attempt diagnostics. Other checks can still complete.
+            supported = [f for f in check.findings if all(e.evidence_type != "ABSENCE" for e in f.evidence)]
+            by_code[code] = check = check.model_copy(update={
+                "findings": supported, "status": "REVIEWED", "reason_code": "INSUFFICIENT_EVIDENCE",
+                "decision_note": "[局部缺失判断待联合复核，未作为已验证风险] " + check.decision_note,
+                **({"candidate_decision": "INSUFFICIENT_EVIDENCE"} if code == "CF-005" else {}),
+            })
+            warnings.append(f"RISK_PARTIAL_SCOPE_ABSENCE_DEFERRED:{code}")
+        if not check.findings:
             # Preserve the observation but do not certify its global negative.
             by_code[code] = check.model_copy(update={
                 "status": "REVIEWED", "reason_code": "INSUFFICIENT_EVIDENCE",
-                "decision_note": "[局部证据，尚不能作全局结论] " + check.decision_note[:950],
+                "decision_note": "[局部证据，尚不能作全局结论] " + check.decision_note,
                 **({"candidate_decision": "INSUFFICIENT_EVIDENCE"} if code == "CF-005" else {}),
             })
     if "CF-005" in by_code:
-        cf005_check, cf005_warning = _suppress_cf005_perspective_conflict(
-            by_code["CF-005"], cf005_candidate,
-        )
-        cf005_check = _enrich_cf005_confirmed_absence(cf005_check, cf005_candidate)
+        cf005_check = by_code["CF-005"]
+        if any(s.check_code=='CF-005' and s.complete for s in request.check_task_scopes):
+            cf005_check = _enrich_cf005_confirmed_absence(cf005_check, cf005_candidate)
         by_code["CF-005"] = cf005_check
         _validate_cf005_candidate_decision(cf005_check, cf005_candidate, ir_refs, anchor_refs)
     specs = {item.check_code: item for item in request.assigned_check_specs}
@@ -1798,6 +1865,8 @@ def _materialize(
                 reason_code=check.reason_code,
                 decision_note=check.decision_note,
                 finding_local_ids=local_ids,
+                decision_evidence_source_ids=check.decision_evidence_source_ids,
+                decision_anchor_ids=check.decision_anchor_ids,
             )
         )
     finding_ids = [item.finding_local_id for item in findings]
@@ -1815,7 +1884,7 @@ def _materialize(
     return (
         coverage,
         findings,
-        [cf005_warning] if cf005_warning is not None else [],
+        warnings + ([cf005_warning] if cf005_warning is not None else []),
     )
 
 
@@ -1932,6 +2001,13 @@ def _validate_cf005_candidate_decision(
                 repairable=True,
             )
         return
+    if (check.candidate_decision == "RISK_CONFIRMED" and candidate.trigger_absence_verified
+            and not candidate.payment_before_performance):
+        raise DirectReviewError(
+            "RISK_CF005_TRIGGER_CONTRADICTION",
+            "CF-005 confirmed a pre-performance payment risk but the complete payment facts verify post-performance payment; reassess the verdict, title and explanation together",
+            repairable=True, check_codes=["CF-005"],
+        )
     if check.findings and candidate.payer_role_status != "OUR_PARTY":
         raise DirectReviewError(
             "RISK_CF005_PAYER_PERSPECTIVE_INVALID",
@@ -2004,6 +2080,8 @@ def _finding(
     ir_refs: dict[str, CommercialIrItem],
     anchor_refs: dict[str, CommercialSourceExcerpt],
 ) -> FindingDraft:
+    selected_legal_evidence_ids(request.legal_evidence, value.legal_evidence_ids,
+        prompt_included=request.legal_evidence_prompt_status == 'INCLUDED', check_code=value.check_code)
     source_keys = [
         f"{item.ir_ref or '-'}:{item.evidence_ref or '-'}:{item.evidence_type}"
         for item in value.evidence
@@ -2032,16 +2110,18 @@ def _finding(
         risk_type=value.risk_type,
         risk_level=value.risk_level,
         title=value.title,
-        issue=value.issue,
+        issue=merge_legal_reasoning(value.issue, [], request.legal_evidence, value.check_code,
+            prompt_included=request.legal_evidence_prompt_status == "INCLUDED", selected_ids=value.legal_evidence_ids),
         impact_to_our_party=value.impact_to_our_party,
         suggestion=value.suggestion,
         perspective=request.perspective,
         our_party=request.our_party,
         counterparty=request.counterparty,
         evidence_candidates=evidence,
-        legal_evidence_ids=legal_evidence_ids_for_check(
+        legal_evidence_ids=selected_legal_evidence_ids(
             request.legal_evidence,
-            value.check_code,
+            value.legal_evidence_ids,
+            prompt_included=request.legal_evidence_prompt_status == "INCLUDED",
         ),
     )
 

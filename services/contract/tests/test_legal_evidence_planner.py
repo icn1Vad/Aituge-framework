@@ -967,7 +967,7 @@ def test_finding_citation_binding_keeps_only_applicable_evidence_ids() -> None:
     )
 
 
-def test_catalog_uses_conservative_budget_and_never_drops_only_some_ids() -> None:
+def test_legacy_catalog_preserves_all_text_regardless_of_old_budget() -> None:
     evidence = [
         LegalEvidence(
             evidence_id="legal-evidence-" + f"{index:032x}",
@@ -986,15 +986,16 @@ def test_catalog_uses_conservative_budget_and_never_drops_only_some_ids() -> Non
     assert {item["evidence_id"] for item in catalog} == {
         item.evidence_id for item in evidence
     }
-    assert token_upper_bound <= 1800
+    assert token_upper_bound > 1800
+    assert all(item["content_excerpt"] == "付款" * 300 and not item["content_truncated"] for item in catalog)
     assert token_upper_bound == deterministic_token_upper_bound(canonical_json(catalog))
 
     omitted, omitted_tokens = compact_legal_evidence_catalog(
         evidence,
         maximum_catalog_tokens=20,
     )
-    assert omitted == []
-    assert omitted_tokens == 0
+    assert omitted == catalog
+    assert omitted_tokens == token_upper_bound
 
     zero_excerpt_catalog = [
         {**item, "content_excerpt": "", "content_truncated": True}
@@ -1007,8 +1008,8 @@ def test_catalog_uses_conservative_budget_and_never_drops_only_some_ids() -> Non
         evidence,
         maximum_catalog_tokens=too_small_for_complete_catalog,
     )
-    assert omitted == []
-    assert omitted_tokens == 0
+    assert omitted == catalog
+    assert omitted_tokens == token_upper_bound
 
 
 def test_remaining_legal_budget_reserves_the_legacy_prompt_and_system_prompt() -> None:

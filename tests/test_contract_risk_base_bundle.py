@@ -204,29 +204,28 @@ def _request() -> GenericReviewRequest:
     )
 
 
-def test_generic_legal_catalog_budget_omission_is_explicit(monkeypatch) -> None:
+def test_generic_legal_catalog_is_included_without_legacy_budget_omission(monkeypatch) -> None:
     request = _request()
     request.legal_evidence = [object()]  # compactor is isolated below
     monkeypatch.setattr(
-        "services.contract.capabilities.risk_review_bundle.compact_legal_evidence_catalog",
-        lambda *_args, **_kwargs: ([], 0),
+        "services.contract.capabilities.risk_review_bundle.review_legal_evidence_catalog",
+        lambda *_args, **_kwargs: ([{"content_excerpt": "完整法条正文", "content_truncated": False}], 100),
     )
 
     _generic_prompt(request)
 
     assert len(request.legal_evidence) == 1
-    assert request.legal_evidence_prompt_status == "OMITTED_TOKEN_BUDGET"
+    assert request.legal_evidence_prompt_status == "INCLUDED"
+    assert "完整法条正文" in _generic_prompt(request)[0]
 
 
-def test_empty_legal_evidence_keeps_generic_prompt_on_legacy_shape() -> None:
+def test_empty_law_catalog_keeps_explicit_selection_without_candidates() -> None:
     prompt, _ir_refs, _anchor_refs = _generic_prompt(_request())
     payload = json.loads(prompt.split("\n", 1)[1])
     assert "legal_evidence_catalog" not in payload
     assert "legal_evidence_input_tokens" not in payload
-    assert not any(
-        "legal_evidence" in rule
-        for rule in payload["output_contract"]["rules"]
-    )
+    # No catalogue means no law may be selected, not a return to prose binding.
+    assert "legal_evidence_ids" in json.dumps(payload["output_contract"])
 
 
 def _po_request(
@@ -1037,6 +1036,7 @@ def _po_candidate_payload(
             severity_factors = list(candidate.allowed_severity_factors)
             decision = {
                 "candidate_id": candidate.candidate_id,
+                "primary_evidence_source_ids": list(candidate.primary_evidence_source_ids),
                 "verdict": "RISK",
                 "decision_summary": "候选事实满足触发条件，且未识别到有效缓释。",
                 "severity_factors": severity_factors,
@@ -1054,6 +1054,7 @@ def _po_candidate_payload(
             )
             decision = {
                 "candidate_id": candidate.candidate_id,
+                "primary_evidence_source_ids": list(candidate.primary_evidence_source_ids),
                 "verdict": "NO_RISK",
                 "decision_summary": "反向证据表明该候选在当前合同中未形成实质风险。",
                 "severity_factors": [],
@@ -1283,10 +1284,12 @@ def test_icd_prompt_uses_candidate_decision_only() -> None:
     payload = json.loads(prompt.split("\n", 1)[1])
     fields = payload["output_contract"]["candidate_decision_fields"]
     assert fields == [
+        "legal_evidence_ids",
         "candidate_id",
         "verdict",
         "decision_summary",
         "severity_factors",
+        "primary_evidence_source_ids",
         "supporting_evidence_source_ids",
         "counter_evidence_source_ids",
         "recommended_control_codes",
@@ -1298,7 +1301,6 @@ def test_icd_prompt_uses_candidate_decision_only() -> None:
         "risk_level",
         "our_party",
         "counterparty",
-        "primary_evidence_source_ids",
     }.isdisjoint(fields)
     assert payload["source_catalog"]
     assert all(
@@ -1327,6 +1329,7 @@ def test_icd_absence_risk_materializes_one_python_finding() -> None:
             decisions.append(
                 {
                     "candidate_id": candidate.candidate_id,
+                    "primary_evidence_source_ids": list(candidate.primary_evidence_source_ids),
                     "verdict": "RISK",
                     "decision_summary": "保密条款缺少例外、披露程序和期限机制",
                     "severity_factors": ["MISSING_CORE_MECHANISM"],
@@ -1341,6 +1344,7 @@ def test_icd_absence_risk_materializes_one_python_finding() -> None:
             decisions.append(
                 {
                     "candidate_id": candidate.candidate_id,
+                    "primary_evidence_source_ids": list(candidate.primary_evidence_source_ids),
                     "verdict": "NO_RISK",
                     "decision_summary": "现有条款未显示对合同立场不利的实质风险",
                     "severity_factors": [],
@@ -1838,13 +1842,23 @@ def test_po_stability_uses_root_and_primary_evidence_not_supporting_variation() 
 
 
 class FakeRuntime:
-    def __init__(self, responses: list[LlmCompletionResult]) -> None:
+    def __init__(self, responses: list[LlmCompletionResult], request=None) -> None:
         self.responses = responses
         self.calls = []
+        self.request = request
 
     async def complete_with_usage(self, **kwargs) -> LlmCompletionResult:
         self.calls.append(kwargs)
-        return self.responses.pop(0)
+        result = self.responses.pop(0)
+        if kwargs.get('review_unit_id') == 'formation_validity_authority':
+            from test_seven_domain_evidence_protocol import wire_fixture, catalog_for
+            try:
+                payload = json.loads(result.content)
+            except ValueError:
+                return result
+            from dataclasses import replace
+            result = replace(result, content=json.dumps(wire_fixture(payload, catalog_for(self.request or _request()), tolerate_invalid=True), ensure_ascii=False))
+        return result
 
 
 def test_generic_direct_review_maps_real_anchor_and_uses_zero_tools() -> None:
@@ -1975,18 +1989,20 @@ def test_po_candidates_cover_frozen_business_hypotheses() -> None:
         for item in payload["output_contract"]["rules"]
     )
     assert payload["output_contract"]["candidate_decision_fields"] == [
+        "legal_evidence_ids",
         "candidate_id",
         "verdict",
         "decision_summary",
         "severity_factors",
+        "primary_evidence_source_ids",
         "supporting_evidence_source_ids",
         "counter_evidence_source_ids",
         "recommended_control_codes",
     ]
     assert "risk_only_fields" not in payload["output_contract"]
-    assert payload["candidate_legend"][0] == "candidate_id"
+    assert "candidate_legend" not in payload
     assert all(
-        len(candidate) == len(payload["candidate_legend"])
+        isinstance(candidate, dict) and "material_source_ids" in candidate
         for check in payload["assigned_checks"]
         for candidate in check["candidates"]
     )
@@ -2020,7 +2036,7 @@ def test_po_directional_candidates_follow_selected_review_side() -> None:
     }
 
 
-def test_po_prompt_isolates_sources_by_check_code() -> None:
+def test_po_prompt_shares_text_sources_across_check_codes() -> None:
     request = _po_request()
     text, _ir_refs, _anchor_refs = _generic_prompt(request)
     payload = json.loads(text.split("\n", 1)[1])
@@ -2049,7 +2065,7 @@ def test_po_prompt_isolates_sources_by_check_code() -> None:
     for check_code in shared.allowed_check_codes:
         assert shared.source_id in source_ids_by_check[check_code]
     for check_code in set(source_ids_by_check) - set(shared.allowed_check_codes):
-        assert shared.source_id not in source_ids_by_check[check_code]
+        assert shared.source_id in source_ids_by_check[check_code]
 
 
 @pytest.mark.skipif(not os.getenv(FIXTURE_ENV), reason=f"{FIXTURE_ENV} is not configured")
@@ -2835,7 +2851,7 @@ def test_po_primary_repeated_as_supporting_is_deduplicated_without_repair() -> N
     assert result.repair_count == 0
 
 
-def test_po_model_schema_excludes_party_primary_and_formal_finding_fields() -> None:
+def test_po_model_schema_accepts_primary_but_excludes_party_and_formal_finding_fields() -> None:
     request = _po_request()
     payload = _po_candidate_payload(request)
     raw = payload["candidate_decisions"][0]
@@ -2843,7 +2859,6 @@ def test_po_model_schema_excludes_party_primary_and_formal_finding_fields() -> N
         "perspective": "PARTY_B",
         "our_party": request.counterparty,
         "counterparty": request.our_party,
-        "primary_evidence_source_ids": ["risk-es-" + "a" * 32],
         "risk_level": "HIGH",
         "title": "模型标题",
         "issue": "模型问题",
@@ -3176,18 +3191,12 @@ def test_po_source_backed_finding_derives_ir_anchor_and_deduplicates() -> None:
     assert source.anchor_id
 
 
-def test_po_unknown_and_cross_check_source_are_rejected() -> None:
+def test_po_unknown_source_is_rejected_but_check_tags_do_not_restrict_text() -> None:
     request = _po_request()
     catalog, ir_refs, anchor_refs = _po_catalog(request)
     po003_allowed = set(catalog.allowed_source_ids_by_check["PO-003"])
-    other_source = next(
-        source_id
-        for check_code, source_ids in catalog.allowed_source_ids_by_check.items()
-        if check_code != "PO-003"
-        for source_id in source_ids
-        if source_id not in po003_allowed
-    )
-    for source_id in ("risk-es-" + "f" * 32, other_source):
+    assert set(catalog.evidence_sources) <= po003_allowed
+    for source_id in ("risk-es-" + "f" * 32,):
         draft = GenericModelFindingDraft.model_validate(
             {
                 "check_code": "PO-003",
@@ -3942,12 +3951,7 @@ def test_po_domain_gate_rejects_cross_domain_core_issue() -> None:
 def test_po_acceptance_mode_stops_before_evidence_selection_repair() -> None:
     request = _po_request()
     catalog, _ir_refs, _anchor_refs = _po_catalog(request)
-    wrong_source_id = next(
-        source_id
-        for source_id in catalog.allowed_source_ids_by_check["PO-006"]
-        if source_id
-        not in set(catalog.allowed_source_ids_by_check["PO-002"])
-    )
+    wrong_source_id = "risk-es-" + "f" * 32
     payload = _po_candidate_payload(request)
     decision = next(
         item
@@ -4061,12 +4065,7 @@ def test_generic_unknown_check_level_compatibility_value_is_rejected() -> None:
 def test_po_invalid_strong_counter_triggers_controlled_redecision() -> None:
     request = _po_request()
     catalog, _ir_refs, _anchor_refs = _po_catalog(request)
-    wrong_source_id = next(
-        source_id
-        for source_id in catalog.allowed_source_ids_by_check["PO-006"]
-        if source_id
-        not in set(catalog.allowed_source_ids_by_check["PO-002"])
-    )
+    wrong_source_id = "risk-es-" + "f" * 32
     invalid_payload = _po_candidate_payload(request)
     corrected_payload = _po_candidate_payload(
         request,
@@ -4188,7 +4187,7 @@ def test_fva002_cannot_assert_unseen_external_facts() -> None:
             )
         )
 
-    assert raised.value.code == "RISK_FVA_EXTERNAL_FACT_ASSERTED"
+    assert raised.value.code == "RISK_EVIDENCE_SELECTION_INVALID"  # External absence is not a contract source.
 
 
 def test_fva002_external_verification_is_not_a_finding() -> None:
@@ -4518,7 +4517,7 @@ def test_structural_repair_cannot_change_fva002_assessment() -> None:
     assert raised.value.code == "RISK_REPAIR_SEMANTICS_CHANGED"
 
 
-def test_semantic_change_failure_persists_both_complete_attempts() -> None:
+def test_targeted_business_correction_persists_both_complete_attempts() -> None:
     first = json.dumps(
         _payload(fva002_external_assertion=True),
         ensure_ascii=False,
@@ -4532,25 +4531,26 @@ def test_semantic_change_failure_persists_both_complete_attempts() -> None:
     )
     persisted: list[GenericAttemptArtifact] = []
 
-    with pytest.raises(DirectReviewError) as raised:
-        asyncio.run(
-            GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
-                _request(),
-                tenant_id="tenant-1",
-                model_id="deepseek-v4-flash",
-                attempt_artifact_sink=persisted.append,
-            )
+    result = asyncio.run(
+        GenericBaseDirectReviewer(runtime_factory=lambda _tenant: runtime).review(
+            _request(),
+            tenant_id="tenant-1",
+            model_id="deepseek-v4-flash",
+            attempt_artifact_sink=persisted.append,
         )
-
-    assert raised.value.code == "RISK_REPAIR_SEMANTICS_CHANGED"
+    )
+    assert result.status == "COMPLETED"
     assert [item.attempt_type for item in persisted] == ["INITIAL", "REPAIR"]
-    assert [item.raw_response for item in persisted] == [first, repaired]
+    from test_seven_domain_evidence_protocol import wire_fixture, catalog_for
+    expected_wire = [wire_fixture(json.loads(value), catalog_for(_request()), tolerate_invalid=True) for value in (first, repaired)]
+    assert [json.loads(item.raw_response) for item in persisted] == expected_wire
     assert persisted[0].accepted is False
     assert persisted[0].acceptance_reason == "REPAIR_REQUIRED"
-    assert persisted[0].validation_errors["domain_safety"]
-    assert persisted[1].accepted is False
-    assert persisted[1].semantic_preservation_passed is False
-    assert persisted[1].validation_errors["semantic_preservation"]
+    assert persisted[0].validation_errors["evidence"]  # Rejected before domain safety: no contract source for external absence.
+    assert persisted[1].accepted is True
+    assert persisted[1].repair_type == "BUSINESS_REASSESSMENT"
+    assert persisted[1].semantic_preservation_passed is True
+    assert not persisted[1].validation_errors["semantic_preservation"]
     assert persisted[1].before_summary is not None
     assert persisted[1].after_summary is not None
     assert persisted[1].semantic_diff is not None
@@ -5689,6 +5689,7 @@ def test_lre_same_batch_root_may_materialize_evidence_from_multiple_checks() -> 
             candidate_decisions=[
                 {
                     "candidate_id": candidate.candidate_id,
+                    "primary_evidence_source_ids": list(candidate.primary_evidence_source_ids),
                     "verdict": (
                         "NO_RISK"
                         if candidate.candidate_type == "TERMINATION_RIGHTS_REVIEW"

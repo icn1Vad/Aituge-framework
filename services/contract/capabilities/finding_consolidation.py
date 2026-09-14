@@ -219,7 +219,7 @@ class FindingConsolidationEngine:
                     messages=[{"role": "user", "content": prompt}],
                     model_id=model_id,
                     system_prompt=_SYSTEM_PROMPT,
-                    max_tokens=max(800, min(8_000, 200 + len(candidates) * 80)),
+                    max_tokens=None, use_provider_output_default=True,
                     temperature=0,
                     thinking_override=False,
                     response_format={"type": "json_object"},
@@ -284,7 +284,7 @@ class FindingConsolidationEngine:
                     )
                     previous_completion = completion_result
                 last_error = exc
-                feedback = str(exc)[:300]
+                feedback = str(exc)
             except Exception:
                 if completion_result is not None:
                     await finalize_completion_validation_failed(
@@ -427,9 +427,9 @@ def _finding_summary(finding: dict[str, Any], evidences: list[dict[str, Any]]) -
     return {
         "category": finding.get("category"),
         "risk_level": finding.get("risk_level"),
-        "title": str(finding.get("title") or "")[:300],
-        "issue": str(finding.get("issue") or "")[:800],
-        "evidence": [_evidence_summary(item) for item in evidences[:8]],
+        "title": str(finding.get("title") or ""),
+        "issue": str(finding.get("issue") or ""),
+        "evidence": [_evidence_summary(item) for item in evidences],
     }
 
 
@@ -437,14 +437,14 @@ def _evidence_summary(evidence: dict[str, Any]) -> dict[str, Any]:
     if evidence.get("evidence_type") == "ABSENCE":
         return {
             "evidence_type": "ABSENCE",
-            "checked_scope": str(evidence.get("checked_scope") or "")[:300],
+            "checked_scope": str(evidence.get("checked_scope") or ""),
         }
     return {
         "evidence_type": evidence.get("evidence_type"),
         "block_id": evidence.get("block_id"),
         "char_start": evidence.get("char_start"),
         "char_end": evidence.get("char_end"),
-        "quoted_text": str(evidence.get("quoted_text") or "")[:500] or None,
+        "quoted_text": str(evidence.get("quoted_text") or "") or None,
     }
 
 

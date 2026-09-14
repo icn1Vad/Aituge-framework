@@ -640,7 +640,10 @@ class LlmRuntime:
         model_attempt_no: int = 1,
         fallback_from_invocation_id: str | None = None,
         defer_terminal: bool = False,
+        use_provider_output_default: bool = False,
     ) -> LlmCompletionResult:
+        if use_provider_output_default and max_tokens is not None:
+            raise ValueError("Provider-default output cannot also specify max_tokens")
         if model_attempt_no < 1:
             raise ValueError("model_attempt_no must be >= 1")
         if (
@@ -681,6 +684,7 @@ class LlmRuntime:
                     model_attempt_no=model_attempt_no + retry_index,
                     fallback_from_invocation_id=fallback_id,
                     defer_terminal=defer_terminal,
+                    use_provider_output_default=use_provider_output_default,
                 )
             except _ObservedProviderAttemptError as observed:
                 if (
@@ -717,6 +721,7 @@ class LlmRuntime:
         model_attempt_no: int = 1,
         fallback_from_invocation_id: str | None = None,
         defer_terminal: bool = False,
+        use_provider_output_default: bool = False,
     ) -> LlmCompletionResult:
         """Complete one request while collecting provider usage and streaming TTFT.
 
@@ -777,6 +782,11 @@ class LlmRuntime:
             "max_tokens": llm.max_tokens if max_tokens is None else max_tokens,
             "extra_body": _build_thinking_extra_body(llm, thinking_override),
         }
+        if use_provider_output_default:
+            # Explicit per-call opt-in; do not silently replace a removed review
+            # ceiling with the registry's default (e.g. 8000). Other callers
+            # retain their current model-profile/explicit output configuration.
+            request_kwargs.pop("max_tokens")
         if response_format is not None:
             request_kwargs["response_format"] = response_format
         transport_accepted = False

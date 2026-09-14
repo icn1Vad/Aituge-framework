@@ -150,8 +150,9 @@ def test_contract_capability_registers_frozen_pipeline_and_internal_tools() -> N
         if item["pipeline_id"] == "contract-party-resolution-pipeline-v1"
     )
     party_stages = {item["stage_id"]: item for item in party_pipeline["stages"]}
-    assert party_pipeline["timeout_seconds"] == 10
-    assert party_stages["parse_contract"]["timeout_seconds"] == 5
+    assert party_pipeline["timeout_seconds"] == 90
+    assert party_stages["parse_contract"]["timeout_seconds"] == 60
+    assert party_pipeline['timeout_seconds'] > sum(s['timeout_seconds'] for s in party_stages.values())
     assert party_stages["resolve_parties"]["stage_type"] == "finalizer"
     assert party_stages["resolve_parties"]["service_handler"] == (
         "contract_party_resolution_direct_v1"

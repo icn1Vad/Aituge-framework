@@ -73,6 +73,7 @@ class _RiskRuntime:
                     "candidate_id": candidate["candidate_id"],
                     "verdict": "RISK",
                     "decision_summary": "候选两侧或Trigger与Absence共同证明实质横向风险。",
+                    "primary_evidence_source_ids": list(dict.fromkeys(candidate['left_evidence_source_ids'] + candidate['right_evidence_source_ids'] + candidate['absence_evidence_source_ids'])),
                     "resolution_reason": None,
                     "severity_factors": candidate["allowed_severity_factors"][:1],
                     "supporting_evidence_source_ids": [],
@@ -119,7 +120,8 @@ class _SlowRiskRuntime(_RiskRuntime):
         return await super().complete_with_usage(**kwargs)
 
 
-def test_empty_legal_evidence_keeps_horizontal_prompt_on_legacy_shape() -> None:
+@pytest.mark.parametrize("with_legal_text", [False, True])
+def test_horizontal_prompt_preserves_legacy_shape_or_full_legal_text(with_legal_text) -> None:
     source_id = "horizontal-es-" + "1" * 32
     candidate_id = "horizontal-candidate-" + "2" * 32
     source = HorizontalEvidenceSource.model_construct(
@@ -179,7 +181,17 @@ def test_empty_legal_evidence_keeps_horizontal_prompt_on_legacy_shape() -> None:
         absence_evidence_sources=[],
     )
 
-    prompt = _batch_prompt(plan, batch, legal_evidence=[])
+    from test_legal_evidence_binding import _bundle
+    from services.contract.capabilities.horizontal_review import _batch_prompt_details
+    law = _bundle("正文；" * 4000 + "条末例外不得遗漏。", domain="cross_clause_consistency", check_codes=["CCC-001"]).evidence
+    prompt, supplied, size, status = _batch_prompt_details(plan, batch, legal_evidence=law if with_legal_text else [])
+    if with_legal_text:
+        payload = json.loads(prompt)
+        assert payload["legal_evidence_catalog"][0]["content_excerpt"] == law[0].unit.content
+        assert supplied == law and size > 7000 and status == "INCLUDED"
+        assert "citation_label" in prompt and "decision_summary" in prompt
+        return
+    assert not supplied and size == 0 and status == "NOT_REQUESTED"
     expected = {
         "task": "HORIZONTAL_CANDIDATE_DECISION",
         "unit_id": batch.unit_id,
@@ -201,8 +213,13 @@ def test_empty_legal_evidence_keeps_horizontal_prompt_on_legacy_shape() -> None:
             ]
         },
     }
-    assert prompt == canonical_json(expected)
-    assert "legal_evidence" not in prompt
+    actual = json.loads(prompt)
+    assert actual['candidate_decisions_required'] == expected['candidate_decisions_required']
+    assert actual['evidence_sources'] == expected['evidence_sources']
+    from services.contract.capabilities.review_evidence_protocol import EVIDENCE_PROTOCOL_VERSION
+    assert actual['output_contract']['evidence_protocol_version'] == EVIDENCE_PROTOCOL_VERSION
+    assert 'primary_evidence_source_ids' in actual['output_contract']['candidate_decisions'][0]
+    assert "legal_evidence_catalog" not in actual
 
 
 def test_registry_and_horizontal_plan_cover_exactly_11_of_45_checks() -> None:

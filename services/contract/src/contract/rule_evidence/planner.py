@@ -329,8 +329,11 @@ class AdaptiveRuleEvidencePlanner:
         ):
             return False
         # Literal A/B and a business role are separate dimensions, not substitutes.
+        business_roles = set(getattr(request, "business_roles", []) or [])
+        if getattr(request, "business_role", None):
+            business_roles.add(request.business_role)
         if not (cls._stance_matches(rule.party_stance, request.perspective)
-                or (request.business_role and cls._stance_matches(rule.party_stance, request.business_role))):
+                or any(cls._stance_matches(rule.party_stance, role) for role in business_roles)):
             return False
         if rule.rule_type.strip().casefold() == "dedicated":
             requested_types = {cls._normalize(value) for value in

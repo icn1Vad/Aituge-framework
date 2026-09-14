@@ -9,6 +9,7 @@ from threading import Lock
 from typing import AsyncIterator
 
 from loguru import logger
+from task_manager.runtime.fencing import current_execution_lease, verify_current_execution_lease
 
 
 _RUN_TASKS: dict[str, asyncio.Task[None]] = {}
@@ -18,6 +19,25 @@ _MEMORY_RUN_LOCKS_GUARD = Lock()
 
 @asynccontextmanager
 async def executor_lock(run_id: str) -> AsyncIterator[bool]:
+    lease = current_execution_lease()
+    if lease is not None:
+        # The persisted, version-fenced DB lease is the worker's authority.
+        # A second independent 30-minute Redis lock survives a crash and used
+        # to block the valid recovery owner while its DB heartbeat lied about
+        # progress. Verify ownership; never delete or steal another Redis lock.
+        await verify_current_execution_lease(run_id)
+        key = f"{run_id}:lease:{lease.version}"
+        with _MEMORY_RUN_LOCKS_GUARD:
+            acquired = key not in _MEMORY_RUN_LOCKS
+            if acquired:
+                _MEMORY_RUN_LOCKS.add(key)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                with _MEMORY_RUN_LOCKS_GUARD:
+                    _MEMORY_RUN_LOCKS.discard(key)
+        return
     backend = os.environ.get(
         "TASK_EXECUTOR_LOCK_BACKEND",
         "redis" if os.environ.get("TASK_EVENT_BROKER", "memory").strip().lower() == "redis" else "memory",

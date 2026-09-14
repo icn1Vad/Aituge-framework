@@ -97,13 +97,13 @@ class SpecialistReviewerSpec(StrictModel):
 
 class CheckSpec(StrictModel):
     check_code: str = Field(pattern=r"^[A-Z]{2,3}-[0-9]{3}$")
-    title: str = Field(min_length=1, max_length=300)
-    description: str = Field(min_length=1, max_length=2000)
+    title: str = Field(min_length=1)
+    description: str = Field(min_length=1)
     domain: RiskDomain
     criticality: Criticality = Criticality.REQUIRED
     applicability: ApplicabilitySpec = Field(default_factory=ApplicabilitySpec)
     required_ir_types: list[IrField] = Field(default_factory=list)
-    review_question: str = Field(min_length=1, max_length=2000)
+    review_question: str = Field(min_length=1)
     allowed_categories: list[FindingCategory] = Field(min_length=1)
     allowed_risk_types: list[str] = Field(min_length=1)
     risk_level_rule_id: str = Field(min_length=1, max_length=160)
@@ -130,8 +130,8 @@ class CheckSpec(StrictModel):
 class PlaybookManifest(StrictModel):
     playbook_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{2,79}$")
     version: str = Field(pattern=r"^[0-9]+\.[0-9]+$")
-    name: str = Field(min_length=1, max_length=200)
-    description: str = Field(min_length=1, max_length=2000)
+    name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
     enabled: bool = True
     execution_mode: ExecutionMode
     criticality: Criticality = Criticality.REQUIRED
@@ -232,10 +232,10 @@ class RiskAbsenceEvidenceSource(StrictModel):
     source_id: str = Field(pattern=r"^risk-as-[0-9a-f]{32}$")
     generation_id: str = Field(min_length=1, max_length=160)
     check_code: str = Field(pattern=r"^[A-Z]{2,3}-[0-9]{3}$")
-    checked_scope: str = Field(min_length=1, max_length=500)
-    verification_method: str = Field(min_length=1, max_length=2000)
+    checked_scope: str = Field(min_length=1)
+    verification_method: str = Field(min_length=1)
     present_ir_types: list[IrField]
-    missing_target: str = Field(min_length=1, max_length=500)
+    missing_target: str = Field(min_length=1)
 
 
 class RiskCheckEvidencePolicy(StrictModel):
@@ -363,8 +363,8 @@ class RiskReviewContext(StrictModel):
     unit_id: RiskDomain
     batch_id: str = Field(pattern=r"^risk-batch-[0-9a-f]{32}$")
     perspective: Perspective
-    our_party: str = Field(min_length=1, max_length=500)
-    counterparty: str = Field(min_length=1, max_length=500)
+    our_party: str = Field(min_length=1)
+    counterparty: str = Field(min_length=1)
     contract_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=80)
     review_attitude: Literal["NEUTRAL"] = "NEUTRAL"
     check_specs: list[CheckSpec] = Field(min_length=1)
@@ -411,8 +411,8 @@ class RiskReviewPlanInput(StrictModel):
     generation_id: str = Field(min_length=1, max_length=160)
     attempt_no: int = Field(ge=1, le=2)
     perspective: Perspective
-    our_party: str = Field(min_length=1, max_length=500)
-    counterparty: str = Field(min_length=1, max_length=500)
+    our_party: str = Field(min_length=1)
+    counterparty: str = Field(min_length=1)
     contract_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=80)
     review_attitude: Literal["NEUTRAL"] = "NEUTRAL"
     stage_result: ExtractContractIrStageResult

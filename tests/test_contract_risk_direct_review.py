@@ -91,6 +91,11 @@ def _request() -> CommercialReviewRequest:
             for index, quote in enumerate(quotes, start=1)
         ],
         estimated_input_tokens=2800,
+        check_task_scopes=[dict(check_code=code,
+            expected_item_ids=[f'ir-payment-{i}' for i in range(1, 6)],
+            provided_item_ids=[f'ir-payment-{i}' for i in range(1, 6)],
+            expected_anchor_ids=[f'anchor-commercial-{i}' for i in range(1, 6)],
+            provided_anchor_ids=[f'anchor-commercial-{i}' for i in range(1, 6)]) for code in COMMERCIAL_CHECK_CODES],
     )
 
 
@@ -178,20 +183,30 @@ def _completion(
 
 
 class FakeRuntime:
-    def __init__(self, responses: list[LlmCompletionResult]) -> None:
+    def __init__(self, responses: list[LlmCompletionResult], request=None) -> None:
         self.responses = responses
         self.calls = []
+        self.request = request
 
     async def complete_with_usage(self, **kwargs) -> LlmCompletionResult:
         self.calls.append(kwargs)
-        return self.responses.pop(0)
+        result = self.responses.pop(0)
+        # Historical fixtures describe internal Evidence. Explicitly migrate the
+        # test data; production runtime accepts only the new selection protocol.
+        from test_seven_domain_evidence_protocol import wire_fixture, catalog_for
+        try:
+            payload = json.loads(result.content)
+        except ValueError:
+            return result
+        from dataclasses import replace
+        return replace(result, content=json.dumps(wire_fixture(payload, catalog_for(self.request or _request()), tolerate_invalid=True), ensure_ascii=False))
 
 
 def _review(
     responses: list[LlmCompletionResult],
     request: CommercialReviewRequest | None = None,
 ):
-    runtime = FakeRuntime(responses)
+    runtime = FakeRuntime(responses, request=request)
     reviewer = CommercialFinancialDirectReviewer(runtime_factory=lambda _tenant: runtime)
     result = asyncio.run(
         reviewer.review(
@@ -204,29 +219,27 @@ def _review(
     return result, runtime
 
 
-def test_empty_legal_evidence_keeps_commercial_prompt_on_legacy_shape() -> None:
+def test_empty_law_catalog_keeps_explicit_selection_without_candidates() -> None:
     prompt, _ir_refs, _anchor_refs, _candidate = _prompt(_request())
     payload = json.loads(prompt.split("\n", 1)[1])
     assert "legal_evidence_catalog" not in payload
     assert "legal_evidence_input_tokens" not in payload
-    assert not any(
-        "legal_evidence" in rule
-        for rule in payload["output_contract"]["rules"]
-    )
+    assert "legal_evidence_ids" in json.dumps(payload["output_contract"])
 
 
-def test_legal_catalog_budget_omission_is_explicit(monkeypatch) -> None:
+def test_legal_catalog_is_included_without_legacy_budget_omission(monkeypatch) -> None:
     request = _request()
     request.legal_evidence = [object()]  # compactor is isolated below
     monkeypatch.setattr(
-        "services.contract.capabilities.risk_review.compact_legal_evidence_catalog",
-        lambda *_args, **_kwargs: ([], 0),
+        "services.contract.capabilities.risk_review.review_legal_evidence_catalog",
+        lambda *_args, **_kwargs: ([{"content_excerpt": "完整法条正文", "content_truncated": False}], 100),
     )
 
     _prompt(request)
 
     assert len(request.legal_evidence) == 1
-    assert request.legal_evidence_prompt_status == "OMITTED_TOKEN_BUDGET"
+    assert request.legal_evidence_prompt_status == "INCLUDED"
+    assert "完整法条正文" in _prompt(request)[0]
 
 
 def test_direct_review_succeeds_with_all_checks_zero_tools_and_one_call() -> None:
@@ -338,7 +351,7 @@ def test_invalid_json_is_repaired_once_for_current_unit() -> None:
     assert len(runtime.calls[1]["messages"]) == 1
     repair_request = json.loads(runtime.calls[1]["messages"][0]["content"])
     assert repair_request["first_raw_json"] == "not-json"
-    assert "不得把非空findings改为空数组" in repair_request["constraints"]
+    assert "删除被证伪的目标风险时必须说明对应证据与复核原因" in repair_request["constraints"]
 
 
 def test_persistently_invalid_json_fails_after_one_repair() -> None:
@@ -375,13 +388,13 @@ def test_persistently_invalid_json_fails_after_one_repair() -> None:
             lambda body: body["check_results"][0]["findings"][0]["evidence"][0].update(
                 {"ir_ref": "I999"}
             ),
-            "RISK_EVIDENCE_IR_UNKNOWN",
+            "RISK_EVIDENCE_SELECTION_INVALID",
         ),
         (
             lambda body: body["check_results"][0]["findings"][0]["evidence"][0].update(
                 {"evidence_ref": "A999"}
             ),
-            "RISK_EVIDENCE_ANCHOR_UNKNOWN",
+            "RISK_EVIDENCE_SELECTION_INVALID",
         ),
     ],
 )
@@ -968,9 +981,9 @@ def test_repair_may_remove_only_candidate_ir_without_changing_decisions() -> Non
     assert len(result.findings) == 1
 
 
-def test_repair_cannot_empty_nonempty_findings() -> None:
+def test_targeted_repair_cannot_empty_untargeted_findings() -> None:
     first = _valid_payload()
-    first["unexpected_top_level"] = True
+    first["check_results"][2]["decision_note"] = ""
     repaired = _valid_payload(finding_count=0)
 
     with pytest.raises(DirectReviewError) as raised:
@@ -997,9 +1010,9 @@ def test_repair_cannot_empty_nonempty_findings() -> None:
         lambda body: body["check_results"][0].update({"status": "NOT_APPLICABLE"}),
     ],
 )
-def test_repair_semantic_preservation_gate_rejects_business_changes(mutate) -> None:
+def test_targeted_repair_preserves_untargeted_business_judgments(mutate) -> None:
     first = _valid_payload()
-    first["unexpected_top_level"] = True
+    first["check_results"][2]["decision_note"] = ""
     repaired = _valid_payload()
     mutate(repaired)
 
@@ -1023,7 +1036,7 @@ def test_repair_cannot_delete_one_of_multiple_valid_evidence_items() -> None:
         "evidence_ref": "A002",
     }
     first["check_results"][0]["findings"][0]["evidence"].append(second_evidence)
-    first["unexpected_top_level"] = True
+    first["check_results"][2]["decision_note"] = ""
     repaired = _valid_payload()
 
     with pytest.raises(DirectReviewError) as raised:
@@ -1221,6 +1234,9 @@ def _request_with_single_payment_text(text: str) -> CommercialReviewRequest:
             "heading_path": ["付款"],
         }
     ]
+    payload['check_task_scopes'] = [dict(check_code=code,
+        expected_item_ids=['ir-payment-special'], provided_item_ids=['ir-payment-special'],
+        expected_anchor_ids=['anchor-payment-special'], provided_anchor_ids=['anchor-payment-special']) for code in COMMERCIAL_CHECK_CODES]
     return CommercialReviewRequest.model_validate(payload)
 
 
@@ -1298,6 +1314,7 @@ def test_cf005_strong_candidate_cannot_be_skipped_by_model() -> None:
     reviewer = CommercialFinancialDirectReviewer(runtime_factory=lambda _tenant: runtime)
 
     with pytest.raises(DirectReviewError) as raised:
+        runtime.request = request
         asyncio.run(
             reviewer.review(
                 request,

@@ -481,7 +481,7 @@ class TaskManagerService:
             raise ValueError(f"Run '{task.current_run_id}' not found.")
         return run
 
-    async def _drain_prepared_task(self, task_id: str, *, run_id: str | None = None) -> None:
+    async def _drain_prepared_task(self, task_id: str, *, run_id: str | None = None) -> bool:
         task = await self.get_task(task_id)
         if task is None:
             raise ValueError(f"Task '{task_id}' not found.")
@@ -492,10 +492,11 @@ class TaskManagerService:
             raise ValueError(f"Task '{task_id}' does not point to Run '{effective_run_id}'.")
         async with executor_lock(effective_run_id) as acquired:
             if not acquired:
-                return
+                return False
             try:
                 async for _ in self._stream_prepared_task(task):
                     pass
+                return True
             except RunLeaseLost:
                 raise
             except Exception as exc:

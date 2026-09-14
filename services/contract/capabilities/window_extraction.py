@@ -128,9 +128,9 @@ class WindowOffsetInput(StrictModel):
 
 class WindowExtractionRequest(StrictModel):
     window_id: str = Field(min_length=1, max_length=160)
-    source_text: str = Field(min_length=1, max_length=100_000)
-    context_text: str = Field(default="", max_length=10_000)
-    offset_map: list[WindowOffsetInput] = Field(min_length=1, max_length=2_000)
+    source_text: str = Field(min_length=1)
+    context_text: str = Field(default="")
+    offset_map: list[WindowOffsetInput] = Field(min_length=1)
 
     @model_validator(mode="after")
     def validate_offset_map(self) -> "WindowExtractionRequest":
@@ -146,13 +146,13 @@ class WindowExtractionRequest(StrictModel):
 
 class ModelExtraction(StrictModel):
     extraction_class: ExtractionClass
-    extraction_text: str = Field(min_length=1, max_length=10_000)
-    subject: str | None = Field(default=None, max_length=500)
-    predicate: str | None = Field(default=None, max_length=1_000)
-    object: str | None = Field(default=None, max_length=5_000)
-    term: str | None = Field(default=None, max_length=500)
-    meaning: str | None = Field(default=None, max_length=5_000)
-    referenced_clause_nos: list[str] = Field(default_factory=list, max_length=30)
+    extraction_text: str = Field(min_length=1)
+    subject: str | None = Field(default=None)
+    predicate: str | None = Field(default=None)
+    object: str | None = Field(default=None)
+    term: str | None = Field(default=None)
+    meaning: str | None = Field(default=None)
+    referenced_clause_nos: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_semantics(self) -> "ModelExtraction":
@@ -165,7 +165,7 @@ class ModelExtraction(StrictModel):
 
 
 class WindowExtractionEnvelope(StrictModel):
-    extractions: list[ModelExtraction] = Field(default_factory=list, max_length=300)
+    extractions: list[ModelExtraction] = Field(default_factory=list)
 
 
 class SourceSpan(StrictModel):
@@ -243,7 +243,7 @@ class WindowExtractionEngine:
                 ],
                 model_id=model_id,
                 system_prompt=_SYSTEM_PROMPT,
-                max_tokens=20_000,
+                max_tokens=None, use_provider_output_default=True,
                 temperature=0,
                 thinking_override=False,
                 response_format={"type": "json_object"},

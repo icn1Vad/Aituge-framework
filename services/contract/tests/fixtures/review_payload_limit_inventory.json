@@ -1,0 +1,1422 @@
+[
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "CommercialCheckSpec.review_question",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "CommercialCheckSpec.allowed_risk_types",
+    "removed": "10"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "CommercialReviewRequest.our_party",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "CommercialReviewRequest.counterparty",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "ModelEvidenceDraft.checked_scope",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "ModelEvidenceDraft.verification_note",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "ModelFindingDraft.title",
+    "removed": "300"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "ModelFindingDraft.issue",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "ModelFindingDraft.impact_to_our_party",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "ModelFindingDraft.suggestion",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "ModelCheckCoverageResultRaw.decision_note",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "ModelCheckCoverageResultRaw.identified_security_mechanisms",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "ModelCheckCoverageResult.decision_note",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "ModelCheckCoverageResult.identified_security_mechanisms",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "EvidenceCandidate.checked_scope",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "EvidenceCandidate.verification_note",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "FindingDraft.title",
+    "removed": "300"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "FindingDraft.issue",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "FindingDraft.impact_to_our_party",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "FindingDraft.suggestion",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "FindingDraft.our_party",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "FindingDraft.counterparty",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "CheckCoverageResult.decision_note",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "ReviewUnitResult.trace_ids",
+    "removed": "2"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "ReviewUnitResult.call_metrics",
+    "removed": "2"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "ReviewUnitResult.repair_reasons",
+    "removed": "1"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review.py",
+    "field": "ReviewUnitResult.attempt_diagnostics",
+    "removed": "2"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "GenericCheckSpec.review_question",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "GenericCheckSpec.allowed_risk_types",
+    "removed": "10"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "GenericCheckSpec.required_ir_types",
+    "removed": "14"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "GenericReviewRequest.our_party",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "GenericReviewRequest.counterparty",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "GenericModelEvidenceDraft.checked_scope",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "GenericModelEvidenceDraft.verification_note",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "GenericModelFindingDraft.candidate_ids",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "GenericModelFindingDraft.title",
+    "removed": "300"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "GenericModelFindingDraft.issue",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "GenericModelFindingDraft.impact_to_our_party",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "GenericModelFindingDraft.suggestion",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "GenericModelCheckResultRaw.decision_note",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "GenericModelCheckResult.decision_note",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "Po003CandidatePrecondition.unmet_conditions",
+    "removed": "4"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "IcdPerspectivePrecondition.decision_reason",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "SeverityFactorPolicy.allowed_candidate_types",
+    "removed": "15"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "SeverityFactorPolicy.required_evidence_types",
+    "removed": "2"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "SeverityFactorPolicy.required_text_signals",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "SeverityFactorPolicy.required_absence_source_types",
+    "removed": "10"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "SeverityFactorPolicy.conflicting_or_disqualifying_signals",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "DeterministicRiskCandidate.trigger_reason",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "DeterministicRiskCandidate.facts",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "DeterministicRiskCandidate.trigger_conditions",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "DeterministicRiskCandidate.mitigating_conditions",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "DeterministicRiskCandidate.disqualifying_conditions",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "DeterministicRiskCandidate.primary_evidence_requirements",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "DeterministicRiskCandidate.absence_evidence_requirements",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "DeterministicRiskCandidate.merge_compatible_candidate_types",
+    "removed": "10"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "DeterministicRiskCandidate.deterministic_severity_factors",
+    "removed": "7"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "DeterministicRiskCandidate.allowed_severity_factors",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "CandidateDecisionRaw.decision_summary",
+    "removed": "1200"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "CandidateDecisionRaw.severity_factors",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "CandidateDecisionRaw.recommended_control_codes",
+    "removed": "30"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "CandidateDecisionResponseRaw.candidate_decisions",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "CandidateDecision.decision_summary",
+    "removed": "1200"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "CandidateDecision.proposed_semantic_severity_factors",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "CandidateDecision.validated_semantic_severity_factors",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "CandidateDecision.rejected_severity_factors",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "CandidateDecision.recommended_control_codes",
+    "removed": "30"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "CanonicalRiskRoot.source_candidate_ids",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "CanonicalRiskRoot.recommended_control_codes",
+    "removed": "30"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "CheckDecisionResult.candidate_ids",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "CheckDecisionResult.finding_local_ids",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "DeterministicFindingEnrichment.candidate_ids",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "ReviewBatchResult.trace_ids",
+    "removed": "2"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "ReviewBatchResult.call_metrics",
+    "removed": "2"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "ReviewBatchResult.repair_reasons",
+    "removed": "1"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "ReviewBatchResult.attempt_diagnostics",
+    "removed": "2"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "BaseReviewUnitResult.batch_ids",
+    "removed": "32"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "BaseReviewUnitResult.trace_ids",
+    "removed": "64"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "BaseReviewUnitResult.call_metrics",
+    "removed": "64"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "BaseBundleIdentity.our_party",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "BaseBundleIdentity.counterparty",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "BaseBundleMetrics.batches_over_target",
+    "removed": "BASE_MAX_BATCHES"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "BaseBundleMetrics.batches_over_hard_limit",
+    "removed": "BASE_MAX_BATCHES"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "BaseBundleMetrics.batch_metrics",
+    "removed": "BASE_MAX_BATCHES"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "BaseBundleMetrics.failed_batch_ids",
+    "removed": "BASE_MAX_BATCHES"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "BaseRiskReviewBundle.batch_results",
+    "removed": "BASE_MAX_BATCHES"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "BaseBundleFailure.error_message",
+    "removed": "4000"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "BaseBundleFailure.completed_batch_ids",
+    "removed": "BASE_MAX_BATCHES"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "BaseBundleFailure.cancelled_batch_ids",
+    "removed": "BASE_MAX_BATCHES"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "BaseBundleFailure.diagnostic_batch_results",
+    "removed": "BASE_MAX_BATCHES"
+  },
+  {
+    "path": "services/contract/capabilities/risk_review_bundle.py",
+    "field": "GenericAttemptArtifact.acceptance_reason",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "RelationshipNode.subject",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "RelationshipNode.predicate",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "RelationshipNode.object",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "RelationshipNode.normalized_topic",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "RelationshipNode.normalized_value",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalAbsenceEvidenceSource.checked_scope",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalAbsenceEvidenceSource.required_mechanism",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalAbsenceEvidenceSource.missing_target",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalAbsenceEvidenceSource.verification_method",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalAbsenceEvidenceSource.trigger_evidence_source_ids",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.normalized_topic",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.left_evidence_source_ids",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.right_evidence_source_ids",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.context_evidence_source_ids",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.absence_evidence_source_ids",
+    "removed": "10"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.left_normalized_claim",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.right_normalized_claim",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.possible_resolution_rules",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.allowed_counter_evidence_source_ids",
+    "removed": "30"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.allowed_supporting_evidence_source_ids",
+    "removed": "30"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.required_trigger_conditions",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.disqualifying_conditions",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.primary_evidence_requirements",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.absence_evidence_requirements",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.deterministic_severity_factors",
+    "removed": "10"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.allowed_severity_factors",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.allowed_control_codes",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalCandidate.linked_base_finding_ids",
+    "removed": "30"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalBatch.evidence_source_ids",
+    "removed": "80"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalDecisionRaw.decision_summary",
+    "removed": "1200"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalDecisionRaw.resolution_reason",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalDecisionRaw.severity_factors",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalDecisionRaw.supporting_evidence_source_ids",
+    "removed": "30"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalDecisionRaw.counter_evidence_source_ids",
+    "removed": "30"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalDecisionRaw.recommended_control_codes",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/capabilities/horizontal_review.py",
+    "field": "HorizontalDecisionEnvelope.candidate_decisions",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/src/contract/risk/models.py",
+    "field": "CheckSpec.title",
+    "removed": "300"
+  },
+  {
+    "path": "services/contract/src/contract/risk/models.py",
+    "field": "CheckSpec.description",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/src/contract/risk/models.py",
+    "field": "CheckSpec.review_question",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/src/contract/risk/models.py",
+    "field": "PlaybookManifest.name",
+    "removed": "200"
+  },
+  {
+    "path": "services/contract/src/contract/risk/models.py",
+    "field": "PlaybookManifest.description",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/src/contract/risk/models.py",
+    "field": "RiskAbsenceEvidenceSource.checked_scope",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/risk/models.py",
+    "field": "RiskAbsenceEvidenceSource.verification_method",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/src/contract/risk/models.py",
+    "field": "RiskAbsenceEvidenceSource.missing_target",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/risk/models.py",
+    "field": "RiskReviewContext.our_party",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/risk/models.py",
+    "field": "RiskReviewContext.counterparty",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/risk/models.py",
+    "field": "RiskReviewPlanInput.our_party",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/risk/models.py",
+    "field": "RiskReviewPlanInput.counterparty",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/models.py",
+    "field": "ReviewRuleSnapshot.review_direction",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/models.py",
+    "field": "ReviewRuleSnapshot.name",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/models.py",
+    "field": "ReviewRuleSnapshot.contract_type_path",
+    "removed": "30"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/models.py",
+    "field": "ReviewRuleSnapshot.reference_basis",
+    "removed": "4000"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/models.py",
+    "field": "ReviewRuleSnapshot.content",
+    "removed": "20000"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/models.py",
+    "field": "ReviewRuleSnapshot.review_method",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/models.py",
+    "field": "ReviewRuleSnapshot.target_check_codes",
+    "removed": "100"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/models.py",
+    "field": "RuleLibraryRelation.evidence_text",
+    "removed": "4000"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/models.py",
+    "field": "RuleEvidenceIssue.query",
+    "removed": "8000"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/models.py",
+    "field": "RuleEvidenceIssue.facts",
+    "removed": "50"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/models.py",
+    "field": "RuleEvidenceIssue.required_concepts",
+    "removed": "100"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/models.py",
+    "field": "RuleEvidenceIssue.check_codes",
+    "removed": "100"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/models.py",
+    "field": "RuleEvidencePlanRequest.contract_type_aliases",
+    "removed": "30"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/models.py",
+    "field": "RuleEvidencePlanRequest.issues",
+    "removed": "100"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/models.py",
+    "field": "RuleEvidencePlanRequest.rules",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/models.py",
+    "field": "RuleEvidencePlanRequest.relations",
+    "removed": "50000"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/java_snapshot.py",
+    "field": "JavaRuleLibrarySnapshot.rules",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/reviewer.py",
+    "field": "Decision.title",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/reviewer.py",
+    "field": "Decision.reason",
+    "removed": "4000"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/reviewer.py",
+    "field": "Decision.suggestion",
+    "removed": "4000"
+  },
+  {
+    "path": "services/contract/src/contract/rule_evidence/reviewer.py",
+    "field": "Decision.quotes",
+    "removed": "10"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalRetrievalUnit.title",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalRetrievalUnit.issuing_authority",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalRelation.evidence_text",
+    "removed": "4000"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalRelationReviewItem.target_title",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalRelationReviewItem.evidence_text",
+    "removed": "4000"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalEvidenceIssue.query",
+    "removed": "8000"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalEvidenceIssue.question",
+    "removed": "4000"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalEvidenceIssue.facts",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalEvidenceIssue.parties",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalEvidenceIssue.contract_object",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalEvidenceIssue.evidence_need",
+    "removed": "100"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalEvidenceIssue.check_codes",
+    "removed": "45"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalEvidenceIssue.required_concepts",
+    "removed": "100"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalEvidencePlanRequest.issues",
+    "removed": "100"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalEvidence.check_codes",
+    "removed": "45"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalEvidence.cautions",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalEvidenceConflict.reason",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalApplicabilityDecision.reasons",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalEvidenceBundle.mapped_check_codes",
+    "removed": "45"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalEvidenceBundle.unmapped_check_codes",
+    "removed": "45"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalEvidenceBundle.unmapped_issue_ids",
+    "removed": "100"
+  },
+  {
+    "path": "services/contract/src/contract/legal_evidence/models.py",
+    "field": "LegalEvidenceBundle.rerank_diagnostics",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/evidence_planning/review_result.py",
+    "field": "RuleReviewDecision.title",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/evidence_planning/review_result.py",
+    "field": "RuleReviewDecision.reason",
+    "removed": "4000"
+  },
+  {
+    "path": "services/contract/src/contract/evidence_planning/review_result.py",
+    "field": "RuleReviewDecision.suggestion",
+    "removed": "4000"
+  },
+  {
+    "path": "services/contract/capabilities/window_extraction.py",
+    "field": "WindowExtractionRequest.source_text",
+    "removed": "100000"
+  },
+  {
+    "path": "services/contract/capabilities/window_extraction.py",
+    "field": "WindowExtractionRequest.context_text",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/capabilities/window_extraction.py",
+    "field": "WindowExtractionRequest.offset_map",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/window_extraction.py",
+    "field": "ModelExtraction.extraction_text",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/capabilities/window_extraction.py",
+    "field": "ModelExtraction.subject",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/window_extraction.py",
+    "field": "ModelExtraction.predicate",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/capabilities/window_extraction.py",
+    "field": "ModelExtraction.object",
+    "removed": "5000"
+  },
+  {
+    "path": "services/contract/capabilities/window_extraction.py",
+    "field": "ModelExtraction.term",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/window_extraction.py",
+    "field": "ModelExtraction.meaning",
+    "removed": "5000"
+  },
+  {
+    "path": "services/contract/capabilities/window_extraction.py",
+    "field": "ModelExtraction.referenced_clause_nos",
+    "removed": "30"
+  },
+  {
+    "path": "services/contract/capabilities/window_extraction.py",
+    "field": "WindowExtractionEnvelope.extractions",
+    "removed": "300"
+  },
+  {
+    "path": "services/contract/capabilities/window_pipeline.py",
+    "field": "PipelineWindowInput.section_ids",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/window_pipeline.py",
+    "field": "PipelineWindowInput.heading_path",
+    "removed": "30"
+  },
+  {
+    "path": "services/contract/capabilities/window_pipeline.py",
+    "field": "PipelineWindowInput.clause_nos",
+    "removed": "100"
+  },
+  {
+    "path": "services/contract/capabilities/window_pipeline.py",
+    "field": "PipelineWindowInput.primary_block_ids",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/window_pipeline.py",
+    "field": "WindowPipelineRequest.expected_blocks",
+    "removed": "20000"
+  },
+  {
+    "path": "services/contract/capabilities/window_pipeline.py",
+    "field": "WindowPipelineRequest.expected_section_ids",
+    "removed": "20000"
+  },
+  {
+    "path": "services/contract/capabilities/window_pipeline.py",
+    "field": "WindowPipelineRequest.windows",
+    "removed": "5000"
+  },
+  {
+    "path": "services/contract/capabilities/window_pipeline.py",
+    "field": "PipelineIrDefinition.term",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/window_pipeline.py",
+    "field": "PipelineIrDefinition.meaning",
+    "removed": "5000"
+  },
+  {
+    "path": "services/contract/capabilities/window_pipeline.py",
+    "field": "PipelineIrSemanticItem.subject",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/window_pipeline.py",
+    "field": "PipelineIrSemanticItem.predicate",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/capabilities/window_pipeline.py",
+    "field": "PipelineIrSemanticItem.object",
+    "removed": "5000"
+  },
+  {
+    "path": "services/contract/capabilities/window_pipeline.py",
+    "field": "WindowAttempt.fallback_reason",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/capabilities/window_pipeline.py",
+    "field": "WindowRunResult.attempts",
+    "removed": "2"
+  },
+  {
+    "path": "services/contract/capabilities/legacy_compatibility.py",
+    "field": "CompatibilityRoutingRecord.routing_reason",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/src/contract/internal/models.py",
+    "field": "ContractRiskPlanRequest.selected_playbook_ids",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/src/contract/internal/models.py",
+    "field": "ContractLegalEvidenceToolData.degradation_reasons",
+    "removed": "50"
+  },
+  {
+    "path": "services/contract/src/contract/internal/models.py",
+    "field": "ContractWindowData.section_ids",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/internal/models.py",
+    "field": "ContractWindowData.heading_path",
+    "removed": "30"
+  },
+  {
+    "path": "services/contract/src/contract/internal/models.py",
+    "field": "ContractWindowData.clause_nos",
+    "removed": "100"
+  },
+  {
+    "path": "services/contract/src/contract/internal/models.py",
+    "field": "ContractWindowData.primary_block_ids",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/src/contract/internal/models.py",
+    "field": "ContractWindowData.source_text",
+    "removed": "100000"
+  },
+  {
+    "path": "services/contract/src/contract/internal/models.py",
+    "field": "ContractWindowData.context_text",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/src/contract/internal/models.py",
+    "field": "ContractWindowData.offset_map",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/src/contract/internal/models.py",
+    "field": "ContractWindowPlanToolData.expected_blocks",
+    "removed": "20000"
+  },
+  {
+    "path": "services/contract/src/contract/internal/models.py",
+    "field": "ContractWindowPlanToolData.expected_section_ids",
+    "removed": "20000"
+  },
+  {
+    "path": "services/contract/src/contract/internal/models.py",
+    "field": "ContractWindowPlanToolData.windows",
+    "removed": "5000"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "ErrorData.message",
+    "removed": "2000"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "CreateReviewRequest.our_party_name",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "PartyProfile.name",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "PartyResolutionData.our_party",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "PartyResolutionData.counterparty",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "PartyResolutionStatusData.party_a_name",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "PartyResolutionStatusData.party_b_name",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "ContractProfile.our_party",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "ContractProfile.counterparty",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "ReviewSummary.overview",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "Finding.title",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "Finding.our_party",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "Finding.counterparty",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "Finding.issue",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "Finding.impact_to_our_party",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "Finding.suggestion",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "Evidence.checked_scope",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "Evidence.verification_note",
+    "removed": "5000"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "LegalApplicabilityDecisionReference.reasons",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "LegalEvidenceReference.title",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "LegalEvidenceReference.issuing_authority",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "LegalEvidenceReference.check_codes",
+    "removed": "45"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "LegalEvidenceReference.cautions",
+    "removed": "20"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "PublicReviewSummary.overview",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "PublicFinding.title",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "PublicFinding.our_party",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "PublicFinding.counterparty",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "PublicFinding.issue",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "PublicFinding.impact_to_our_party",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/src/contract/api/models.py",
+    "field": "PublicFinding.suggestion",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "ContractTaskInput.our_party_name",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "ContractTaskInput.confirmed_party_a_name",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "ContractTaskInput.confirmed_party_b_name",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "PartyValue.name",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "IrParty.name",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "IrDefinition.term",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "IrDefinition.meaning",
+    "removed": "5000"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "IrClause.heading_path",
+    "removed": "30"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "IrClause.text",
+    "removed": "100000"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "IrSemanticItem.subject",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "IrSemanticItem.predicate",
+    "removed": "1000"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "IrSemanticItem.object",
+    "removed": "5000"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "ContractIr.our_party",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "ContractIr.counterparty",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "ContractProfile.our_party",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "ContractProfile.counterparty",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "ReviewSummary.overview",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "Finding.title",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "Finding.our_party",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "Finding.counterparty",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "Finding.issue",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "Finding.impact_to_our_party",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "Finding.suggestion",
+    "removed": "10000"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "Evidence.checked_scope",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "Evidence.verification_note",
+    "removed": "5000"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "PartyResolutionStageResult.our_party",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "PartyResolutionStageResult.counterparty",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "EvidenceCandidate.checked_scope",
+    "removed": "500"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "EvidenceCandidate.verification_note",
+    "removed": "5000"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "InternalRelationship.explanation",
+    "removed": "4000"
+  },
+  {
+    "path": "services/contract/capabilities/register.py",
+    "field": "EvidenceVerificationStageResult.overview",
+    "removed": "10000"
+  }
+]

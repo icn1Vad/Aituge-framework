@@ -43,7 +43,6 @@ class ContractRiskPlanRequest(ContractDocumentToolRequest):
     selected_playbook_ids: list[str] = Field(
         default_factory=lambda: ["base_neutral"],
         min_length=1,
-        max_length=20,
     )
 
 
@@ -56,7 +55,7 @@ class ContractLegalEvidenceToolData(StrictModel):
     policy: Literal["OFF", "OPTIONAL", "REQUIRED"]
     enabled: bool
     usable: bool
-    degradation_reasons: list[str] = Field(default_factory=list, max_length=50)
+    degradation_reasons: list[str] = Field(default_factory=list)
     bundle: LegalEvidenceBundle | None = None
 
     @model_validator(mode="after")
@@ -145,23 +144,23 @@ class ContractWindowOffsetData(StrictModel):
 class ContractWindowData(StrictModel):
     window_id: str = Field(min_length=1, max_length=160)
     sequence_no: int = Field(ge=1)
-    section_ids: list[str] = Field(min_length=1, max_length=500)
-    heading_path: list[str] = Field(default_factory=list, max_length=30)
-    clause_nos: list[str] = Field(default_factory=list, max_length=100)
-    primary_block_ids: list[str] = Field(min_length=1, max_length=2000)
+    section_ids: list[str] = Field(min_length=1)
+    heading_path: list[str] = Field(default_factory=list)
+    clause_nos: list[str] = Field(default_factory=list)
+    primary_block_ids: list[str] = Field(min_length=1)
     estimated_tokens: int = Field(ge=1)
-    source_text: str = Field(min_length=1, max_length=100000)
-    context_text: str = Field(default="", max_length=10000)
-    offset_map: list[ContractWindowOffsetData] = Field(min_length=1, max_length=2000)
+    source_text: str = Field(min_length=1)
+    context_text: str = Field(default="")
+    offset_map: list[ContractWindowOffsetData] = Field(min_length=1)
 
 
 class ContractWindowPlanToolData(StrictModel):
     review_id: str = Field(min_length=1, max_length=160)
     document_id: str = Field(min_length=1, max_length=160)
     generation_id: str = Field(min_length=1, max_length=160)
-    expected_blocks: list[ContractWindowExpectedBlockData] = Field(min_length=1, max_length=20000)
-    expected_section_ids: list[str] = Field(min_length=1, max_length=20000)
-    windows: list[ContractWindowData] = Field(min_length=1, max_length=5000)
+    expected_blocks: list[ContractWindowExpectedBlockData] = Field(min_length=1)
+    expected_section_ids: list[str] = Field(min_length=1)
+    windows: list[ContractWindowData] = Field(min_length=1)
     concurrency: Literal[10] = 10
 
 

@@ -40,12 +40,14 @@ class RuleReviewBasis(ReviewModel):
 
 
 class RuleReviewDecision(ReviewModel):
+    # Filled by the server when projected into the existing Finding/card path.
+    finding_id: str | None = None
     decision_id: str = Field(pattern=r"^rule-decision-[0-9a-f]{32}$")
     evidence_id: str = Field(pattern=r"^rule-evidence-[0-9a-f]{32}$")
     outcome: Literal["RISK", "NO_RISK", "INSUFFICIENT_EVIDENCE"]
-    title: str = Field(min_length=1, max_length=500)
-    reason: str = Field(min_length=1, max_length=4000)
-    suggestion: str = Field(default="", max_length=4000)
+    title: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    suggestion: str = Field(default="")
     citations: list[RuleReviewCitation] = Field(default_factory=list)
 
 
@@ -59,6 +61,7 @@ class RuleReviewResult(ReviewModel):
     perspective: Literal["PARTY_A", "PARTY_B"]
     # Stage transport omits null fields. Unknown is valid and must not cause HTTP 422.
     business_role: str | None = None
+    business_roles: list[str] = Field(default_factory=list)
     review_standard: Literal["neutral", "strong", "weak"]
     snapshot_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     bundle_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
@@ -73,6 +76,8 @@ class RuleReviewResult(ReviewModel):
     model_calls: int = Field(default=0, ge=0)
     prompt_tokens: int = Field(default=0, ge=0)
     completion_tokens: int = Field(default=0, ge=0)
+    # Audit data for the single semantic role/type routing call; separate from rule evaluation usage.
+    semantic_selection: dict | None = None
 
     @model_validator(mode="after")
     def validate_links(self):
@@ -93,6 +98,8 @@ class RuleReviewResult(ReviewModel):
         if self.mode == "ACTIVE" and any(item.source_status != "active" for item in self.evidence):
             raise ValueError("Active review requires published rules")
         for decision in self.decisions:
+            if decision.finding_id is not None and decision.outcome != 'RISK':
+                raise ValueError('Only risk decisions can link to Findings')
             if decision.outcome == "RISK" and (not decision.citations or not decision.suggestion.strip()):
                 raise ValueError("Rule finding requires contract citations and a suggestion")
         return self

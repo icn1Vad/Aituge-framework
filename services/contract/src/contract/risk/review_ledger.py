@@ -143,7 +143,8 @@ def build_review_records(plan: Any, batches: list[Any]) -> list[CheckReviewRecor
                                   else "PARTIAL" if failed or len(checks) != len(assigned) else "COMPLETED"),
                 judgement=judgement, scope_complete=complete,
                 expected_anchor_ids=expected, provided_anchor_ids=provided,
-                cited_anchor_ids=sorted({e.anchor_id for f in findings for e in f.evidence_candidates if e.anchor_id}),
+                cited_anchor_ids=sorted({e.anchor_id for f in findings for e in f.evidence_candidates if e.anchor_id}
+                    | {aid for check in checks for aid in getattr(check, 'decision_anchor_ids', [])}),
                 finding_local_ids=ids,
                 decision_notes=list(dict.fromkeys(c.decision_note for c in checks)),
                 unresolved_reasons=sorted(set(missing)),

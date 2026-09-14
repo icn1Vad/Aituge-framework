@@ -300,6 +300,10 @@ class FrameworkHttpGateway(FrameworkGateway):
             stage = "PARSING"
         else:
             stage = STAGE_MAPPING.get(record.current_stage_id)
+            if record.current_stage_id == "finalize_review" and status == "running":
+                # The direct pipeline executes the actual domain reviews in
+                # this stage. FINALIZING is only truthful once it has finished.
+                stage = "RISK_REVIEW"
             if stage is None:
                 raise FrameworkProtocolError(
                     f"Framework returned unknown contract stage '{record.current_stage_id}'"

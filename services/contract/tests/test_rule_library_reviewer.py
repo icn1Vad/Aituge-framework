@@ -22,13 +22,12 @@ class FakeModel:
         data = json.loads(kwargs["messages"][0]["content"])
         decisions = []
         for task in data["rules"]:
-            source = next(iter(task["sources"]), None)
+            source = next(iter(data["contract_sources"]), None)
             decisions.append({"evidence_id": task["evidence_id"],
                               "outcome": "RISK" if source else "INSUFFICIENT_EVIDENCE",
                               "title": task["rule_name"], "reason": "按分配规则审查付款条件",
                               "suggestion": "明确付款期限与验收条件",
-                              "quotes": [{"source_id": source["source_id"],
-                                          "quote": "凭空捏造的原文" if self.corrupt else source["text"]}]
+                              "primary_evidence_source_ids": ["unknown-contract-source" if self.corrupt else source["source_id"]]
                               if source else []})
         return SimpleNamespace(content=json.dumps({"decisions": decisions}, ensure_ascii=False),
                                prompt_tokens=100, completion_tokens=80)
@@ -52,7 +51,7 @@ def test_existing_rules_actually_enter_model_and_produce_traceable_decisions(tmp
     assert first.prompt_tokens == 100
 
 
-def test_invented_quotes_are_rejected_without_retry_or_fabricated_success(tmp_path):
+def test_invented_source_ids_are_rejected_without_retry_or_fabricated_success(tmp_path):
     value = risk_plan_input()
     plan = RiskReviewPlanBuilder().build(value)
     observation = RuleLibraryShadow(snapshot(tmp_path)).evaluate(
@@ -61,7 +60,7 @@ def test_invented_quotes_are_rejected_without_retry_or_fabricated_success(tmp_pa
     result = asyncio.run(RuleLibraryReviewer(runtime).review(observation, plan, tenant_id="42", model_id="test"))
     assert result.status == "PARTIAL" and not result.decisions
     assert result.pending_evidence_ids and runtime.calls == 1
-    assert result.diagnostics == ["BATCH_FAILED:ValueError"]
+    assert result.diagnostics == ["UNKNOWN_CONTRACT_SOURCE:1"]
     with pytest.raises(ValueError, match="Preview bundle"):
         asyncio.run(RuleLibraryReviewer(runtime).review(observation, plan, tenant_id="42", model_id="test", mode="ACTIVE"))
 

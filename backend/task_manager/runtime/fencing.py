@@ -8,7 +8,7 @@ from typing import Any, Iterator
 from db.db_context import create_db_session
 from sqlmodel import select
 
-from task_manager.models import TaskRunEntity
+from task_manager.models import TaskRunEntity, utc_now
 
 
 class RunLeaseLost(RuntimeError):
@@ -87,6 +87,8 @@ async def verify_execution_lease(
         or run.status != "running"
         or run.lease_owner != lease.owner
         or run.lease_version != lease.version
+        or run.lease_until is None
+        or run.lease_until.replace(tzinfo=None) <= utc_now().replace(tzinfo=None)
     ):
         raise RunLeaseLost(
             f"Run '{run_id}' is no longer owned by worker '{lease.owner}' "

@@ -12,6 +12,7 @@ from contract.risk.review_ledger import CheckReviewRecord
 
 import asyncio
 import hashlib
+import json
 import re
 import time
 import unicodedata
@@ -22,9 +23,10 @@ from typing import Any, Callable, Literal, Protocol
 from contract.application.idempotency import canonical_json
 from contract.legal_evidence.models import LegalEvidence
 from contract.legal_evidence.prompting import (
-    compact_legal_evidence_catalog,
-    legal_evidence_ids_for_check,
-    remaining_legal_prompt_budget,
+    review_legal_evidence_catalog,
+    LEGAL_REVIEW_INSTRUCTIONS,
+    selected_legal_evidence_ids,
+    merge_legal_reasoning,
 )
 from contract.risk.models import RiskReviewPlanInput
 from contract.risk.playbooks import build_default_registry
@@ -44,6 +46,11 @@ from services.contract.capabilities.prompt_budget import (
 )
 from services.contract.capabilities.risk_review import EvidenceCandidate, FindingDraft
 from services.contract.capabilities.risk_review_bundle import BaseRiskReviewBundle
+
+from services.contract.capabilities.review_evidence_protocol import (
+    EVIDENCE_PROTOCOL_VERSION, SOURCE_SELECTION_RULES, SourceSelectionError,
+    select_source_ids, model_legal_catalog,
+)
 
 HORIZONTAL_UNIT_IDS = (
     "cross_clause_consistency",
@@ -93,11 +100,13 @@ class RelationshipNode(StrictModel):
     block_id: str = Field(min_length=1, max_length=160)
     block_no: int = Field(ge=1)
     heading_path: list[str] = Field(default_factory=list)
-    subject: str | None = Field(default=None, max_length=500)
-    predicate: str = Field(min_length=1, max_length=500)
-    object: str | None = Field(default=None, max_length=2000)
-    normalized_topic: str = Field(min_length=1, max_length=500)
-    normalized_value: str = Field(min_length=1, max_length=2000)
+    subject: str | None = Field(default=None)
+    predicate: str = Field(min_length=1)
+    object: str | None = Field(default=None)
+    normalized_topic: str = Field(min_length=1)
+    # Punctuation/blank slots (e.g. "___") have no normalized value. Keep
+    # their real source node without inventing a semantic value or crashing.
+    normalized_value: str
     source_text: str = Field(min_length=1)
     char_start: int = Field(ge=0)
     char_end: int = Field(gt=0)
@@ -155,12 +164,12 @@ class HorizontalAbsenceEvidenceSource(StrictModel):
     generation_id: str = Field(min_length=1, max_length=160)
     check_code: str = Field(pattern=r"^MAC-00[1-6]$")
     candidate_type: str = Field(min_length=1, max_length=160)
-    checked_scope: str = Field(min_length=1, max_length=1000)
-    required_mechanism: str = Field(min_length=1, max_length=500)
+    checked_scope: str = Field(min_length=1)
+    required_mechanism: str = Field(min_length=1)
     present_ir_types: list[str]
-    missing_target: str = Field(min_length=1, max_length=500)
-    verification_method: str = Field(min_length=1, max_length=2000)
-    trigger_evidence_source_ids: list[str] = Field(min_length=1, max_length=20)
+    missing_target: str = Field(min_length=1)
+    verification_method: str = Field(min_length=1)
+    trigger_evidence_source_ids: list[str] = Field(min_length=1)
 
 
 class HorizontalCandidate(StrictModel):
@@ -169,28 +178,28 @@ class HorizontalCandidate(StrictModel):
     check_code: str = Field(pattern=r"^(CCC-00[1-5]|MAC-00[1-6])$")
     candidate_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$")
     candidate_strength: Literal["HARD_RULE", "STRONG_SIGNAL", "SEMANTIC_REVIEW"]
-    normalized_topic: str = Field(min_length=1, max_length=500)
+    normalized_topic: str = Field(min_length=1)
     conflict_dimension: str | None = Field(default=None, max_length=160)
-    left_evidence_source_ids: list[str] = Field(default_factory=list, max_length=20)
-    right_evidence_source_ids: list[str] = Field(default_factory=list, max_length=20)
-    context_evidence_source_ids: list[str] = Field(default_factory=list, max_length=20)
-    absence_evidence_source_ids: list[str] = Field(default_factory=list, max_length=10)
-    left_normalized_claim: str | None = Field(default=None, max_length=2000)
-    right_normalized_claim: str | None = Field(default=None, max_length=2000)
-    possible_resolution_rules: list[str] = Field(default_factory=list, max_length=20)
-    allowed_counter_evidence_source_ids: list[str] = Field(default_factory=list, max_length=30)
-    allowed_supporting_evidence_source_ids: list[str] = Field(default_factory=list, max_length=30)
-    required_trigger_conditions: list[str] = Field(min_length=1, max_length=20)
-    disqualifying_conditions: list[str] = Field(default_factory=list, max_length=20)
-    primary_evidence_requirements: list[str] = Field(min_length=1, max_length=20)
-    absence_evidence_requirements: list[str] = Field(default_factory=list, max_length=20)
+    left_evidence_source_ids: list[str] = Field(default_factory=list)
+    right_evidence_source_ids: list[str] = Field(default_factory=list)
+    context_evidence_source_ids: list[str] = Field(default_factory=list)
+    absence_evidence_source_ids: list[str] = Field(default_factory=list)
+    left_normalized_claim: str | None = Field(default=None)
+    right_normalized_claim: str | None = Field(default=None)
+    possible_resolution_rules: list[str] = Field(default_factory=list)
+    allowed_counter_evidence_source_ids: list[str] = Field(default_factory=list)
+    allowed_supporting_evidence_source_ids: list[str] = Field(default_factory=list)
+    required_trigger_conditions: list[str] = Field(min_length=1)
+    disqualifying_conditions: list[str] = Field(default_factory=list)
+    primary_evidence_requirements: list[str] = Field(min_length=1)
+    absence_evidence_requirements: list[str] = Field(default_factory=list)
     canonical_root_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$")
     severity_rule_id: str = Field(pattern=r"^[A-Z][A-Z0-9_]*_V[0-9]+$")
-    deterministic_severity_factors: list[str] = Field(default_factory=list, max_length=10)
-    allowed_severity_factors: list[str] = Field(default_factory=list, max_length=20)
-    allowed_control_codes: list[str] = Field(min_length=1, max_length=20)
+    deterministic_severity_factors: list[str] = Field(default_factory=list)
+    allowed_severity_factors: list[str] = Field(default_factory=list)
+    allowed_control_codes: list[str] = Field(min_length=1)
     owner_type: Ownership
-    linked_base_finding_ids: list[str] = Field(default_factory=list, max_length=30)
+    linked_base_finding_ids: list[str] = Field(default_factory=list)
     requires_model_decision: bool
 
     @model_validator(mode="after")
@@ -222,7 +231,7 @@ class HorizontalBatch(StrictModel):
     unit_id: HorizontalUnitId
     check_codes: list[str] = Field(min_length=1)
     candidate_ids: list[str] = Field(min_length=1)
-    evidence_source_ids: list[str] = Field(min_length=1, max_length=80)
+    evidence_source_ids: list[str] = Field(min_length=1)
     estimated_business_context_tokens: int = Field(ge=0)
 
 
@@ -242,14 +251,16 @@ class HorizontalReviewPlan(StrictModel):
 
 
 class HorizontalDecisionRaw(StrictModel):
+    legal_evidence_ids: list[str] = Field(default_factory=list)
     candidate_id: str = Field(pattern=r"^horizontal-candidate-[0-9a-f]{32}$")
     verdict: HorizontalVerdict
-    decision_summary: str = Field(min_length=1, max_length=1200)
-    resolution_reason: str | None = Field(default=None, max_length=500)
-    severity_factors: list[str] = Field(default_factory=list, max_length=20)
-    supporting_evidence_source_ids: list[str] = Field(default_factory=list, max_length=30)
-    counter_evidence_source_ids: list[str] = Field(default_factory=list, max_length=30)
-    recommended_control_codes: list[str] = Field(default_factory=list, max_length=20)
+    decision_summary: str = Field(min_length=1)
+    primary_evidence_source_ids: list[str]
+    resolution_reason: str | None = Field(default=None)
+    severity_factors: list[str] = Field(default_factory=list)
+    supporting_evidence_source_ids: list[str] = Field(default_factory=list)
+    counter_evidence_source_ids: list[str] = Field(default_factory=list)
+    recommended_control_codes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_verdict(self) -> "HorizontalDecisionRaw":
@@ -263,14 +274,16 @@ class HorizontalDecisionRaw(StrictModel):
 
 
 class HorizontalDecisionEnvelope(StrictModel):
-    candidate_decisions: list[HorizontalDecisionRaw] = Field(min_length=1, max_length=20)
+    candidate_decisions: list[HorizontalDecisionRaw] = Field(min_length=1)
 
 
 class HorizontalDecision(StrictModel):
+    legal_evidence_ids: list[str] = Field(default_factory=list)
     candidate_id: str
     check_code: str
     verdict: HorizontalVerdict
     decision_summary: str
+    primary_evidence_source_ids: list[str] = Field(default_factory=list)
     accepted_severity_factors: list[str] = Field(default_factory=list)
     rejected_severity_factors: list[str] = Field(default_factory=list)
     supporting_evidence_source_ids: list[str] = Field(default_factory=list)
@@ -312,8 +325,8 @@ class HorizontalBatchMetric(StrictModel):
     batch_id: str
     unit_id: HorizontalUnitId
     wall_duration_ms: int = Field(ge=0)
-    model_call_count: int = Field(ge=0, le=1)
-    repair_count: Literal[0] = 0
+    model_call_count: int = Field(ge=0, le=2)
+    repair_count: int = Field(default=0, ge=0, le=1)
     tool_call_count: Literal[0] = 0
     prompt_tokens: int | None = Field(default=None, ge=0)
     cached_tokens: int | None = Field(default=None, ge=0)
@@ -339,7 +352,7 @@ class HorizontalUnitResult(StrictModel):
     findings: list[FindingDraft]
     batch_metrics: list[HorizontalBatchMetric]
     model_call_count: int = Field(ge=0)
-    repair_count: Literal[0] = 0
+    repair_count: int = Field(default=0, ge=0)
     tool_call_count: Literal[0] = 0
     wall_duration_ms: int = Field(ge=0)
     warnings: list[str] = Field(default_factory=list)
@@ -538,7 +551,7 @@ def build_relationship_index(
                 subject=subject,
                 predicate=predicate or "涉及",
                 object=obj,
-                normalized_topic=_normalize(subject or ir_type),
+                normalized_topic=_normalize(subject) or _normalize(ir_type),
                 normalized_value=_normalize(obj or predicate or quoted),
                 source_text=quoted,
                 char_start=anchor.char_start,
@@ -745,7 +758,7 @@ def _candidate(
         ),
         required_trigger_conditions=["候选的全部确定性前置条件已经满足"],
         disqualifying_conditions=["存在明确优先级、适用范围或例外足以化解问题"],
-        primary_evidence_requirements=["必须使用Python固定的核心Evidence"],
+        primary_evidence_requirements=["模型明确选择实际支撑判断的证据；主证据与辅助证据共同提供依据，不能自动继承候选材料"],
         absence_evidence_requirements=(
             ["必须同时具有Trigger Evidence和合法Absence Evidence"]
             if absence_ids
@@ -760,6 +773,23 @@ def _candidate(
         linked_base_finding_ids=linked_base or [],
         requires_model_decision=requires_model,
     )
+
+
+def attachment_labels(text: str) -> set[str]:
+    """Compare referenced identities, never 'any attachment satisfies all'."""
+    numerals = {'零':0,'〇':0,'一':1,'二':2,'两':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9}
+    def normalized(value):
+        if value.isdigit():
+            return str(int(value))
+        if all(c in numerals or c in '十百千' for c in value):
+            total=0; digit=0
+            for c in value:
+                if c in numerals: digit=numerals[c]
+                else: total+=(digit or 1)*{'十':10,'百':100,'千':1000}[c]; digit=0
+            return str(total+digit)
+        return value.upper()
+    return {kind+':'+normalized(number) for kind,number in re.findall(
+        r'(附件|附表|附录)\s*([零〇一二两三四五六七八九十百千0-9A-Za-z]+)', text)}
 
 
 def build_horizontal_plan(
@@ -826,8 +856,8 @@ def build_horizontal_plan(
         for node in index.dates
         if "签订" in (node.subject or "") or "签订" in node.predicate
     ]
-    for start in start_nodes[:1]:
-        for signing in signing_nodes[:1]:
+    for start in start_nodes:
+        for signing in signing_nodes:
             start_date = _date_value(start.source_text)
             signing_date = _date_value(signing.source_text)
             if start_date and signing_date and start_date < signing_date:
@@ -923,13 +953,17 @@ def build_horizontal_plan(
     # Missing attachments are structural completeness issues, not consistency
     # conflicts. A reference is the positive trigger; the active source scope
     # supplies the absence proof.
-    for node in index.attachment_references[:1]:
+    seen_attachment_refs = set()
+    for node in index.attachment_references:
+        references = attachment_labels(node.source_text)
+        key = (node.block_id, tuple(sorted(references)))
+        if key in seen_attachment_refs:
+            continue
+        seen_attachment_refs.add(key)
         source = block_source(node.block_id, "attachment_reference")
-        attachment_present = any(
-            "附件" in " ".join(block.heading_path)
-            and block.block_id != node.block_id
-            for block in value.source_blocks
-        )
+        present = set().union(*(attachment_labels(' '.join(block.heading_path))
+                              for block in value.source_blocks if block.block_id != node.block_id))
+        attachment_present = bool(references) and references.issubset(present)
         if not attachment_present:
             absence_id = _stable_id(
                 "horizontal-as",
@@ -946,12 +980,12 @@ def build_horizontal_plan(
                     generation_id=value.generation_id,
                     check_code="MAC-005",
                     candidate_type="MISSING_REFERENCED_ATTACHMENT",
-                    checked_scope="当前Active Generation的全部93个Block及其heading_path",
+                    checked_scope=f"当前Active Generation提供的全部{len(value.source_blocks)}个Block及其heading_path；不证明未上传附件不存在",
                     required_mechanism="正文引用的附件应当随合同提供且可唯一定位",
                     present_ir_types=sorted(
                         {item.ir_type for item in index.all_nodes if item.ir_id}
                     ),
-                    missing_target="正文所引用的附件正文或可解析附件Section",
+                    missing_target="正文所引用的附件正文或可解析附件Section：" + ('、'.join(sorted(references-present)) or '名称未明确，需核实引用'),
                     verification_method=(
                         "扫描全部Block、heading_path和附件引用；发现正文引用，"
                         "但未发现独立附件Section或附件正文。"
@@ -966,6 +1000,7 @@ def build_horizontal_plan(
                     candidate_type="MISSING_REFERENCED_ATTACHMENT",
                     candidate_strength="HARD_RULE",
                     normalized_topic="附件承包方案",
+                    primary_left=[source.source_id],
                     context=[source.source_id],
                     absence=[absence_id],
                     root_type="REFERENCED_ATTACHMENT_MISSING",
@@ -1075,11 +1110,12 @@ def build_horizontal_plan(
                     / 2
                 ),
             )
-            if estimate > 5000:
-                raise HorizontalReviewError(
-                    "RISK_CONTEXT_BUDGET_EXCEEDED",
-                    "A horizontal Candidate exceeds its Business Context budget",
-                )
+            # Share delivered text across candidates, but keep absence scoped.
+            for candidate in group:
+                candidate.allowed_supporting_evidence_source_ids = sorted(set(
+                    candidate.allowed_supporting_evidence_source_ids) | set(selected_sources))
+                candidate.allowed_counter_evidence_source_ids = sorted(set(
+                    candidate.allowed_counter_evidence_source_ids) | set(selected_sources))
             batches.append(
                 HorizontalBatch(
                     batch_id=_stable_id(
@@ -1162,11 +1198,17 @@ def _batch_prompt_details(
             for source_id in candidates[candidate_id].absence_evidence_source_ids
         ],
         "output_contract": {
+            "evidence_protocol_version": EVIDENCE_PROTOCOL_VERSION,
+            "rules": SOURCE_SELECTION_RULES + [
+                "主证据必须明确选择，不默认把左右两侧及背景全部绑定；RISK冲突必须选择分别支持冲突两侧的原文。",
+                "真实缺失风险必须选择当前候选的absence_evidence_source_ids；未决裁决可用空主证据。"],
             "candidate_decisions": [
                 {
                     "candidate_id": "必须来自输入",
                     "verdict": "RISK|NO_RISK|INSUFFICIENT_EVIDENCE",
-                    "decision_summary": "只说明裁决，不生成正式Finding",
+                    "decision_summary": "只说明裁决及所选法条的适用理由，不生成正式Finding",
+                    "legal_evidence_ids": ["仅选择法律目录中实际适用的evidence_id，无适用法律依据时为空数组"],
+                    "primary_evidence_source_ids": ["从已提供的原文及本候选缺失记录中选主证据；主证据与辅助证据合计必须支撑判断。缺失风险需要本候选缺失记录和触发原文；冲突风险需要双方原文。反证不算支持证据。"],
                     "resolution_reason": "NO_RISK时必填，否则null",
                     "severity_factors": ["只能来自allowed_severity_factors"],
                     "supporting_evidence_source_ids": ["只能来自白名单"],
@@ -1176,30 +1218,19 @@ def _batch_prompt_details(
             ],
         },
     }
+    payload['output_contract']['response_schema'] = HorizontalDecisionEnvelope.model_json_schema()
     baseline_prompt = canonical_json(payload)
-    legal_budget = remaining_legal_prompt_budget(
-        baseline_prompt=baseline_prompt,
-        system_prompt=_SYSTEM_PROMPT,
-        hard_limit_tokens=PROVIDER_PROMPT_HARD_LIMIT_TOKENS,
-    )
     effective_evidence = list(legal_evidence or [])
-    legal_catalog, legal_tokens = compact_legal_evidence_catalog(
-        effective_evidence,
-        maximum_catalog_tokens=legal_budget,
-    )
+    legal_catalog, legal_tokens = review_legal_evidence_catalog(effective_evidence)
     if not legal_catalog:
-        status = "OMITTED_TOKEN_BUDGET" if effective_evidence else "NOT_REQUESTED"
-        # The model does not receive the catalog, but the deterministic
-        # Check-to-Evidence-ID binding remains available to materialization.
-        return baseline_prompt, effective_evidence, 0, status
-    payload["legal_evidence_catalog"] = legal_catalog
+        status = "NOT_REQUESTED"
+        # No legal text sent means no automatic citations at materialization.
+        return baseline_prompt, [], 0, status
+    payload["legal_evidence_catalog"] = model_legal_catalog(legal_catalog)
     payload["legal_evidence_input_tokens"] = legal_tokens
-    payload["output_contract"]["legal_evidence_rules"] = [
-        "法律依据不能代替合同原文Evidence",
-        "UNVERIFIED的生效日期或状态不得表述为已核实现行有效",
-        "Evidence ID由Python绑定，模型不得输出或编造",
-    ]
-    return canonical_json(payload), effective_evidence, legal_tokens, "INCLUDED"
+    payload["output_contract"]["legal_evidence_rules"] = LEGAL_REVIEW_INSTRUCTIONS
+    supplied_ids = {item["evidence_id"] for item in legal_catalog}
+    return canonical_json(payload), [item for item in effective_evidence if item.evidence_id in supplied_ids], legal_tokens, "INCLUDED"
 
 
 def _batch_prompt(
@@ -1248,12 +1279,35 @@ def _validate_decision(
         *candidate.left_evidence_source_ids,
         *candidate.right_evidence_source_ids,
         *candidate.context_evidence_source_ids,
+        *candidate.absence_evidence_source_ids,
+        *candidate.allowed_supporting_evidence_source_ids,
+        *candidate.allowed_counter_evidence_source_ids,
     }
+    try:
+        primary = select_source_ids(raw.primary_evidence_source_ids, allowed_sources,
+            required=raw.verdict != "INSUFFICIENT_EVIDENCE")
+        select_source_ids(raw.supporting_evidence_source_ids, allowed_sources, required=False)
+        select_source_ids(raw.counter_evidence_source_ids,
+            allowed_sources - set(candidate.absence_evidence_source_ids), required=False)
+    except SourceSelectionError as exc:
+        raise HorizontalReviewError("HORIZONTAL_EVIDENCE_SOURCE_INVALID", str(exc)) from exc
+    if raw.verdict == "RISK":
+        selected = set(primary) | set(raw.supporting_evidence_source_ids)
+        if candidate.unit_id == "cross_clause_consistency" and (
+            not selected & set(candidate.left_evidence_source_ids)
+            or not selected & set(candidate.right_evidence_source_ids) or len(selected) < 2
+        ):
+            raise HorizontalReviewError("HORIZONTAL_PRIMARY_EVIDENCE_INCOMPLETE", "A conflict requires selected evidence for both sides")
+        if candidate.absence_evidence_requirements and not selected & set(candidate.absence_evidence_source_ids):
+            raise HorizontalReviewError("HORIZONTAL_PRIMARY_EVIDENCE_INCOMPLETE", "A missing-mechanism risk requires scoped absence evidence")
+        if candidate.absence_evidence_requirements and not selected & set(
+                candidate.left_evidence_source_ids or candidate.context_evidence_source_ids):
+            raise HorizontalReviewError('HORIZONTAL_PRIMARY_EVIDENCE_INCOMPLETE', 'A missing-mechanism risk also requires its original reference/trigger clause')
     if (
         set(raw.supporting_evidence_source_ids)
-        - set(candidate.allowed_supporting_evidence_source_ids)
+        - allowed_sources
         or set(raw.counter_evidence_source_ids)
-        - set(candidate.allowed_counter_evidence_source_ids)
+        - (allowed_sources - set(candidate.absence_evidence_source_ids))
     ):
         raise HorizontalReviewError(
             "HORIZONTAL_EVIDENCE_SOURCE_INVALID",
@@ -1291,10 +1345,12 @@ def _validate_decision(
         if item not in candidate.allowed_severity_factors
     ]
     return HorizontalDecision(
+        legal_evidence_ids=raw.legal_evidence_ids,
         candidate_id=candidate.candidate_id,
         check_code=candidate.check_code,
         verdict=raw.verdict,
         decision_summary=raw.decision_summary,
+        primary_evidence_source_ids=primary,
         accepted_severity_factors=accepted,
         rejected_severity_factors=rejected,
         supporting_evidence_source_ids=list(
@@ -1399,14 +1455,9 @@ def _materialize_unit(
         decision = decision_by_id.get(candidate.candidate_id)
         if decision is None or decision.verdict != "RISK":
             continue
-        primary_ids = list(
-            dict.fromkeys(
-                candidate.left_evidence_source_ids
-                + candidate.right_evidence_source_ids
-                + candidate.context_evidence_source_ids
-                + candidate.absence_evidence_source_ids
-            )
-        )
+        primary_ids = list(decision.primary_evidence_source_ids)
+        if not primary_ids:
+            raise HorizontalReviewError("HORIZONTAL_PRIMARY_EVIDENCE_MISSING", "A risk cannot silently inherit candidate trigger evidence")
         root_id = _stable_id(
             "horizontal-root",
             {
@@ -1421,8 +1472,14 @@ def _materialize_unit(
             {"root_id": root_id, "perspective": value.perspective.value},
         )
         title, issue, impact, suggestion = _finding_text(candidate)
+        issue = merge_legal_reasoning(issue, [decision.decision_summary],
+            (legal_evidence_by_check or {}).get(candidate.check_code, []), candidate.check_code,
+            prompt_included=bool(legal_evidence_by_check), selected_ids=decision.legal_evidence_ids)
         evidence_candidates: list[EvidenceCandidate] = []
-        for position, source_id in enumerate(primary_ids, 1):
+        # Persist supporting text too: a real trigger must not disappear from
+        # the risk card / revision anchor merely because it was not primary.
+        selected_ids = list(dict.fromkeys(primary_ids + decision.supporting_evidence_source_ids))
+        for position, source_id in enumerate(selected_ids, 1):
             if source_id in source_by_id:
                 source = source_by_id[source_id]
                 evidence_candidates.append(
@@ -1482,9 +1539,10 @@ def _materialize_unit(
             our_party=value.our_party,
             counterparty=value.counterparty,
             evidence_candidates=evidence_candidates,
-            legal_evidence_ids=legal_evidence_ids_for_check(
+            legal_evidence_ids=selected_legal_evidence_ids(
                 (legal_evidence_by_check or {}).get(candidate.check_code, []),
-                candidate.check_code,
+                decision.legal_evidence_ids,
+                prompt_included=bool(legal_evidence_by_check),
             ),
         )
         findings.append(finding)
@@ -1568,6 +1626,7 @@ def _materialize_unit(
         findings=sorted(findings, key=lambda item: item.finding_local_id),
         batch_metrics=metrics,
         model_call_count=sum(item.model_call_count for item in metrics),
+        repair_count=sum(item.repair_count for item in metrics),
         wall_duration_ms=round((time.perf_counter() - started) * 1000),
         warnings=[
             warning
@@ -1592,6 +1651,44 @@ def _materialize_unit(
             )
         ],
     )
+
+
+def _recover_horizontal_rows(content, selected, legal_evidence=None):
+    """Validate candidates independently; repair only failed rows, not valid siblings."""
+    parsed = parse_json_output(content)
+    expected = {c.candidate_id:c for c in selected}
+    if (not parsed.ok or not isinstance(parsed.structured,dict)
+            or set(parsed.structured) != {'candidate_decisions'}
+            or not isinstance(parsed.structured['candidate_decisions'],list)):
+        return {}, [dict(candidate_id=cid,code='HORIZONTAL_MODEL_SCHEMA_INVALID',
+                         message='Return an object containing only candidate_decisions array') for cid in expected]
+    rows = parsed.structured['candidate_decisions']
+    ids = [r.get('candidate_id') if isinstance(r,dict) else None for r in rows]
+    if any(not isinstance(cid,str) or cid not in expected for cid in ids):
+        return {}, [dict(candidate_id=cid,code='HORIZONTAL_CANDIDATE_COVERAGE_INVALID',
+                         message='Unknown or malformed candidate ID; use the supplied candidates only') for cid in expected]
+    valid, errors = {}, []
+    for cid,candidate in expected.items():
+        if ids.count(cid) != 1:
+            errors.append(dict(candidate_id=cid,code='HORIZONTAL_CANDIDATE_COVERAGE_INVALID',
+                               message='Return this candidate exactly once'))
+            continue
+        row = dict(rows[ids.index(cid)])
+        # Reuse an already supplied explanation, never invent a risk rationale.
+        if not str(row.get('decision_summary') or '').strip() and row.get('verdict')=='NO_RISK':
+            if isinstance(row.get('resolution_reason'),str) and row['resolution_reason'].strip():
+                row['decision_summary'] = row['resolution_reason']
+        try:
+            raw = HorizontalDecisionRaw.model_validate(row)
+            selected_legal_evidence_ids(list(legal_evidence or []), raw.legal_evidence_ids,
+                prompt_included=bool(legal_evidence))
+            if not raw.decision_summary.strip():
+                raise ValueError('decision_summary must not be blank')
+            valid[cid] = _validate_decision(raw,candidate)
+        except Exception as exc:
+            errors.append(dict(candidate_id=cid,code=getattr(exc,'code','HORIZONTAL_MODEL_SCHEMA_INVALID'),
+                               message=str(exc)))
+    return valid, errors
 
 
 async def execute_horizontal_unit(
@@ -1645,59 +1742,74 @@ async def execute_horizontal_unit(
             prompted_legal_evidence_by_check[check_code].update(
                 {item.evidence_id: item for item in effective_legal_evidence}
             )
+        completions, attempts, valid = [], [], {}
+        calls = 0
+        targets = selected
+        def usage(key):
+            values = [getattr(item,key,None) for item in completions]
+            return sum(values) if len(values)==calls and all(v is not None for v in values) else None
+        def save_diagnostic():
+            from .review_output_diagnostics import write_private_diagnostic
+            write_private_diagnostic('horizontal_batch',
+                {'review_id':value.review_id,'generation_id':getattr(value,'generation_id',None),'batch_id':batch.batch_id},
+                {'request':json.loads(prompt),'attempts':attempts})
         try:
-            completion = await asyncio.wait_for(
-                runtime.complete_with_usage(
-                    messages=[{
-                        "role": "user",
-                        "content": prompt,
-                    }],
-                    model_id=model_id,
-                    system_prompt=_SYSTEM_PROMPT,
-                    max_tokens=2500,
-                    temperature=0,
-                    thinking_override=False,
-                    response_format={"type": "json_object"},
-                    review_unit_id=unit_id,
-                    review_id=value.review_id,
-                    framework_run_id=framework_run_id,
-                    attempt_no=value.attempt_no,
-                    repair_no=0,
-                    defer_terminal=True,
-                ),
-                timeout=timeout_seconds,
-            )
-            budget = evaluate_prompt_budget(
-                provider_prompt_tokens=completion.prompt_tokens,
-                provider_cached_tokens=completion.cached_tokens,
-                estimated_business_context_tokens=(
-                    batch.estimated_business_context_tokens + batch_legal_tokens
-                ),
-                unit_id=unit_id,
-                batch_id=batch.batch_id,
-            )
-            raw = _parse_decisions(completion.content, selected)
-            decisions = [
-                _validate_decision(item, candidate)
-                for item, candidate in zip(raw, selected, strict=True)
-            ]
+            request_payload = json.loads(prompt)
+            for repair_no in range(2):
+                remaining = timeout_seconds - (time.perf_counter()-batch_started)
+                if remaining <= 0:
+                    raise TimeoutError('Horizontal batch deadline exceeded')
+                calls += 1
+                completion = None
+                completion = await asyncio.wait_for(runtime.complete_with_usage(
+                    messages=[{'role':'user','content':canonical_json(request_payload)}],
+                    model_id=model_id,system_prompt=_SYSTEM_PROMPT,
+                    max_tokens=None,use_provider_output_default=True,temperature=0,thinking_override=False,
+                    response_format={'type':'json_object'},review_unit_id=unit_id,review_id=value.review_id,
+                    framework_run_id=framework_run_id,attempt_no=value.attempt_no,repair_no=repair_no,
+                    defer_terminal=True),timeout=remaining)
+                completions.append(completion)
+                resolved, errors = _recover_horizontal_rows(completion.content,targets,effective_legal_evidence)
+                valid.update(resolved)
+                attempts.append(dict(repair_no=repair_no,raw_content=completion.content,
+                    raw_content_sha256='sha256:'+hashlib.sha256(completion.content.encode()).hexdigest(),
+                    errors=errors, prompt_tokens=completion.prompt_tokens,
+                    completion_tokens=completion.completion_tokens,total_tokens=completion.total_tokens))
+                if not errors:
+                    await finalize_completion_success(completion)
+                    completion = None
+                    break
+                await finalize_completion_validation_failed(completion,errors[0]['code'])
+                completion = None
+                if repair_no:
+                    raise HorizontalReviewError(errors[0]['code'],'; '.join(e['message'] for e in errors))
+                targets = [c for c in selected if c.candidate_id not in valid]
+                request_payload = json.loads(prompt)
+                request_payload['candidate_decisions_required'] = [c.model_dump(mode='json') for c in targets]
+                request_payload['repair'] = {'errors':errors,'previous_output':attempts[-1]['raw_content'],
+                    'instruction':'只返回尚未通过的候选。根据全部原文和本候选缺失记录重新判断，可以纠正判断和说明；不要返回或改写已通过候选。不得编造原文或用别的候选缺失记录。'}
+            decisions = [valid[c.candidate_id] for c in selected]
+            budget = evaluate_prompt_budget(provider_prompt_tokens=usage('prompt_tokens'),
+                provider_cached_tokens=usage('cached_tokens'),
+                estimated_business_context_tokens=batch.estimated_business_context_tokens+batch_legal_tokens,
+                unit_id=unit_id,batch_id=batch.batch_id)
             metric = HorizontalBatchMetric(
                 batch_id=batch.batch_id,
                 unit_id=unit_id,
                 wall_duration_ms=round(
                     (time.perf_counter() - batch_started) * 1000
                 ),
-                model_call_count=1,
-                prompt_tokens=completion.prompt_tokens,
-                cached_tokens=completion.cached_tokens,
-                completion_tokens=completion.completion_tokens,
-                total_tokens=completion.total_tokens,
+                model_call_count=calls,repair_count=max(0,calls-1),
+                prompt_tokens=usage('prompt_tokens'),
+                cached_tokens=usage('cached_tokens'),
+                completion_tokens=usage('completion_tokens'),
+                total_tokens=usage('total_tokens'),
                 prompt_budget=budget,
                 legal_evidence_status=legal_evidence_status,
                 legal_evidence_candidate_count=len(batch_legal_evidence),
                 legal_evidence_prompted_count=len(effective_legal_evidence),
             )
-            await finalize_completion_success(completion)
+            save_diagnostic()
             return decisions, metric
         except asyncio.CancelledError:
             if completion is not None:
@@ -1714,8 +1826,9 @@ async def execute_horizontal_unit(
                 )
             code = getattr(exc, "code", "HORIZONTAL_BATCH_FAILED")
             message = str(exc) or exc.__class__.__name__
+            save_diagnostic()
             decisions = [
-                HorizontalDecision(
+                valid.get(candidate.candidate_id) or HorizontalDecision(
                     candidate_id=candidate.candidate_id,
                     check_code=candidate.check_code,
                     verdict="INSUFFICIENT_EVIDENCE",
@@ -1734,10 +1847,14 @@ async def execute_horizontal_unit(
                 wall_duration_ms=round(
                     (time.perf_counter() - batch_started) * 1000
                 ),
-                model_call_count=0,
+                model_call_count=calls,repair_count=max(0,calls-1),
+                prompt_tokens=usage('prompt_tokens'),
+                cached_tokens=usage('cached_tokens'),
+                completion_tokens=usage('completion_tokens'),
+                total_tokens=usage('total_tokens'),
                 status="FAILED",
                 error_code=code,
-                error_message=message[:1000],
+                error_message=message,
                 legal_evidence_status=legal_evidence_status,
                 legal_evidence_candidate_count=len(batch_legal_evidence),
                 legal_evidence_prompted_count=len(effective_legal_evidence),

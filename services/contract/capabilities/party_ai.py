@@ -88,4 +88,6 @@ def rule_role_arguments(metadata, perspective):
     side = "party_a" if str(getattr(perspective, "value", perspective)) == "PARTY_A" else "party_b"
     item = metadata.get("parties", {}).get(side, {})
     roles = item.get("business_roles", []) if item.get("status") == "RESOLVED" else []
-    return {"business_role": roles[0] if len(roles) == 1 else None, "infer_business_role": False}
+    roles = sorted({role.strip() for role in roles if isinstance(role, str) and role.strip()})
+    return {"business_role": roles[0] if len(roles) == 1 else None,
+            "business_roles": roles, "infer_business_role": False}

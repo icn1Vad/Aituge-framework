@@ -17,23 +17,23 @@ class ReviewRuleSnapshot(StrictModel):
     code: str = Field(min_length=1, max_length=160)
     version: int = Field(ge=1)
     tenant_id: str = Field(min_length=1, max_length=160)
-    review_direction: str = Field(min_length=1, max_length=1000)
-    name: str = Field(min_length=1, max_length=1000)
-    contract_type_path: list[str] = Field(default_factory=list, max_length=30)
+    review_direction: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    contract_type_path: list[str] = Field(default_factory=list)
     contract_type_id: str | None = Field(default=None, max_length=160)
     party_stance: str | None = Field(default=None, max_length=80)
     review_standard: str = Field(min_length=1, max_length=80)
     rule_type: str = Field(min_length=1, max_length=80)
     source: str = Field(min_length=1, max_length=80)
-    reference_basis: str | None = Field(default=None, max_length=4000)
-    content: str = Field(min_length=1, max_length=20000)
-    review_method: str = Field(min_length=1, max_length=10000)
+    reference_basis: str | None = Field(default=None)
+    content: str = Field(min_length=1)
+    review_method: str = Field(min_length=1)
     status: str = Field(min_length=1, max_length=80)
     jurisdiction: str | None = Field(default=None, max_length=128)
     effective_from: date | None = None
     effective_to: date | None = None
     legal_source_version: str | None = Field(default=None, max_length=300)
-    target_check_codes: list[str] = Field(default_factory=list, max_length=100)
+    target_check_codes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_dates_and_codes(self) -> ReviewRuleSnapshot:
@@ -55,7 +55,7 @@ class RuleLibraryRelation(StrictModel):
         "CONFLICTS_WITH",
         "SUPERSEDES",
     ]
-    evidence_text: str = Field(min_length=1, max_length=4000)
+    evidence_text: str = Field(min_length=1)
     confidence: float = Field(ge=0, le=1)
     verification_status: Literal["VERIFIED", "CANDIDATE"] = "CANDIDATE"
 
@@ -63,10 +63,10 @@ class RuleLibraryRelation(StrictModel):
 class RuleEvidenceIssue(StrictModel):
     issue_id: str = Field(pattern=r"^rule-issue-[0-9a-f]{32}$")
     domain: str = Field(min_length=1, max_length=160)
-    query: str = Field(min_length=1, max_length=8000)
-    facts: list[str] = Field(default_factory=list, max_length=50)
-    required_concepts: list[str] = Field(default_factory=list, max_length=100)
-    check_codes: list[str] = Field(default_factory=list, max_length=100)
+    query: str = Field(min_length=1)
+    facts: list[str] = Field(default_factory=list)
+    required_concepts: list[str] = Field(default_factory=list)
+    check_codes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def normalize_lists(self) -> RuleEvidenceIssue:
@@ -86,7 +86,8 @@ class RuleEvidencePlanRequest(StrictModel):
     perspective: str = Field(min_length=1, max_length=80)
     review_standard: Literal["neutral", "strong", "weak"] = "neutral"
     business_role: str | None = Field(default=None, max_length=80)
-    contract_type_aliases: list[str] = Field(default_factory=list, max_length=30)
+    business_roles: list[str] = Field(default_factory=list)
+    contract_type_aliases: list[str] = Field(default_factory=list)
     preview_pending: bool = False
     jurisdiction: str | None = Field(default=None, max_length=128)
     contract_date: date | None = None
@@ -97,12 +98,14 @@ class RuleEvidencePlanRequest(StrictModel):
         pattern=r"^sha256:[0-9a-f]{64}$",
     )
     planner_version: str = Field(default="adaptive-rule-evidence-planner-v1", max_length=160)
-    issues: list[RuleEvidenceIssue] = Field(min_length=1, max_length=100)
-    rules: list[ReviewRuleSnapshot] = Field(default_factory=list, max_length=10000)
-    relations: list[RuleLibraryRelation] = Field(default_factory=list, max_length=50000)
+    issues: list[RuleEvidenceIssue] = Field(min_length=1)
+    rules: list[ReviewRuleSnapshot] = Field(default_factory=list)
+    relations: list[RuleLibraryRelation] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_snapshot(self) -> RuleEvidencePlanRequest:
+        self.business_roles = sorted({role.strip() for role in
+            [*self.business_roles, *([self.business_role] if self.business_role else [])] if role.strip()})
         for values, label in (
             ([item.issue_id for item in self.issues], "issue IDs"),
             ([item.rule_id for item in self.rules], "rule IDs"),

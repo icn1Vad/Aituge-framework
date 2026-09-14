@@ -82,7 +82,7 @@ class EvidenceType(str, Enum):
 
 class ErrorData(StrictModel):
     code: Identifier
-    message: Annotated[str, StringConstraints(min_length=1, max_length=2000)]
+    message: Annotated[str, StringConstraints(min_length=1)]
     retryable: bool
     user_action_required: bool
     details: dict[str, JsonValue] | None = None
@@ -116,7 +116,7 @@ class CreateReviewRequest(StrictModel):
     party_resolution_id: Identifier | None = None
     model_pack_id: Identifier | None = None
     perspective: Perspective
-    our_party_name: Annotated[str, StringConstraints(max_length=500)] | None = None
+    our_party_name: Annotated[str, StringConstraints()] | None = None
     confirmed_party_a_name: Annotated[
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)
     ] | None = None
@@ -208,7 +208,7 @@ class PartyResolutionCreateData(FrameworkMappingModel):
 
 
 class PartyProfile(StrictModel):
-    name: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    name: Annotated[str, StringConstraints(min_length=1)]
     name_status: Literal["EXTRACTED", "USER_CONFIRMED", "NOT_STATED"] = "EXTRACTED"
 
     @model_validator(mode="before")
@@ -228,8 +228,8 @@ class PartyResolutionData(StrictModel):
     party_a: PartyProfile
     party_b: PartyProfile
     perspective: Perspective
-    our_party: Annotated[str, StringConstraints(min_length=1, max_length=500)]
-    counterparty: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    our_party: Annotated[str, StringConstraints(min_length=1)]
+    counterparty: Annotated[str, StringConstraints(min_length=1)]
 
     @model_validator(mode="after")
     def validate_perspective(self) -> "PartyResolutionData":
@@ -271,8 +271,8 @@ class PartyResolutionStatusData(FrameworkMappingModel):
     status: ReviewStatus
     document_id: Identifier
     error: ErrorData | None = None
-    party_a_name: Annotated[str, StringConstraints(min_length=1, max_length=500)] | None = None
-    party_b_name: Annotated[str, StringConstraints(min_length=1, max_length=500)] | None = None
+    party_a_name: Annotated[str, StringConstraints(min_length=1)] | None = None
+    party_b_name: Annotated[str, StringConstraints(min_length=1)] | None = None
     party_a_name_status: Literal["EXTRACTED", "USER_CONFIRMED", "NOT_STATED"] | None = None
     party_b_name_status: Literal["EXTRACTED", "USER_CONFIRMED", "NOT_STATED"] | None = None
     schema_version: Literal["1.0"] = "1.0"
@@ -322,8 +322,8 @@ class ContractProfile(StrictModel):
     party_a: PartyProfile
     party_b: PartyProfile
     perspective: Perspective
-    our_party: Annotated[str, StringConstraints(min_length=1, max_length=500)]
-    counterparty: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    our_party: Annotated[str, StringConstraints(min_length=1)]
+    counterparty: Annotated[str, StringConstraints(min_length=1)]
     review_attitude: Literal["NEUTRAL"] = "NEUTRAL"
 
     @model_validator(mode="after")
@@ -336,7 +336,7 @@ class ContractProfile(StrictModel):
 
 
 class ReviewSummary(StrictModel):
-    overview: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
+    overview: Annotated[str, StringConstraints(min_length=1)]
     high_count: int = Field(ge=0)
     medium_count: int = Field(ge=0)
     low_count: int = Field(ge=0)
@@ -347,13 +347,13 @@ class Finding(StrictModel):
     finding_id: Identifier
     category: FindingCategory
     risk_level: RiskLevel
-    title: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    title: Annotated[str, StringConstraints(min_length=1)]
     perspective: Perspective
-    our_party: Annotated[str, StringConstraints(min_length=1, max_length=500)]
-    counterparty: Annotated[str, StringConstraints(min_length=1, max_length=500)]
-    issue: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
-    impact_to_our_party: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
-    suggestion: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
+    our_party: Annotated[str, StringConstraints(min_length=1)]
+    counterparty: Annotated[str, StringConstraints(min_length=1)]
+    issue: Annotated[str, StringConstraints(min_length=1)]
+    impact_to_our_party: Annotated[str, StringConstraints(min_length=1)]
+    suggestion: Annotated[str, StringConstraints(min_length=1)]
     evidence_ids: list[Identifier] = Field(min_length=1)
     legal_evidence_ids: list[Identifier] = Field(default_factory=list)
 
@@ -376,8 +376,8 @@ class Evidence(StrictModel):
     char_end: int | None = Field(default=None, ge=1)
     quoted_text: str | None = None
     quoted_text_hash: HashValue | None = None
-    checked_scope: Annotated[str, StringConstraints(min_length=1, max_length=500)] | None = None
-    verification_note: Annotated[str, StringConstraints(min_length=1, max_length=5000)] | None = None
+    checked_scope: Annotated[str, StringConstraints(min_length=1)] | None = None
+    verification_note: Annotated[str, StringConstraints(min_length=1)] | None = None
     bounding_boxes: list[None] = Field(default_factory=list, max_length=0)
 
     @model_validator(mode="after")
@@ -432,7 +432,7 @@ class LegalApplicabilityDecisionReference(StrictModel):
     ]
     review_as_of_date: date
     contract_date: date | None = None
-    reasons: list[str] = Field(default_factory=list, max_length=20)
+    reasons: list[str] = Field(default_factory=list)
 
 
 class LegalEvidenceReference(StrictModel):
@@ -447,13 +447,13 @@ class LegalEvidenceReference(StrictModel):
     instrument_id: Identifier
     version_id: Identifier
     source_node_ids: list[Identifier] = Field(min_length=1)
-    title: Annotated[str, StringConstraints(min_length=1, max_length=1000)]
+    title: Annotated[str, StringConstraints(min_length=1)]
     article_no: Annotated[str, StringConstraints(max_length=160)] | None = None
     heading_path: list[str] = Field(default_factory=list)
     content: Annotated[str, StringConstraints(min_length=1)]
     jurisdiction: Annotated[str, StringConstraints(max_length=128)] | None = None
     authority_level: Annotated[str, StringConstraints(max_length=128)] | None = None
-    issuing_authority: Annotated[str, StringConstraints(max_length=1000)] | None = None
+    issuing_authority: Annotated[str, StringConstraints()] | None = None
     effective_from: date | None = None
     effective_to: date | None = None
     validity_status: Literal[
@@ -466,7 +466,7 @@ class LegalEvidenceReference(StrictModel):
     metadata_verification_status: Literal["VERIFIED", "UNVERIFIED", "REJECTED"]
     official_source_url: Annotated[str, StringConstraints(max_length=4000)] | None = None
     content_hash: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
-    check_codes: list[Identifier] = Field(min_length=1, max_length=45)
+    check_codes: list[Identifier] = Field(min_length=1)
     issue_ids: list[Identifier] = Field(min_length=1)
     retrieval_channels: list[
         Literal["EXACT", "KEYWORD", "VECTOR", "RELATION"]
@@ -479,7 +479,7 @@ class LegalEvidenceReference(StrictModel):
     applicability_decisions: list[LegalApplicabilityDecisionReference] = Field(
         min_length=1
     )
-    cautions: list[str] = Field(default_factory=list, max_length=20)
+    cautions: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_reference_identity(self) -> "LegalEvidenceReference":
@@ -537,6 +537,10 @@ class ReviewResultData(StrictModel):
             if self.rule_review.perspective != self.contract_profile.perspective.value:
                 raise ValueError("Rule review perspective must match the contract review")
         finding_by_id = {finding.finding_id: finding for finding in self.findings}
+        if self.rule_review is not None:
+            for decision in self.rule_review.decisions:
+                if decision.finding_id is not None and decision.finding_id not in finding_by_id:
+                    raise ValueError('Rule decision Finding link must resolve in the unified result')
         evidence_by_id = {evidence.evidence_id: evidence for evidence in self.evidences}
         legal_evidence_by_id = {
             evidence.evidence_id: evidence for evidence in self.legal_evidences
@@ -608,20 +612,20 @@ class ReviewResultData(StrictModel):
 
 
 class PublicReviewSummary(StrictModel):
-    overview: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
+    overview: Annotated[str, StringConstraints(min_length=1)]
     finding_count: int = Field(ge=0)
 
 
 class PublicFinding(StrictModel):
     finding_id: Identifier
     category: FindingCategory
-    title: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    title: Annotated[str, StringConstraints(min_length=1)]
     perspective: Perspective
-    our_party: Annotated[str, StringConstraints(min_length=1, max_length=500)]
-    counterparty: Annotated[str, StringConstraints(min_length=1, max_length=500)]
-    issue: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
-    impact_to_our_party: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
-    suggestion: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
+    our_party: Annotated[str, StringConstraints(min_length=1)]
+    counterparty: Annotated[str, StringConstraints(min_length=1)]
+    issue: Annotated[str, StringConstraints(min_length=1)]
+    impact_to_our_party: Annotated[str, StringConstraints(min_length=1)]
+    suggestion: Annotated[str, StringConstraints(min_length=1)]
     evidence_ids: list[Identifier] = Field(min_length=1)
     legal_evidence_ids: list[Identifier] = Field(default_factory=list)
 

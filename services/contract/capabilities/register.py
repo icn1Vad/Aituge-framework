@@ -111,10 +111,10 @@ class ContractTaskInput(StrictModel):
     party_resolution_id: str | None = Field(default=None, min_length=1, max_length=160)
     document_id: str = Field(min_length=1, max_length=160)
     perspective: Literal["PARTY_A", "PARTY_B"]
-    our_party_name: str | None = Field(default=None, max_length=500)
+    our_party_name: str | None = Field(default=None)
     execution_mode: Literal["FULL_REVIEW", "PARTY_RESOLUTION"] = "FULL_REVIEW"
-    confirmed_party_a_name: str | None = Field(default=None, min_length=1, max_length=500)
-    confirmed_party_b_name: str | None = Field(default=None, min_length=1, max_length=500)
+    confirmed_party_a_name: str | None = Field(default=None, min_length=1)
+    confirmed_party_b_name: str | None = Field(default=None, min_length=1)
     contract_type: Literal["AUTO"]
     review_attitude: Literal["NEUTRAL"]
     rule_review_standard: Literal["neutral", "strong", "weak"] = "neutral"
@@ -170,7 +170,7 @@ class ContractIrToolInput(ContractDocumentToolInput):
 
 
 class PartyValue(StrictModel):
-    name: str = Field(min_length=1, max_length=500)
+    name: str = Field(min_length=1)
     name_resolved: bool = True
     name_status: Literal["EXTRACTED", "USER_CONFIRMED", "NOT_STATED"] = "EXTRACTED"
 
@@ -202,13 +202,13 @@ class IrDocument(StrictModel):
 
 class IrParty(StrictModel):
     role: Literal["PARTY_A", "PARTY_B", "OTHER"]
-    name: str = Field(min_length=1, max_length=500)
+    name: str = Field(min_length=1)
     source_anchors: list[SourceAnchor] = Field(min_length=1)
 
 
 class IrDefinition(StrictModel):
-    term: str = Field(min_length=1, max_length=500)
-    meaning: str = Field(min_length=1, max_length=5000)
+    term: str = Field(min_length=1)
+    meaning: str = Field(min_length=1)
     source_anchors: list[SourceAnchor] = Field(min_length=1)
 
 
@@ -216,16 +216,16 @@ class IrClause(StrictModel):
     clause_id: str = Field(min_length=1, max_length=160)
     clause_no: str | None = Field(default=None, max_length=200)
     clause_type: str = Field(min_length=1, max_length=160)
-    heading_path: list[str] = Field(default_factory=list, max_length=30)
-    text: str = Field(min_length=1, max_length=100_000)
+    heading_path: list[str] = Field(default_factory=list)
+    text: str = Field(min_length=1)
     source_anchors: list[SourceAnchor] = Field(min_length=1)
 
 
 class IrSemanticItem(StrictModel):
     item_id: str = Field(min_length=1, max_length=160)
-    subject: str | None = Field(default=None, max_length=500)
-    predicate: str = Field(min_length=1, max_length=1000)
-    object: str | None = Field(default=None, max_length=5000)
+    subject: str | None = Field(default=None)
+    predicate: str = Field(min_length=1)
+    object: str | None = Field(default=None)
     source_anchors: list[SourceAnchor] = Field(min_length=1)
 
 
@@ -233,8 +233,8 @@ class ContractIr(StrictModel):
     ir_version: Literal["1.0"] = "1.0"
     document: IrDocument
     parties: list[IrParty] = Field(default_factory=list)
-    our_party: str | None = Field(default=None, min_length=1, max_length=500)
-    counterparty: str | None = Field(default=None, min_length=1, max_length=500)
+    our_party: str | None = Field(default=None, min_length=1)
+    counterparty: str | None = Field(default=None, min_length=1)
     contract_type: str = Field(default="AUTO", pattern=r"^[A-Z][A-Z0-9_]*$", max_length=80)
     definitions: list[IrDefinition] = Field(default_factory=list)
     clauses: list[IrClause] = Field(min_length=1)
@@ -259,8 +259,8 @@ class ContractProfile(StrictModel):
     party_a: PartyValue
     party_b: PartyValue
     perspective: Literal["PARTY_A", "PARTY_B"]
-    our_party: str = Field(min_length=1, max_length=500)
-    counterparty: str = Field(min_length=1, max_length=500)
+    our_party: str = Field(min_length=1)
+    counterparty: str = Field(min_length=1)
     review_attitude: Literal["NEUTRAL"] = "NEUTRAL"
 
     @model_validator(mode="after")
@@ -273,7 +273,7 @@ class ContractProfile(StrictModel):
 
 
 class ReviewSummary(StrictModel):
-    overview: str = Field(min_length=1, max_length=10_000)
+    overview: str = Field(min_length=1)
     high_count: int = Field(ge=0)
     medium_count: int = Field(ge=0)
     low_count: int = Field(ge=0)
@@ -300,13 +300,13 @@ class Finding(StrictModel):
         "OTHER",
     ]
     risk_level: Literal["HIGH", "MEDIUM", "LOW", "INFO"]
-    title: str = Field(min_length=1, max_length=500)
+    title: str = Field(min_length=1)
     perspective: Literal["PARTY_A", "PARTY_B"]
-    our_party: str = Field(min_length=1, max_length=500)
-    counterparty: str = Field(min_length=1, max_length=500)
-    issue: str = Field(min_length=1, max_length=10_000)
-    impact_to_our_party: str = Field(min_length=1, max_length=10_000)
-    suggestion: str = Field(min_length=1, max_length=10_000)
+    our_party: str = Field(min_length=1)
+    counterparty: str = Field(min_length=1)
+    issue: str = Field(min_length=1)
+    impact_to_our_party: str = Field(min_length=1)
+    suggestion: str = Field(min_length=1)
     evidence_ids: list[str] = Field(min_length=1)
     legal_evidence_ids: list[str] = Field(default_factory=list)
 
@@ -329,8 +329,8 @@ class Evidence(StrictModel):
     char_end: int | None = Field(default=None, ge=1)
     quoted_text: str | None = None
     quoted_text_hash: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
-    checked_scope: str | None = Field(default=None, min_length=1, max_length=500)
-    verification_note: str | None = Field(default=None, min_length=1, max_length=5000)
+    checked_scope: str | None = Field(default=None, min_length=1)
+    verification_note: str | None = Field(default=None, min_length=1)
     bounding_boxes: list[None] = Field(default_factory=list, max_length=0)
 
     @model_validator(mode="after")
@@ -375,8 +375,8 @@ class PartyResolutionStageResult(StrictModel):
     party_a: PartyValue | None = None
     party_b: PartyValue | None = None
     perspective: Literal["PARTY_A", "PARTY_B"]
-    our_party: str | None = Field(default=None, min_length=1, max_length=500)
-    counterparty: str | None = Field(default=None, min_length=1, max_length=500)
+    our_party: str | None = Field(default=None, min_length=1)
+    counterparty: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def validate_perspective(self) -> "PartyResolutionStageResult":
@@ -431,8 +431,8 @@ class EvidenceCandidate(StrictModel):
     char_end: int | None = Field(default=None, ge=1)
     quoted_text: str | None = None
     quoted_text_hash: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
-    checked_scope: str | None = Field(default=None, min_length=1, max_length=500)
-    verification_note: str | None = Field(default=None, min_length=1, max_length=5000)
+    checked_scope: str | None = Field(default=None, min_length=1)
+    verification_note: str | None = Field(default=None, min_length=1)
     bounding_boxes: list[None] = Field(default_factory=list, max_length=0)
 
     @model_validator(mode="after")
@@ -487,7 +487,7 @@ class InternalRelationship(StrictModel):
     source_clause_id: str = Field(min_length=1, max_length=160)
     target_clause_id: str = Field(min_length=1, max_length=160)
     relation_type: Literal["SUPPORTS", "CONFLICTS", "DEPENDS_ON", "OVERRIDES"]
-    explanation: str = Field(min_length=1, max_length=4000)
+    explanation: str = Field(min_length=1)
 
 
 class RelationExtractionStageResult(ReviewStageResult):
@@ -498,7 +498,7 @@ class RelationExtractionStageResult(ReviewStageResult):
 class EvidenceVerificationStageResult(StrictModel):
     result_type: Literal["EVIDENCE_VERIFICATION_STAGE_V1"]
     contract_profile: ContractProfile
-    overview: str = Field(min_length=1, max_length=10_000)
+    overview: str = Field(min_length=1)
     findings: list[Finding] = Field(default_factory=list)
     evidences: list[Evidence] = Field(default_factory=list)
     relationships: list[None] = Field(default_factory=list, max_length=0)
@@ -1277,7 +1277,12 @@ def _direct_contract_review_handler(
                 standard=task_input.rule_review_standard,
                 **rule_role_arguments(getattr(party_artifact, "metadata_json", None) or {}, task_input.perspective),
             )
-            formal["rule_review"] = rule_result.model_dump(mode="json")
+            from contract.rule_evidence.finding_projection import merge_rule_findings
+            formal, rule_result = merge_rule_findings(formal, rule_result, value)
+        # Rules may add or deduplicate cards. Describe the final, merged result,
+        # while keeping the underlying incomplete decisions unchanged.
+        from services.contract.capabilities.review_completion import final_result_overview
+        formal["summary"]["overview"] = final_result_overview(formal, summary.get("review_completion"))
         formal.pop("result_hash", None)
         formal["result_type"] = "FINAL_REVIEW_STAGE_V1"
         validated = FinalizeReviewStageResult.model_validate(formal)
@@ -1287,7 +1292,8 @@ def _direct_contract_review_handler(
             # later HTTP callback normalization.
             output=_json_safe(validated.model_dump()),
             summary=(
-                f"Direct structured review completed: "
+                f"Direct structured review result returned "
+                f"({summary.get('review_completion', {}).get('status', 'UNKNOWN')}): "
                 f"{len(validated.findings)} findings, "
                 f"{summary.get('total_model_calls', 0)} model calls."
             ),
@@ -1298,9 +1304,14 @@ def _direct_contract_review_handler(
                     "prompt_tokens": rule_result.prompt_tokens,
                     "completion_tokens": rule_result.completion_tokens,
                 }} if rule_result is not None else {}),
+                **({"rule_library_selection_usage": {
+                    key: rule_result.semantic_selection.get(key)
+                    for key in ("model_calls", "prompt_tokens", "completion_tokens", "cache_hit")
+                }} if rule_result is not None and rule_result.semantic_selection else {}),
                 **({"rule_library_shadow": summary["rule_library_shadow"]}
                    if "rule_library_shadow" in summary else {}),
                 "risk_review_engine": "direct",
+                "review_completion": summary.get("review_completion"),
                 "review_unit_count": 7,
                 "check_count": 45,
                 "model_calls": summary.get("total_model_calls", 0),
@@ -1804,6 +1815,7 @@ async def register(registry, settings) -> None:
             mode=rule_mode,
             standard=settings.get("RULE_LIBRARY_REVIEW_STANDARD") or "neutral",
             max_calls=int(settings.get("RULE_LIBRARY_REVIEW_MAX_CALLS") or "4"),
+            semantic_selection=True,
         )
     rule_snapshot_directory = settings.get("RULE_LIBRARY_SHADOW_SNAPSHOT_DIR")
     party_ai_enabled = settings.get("CONTRACT_PARTY_AI_ENABLED") == "true"
@@ -2035,14 +2047,14 @@ async def register(registry, settings) -> None:
     party_resolution_stages: list[dict[str, Any]] = [
         {
             "stage_id": "parse_contract",
-            "name": "Validate persisted contract parse for fast party resolution",
+            "name": "Validate persisted contract parse for party resolution",
             "stage_type": "gateway",
             "input_model": ContractTaskInput,
             "output_model": ParseContractStageResult,
             "input_adapter": "task_input",
             "artifact_type": "contract_parse_result",
             "service_handler": "contract_stage_gateway_v1",
-            "timeout_seconds": 5,
+            "timeout_seconds": 60,
             "retry_policy": {"max_attempts": 1, "retry_on": []},
         },
         {
@@ -2116,7 +2128,8 @@ async def register(registry, settings) -> None:
         task_type=PARTY_RESOLUTION_TASK_TYPE,
         description="Parse a contract and resolve PARTY_A and PARTY_B without starting risk review.",
         final_artifact_type="contract_party_resolution",
-        timeout_seconds=25 if party_ai_enabled else 10,
+        # Include the parse stage plus party resolution and orchestration time.
+        timeout_seconds=90,
         resumable=False,
         max_parallelism=1,
         stages=party_resolution_stages,

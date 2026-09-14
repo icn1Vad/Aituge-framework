@@ -117,10 +117,10 @@ class ExpectedBlock(StrictModel):
 
 class PipelineWindowInput(WindowExtractionRequest):
     sequence_no: int = Field(ge=1)
-    section_ids: list[str] = Field(min_length=1, max_length=500)
-    heading_path: list[str] = Field(default_factory=list, max_length=30)
-    clause_nos: list[str] = Field(default_factory=list, max_length=100)
-    primary_block_ids: list[str] = Field(min_length=1, max_length=2_000)
+    section_ids: list[str] = Field(min_length=1)
+    heading_path: list[str] = Field(default_factory=list)
+    clause_nos: list[str] = Field(default_factory=list)
+    primary_block_ids: list[str] = Field(min_length=1)
     estimated_tokens: int = Field(ge=1)
 
     @model_validator(mode="after")
@@ -143,9 +143,9 @@ class PipelineWindowInput(WindowExtractionRequest):
 class WindowPipelineRequest(StrictModel):
     document_id: str = Field(min_length=1, max_length=160)
     generation_id: str = Field(min_length=1, max_length=160)
-    expected_blocks: list[ExpectedBlock] = Field(min_length=1, max_length=20_000)
-    expected_section_ids: list[str] = Field(min_length=1, max_length=20_000)
-    windows: list[PipelineWindowInput] = Field(min_length=1, max_length=5_000)
+    expected_blocks: list[ExpectedBlock] = Field(min_length=1)
+    expected_section_ids: list[str] = Field(min_length=1)
+    windows: list[PipelineWindowInput] = Field(min_length=1)
     concurrency: Literal[10] = WINDOW_EXTRACTION_CONCURRENCY
 
     @model_validator(mode="after")
@@ -175,16 +175,16 @@ class PipelineSourceAnchor(StrictModel):
 
 
 class PipelineIrDefinition(StrictModel):
-    term: str = Field(min_length=1, max_length=500)
-    meaning: str = Field(min_length=1, max_length=5_000)
+    term: str = Field(min_length=1)
+    meaning: str = Field(min_length=1)
     source_anchors: list[PipelineSourceAnchor] = Field(min_length=1)
 
 
 class PipelineIrSemanticItem(StrictModel):
     item_id: str
-    subject: str | None = Field(default=None, max_length=500)
-    predicate: str = Field(min_length=1, max_length=1_000)
-    object: str | None = Field(default=None, max_length=5_000)
+    subject: str | None = Field(default=None)
+    predicate: str = Field(min_length=1)
+    object: str | None = Field(default=None)
     source_anchors: list[PipelineSourceAnchor] = Field(min_length=1)
 
 
@@ -240,14 +240,14 @@ class WindowAttempt(StrictModel):
     error_code: str | None = None
     error_message: str | None = None
     fallback_extraction_count: int = Field(default=0, ge=0)
-    fallback_reason: str | None = Field(default=None, max_length=2_000)
+    fallback_reason: str | None = Field(default=None)
 
 
 class WindowRunResult(StrictModel):
     window_id: str
     sequence_no: int
     status: Literal["SUCCEEDED", "FAILED"]
-    attempts: list[WindowAttempt] = Field(min_length=1, max_length=2)
+    attempts: list[WindowAttempt] = Field(min_length=1)
     mapped_extractions: list[MappedExtraction] = Field(default_factory=list)
 
 

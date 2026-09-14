@@ -13,7 +13,15 @@ from contract.application.framework_gateway import (
     FrameworkUnavailableError,
 )
 from contract.application.framework_http_gateway import FrameworkHttpGateway
+from contract.application.framework_http_gateway import _RunRecord
 from contract.config import Settings
+
+
+@pytest.mark.parametrize(("status", "expected"), [("running", "RISK_REVIEW"), ("succeeded", "FINALIZING")])
+def test_direct_final_stage_only_claims_finalizing_after_review_finishes(status, expected):
+    record = _RunRecord(id="run", task_id="task", status=status,
+                        current_stage_id="finalize_review", updated_at=datetime.now(timezone.utc))
+    assert FrameworkHttpGateway._snapshot(record).current_stage_id == expected
 
 
 def _request() -> FrameworkExecutionRequest:

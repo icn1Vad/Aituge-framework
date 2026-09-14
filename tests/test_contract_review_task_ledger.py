@@ -28,6 +28,11 @@ def test_commercial_response_size_follows_assignment_not_eight(count):
     })
     response = {"check_results": [{"check_code": code, "status": "REVIEWED",
                 "decision_note": "已检查本次分配的价款证据，未见口径冲突。", "findings": []} for code in reversed(codes)]}
+    from test_seven_domain_evidence_protocol import wire_fixture, catalog_for
+    response = wire_fixture(response, catalog_for(request))
+    prompt = json.loads(_prompt(request)[0].split('\n', 1)[1])
+    assert 'cf005_candidate' not in prompt
+    assert 'cf005_required_fields' not in prompt['output_contract']
     class Runtime:
         calls = 0
         async def complete_with_usage(self, **kwargs):

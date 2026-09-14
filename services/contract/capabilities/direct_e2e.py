@@ -134,7 +134,7 @@ class DirectRiskReviewEndToEndResult(StrictModel):
     contract_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     fixture_id: str = Field(min_length=1, max_length=160)
     status: DirectE2EStatus
-    extended_bundle_status: Literal["SUCCEEDED"]
+    extended_bundle_status: Literal["SUCCEEDED", "PARTIAL"]
     compatibility_status: Literal["SUCCEEDED"]
     semantic_merge_status: Literal["COMPLETED", "SKIPPED"]
     evidence_verification_status: Literal["VERIFIED"]
@@ -197,14 +197,12 @@ def build_formal_result(
     framework_task_id: str,
     framework_run_id: str,
     legal_evidence_bundle: Any | None = None,
+    review_completion: dict[str, Any] | None = None,
 ) -> tuple[FinalizeReviewStageResult, ReviewResultData, str]:
     """Build and validate the exact formal final-stage/result DTOs."""
 
-    overview = (
-        f"发现{len(compatible.final_findings)}项需要人工复核的合同事项。"
-        if compatible.final_findings
-        else "未发现需要人工复核的实质合同风险。"
-    )
+    from services.contract.capabilities.review_completion import result_overview
+    overview = result_overview(len(compatible.final_findings), review_completion)
     verified = EvidenceVerificationStageResult(
         result_type="EVIDENCE_VERIFICATION_STAGE_V1",
         contract_profile=context.contract_profile,
@@ -534,6 +532,7 @@ def build_final_callback(
 def build_success_state_trace(
     *,
     merge_status: Literal["COMPLETED", "SKIPPED"],
+    review_partial: bool = False,
 ) -> list[DirectE2EStateEvent]:
     if _FORMAL_STAGE_MAPPING["verify_evidence"] != "EVIDENCE_VERIFICATION":
         raise DirectE2EError("RISK_E2E_STATE_MACHINE_CHANGED", "Evidence stage mapping changed")
@@ -541,7 +540,7 @@ def build_success_state_trace(
         raise DirectE2EError("RISK_E2E_STATE_MACHINE_CHANGED", "Final stage mapping changed")
     events = (
         ("RISK_REVIEW_STARTED", "RISK_REVIEW"),
-        ("EXTENDED_BUNDLE_COMPLETED", "RISK_REVIEW"),
+        ("EXTENDED_BUNDLE_PARTIAL" if review_partial else "EXTENDED_BUNDLE_COMPLETED", "RISK_REVIEW"),
         ("COMPATIBILITY_COMPLETED", "RISK_REVIEW"),
         (
             "SEMANTIC_MERGE_COMPLETED"
@@ -584,6 +583,7 @@ class DirectRiskReviewEndToEndRunner:
         framework_run_id: str,
         core_signature: str | None = None,
         legal_evidence_bundle: Any | None = None,
+        review_completion: dict[str, Any] | None = None,
     ) -> tuple[DirectRiskReviewEndToEndResult, ReviewResultData]:
         started = time.perf_counter()
         if request.review_id != compatibility_context.review_id:
@@ -595,6 +595,7 @@ class DirectRiskReviewEndToEndRunner:
             framework_task_id=framework_task_id,
             framework_run_id=framework_run_id,
             legal_evidence_bundle=legal_evidence_bundle,
+            review_completion=review_completion,
         )
         receipt = self.sink.submit(payload.model_dump(mode="json"))
         callback = build_final_callback(
@@ -623,7 +624,7 @@ class DirectRiskReviewEndToEndRunner:
             contract_hash=request.contract_hash,
             fixture_id=request.fixture_id,
             status="SUCCEEDED",
-            extended_bundle_status="SUCCEEDED",
+            extended_bundle_status="PARTIAL" if review_completion and review_completion["status"] == "PARTIAL" else "SUCCEEDED",
             compatibility_status="SUCCEEDED",
             semantic_merge_status=compatible.merge_status,
             evidence_verification_status=compatible.evidence_verification_status,
@@ -635,7 +636,8 @@ class DirectRiskReviewEndToEndRunner:
             core_result_signature=core_signature or core_result_signature(compatible),
             stage_metrics=metrics,
             state_transition_trace=build_success_state_trace(
-                merge_status=compatible.merge_status
+                merge_status=compatible.merge_status,
+                review_partial=bool(review_completion and review_completion["status"] == "PARTIAL"),
             ),
             sink_receipt=receipt,
             callback_receipt=callback_receipt,

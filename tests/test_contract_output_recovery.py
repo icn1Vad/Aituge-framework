@@ -1,6 +1,7 @@
 """Offline regression matrix for check-local recovery. All completions are fake."""
 import copy
 import json
+import os
 import stat
 from types import SimpleNamespace
 
@@ -33,7 +34,8 @@ def test_only_missing_explanation_is_repaired_and_other_checks_stay_identical(mi
     normalized = result.attempt_diagnostics[1].normalized_output
     for index in range(8):
         if index != 1:
-            assert normalized["check_results"][index] == initial["check_results"][index]
+            from test_seven_domain_evidence_protocol import normalized_fixture
+            assert normalized["check_results"][index] == normalized_fixture(initial)["check_results"][index]
     assert result.check_results[1].decision_note == repaired["decision_note"]
 
 
@@ -50,12 +52,14 @@ def test_targeted_repair_may_correct_an_existing_nonblank_explanation():
     ])
     assert result.check_results[1].decision_note == repaired["decision_note"]
     assert result.attempt_diagnostics[-1].semantic_preservation_passed is True
-    assert result.attempt_diagnostics[0].normalized_output["check_results"][1]["decision_note"] == check["decision_note"]
+    assert json.loads(result.attempt_diagnostics[0].raw_content)["check_results"][1]["decision_note"] == check["decision_note"]
     payload = json.loads(runtime.calls[1]["messages"][0]["content"])
     assert payload["target_check_codes"] == ["CF-002"]
     assert any("包括已有非空说明" in rule for rule in payload["constraints"])
     normalized = result.attempt_diagnostics[-1].normalized_output["check_results"]
-    assert all(normalized[i] == value for i, value in enumerate(initial["check_results"]) if i != 1)
+    from test_seven_domain_evidence_protocol import normalized_fixture
+    siblings = {"check_results": [value for i,value in enumerate(initial["check_results"]) if i != 1]}
+    assert [value for i,value in enumerate(normalized) if i != 1] == normalized_fixture(siblings)["check_results"]
 
 
 def test_explanation_permission_does_not_allow_changes_to_untargeted_checks():
@@ -151,15 +155,14 @@ def test_unknown_payer_remains_unknown_not_inapplicable():
     assert caught.value.code == "RISK_CF005_APPLICABILITY_INVALID"
 
 
-def test_insufficient_evidence_is_not_reported_as_success():
+def test_insufficient_evidence_stays_pending_without_blocking_other_batches():
     initial = _valid_payload(finding_count=0)
     initial["check_results"][4].update(status="FAILED", candidate_decision="INSUFFICIENT_EVIDENCE",
                                       identified_security_mechanisms=[], candidate_evidence=[])
     result, _ = _review([_completion(json.dumps(initial))])
     assert result.status == "PARTIAL_FAILED"
-    from services.contract.scripts.contract_risk_stage66_direct_e2e import _require_complete_review_phase, DirectE2EError
-    with pytest.raises(DirectE2EError):
-        _require_complete_review_phase("base", "PARTIAL_FAILED", [result])
+    assert result.check_results[4].status == "FAILED"
+    assert result.check_results[4].reason_code == "INSUFFICIENT_EVIDENCE"
 
 
 def test_failed_calls_keep_usage_and_private_full_diagnostics(tmp_path, monkeypatch):
@@ -175,9 +178,12 @@ def test_failed_calls_keep_usage_and_private_full_diagnostics(tmp_path, monkeypa
     record = json.loads(record_path.read_text())
     assert len(record["payload"]["attempts"]) == 2
     assert len(record["payload"]["attempts"][0]["validation_issues"]) >= 8
-    assert record["payload"]["attempts"][0]["raw_content"] == json.dumps(initial)
-    assert stat.S_IMODE(record_path.stat().st_mode) == 0o600
-    assert stat.S_IMODE(record_path.parent.stat().st_mode) == 0o700
+    from test_seven_domain_evidence_protocol import wire_fixture, catalog_for
+    assert json.loads(record["payload"]["attempts"][0]["raw_content"]) == wire_fixture(initial, catalog_for(_request()))
+    if os.name != "nt":  # Production is Linux; Windows uses ACLs, not POSIX mode bits.
+        assert stat.S_IMODE(record_path.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(record_path.parent.stat().st_mode) == 0o700
     request = _request()
     batch = _failed_batch_result(SimpleNamespace(unit_id="commercial_financial", batch_id=request.batch_id,
                                                 check_specs=request.assigned_check_specs), error, duration_ms=10)

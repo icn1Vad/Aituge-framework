@@ -3,6 +3,27 @@ from __future__ import annotations
 
 import copy
 import json
+import re
+from services.contract.capabilities.review_evidence_protocol import scope_direct_repair_context
+
+
+def infer_repair_targets(error, baseline):
+    checks = baseline.get("check_results", []) if isinstance(baseline, dict) else []
+    if not isinstance(checks, list):
+        return []
+    codes = [c.get("check_code") for c in checks if isinstance(c, dict)]
+    if len(codes) != len(checks) or any(not isinstance(c, str) for c in codes) or len(set(codes)) != len(codes):
+        return []
+    targets = set(getattr(error, "check_codes", []))
+    cause = error.__cause__
+    issues = cause.errors() if hasattr(cause, "errors") else []
+    if not hasattr(cause, "errors"):
+        targets.update(re.findall(r"\b(?:CF|FVA|PO|ICD|LRE|CCC|MAC)-[0-9]{3}\b", str(error)))
+    for issue in issues:
+        loc = issue.get("loc", ())
+        if len(loc) > 1 and loc[0] == "check_results" and isinstance(loc[1], int) and loc[1] < len(codes):
+            targets.add(codes[loc[1]])
+    return sorted(targets & set(codes))
 
 
 def build_check_repair(*, baseline, error, request_context, check_schema):
@@ -11,52 +32,46 @@ def build_check_repair(*, baseline, error, request_context, check_schema):
         checks = None
     valid_ids = [item.get("check_code") for item in checks or [] if isinstance(item, dict)]
     unique = bool(checks) and all(isinstance(code, str) for code in valid_ids) and len(valid_ids) == len(checks) == len(set(valid_ids))
-    targets = list(error.check_codes) if unique and error.check_codes else []
+    # The list sent to the model MUST be the same one used by merge/preservation.
+    # With a valid envelope but an unlocated error, no sibling is certified yet.
+    targets = (list(error.check_codes) or infer_repair_targets(error, baseline) or list(valid_ids)) if unique else []
     selected = [item for item in checks or [] if item.get("check_code") in targets] if targets else checks
     context = copy.deepcopy(request_context)
     if targets:
-        context["assigned_check_specs"] = [item for item in context["assigned_check_specs"] if item["check_code"] in targets]
-        context["decision_policies"] = {key: value for key, value in context["decision_policies"].items() if key in targets}
-        if "CF-005" not in targets:
-            context.pop("cf005_candidate", None)
-        refs = set()
-        def collect(value):
-            if isinstance(value, dict):
-                for key, item in value.items():
-                    if key in {"ir_ref", "evidence_ref"} and isinstance(item, str):
-                        refs.add(item)
-                    collect(item)
-            elif isinstance(value, list):
-                for item in value:
-                    collect(item)
-        collect(selected)
-        candidate = context.get("cf005_candidate") or {}
-        refs.update(candidate.get("candidate_ir_refs") or [])
-        refs.update(candidate.get("candidate_evidence_refs") or [])
-        # If no source has been selected (e.g. a no-risk note), retain the already
-        # bounded financial context. Never fetch the entire contract for a repair.
-        if refs:
-            projected = context.get("projected_ir", {})
-            context["projected_ir"] = {group: [item for item in entries if item.get("ir_ref") in refs]
-                                       for group, entries in projected.items()}
-            context["source_excerpts"] = [item for item in context.get("source_excerpts", []) if item.get("evidence_ref") in refs]
-    context.pop("output_contract", None)
-    context.pop("legal_evidence_catalog", None)  # this is repair, not a second legal review
+        context = scope_direct_repair_context(context, targets)
+        # A rejected reference is NOT a retrieval query. Filtering by the wrong
+        # I/A pair removes precisely the alternatives needed to correct it.
+        # Retain the original bounded batch catalogue, including both ends of
+        # every binding. No new contract retrieval or model call is performed.
+    # Reassessment must see the same contract AND legal text. A failed type/ID
+    # can coexist with a wrong conclusion; do not freeze that conclusion.
     schema = copy.deepcopy(check_schema)
     definitions = schema.pop("$defs", {})
     output_schema = {"type": "object", "additionalProperties": False,
                      "required": ["check_results"], "properties": {"check_results": {
                          "type": "array", "items": schema}}, "$defs": definitions}
-    return {"task": "REPAIR_FAILED_CHECKS_ONLY", "target_check_codes": targets,
+    mode = "REASSESS_TARGET" if "source_selection_contract" in context else repair_mode(error)
+    prompt_targets = targets or [s["check_code"] for s in context["assigned_check_specs"]]
+    return {"task": "REPAIR_FAILED_CHECKS_ONLY", "repair_mode": mode, "target_check_codes": prompt_targets,
             "original_checks": selected, "errors": error.validation_issues,
             "context": context, "output_schema": output_schema,
             "constraints": [
                 "只返回target_check_codes指定的检查项，其他已通过检查项由程序原样保留",
                 "允许补充或更正目标检查项的decision_note，包括已有非空说明；说明需对应提供的事实，禁止套用已审查无风险模板",
-                "允许修复明确的格式问题；status、Finding及其原文Evidence仍须保留，不能新增或删除风险",
-                "不得把非空findings改为空数组",
+                ("业务复核模式：允许纠正目标项的判断、风险标题、说明和结论；必须一并纠正矛盾字段，并重新通过原文绑定、立场和范围校验"
+                 if mode == "REASSESS_TARGET" else
+                 "格式修复模式：保留风险判断和文字；证据绑定错误时可从原始目录重新选择正确配对，不得按相近编号猜测"),
+                ("删除被证伪的目标风险时必须说明对应证据与复核原因" if mode == "REASSESS_TARGET" else "不得把非空findings改为空数组"),
                 "不得伪造证据、保障措施、原文或业务判断；无法修复则保留失败，不得清空结果规避错误",
             ]}, targets
+
+
+def repair_mode(error):
+    if getattr(error, "validation_stage", None) == "BUSINESS":
+        return "REASSESS_TARGET"
+    if any(issue.get("stage") == "EVIDENCE" for issue in getattr(error, "validation_issues", [])):
+        return "REBIND_EVIDENCE"
+    return "FORMAT_ONLY"
 
 
 def merge_check_repair(baseline, repaired, targets):
@@ -73,13 +88,16 @@ def merge_check_repair(baseline, repaired, targets):
     original = {item["check_code"]: item for item in baseline["check_results"]}
     if len(by_code) != len(entries) or not set(targets).issubset(by_code):
         raise ValueError("Repair omitted or duplicated a target check")
-    if not set(by_code).issubset(original):
+    if not set(by_code).issubset(set(original) | set(targets)):
         raise ValueError("Repair introduced an unknown check")
     for code, check in by_code.items():
         if code not in targets and check != original[code]:
             raise ValueError("Repair changed an untargeted check")
-    merged = copy.deepcopy(baseline)
+    # Only the declared envelope survives. Invalid top-level extras are format
+    # errors, not accepted sibling judgments that need preservation.
+    merged = {"check_results": copy.deepcopy(baseline["check_results"])}
     merged["check_results"] = [copy.deepcopy(by_code[check["check_code"]])
                                if check["check_code"] in targets else check
                                for check in merged["check_results"]]
+    merged["check_results"].extend(copy.deepcopy(by_code[code]) for code in targets if code not in original)
     return merged

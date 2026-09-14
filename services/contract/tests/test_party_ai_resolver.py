@@ -81,7 +81,7 @@ def test_service_provider_can_be_a_and_selected_b_remains_client(tmp_path):
     result = asyncio.run(resolve(tmp_path, runtime))
     assert result["parties"]["party_a"]["name"] == "晨星公司"
     assert result["parties"]["party_a"]["business_roles"] == ["服务方"]
-    assert rule_role_arguments(result, "PARTY_B") == {"business_role": "委托方", "infer_business_role": False}
+    assert rule_role_arguments(result, "PARTY_B") == {"business_role": "委托方", "business_roles": ["委托方"], "infer_business_role": False}
     assert result["model_call_count"] == runtime.calls == 1
 
 
@@ -148,6 +148,7 @@ def test_conflicts_and_multiple_roles_are_not_arbitrarily_assigned():
     assert rule_role_arguments(metadata, "PARTY_A")["business_role"] is None
     bound["party_b"]["business_roles"] = ["委托方", "采购方"]
     assert rule_role_arguments(metadata, "PARTY_B")["business_role"] is None
+    assert rule_role_arguments(metadata, "PARTY_B")["business_roles"] == ["委托方", "采购方"]
     assert rule_role_arguments({}, "PARTY_B") == {}
 
 
@@ -258,6 +259,7 @@ def test_ai_flag_registers_separate_bounded_stage_without_changing_legacy(tmp_pa
         "CONTRACT_SERVICE_BASE_URL": "http://unused", "CONTRACT_RESULT_SINK_INTERNAL_TOKEN": "fake",
         "CONTRACT_PARTY_AI_ENABLED": "true", "CONTRACT_PARTY_AI_CACHE_DIR": str(tmp_path)})))
     pipeline = next(p for p in registry.pipelines if p["pipeline_id"] == capability.PARTY_RESOLUTION_PIPELINE_ID)
-    assert pipeline["timeout_seconds"] == 25
+    assert pipeline["timeout_seconds"] == 90
+    assert pipeline['timeout_seconds'] > sum(stage['timeout_seconds'] for stage in pipeline['stages'])
     assert pipeline["stages"][1]["timeout_seconds"] == 18
     assert pipeline["stages"][1]["retry_policy"]["max_attempts"] == 1

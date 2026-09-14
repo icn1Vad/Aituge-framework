@@ -22,7 +22,7 @@ class JavaRuleLibrarySnapshot(StrictModel):
     snapshot_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     tenant_id: str = Field(min_length=1, max_length=160)
     as_of_date: date
-    rules: list[ReviewRuleSnapshot] = Field(default_factory=list, max_length=10000)
+    rules: list[ReviewRuleSnapshot] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_scope(self) -> JavaRuleLibrarySnapshot:
@@ -43,6 +43,7 @@ class JavaRuleLibrarySnapshot(StrictModel):
         relations: list[RuleLibraryRelation] | None = None,
         review_standard: Literal["neutral", "strong", "weak"] = "neutral",
         business_role: str | None = None,
+        business_roles: list[str] | None = None,
         contract_type_aliases: list[str] | None = None,
     ) -> RuleEvidencePlanRequest:
         return RuleEvidencePlanRequest(
@@ -53,6 +54,7 @@ class JavaRuleLibrarySnapshot(StrictModel):
             perspective=perspective,
             review_standard=review_standard,
             business_role=business_role,
+            business_roles=business_roles or [],
             contract_type_aliases=contract_type_aliases or [],
             jurisdiction=jurisdiction,
             contract_date=contract_date,

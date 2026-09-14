@@ -252,6 +252,7 @@ class TaskWorker:
             owner=lease.owner,
             version=lease.version,
         )
+        executed = False
         with bind_execution_lease(execution_lease):
             heartbeat_stop: asyncio.Event | None = None
             heartbeat: asyncio.Task | None = None
@@ -271,11 +272,13 @@ class TaskWorker:
                     name=f"task-manager-heartbeat:{lease.run_id}",
                 )
             try:
-                await self._execute_run_with_trace(service, lease)
+                executed = await self._execute_run_with_trace(service, lease)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("TaskManager worker failed for Run {}", lease.run_id)
+                current = await service.get_task(lease.task_id)
+                executed = current is not None and current.status in {"succeeded", "failed", "cancelled"}
             finally:
                 if heartbeat_supervisor is not None:
                     await asyncio.to_thread(heartbeat_supervisor.stop)
@@ -295,14 +298,16 @@ class TaskWorker:
                         lease.run_id,
                         pool_metrics,
                     )
-        return True
+        # A claimed but unexecuted run must back off, not immediately reclaim
+        # itself thousands of times while reporting a fresh heartbeat.
+        return executed
 
-    async def _execute_run_with_trace(self, service: TaskManagerService, lease: RunLease) -> None:
+    async def _execute_run_with_trace(self, service: TaskManagerService, lease: RunLease) -> bool:
         tracer = trace.get_tracer("aituge.task-worker")
         with tracer.start_as_current_span("task.run") as span:
             span.set_attribute("task.id", lease.task_id)
             span.set_attribute("run.id", lease.run_id)
-            await service._drain_prepared_task(lease.task_id, run_id=lease.run_id)
+            return await service._drain_prepared_task(lease.task_id, run_id=lease.run_id)
 
     async def run_forever(self, stop_event: asyncio.Event | None = None) -> None:
         stop_event = stop_event or asyncio.Event()

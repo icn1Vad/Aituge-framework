@@ -30,17 +30,13 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = "1.0"
 PROMPT_TARGET_TOKENS = 6_000
-PROMPT_HARD_LIMIT_TOKENS = 7_000
-# The model payload also contains a fixed JSON schema, party constraints and
-# output rules.  Six otherwise small requests can therefore exceed the
-# provider's 7k prompt hard limit after serialization.  Four keeps the common
-# multi-finding contract within that limit while preserving batch generation.
+# Packing targets only: all Findings are processed, and atomic inputs/output
+# are never discarded based on their size. Provider limits remain external.
 MAX_BATCH_FINDINGS = 4
-MAX_INSERTION_CANDIDATES = 24
 # Bump whenever deterministic draft-planning semantics change.  A cached
 # failure must not outlive the validation rule that produced it.
 REVISION_DRAFT_CACHE_VERSION = (
-    "numbering-domain-plan-v11-native-structured-numbering"
+    "numbering-domain-plan-v12-no-local-size-rejection"
 )
 _PLACEHOLDER_RE = re.compile(r"(?:TODO|TBD|XXX|待补充|待定|请填写)", re.IGNORECASE)
 _STRUCTURAL_PLACEHOLDER_HEADING_RE = re.compile(
@@ -109,7 +105,7 @@ class RevisionDocumentBlock(StrictModel):
     char_start: int = Field(ge=0)
     char_end: int = Field(gt=0)
     text: str = Field(min_length=1)
-    heading_path: list[str] = Field(default_factory=list, max_length=30)
+    heading_path: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -176,9 +172,9 @@ class RevisionInsertionTarget(StrictModel):
     block_id: str
     block_no: int = Field(gt=0)
     heading_path: list[str] = Field(default_factory=list)
-    anchor_excerpt: str = Field(min_length=1, max_length=500)
+    anchor_excerpt: str = Field(min_length=1)
     anchor_text_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
-    display_position: str = Field(min_length=1, max_length=500)
+    display_position: str = Field(min_length=1)
 
 
 class RevisionNumberingPlanItem(StrictModel):
@@ -186,7 +182,7 @@ class RevisionNumberingPlanItem(StrictModel):
     parent_item_id: str | None = Field(default=None, max_length=100)
     level: int = Field(ge=0, le=8)
     marker_type: Literal["DECIMAL", "PAREN_ALPHA", "PAREN_DECIMAL", "PAREN_CHINESE"]
-    text: str = Field(min_length=1, max_length=1_200)
+    text: str = Field(min_length=1)
 
     marker: str | None = Field(default=None, max_length=32)
 
@@ -708,18 +704,6 @@ class LlmRevisionTextGenerator:
                 previous_completion=previous_completion,
                 repair_no=repair_no,
             )
-            if (
-                completion.prompt_tokens is not None
-                and completion.prompt_tokens > PROMPT_HARD_LIMIT_TOKENS
-            ):
-                await _reject_revision_completion(
-                    completion,
-                    "REVISION_PROMPT_TOKEN_LIMIT",
-                )
-                raise RevisionDraftError(
-                    "REVISION_GENERATION_FAILED",
-                    "Provider prompt token limit was exceeded.",
-                )
             try:
                 generated = _parse_generated_replacements(
                     completion.content,
@@ -1963,7 +1947,7 @@ def _insertion_candidate_score(block: RevisionDocumentBlock, query: str) -> floa
     query_bigrams = _character_bigrams(query)
     if query_bigrams:
         heading_overlap = query_bigrams & _character_bigrams(heading)
-        text_overlap = query_bigrams & _character_bigrams(block.text[:500])
+        text_overlap = query_bigrams & _character_bigrams(block.text)
         score += 20.0 * len(heading_overlap) / len(query_bigrams)
         score += 5.0 * len(text_overlap) / len(query_bigrams)
     return score
@@ -1974,7 +1958,7 @@ def _candidate_from_block(
     *,
     match_score: float,
 ) -> RevisionInsertionCandidate:
-    excerpt = re.sub(r"\s+", " ", block.text).strip()[:500]
+    excerpt = re.sub(r"\s+", " ", block.text).strip()
     return RevisionInsertionCandidate(
         block_id=block.block_id,
         block_no=block.block_no,
@@ -2010,7 +1994,7 @@ def _section_end_blocks(
             else len(blocks)
         )
         section_end = blocks[next_heading_index - 1]
-        heading = re.sub(r"\s+", " ", blocks[heading_index].text).strip()[:200]
+        heading = re.sub(r"\s+", " ", blocks[heading_index].text).strip()
         inferred.append(section_end.model_copy(update={"heading_path": [heading]}))
     return inferred
 
@@ -2090,8 +2074,6 @@ def _build_insertion_candidates(
             continue
         seen.add(block.block_id)
         selected.append(_candidate_from_block(block, match_score=score))
-        if len(selected) >= MAX_INSERTION_CANDIDATES:
-            break
     return tuple(selected)
 
 
@@ -2297,8 +2279,6 @@ def _validate_replacement(
         raise RevisionDraftError("REVISION_GENERATION_FAILED", "replacement_text did not change")
     if _PLACEHOLDER_RE.search(normalized):
         raise RevisionDraftError("REVISION_GENERATION_FAILED", "replacement_text contains a placeholder")
-    if len(normalized) > max(1_200, len(original_text) * 8):
-        raise RevisionDraftError("REVISION_GENERATION_FAILED", "replacement_text expanded abnormally")
     original_amounts = _extract_values(_AMOUNT_RE, original_text)
     replacement_amounts = _extract_values(_AMOUNT_RE, normalized)
     if not replacement_amounts.issubset(original_amounts):
@@ -2374,8 +2354,6 @@ def _validate_supplement(value: str, source: RevisionReviewSource) -> str:
         raise RevisionDraftError("REVISION_GENERATION_FAILED", "replacement_text is empty")
     if _PLACEHOLDER_RE.search(normalized):
         raise RevisionDraftError("REVISION_GENERATION_FAILED", "replacement_text contains a placeholder")
-    if len(normalized) > 1_200:
-        raise RevisionDraftError("REVISION_GENERATION_FAILED", "replacement_text expanded abnormally")
     known_names = {source.our_party, source.counterparty}
     supplement_companies = set(_COMPANY_RE.findall(normalized))
     if not supplement_companies.issubset(known_names):
@@ -2639,7 +2617,8 @@ async def _complete_revision_batch(
         messages=messages,
         model_id=model_id,
         system_prompt=system_prompt,
-        max_tokens=4_000,
+        max_tokens=None,
+        use_provider_output_default=True,
         temperature=0,
         thinking_override=False,
         response_format={"type": "json_object"},

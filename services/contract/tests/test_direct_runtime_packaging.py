@@ -34,32 +34,10 @@ def test_formal_direct_runtime_import_does_not_require_fixture_loader(
     assert "diagnostic_allow_oracle_drift" in parameters
 
 
-def test_partial_review_phase_is_never_finalized_as_success() -> None:
+def test_runtime_does_not_restore_the_atomic_phase_completion_guard() -> None:
     module = importlib.import_module(
         "services.contract.scripts.contract_risk_stage66_direct_e2e"
     )
 
-    with pytest.raises(module.DirectE2EError) as raised:
-        module._require_complete_review_phase(
-            "base",
-            "PARTIAL_FAILED",
-            [
-                SimpleNamespace(unit_id="commercial_financial", status="COMPLETED"),
-                SimpleNamespace(unit_id="liability_remedies_exit", status="FAILED"),
-            ],
-        )
-
-    assert raised.value.code == "RISK_REVIEW_PARTIAL_FAILED"
-    assert "liability_remedies_exit" in str(raised.value)
-
-
-def test_complete_review_phase_passes_the_finalization_guard() -> None:
-    module = importlib.import_module(
-        "services.contract.scripts.contract_risk_stage66_direct_e2e"
-    )
-
-    module._require_complete_review_phase(
-        "horizontal",
-        "COMPLETED",
-        [SimpleNamespace(unit_id="cross_clause_consistency", status="COMPLETED")],
-    )
+    assert not hasattr(module, "_require_complete_review_phase")
+    assert "review_completion=completion" in inspect.getsource(module._execute_one)

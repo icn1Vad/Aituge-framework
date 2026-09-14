@@ -184,3 +184,18 @@ def test_complete_remains_non_streaming_and_backward_compatible() -> None:
 
     assert value == "ordinary"
     assert completions.calls[0]["stream"] is False
+
+
+def test_review_can_omit_output_quota_without_inheriting_registry_default():
+    runtime, completions = _runtime_with_fake_llm()
+    result = asyncio.run(runtime.complete_with_usage(
+        messages=[{"role": "user", "content": "offline test"}],
+        use_provider_output_default=True))
+    assert result.content == '{"ok":true}'
+    assert "max_tokens" not in completions.calls[0]
+
+
+def test_other_usage_calls_still_use_their_configured_output_profile():
+    runtime, completions = _runtime_with_fake_llm()
+    asyncio.run(runtime.complete_with_usage(messages=[{"role":"user","content":"test"}]))
+    assert completions.calls[0]["max_tokens"] == 8192

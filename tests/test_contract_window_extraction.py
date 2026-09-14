@@ -182,7 +182,8 @@ async def test_window_extractor_uses_framework_runtime_and_exact_block_alignment
     assert len(runtime.calls) == 1
     call = runtime.calls[0]
     assert call["model_id"] == "contract-model"
-    assert call["max_tokens"] == 20_000
+    assert call["max_tokens"] is None
+    assert call["use_provider_output_default"] is True
     assert call["temperature"] == 0
     assert call["thinking_override"] is False
     assert "source_text" in call["messages"][0]["content"]

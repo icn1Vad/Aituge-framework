@@ -264,60 +264,6 @@ def _stage_metric(
     )
 
 
-def _require_complete_review_phase(
-    phase: str,
-    status: str,
-    units: list[Any],
-) -> None:
-    """Prevent a partially executed seven-domain review from looking successful."""
-
-    if status == "COMPLETED":
-        return
-    incomplete = sorted(
-        str(getattr(item, "unit_id", "unknown"))
-        for item in units
-        if getattr(item, "status", None) != "COMPLETED"
-    )
-    detail = ",".join(incomplete) if incomplete else "unknown"
-    diagnostics: list[str] = []
-    for item in units:
-        if getattr(item, "status", None) == "COMPLETED":
-            continue
-        unit_id = str(getattr(item, "unit_id", "unknown"))
-        warnings = [
-            str(value).strip()
-            for value in (getattr(item, "warnings", None) or [])
-            if str(value).strip()
-        ]
-        failed_by_note: dict[str, list[str]] = {}
-        for check in (getattr(item, "check_results", None) or []):
-            if (
-                getattr(check, "status", None) != "FAILED"
-                and getattr(check, "reason_code", None) != "INSUFFICIENT_EVIDENCE"
-            ):
-                continue
-            note = str(getattr(check, "decision_note", "") or "").strip()
-            failed_by_note.setdefault(note[:900], []).append(
-                str(getattr(check, "check_code", "unknown"))
-            )
-        failed_checks = [
-            f"{','.join(codes)}={note}"
-            for note, codes in failed_by_note.items()
-        ]
-        evidence = list(dict.fromkeys([*warnings, *failed_checks]))
-        if evidence:
-            diagnostics.append(f"{unit_id}[{'; '.join(evidence)}]")
-    diagnostic_suffix = (
-        "; diagnostics=" + " | ".join(diagnostics)
-        if diagnostics
-        else ""
-    )
-    raise DirectE2EError(
-        "RISK_REVIEW_PARTIAL_FAILED",
-        f"{phase} review phase did not complete: {detail}{diagnostic_suffix}"[:4000],
-    )
-
-
 def _core_components(extended: ExtendedRiskReviewBundle) -> list[dict[str, Any]]:
     units = {item.unit_id: item for item in extended.base_bundle.units}
     fva = units["formation_validity_authority"]
@@ -459,7 +405,8 @@ async def _execute_one(
     write_private_diagnostic("base_phase", {"review_id": value.review_id, "tenant_id": tenant_id,
                                           "framework_run_id": run_id},
                              {"bundle": base.model_dump(mode="json")})
-    _require_complete_review_phase("base", base.status, list(base.units))
+    # Failed batches are already isolated by the bundle executor. Continue with
+    # validated siblings; the final overview and ledger disclose unfinished work.
     base_wall = round((time.perf_counter() - base_started) * 1000)
 
     horizontal_build_started = time.perf_counter()
@@ -490,11 +437,6 @@ async def _execute_one(
         framework_run_id=f"{run_id}-horizontal",
         legal_evidence_by_domain=legal_evidence_by_domain,
     )
-    horizontal_status = (
-        "COMPLETED"
-        if all(item.status == "COMPLETED" for item in horizontal_units)
-        else "PARTIAL_FAILED"
-    )
     from services.contract.capabilities.horizontal_review import build_horizontal_review_records
     write_private_diagnostic("horizontal_phase", {
         "review_id": value.review_id, "tenant_id": tenant_id, "framework_run_id": run_id,
@@ -502,11 +444,6 @@ async def _execute_one(
         "review_records": [record.model_dump(mode="json") for record in build_horizontal_review_records(value, horizontal_plan, horizontal_units)],
         "units": [unit.model_dump(mode="json") for unit in horizontal_units],
     })
-    _require_complete_review_phase(
-        "horizontal",
-        horizontal_status,
-        list(horizontal_units),
-    )
     horizontal_wall = round((time.perf_counter() - horizontal_started) * 1000)
     extended = build_extended_bundle(
         value=value,
@@ -529,6 +466,9 @@ async def _execute_one(
     ] + [
         metric for unit in horizontal_units for metric in unit.batch_metrics
     ]
+
+    from services.contract.capabilities.review_completion import review_completion
+    completion = review_completion(extended)
 
     compatibility_started = time.perf_counter()
     projection = LegacyRiskArtifactAdapter().adapt(
@@ -597,6 +537,7 @@ async def _execute_one(
         framework_run_id=f"{run_id}-framework-run",
         core_signature=_core_signature(extended),
         legal_evidence_bundle=legal_evidence_bundle,
+        review_completion=completion,
     )
 
     duplicate_sink = sink.submit(payload.model_dump(mode="json"))
@@ -607,6 +548,7 @@ async def _execute_one(
         framework_task_id=f"{run_id}-task",
         framework_run_id=f"{run_id}-framework-run",
         legal_evidence_bundle=legal_evidence_bundle,
+        review_completion=completion,
     )
     duplicate_callback = sink.callback(
         build_final_callback(
@@ -630,6 +572,7 @@ async def _execute_one(
         expected_payload=payload,
         repetitions=100,
         legal_evidence_bundle=legal_evidence_bundle,
+        review_completion=completion,
     )
     total_wall = round((time.perf_counter() - started) * 1000)
     total_calls = len(review_calls) + len(merge_run["call_metrics"])
@@ -646,6 +589,7 @@ async def _execute_one(
         key: len(value["findings"]) for key, value in artifacts.items()
     }
     summary = {
+        "review_completion": completion,
         **({"rule_library_shadow": rule_shadow_result} if rule_shadow_result is not None else {}),
         "run_index": run_index,
         "run_id": run_id,
@@ -736,6 +680,7 @@ def _deterministic_replay(
     expected_payload,
     repetitions: int,
     legal_evidence_bundle=None,
+    review_completion=None,
 ) -> dict[str, Any]:
     artifact_hashes: set[str] = set()
     payload_hashes: set[str] = set()
@@ -755,6 +700,7 @@ def _deterministic_replay(
             framework_task_id=f"replay-task-{index}",
             framework_run_id=f"replay-run-{index}",
             legal_evidence_bundle=legal_evidence_bundle,
+            review_completion=review_completion,
         )
         sink = DryRunResultSink()
         first = sink.submit(payload.model_dump(mode="json"))
