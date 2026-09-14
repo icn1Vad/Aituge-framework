@@ -7,6 +7,7 @@ import asyncio
 from dataclasses import replace
 import importlib
 import inspect
+import hashlib
 import json
 from pathlib import Path
 
@@ -119,6 +120,8 @@ def test_oversized_rule_is_attempted_with_full_text_and_without_paid_retry(tmp_p
     for context in plan.contexts:
         for source in context.evidence_sources:
             source.quoted_text = text
+            source.char_end = source.char_start + len(text)
+            source.quoted_text_hash = 'sha256:' + hashlib.sha256(text.encode()).hexdigest()
     runtime=FakeModel()
     result=asyncio.run(RuleLibraryReviewer(runtime,max_prompt_chars=2000).review(
         observation,plan,tenant_id='42',model_id='fake'))

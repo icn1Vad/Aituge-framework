@@ -707,11 +707,11 @@ def _confirmed_party_value(name: str, role: str) -> PartyValue:
 
 
 def _direct_party_resolution_handler(base_url: str, token: str, *, model_id=None,
-                                     cache_directory=None, role_options=()):
+                                     cache_directory=None, role_options=(), rule_library_execution=None):
     """Use the opt-in source-backed AI stage, or preserve the legacy deployment."""
     if model_id is not None:
         from services.contract.capabilities.party_ai import ai_party_resolution_handler
-        return ai_party_resolution_handler(base_url, token, model_id, cache_directory, role_options)
+        return ai_party_resolution_handler(base_url, token, model_id, cache_directory, role_options, rule_library_execution)
 
     async def execute(context: StageExecutionContext) -> StageServiceResult:
         from contract.party import extract_party_evidence
@@ -1206,6 +1206,19 @@ def _direct_contract_review_handler(
                 "execution_source": "FORMAL_DIRECT_PIPELINE",
             },
         )
+        # Java froze this at task creation. Load before any review model call;
+        # never fall back to a startup file or today's data on a failed read.
+        task_rule_shadow = None
+        if rule_library_execution is not None:
+            try:
+                task_rule_shadow = await rule_library_execution.task_shadow(
+                    task_input.business_task_id, str(context.task.tenant_id))
+            except (httpx.HTTPError, ValueError, OSError) as exc:
+                raise StageExecutionError(
+                    "无法读取本次审查的规则快照，请重试；未使用旧规则。",
+                    code="FRAMEWORK_RUN_FAILED", retryable=isinstance(exc, httpx.TransportError)
+                    or (isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500),
+                ) from exc
         legal_evidence_bundle = None
         legal_evidence_reasons: list[str] = []
         if legal_evidence_policy == "OFF":
@@ -1275,6 +1288,7 @@ def _direct_contract_review_handler(
             rule_result = await rule_library_execution.run(
                 value, str(context.task.tenant_id), model_id,
                 standard=task_input.rule_review_standard,
+                task_shadow=task_rule_shadow,
                 **rule_role_arguments(getattr(party_artifact, "metadata_json", None) or {}, task_input.perspective),
             )
             from contract.rule_evidence.finding_projection import merge_rule_findings
@@ -1809,13 +1823,22 @@ async def register(registry, settings) -> None:
     rule_mode = settings.get("RULE_LIBRARY_REVIEW_MODE") or "OFF"
     if rule_mode != "OFF":
         from contract.rule_evidence.execution import RuleLibraryExecution
+        from contract.rule_evidence.live_snapshot import JavaRuleSnapshotClient
+        rule_source = settings.get("RULE_LIBRARY_REVIEW_SOURCE") or "JAVA"
+        if rule_source not in {"JAVA", "LOCAL"}:
+            raise ValueError("Invalid rule-library snapshot source")
+        snapshot_client = JavaRuleSnapshotClient(
+            settings.require("RULE_LIBRARY_JAVA_BASE_URL"),
+            settings.require("RULE_LIBRARY_JAVA_INTERNAL_TOKEN"),
+        ) if rule_source == "JAVA" else None
         rule_library_execution = RuleLibraryExecution(
-            settings.require("RULE_LIBRARY_REVIEW_SNAPSHOT_DIR"),
+            settings.require("RULE_LIBRARY_REVIEW_SNAPSHOT_DIR") if rule_source == "LOCAL" else None,
             settings.require("RULE_LIBRARY_REVIEW_CACHE_DIR"),
             mode=rule_mode,
             standard=settings.get("RULE_LIBRARY_REVIEW_STANDARD") or "neutral",
             max_calls=int(settings.get("RULE_LIBRARY_REVIEW_MAX_CALLS") or "4"),
             semantic_selection=True,
+            snapshot_client=snapshot_client,
         )
     rule_snapshot_directory = settings.get("RULE_LIBRARY_SHADOW_SNAPSHOT_DIR")
     party_ai_enabled = settings.get("CONTRACT_PARTY_AI_ENABLED") == "true"
@@ -1825,7 +1848,8 @@ async def register(registry, settings) -> None:
             "model_id": model_id,
             "cache_directory": settings.require("CONTRACT_PARTY_AI_CACHE_DIR"),
             "role_options": sorted({r.party_stance for r in rule_library_execution.shadow.snapshot.rules
-                                    if r.party_stance}) if rule_library_execution else [],
+                                    if r.party_stance}) if rule_library_execution and rule_library_execution.shadow else [],
+            "rule_library_execution": rule_library_execution,
         }
     if rule_snapshot_directory:
         from contract.rule_evidence.shadow import RuleLibraryShadow
@@ -2040,7 +2064,7 @@ async def register(registry, settings) -> None:
             "output_model": PartyResolutionStageResult,
             "artifact_type": "contract_party_resolution",
             "service_handler": "contract_party_resolution_direct_v1",
-            "timeout_seconds": 18 if party_ai_enabled else 3,
+            "timeout_seconds": 50 if party_ai_enabled and rule_library_execution else 18 if party_ai_enabled else 3,
             "retry_policy": {"max_attempts": 1, "retry_on": []},
         },
     ]

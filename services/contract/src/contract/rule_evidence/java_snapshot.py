@@ -28,6 +28,8 @@ class JavaRuleLibrarySnapshot(StrictModel):
     def validate_scope(self) -> JavaRuleLibrarySnapshot:
         if any(rule.tenant_id not in {"0", self.tenant_id} for rule in self.rules):
             raise ValueError("Rule snapshot contains a foreign tenant")
+        if len({rule.rule_id for rule in self.rules}) != len(self.rules):
+            raise ValueError("Rule snapshot contains duplicate rule IDs")
         return self
 
     def planning_request(

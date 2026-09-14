@@ -45,8 +45,8 @@ def issues_from_plan(plan):
 
 class RuleLibraryShadow:
     """A separately enabled observation path; pending rules never become usable."""
-    def __init__(self, directory):
-        self.snapshot = shared_rule_snapshot(directory)
+    def __init__(self, directory=None, *, snapshot=None):
+        self.snapshot = snapshot if snapshot is not None else shared_rule_snapshot(directory)
 
     def selectors(self, value):
         text = "\n".join(block.text for block in value.source_blocks)
@@ -91,7 +91,7 @@ class RuleLibraryShadow:
             perspective=str(getattr(plan.perspective, "value", plan.perspective)),
             business_role=business_role, business_roles=business_roles or [],
             review_standard=review_standard, preview_pending=preview_pending,
-            review_as_of_date=review_as_of_date or date.today(), jurisdiction=jurisdiction,
+            review_as_of_date=review_as_of_date or getattr(self.snapshot, "as_of_date", None) or date.today(), jurisdiction=jurisdiction,
             source_version=self.snapshot.manifest["source_version"], issues=issues,
         )
         request = self.snapshot.select(selectors)

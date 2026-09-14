@@ -8,16 +8,28 @@ from task_manager.pipeline.errors import StageExecutionError
 from task_manager.pipeline.stage_registry import StageServiceResult
 
 
-def ai_party_resolution_handler(base_url, token, model_id, cache_directory, role_options=()):
+def ai_party_resolution_handler(base_url, token, model_id, cache_directory, role_options=(), rule_library_execution=None):
     async def execute(context):
         from services.contract.capabilities.register import (
             ContractTaskInput, ParseContractStageResult, InternalContractBlocksEnvelope,
             PartyResolutionStageResult, PartyValue, _confirmed_party_value,
+            PARTY_RESOLUTION_TASK_TYPE,
         )
         from service.conversation.llm_runner import LlmRuntime
 
         started = time.perf_counter()
         task = ContractTaskInput.model_validate(context.task.input_payload_json or {})
+        selected_roles = role_options
+        # Preflight runs before a Java review task exists. It only resolves names;
+        # the formal review resolves roles against its own frozen rule vocabulary.
+        if rule_library_execution is not None and getattr(context.task, "task_type", None) != PARTY_RESOLUTION_TASK_TYPE:
+            try:
+                shadow = await rule_library_execution.task_shadow(task.business_task_id, str(context.task.tenant_id))
+                selected_roles = sorted({rule.party_stance for rule in shadow.snapshot.rules if rule.party_stance})
+            except (httpx.HTTPError, ValueError, OSError) as exc:
+                raise StageExecutionError("无法读取本次审查的规则快照，请重试。",
+                    code="FRAMEWORK_RUN_FAILED", retryable=isinstance(exc, httpx.TransportError)
+                    or (isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500)) from exc
         artifact = context.artifacts.get("parse_contract")
         if artifact is None:
             raise StageExecutionError("Missing persisted parse", code="PARTY_UNRESOLVED", retryable=False)
@@ -41,7 +53,7 @@ def ai_party_resolution_handler(base_url, token, model_id, cache_directory, role
             metadata.update(await resolve_parties_ai(
                 blocks.blocks, runtime_factory=lambda: LlmRuntime(str(context.task.tenant_id), provider_max_retries=0),
                 tenant_id=str(context.task.tenant_id), model_id=model_id, review_id=task.review_id,
-                run_id=str(context.run.id), cache_directory=cache_directory, role_options=role_options))
+                run_id=str(context.run.id), cache_directory=cache_directory, role_options=selected_roles))
         except (httpx.HTTPError, ValueError, OSError) as exc:
             # Confirmed human identities remain usable even if business roles are unknown.
             metadata["diagnostics"] = ["PARTY_AI_UNAVAILABLE:" + type(exc).__name__]

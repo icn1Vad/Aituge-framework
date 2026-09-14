@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
 from rapidfuzz.distance import Levenshtein
+from aituge_model.text_similarity import normalize_similarity_text, ngrams as _ngrams
 
 from proof.versioning import format_policy_version
 
@@ -22,13 +22,6 @@ class SimilarityThresholds:
     containment: float = 0.98
     length_ratio: float = 0.80
     clause_coverage: float = 0.80
-
-
-def normalize_similarity_text(value: str) -> str:
-    normalized = unicodedata.normalize("NFKC", str(value or "")).lower()
-    return "".join(
-        char for char in normalized if char.isalnum() or "\u4e00" <= char <= "\u9fff"
-    )
 
 
 def normalized_text_hash(value: str) -> str:
@@ -196,9 +189,3 @@ def similarity_report(
             ["new_version", "separate", "discard"] if selected else []
         ),
     }
-
-
-def _ngrams(value: str, size: int) -> set[str]:
-    if len(value) < size:
-        return {value} if value else set()
-    return {value[index : index + size] for index in range(len(value) - size + 1)}

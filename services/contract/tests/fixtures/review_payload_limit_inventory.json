@@ -796,7 +796,7 @@
   },
   {
     "path": "services/contract/src/contract/rule_evidence/reviewer.py",
-    "field": "Decision.quotes",
+    "field": "Decision.primary_evidence_source_ids",
     "removed": "10"
   },
   {

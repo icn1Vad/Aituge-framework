@@ -191,8 +191,9 @@ def test_legacy_ir_execution_path_is_removed() -> None:
 
 @pytest.mark.parametrize("shadow_enabled", [False, True])
 @pytest.mark.parametrize("execution_enabled", [False, True])
+@pytest.mark.parametrize("snapshot_failure", [False, True])
 def test_direct_final_stage_builds_formal_result_without_legacy_review_stages(
-    monkeypatch, shadow_enabled, execution_enabled,
+    monkeypatch, shadow_enabled, execution_enabled, snapshot_failure,
 ) -> None:
     import services.contract.scripts.contract_risk_stage66_direct_e2e as direct_script
 
@@ -272,7 +273,14 @@ def test_direct_final_stage_builds_formal_result_without_legacy_review_stages(
     observation = {"mode": "SHADOW", "affects_findings": False, "model_calls": 0}
 
     class RuleExecution:
-        async def run(self, value, tenant_id, model_id, *, standard):
+        async def task_shadow(self, business_task_id, tenant_id):
+            if snapshot_failure:
+                raise httpx.ConnectError("offline")
+            captured["frozen_rules"] = (business_task_id, tenant_id)
+            return "frozen-task-rules"
+
+        async def run(self, value, tenant_id, model_id, *, standard, task_shadow):
+            assert task_shadow == "frozen-task-rules"
             assert standard == "neutral"
             from contract.evidence_planning.review_result import RuleReviewResult
             captured["rule_execution"] = (value.review_id, tenant_id, model_id)
@@ -285,6 +293,8 @@ def test_direct_final_stage_builds_formal_result_without_legacy_review_stages(
             )
 
     async def fake_execute_one(**kwargs):
+        if execution_enabled:
+            assert captured["frozen_rules"] == ("business-1", "tenant-1")
         captured.update(kwargs)
         return (
             {
@@ -353,6 +363,15 @@ def test_direct_final_stage_builds_formal_result_without_legacy_review_stages(
             ),
         },
     )
+
+    if snapshot_failure and execution_enabled:
+        with pytest.raises(StageExecutionError, match="规则快照") as failure:
+            asyncio.run(capability._direct_contract_review_handler(
+                "http://ai-contract:18200", "callback-secret", "contract-model",
+                rule_library_execution=RuleExecution())(context))
+        assert failure.value.retryable
+        assert not captured
+        return
 
     result = asyncio.run(
         capability._direct_contract_review_handler(
