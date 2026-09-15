@@ -78,4 +78,13 @@ playwright = "^1.60.0"
 alibabacloud-green20220302 = "^3.3.0"
 alibabacloud-tea-openapi = "^0.4.4"
 llama-index-vector-stores-alibabacloud-opensearch = "^0.5.0"
-nls = {git = "https://github.com/aliyun/alibabacloud-nls-python-sdk.git", rev = "177972b1f02fcb1f2b229e77320a7286d21785f3"}
+# The speech SDK is installed separately in the container because its source
+# archive is hosted on GitHub. Keep its runtime dependencies in the main lock.
+aliyun-python-sdk-core = ">=2.13.3"
+oss2 = "^2.19.1"
+
+[tool.poetry.group.speech]
+optional = true
+
+[tool.poetry.group.speech.dependencies]
+nls = {url = "https://github.com/aliyun/alibabacloud-nls-python-sdk/archive/177972b1f02fcb1f2b229e77320a7286d21785f3.tar.gz"}

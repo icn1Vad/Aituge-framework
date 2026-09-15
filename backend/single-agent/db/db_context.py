@@ -109,8 +109,6 @@ def _ensure_sqlite_parent_dir(db_url: str) -> None:
 
 def get_async_db_engine() -> AsyncEngine:
     # 从环境变量中读取数据库配置
-    if not os.path.exists("./localdata"):
-        os.makedirs("./localdata")
     db_type = os.getenv("DB_TYPE", "sqlite")
     db_name = os.getenv("DB_NAME")
     db_user = os.getenv("DB_USER")
