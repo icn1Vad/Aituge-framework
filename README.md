@@ -3,6 +3,11 @@
 Minimal TUGE framework for single-agent execution, tool injection, local RAG,
 agent scheduling, and multi-agent discussion tests.
 
+制度问答、附件和录音的三端源码联调使用工作区中
+[`aituge-deployment-config/environments/source`](../aituge-deployment-config/environments/source/README.md)
+的统一配置与启动入口。该模式使用 PostgreSQL、容器 Redis 和 `runtime-data` 持久化目录；
+以下 Quick Start 保留独立框架的 SQLite 开发方式。
+
 ## Quick Start
 
 Use Python 3.11.

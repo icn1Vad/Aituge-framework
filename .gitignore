@@ -18,7 +18,7 @@ venv/
 
 # Runtime data
 backend/single-agent/tmp/
-runtime/
+/runtime/
 backups/
 localdata/private_config/
 localdata/external_skills/

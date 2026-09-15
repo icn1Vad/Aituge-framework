@@ -1,5 +1,4 @@
 from pathlib import Path
-import os
 import sys
 from typing import Any
 
@@ -12,9 +11,9 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 BACKEND_DIR = ROOT_DIR / "backend"
 SINGLE_AGENT_DIR = ROOT_DIR / "backend" / "single-agent"
 FRONTEND_DIR = ROOT_DIR / "frontend" / "simple-chat"
-AITUGE_TMP_ROOT = Path(
-    os.environ.get("AITUGE_TMP_ROOT", ROOT_DIR.parent / "tmp")
-).expanduser().resolve()
+from backend.runtime_paths import runtime_root
+
+AITUGE_TMP_ROOT = runtime_root()
 LOCAL_PYTHON_WORK_DIR = AITUGE_TMP_ROOT / "code-runs"
 LOCAL_PYTHON_ARTIFACT_DIR = AITUGE_TMP_ROOT / "chat-artifacts"
 

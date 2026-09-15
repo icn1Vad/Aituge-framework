@@ -6,7 +6,6 @@ import threading
 import uuid
 from dataclasses import dataclass
 from datetime import timedelta
-from pathlib import Path
 
 import psycopg
 from opentelemetry import trace
@@ -359,10 +358,8 @@ class TaskWorker:
 
 
 def build_worker_options() -> SchedulingRuntimeOptions:
-    # Match the API's local-development default while production Compose
-    # explicitly supplies /app/aituge-tmp as a shared volume.
-    default_root = Path(__file__).resolve().parents[4] / "tmp"
-    root = Path(os.environ.get("AITUGE_TMP_ROOT", default_root)).expanduser().resolve()
+    from backend.runtime_paths import runtime_root
+    root = runtime_root()
     return SchedulingRuntimeOptions(
         local_python_artifact_dir=root / "chat-artifacts",
         local_python_work_dir=root / "code-runs",
