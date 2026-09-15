@@ -21,6 +21,7 @@ CAPABILITY_DIR = Path(__file__).resolve().parent
 class ProofQaInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    attachments: list[dict[str, str]] = Field(default_factory=list)
     question: str = Field(min_length=1, max_length=4000)
     top_k: int = Field(default=8, ge=1, le=20)
     model_id: str | None = Field(default=None, min_length=1, max_length=64)
@@ -103,7 +104,6 @@ class ProofIntraConflictSearchInput(BaseModel):
 
 class ProofSqlInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     question: str = Field(min_length=1, max_length=4000)
     sql: str = Field(min_length=1, max_length=20_000)
 

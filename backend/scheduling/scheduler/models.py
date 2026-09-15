@@ -24,6 +24,7 @@ class SchedulingChatRequest(BaseModel):
     session_id: Optional[str] = None
     user_id: str = "default_user"
     stream: bool = False
+    attachments: list[dict[str, str]] = Field(default_factory=list)
     extra_tools: list[str] = Field(default_factory=list)
     skill_package: Optional[str] = None
     extra_datasets: list[str] = Field(default_factory=list)

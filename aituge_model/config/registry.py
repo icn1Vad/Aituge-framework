@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -57,6 +57,25 @@ class RerankerModelRegistration:
 
 
 @dataclass(frozen=True, slots=True)
+class SpeechRecognitionModelRegistration:
+    id: str
+    mode: str
+    provider: str
+    model: str
+    base_url: str
+    app_key_ref: str | None = None
+    access_key_id_ref: str | None = None
+    access_key_secret_ref: str | None = None
+    token_ref: str | None = None
+    region: str = "cn-shanghai"
+    meta_endpoint: str = "nls-meta.cn-shanghai.aliyuncs.com"
+    audio_format: str = "pcm"
+    sample_rate: int = 16_000
+    channels: int = 1
+    recommended_chunk_ms: int = 20
+
+
+@dataclass(frozen=True, slots=True)
 class ModelPackRegistration:
     id: str
     display_name: str
@@ -81,6 +100,8 @@ class ModelRegistry:
     embeddings: Mapping[str, EmbeddingModelRegistration]
     rerankers: Mapping[str, RerankerModelRegistration]
     packs: Mapping[str, ModelPackRegistration]
+    speech_recognizers: Mapping[str, SpeechRecognitionModelRegistration] = field(default_factory=dict)
+    default_speech_recognition_id: str = ""
 
     @classmethod
     def from_directory(cls, directory: str | Path) -> ModelRegistry:
@@ -102,6 +123,18 @@ class ModelRegistry:
             kind="reranker",
             factory=_reranker_registration,
         )
+        speech_recognizers = (
+            _component_map(
+                components.get("speech_recognizers"),
+                kind="speech recognition",
+                factory=_speech_recognition_registration,
+            )
+            if components.get("speech_recognizers")
+            else {}
+        )
+        default_speech_recognition_id = str(
+            components.get("default_speech_recognition_id", "") or ""
+        ).strip()
 
         packs: dict[str, ModelPackRegistration] = {}
         pack_dir = root / "packs"
@@ -127,11 +160,26 @@ class ModelRegistry:
             embeddings=embeddings,
             rerankers=rerankers,
             packs=packs,
+            speech_recognizers=speech_recognizers,
+            default_speech_recognition_id=default_speech_recognition_id,
         )
         for pack_id in packs:
             registry.resolve_pack(pack_id)
         if default_pack_id not in packs:
             raise ValueError(f"Unknown default model pack: {default_pack_id}")
+        if speech_recognizers and not default_speech_recognition_id:
+            raise ValueError(
+                "default_speech_recognition_id is required when "
+                "speech_recognizers are registered."
+            )
+        if (
+            default_speech_recognition_id
+            and default_speech_recognition_id not in speech_recognizers
+        ):
+            raise ValueError(
+                "Unknown default speech recognition model: "
+                f"{default_speech_recognition_id}"
+            )
         return registry
 
     def resolve_pack(self, pack_id: str | None = None) -> ResolvedModelPack:
@@ -313,6 +361,34 @@ def _reranker_registration(component_id: str, values: Mapping[str, Any]):
             values.get("timeout_seconds", 30), "timeout_seconds"
         ),
         instruction=str(values.get("instruction", "") or "").strip(),
+    )
+
+
+def _speech_recognition_registration(
+    component_id: str,
+    values: Mapping[str, Any],
+) -> SpeechRecognitionModelRegistration:
+    return SpeechRecognitionModelRegistration(
+        id=component_id,
+        mode=_mode(values, component_id),
+        provider=_required_text(values, "provider", component_id),
+        model=_required_text(values, "model", component_id),
+        base_url=_required_text(values, "base_url", component_id),
+        app_key_ref=_optional_text(values, "app_key_ref"),
+        access_key_id_ref=_optional_text(values, "access_key_id_ref"),
+        access_key_secret_ref=_optional_text(values, "access_key_secret_ref"),
+        token_ref=_optional_text(values, "token_ref"),
+        region=str(values.get("region", "cn-shanghai") or "cn-shanghai").strip(),
+        meta_endpoint=str(
+            values.get("meta_endpoint", "nls-meta.cn-shanghai.aliyuncs.com")
+            or "nls-meta.cn-shanghai.aliyuncs.com"
+        ).strip(),
+        audio_format=str(values.get("audio_format", "pcm") or "pcm").strip(),
+        sample_rate=_positive_int(values.get("sample_rate", 16_000), "sample_rate"),
+        channels=_positive_int(values.get("channels", 1), "channels"),
+        recommended_chunk_ms=_positive_int(
+            values.get("recommended_chunk_ms", 20), "recommended_chunk_ms"
+        ),
     )
 
 

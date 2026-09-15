@@ -623,3 +623,36 @@ async def test_worker_fails_unregistered_task_and_releases_quota(tmp_path, monke
         assert quota.running_count == 0
 
     assert await worker.claim_one() is None
+
+
+@pytest.mark.asyncio
+async def test_worker_executes_bounded_parallel_runs_and_drains_on_stop(tmp_path):
+    worker = TaskWorker(SchedulingRuntimeOptions(local_python_artifact_dir=tmp_path), concurrency=3)
+    stop = asyncio.Event()
+    release = asyncio.Event()
+    started = asyncio.Event()
+    active = 0
+    peak = 0
+    async def run_once():
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        if active == 3:
+            started.set()
+        try:
+            await release.wait()
+        finally:
+            active -= 1
+        return True
+    worker.run_once = run_once
+    running = asyncio.create_task(worker.run_forever(stop))
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        assert peak == 3
+        stop.set()
+        release.set()
+        await asyncio.wait_for(running, 2)
+        assert active == 0
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)

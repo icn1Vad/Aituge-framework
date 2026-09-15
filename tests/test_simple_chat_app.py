@@ -55,6 +55,10 @@ def test_outer_backend_serves_frontend_and_chat(monkeypatch):
             assert "table.audit" in page.text
             assert "runTask" in page.text
 
+            speech_config = await client.get("/api/speech/config")
+            assert speech_config.status_code == 200
+            assert speech_config.json()["provider"] == "aliyun_nls"
+
             non_stream = await client.post(
                 "/single-agent/chat",
                 json={

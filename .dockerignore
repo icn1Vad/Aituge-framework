@@ -12,3 +12,6 @@ aituge_model/config/secrets/*
 runtime
 backups
 services/proof/reports
+
+backend/single-agent/tmp
+localdata

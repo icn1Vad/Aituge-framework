@@ -163,18 +163,26 @@ class SchedulingService:
     ) -> SchedulingToolContext:
         tool_names = _dedupe(profile.default_tools + request.extra_tools)
         dataset_names = _dedupe(profile.default_datasets + request.extra_datasets)
+        attachment_bundle, attachment_prompt, input_files = ToolBundle.empty(), "", {}
+        from backend.attachments.tasks import enabled
+        if request.attachments and enabled():
+            from backend.attachments.tools import create_attachment_bundle
+            attachment_bundle, attachment_prompt, input_files = await create_attachment_bundle(
+                request.attachments, self.tenant_id, self.model_pack_id)
         bundle = await self._build_tool_bundle(
             tool_names,
             dataset_names,
+            input_files=input_files,
             artifact_publisher=artifact_publisher,
         )
+        bundle = ToolBundle.combine([attachment_bundle, bundle])
         skill_context = await SkillManager(tenant_id=self.tenant_id).create_context(
             request.skill_package
         )
         runtime_prompt = runtime_context.render_prompt() if runtime_context else ""
         task_prompts = [
             item
-            for item in [profile.system_prompt, skill_context.task_prompt, runtime_prompt]
+            for item in [profile.system_prompt, skill_context.task_prompt, runtime_prompt, attachment_prompt]
             if item
         ]
 
@@ -191,6 +199,7 @@ class SchedulingService:
         dataset_names: list[str],
         *,
         artifact_publisher: ArtifactPublisher | None = None,
+        input_files: dict | None = None,
     ) -> ToolBundle:
         bundles: list[ToolBundle] = []
         wants_rag = "rag_retrieval" in tool_names or "local_rag" in dataset_names
@@ -205,6 +214,7 @@ class SchedulingService:
                 artifact_publisher=artifact_publisher,
                 tenant_id=self.tenant_id,
                 model_pack_id=self.model_pack_id,
+                input_files=input_files,
             ).create_bundle(non_rag_tool_names)
         )
         if wants_rag:

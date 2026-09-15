@@ -7,6 +7,7 @@ from .registry import (
     ModelRegistry,
     RerankerModelRegistration,
     ResolvedModelPack,
+    SpeechRecognitionModelRegistration,
     SecretResolver,
     get_active_model_pack,
     get_model_pack_for_ai_mode,
@@ -17,6 +18,7 @@ from .runtime import (
     ResolvedEmbeddingModel,
     ResolvedLlmModel,
     ResolvedRerankerModel,
+    ResolvedSpeechRecognitionModel,
 )
 
 __all__ = [
@@ -30,6 +32,8 @@ __all__ = [
     "ResolvedLlmModel",
     "ResolvedModelPack",
     "ResolvedRerankerModel",
+    "ResolvedSpeechRecognitionModel",
+    "SpeechRecognitionModelRegistration",
     "SecretResolver",
     "get_active_model_pack",
     "get_model_pack_for_ai_mode",

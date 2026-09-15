@@ -8,6 +8,10 @@ credential value, for example:
 secrets/
   deepseek_api_key
   dashscope_api_key
+  aliyun_nls_appkey
+  aliyun_access_key_id
+  aliyun_access_key_secret
+  aliyun_nls_token  # optional when the access-key pair is configured
 ```
 
 Do not add a suffix to the file name. Leading and trailing whitespace is

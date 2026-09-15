@@ -2,6 +2,13 @@ import os
 import uuid
 
 import httpx
+import pytest
+
+
+pytestmark = pytest.mark.skipif(
+    os.getenv("AITUGE_RUN_LIVE_TESTS") != "1",
+    reason="Set AITUGE_RUN_LIVE_TESTS=1 to run against explicitly configured live services.",
+)
 
 
 APPLIANCE_BASE_URL = os.getenv("AITUGE_APPLIANCE_BASE_URL", "http://127.0.0.1:8894")

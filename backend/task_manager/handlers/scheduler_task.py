@@ -63,6 +63,7 @@ class SchedulerTaskHandler:
 
         request = SchedulingChatRequest(
             message=task_message,
+            attachments=(task.input_payload_json or {}).get("attachments", []),
             user_id=task.user_id,
             thread_id=task.thread_id,
             session_id=task.session_id,

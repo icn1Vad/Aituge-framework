@@ -90,3 +90,14 @@ the dependencies from `pyproject.toml`.
 本仓库为合同审查构建三个可独立升级的镜像：`python-framework` 负责调度、Worker和能力注册，`python-contract` 负责合同运行与结果组织，`python-model-gateway` 负责模型路由和鉴权。
 
 正式组合由 `AI-tuge/aituge-deployment` 的 `environments/contract-review/` 管理，对应变量为 `PYTHON_FRAMEWORK_IMAGE`、`PYTHON_CONTRACT_IMAGE` 和 `PYTHON_MODEL_GATEWAY_IMAGE`。Framework API与Worker必须使用同一个镜像。运行数据写PostgreSQL、Redis和命名卷，模型密钥通过只读文件注入，不能进入源码或镜像。
+
+## 架构与维护
+
+- [当前架构、业务边界与新增功能接入位置](docs/ARCHITECTURE.md)
+- [2026-09-14 清理范围、功能验证与分支对齐](docs/maintenance/2026-09-14-cleanup.md)
+- [历史阶段记录](docs/archive/README.md)
+- [开发示例](examples/README.md)
+
+根测试配置以 `pytest.ini` 为准；Contract、Proof 使用各自服务的测试配置。
+`tests/test_live_multi_capability.py` 默认跳过，设置 `AITUGE_RUN_LIVE_TESTS=1`
+才会执行。该测试依赖明确配置的 Framework / Smoke 服务地址和当前请求协议。

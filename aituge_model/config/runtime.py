@@ -13,6 +13,7 @@ from .registry import (
     ModelRegistry,
     RerankerModelRegistration,
     ResolvedModelPack,
+    SpeechRecognitionModelRegistration,
     SecretResolver,
     load_model_registry,
 )
@@ -61,6 +62,25 @@ class ResolvedRerankerModel:
     instruction: str
     identity_base_url: str = ""
     via_gateway: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedSpeechRecognitionModel:
+    id: str
+    mode: str
+    provider: str
+    model: str
+    base_url: str
+    app_key: str
+    access_key_id: str
+    access_key_secret: str
+    token: str
+    region: str
+    meta_endpoint: str
+    audio_format: str
+    sample_rate: int
+    channels: int
+    recommended_chunk_ms: int
 
 
 class ModelRuntimeProvider:
@@ -127,6 +147,22 @@ class ModelRuntimeProvider:
 
     def reranker_registration(self) -> RerankerModelRegistration:
         return self.active_pack.reranker
+
+    def speech_recognition_registration(
+        self,
+        model_id: str | None = None,
+    ) -> SpeechRecognitionModelRegistration:
+        resolved_id = (
+            model_id
+            or os.getenv("SPEECH_RECOGNITION_MODEL_ID", "")
+            or self.registry.default_speech_recognition_id
+        ).strip()
+        registration = self.registry.speech_recognizers.get(resolved_id)
+        if registration is None:
+            raise ValueError(
+                f"Speech recognition model {resolved_id!r} is not registered."
+            )
+        return registration
 
     def resolve_llm(
         self,
@@ -218,6 +254,42 @@ class ModelRuntimeProvider:
             instruction=registration.instruction,
             identity_base_url=registration.base_url,
             via_gateway=bool(gateway_base_url),
+        )
+
+    def resolve_speech_recognition(
+        self,
+        model_id: str | None = None,
+        *,
+        require_credentials: bool = True,
+    ) -> ResolvedSpeechRecognitionModel:
+        registration = self.speech_recognition_registration(model_id)
+        token = self.secret_resolver.resolve(registration.token_ref, required=False)
+        app_key = self.secret_resolver.resolve(
+            registration.app_key_ref, required=require_credentials
+        )
+        access_key_required = require_credentials and not token
+        access_key_id = self.secret_resolver.resolve(
+            registration.access_key_id_ref, required=access_key_required
+        )
+        access_key_secret = self.secret_resolver.resolve(
+            registration.access_key_secret_ref, required=access_key_required
+        )
+        return ResolvedSpeechRecognitionModel(
+            id=registration.id,
+            mode=registration.mode,
+            provider=registration.provider,
+            model=registration.model,
+            base_url=registration.base_url,
+            app_key=app_key,
+            access_key_id=access_key_id,
+            access_key_secret=access_key_secret,
+            token=token,
+            region=registration.region,
+            meta_endpoint=registration.meta_endpoint,
+            audio_format=registration.audio_format,
+            sample_rate=registration.sample_rate,
+            channels=registration.channels,
+            recommended_chunk_ms=registration.recommended_chunk_ms,
         )
 
     def resolve_optional_credential(self, credential_ref: str | None) -> str:

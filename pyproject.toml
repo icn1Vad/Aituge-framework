@@ -18,7 +18,6 @@ packages = [
   {include = "common", from = "backend/single-agent"},
   {include = "db", from = "backend/single-agent"},
   {include = "extensions", from = "backend/single-agent"},
-  {include = "memory", from = "backend/single-agent"},
   {include = "service", from = "backend/single-agent"},
   {include = "utils", from = "backend/single-agent"},
   {include = "data", from = "backend"},
@@ -66,6 +65,10 @@ pydantic-settings = "^2.4.0"
 python-docx = "^1.1.0"
 numpy = "1.26.4"
 pandas = "^2.2.0"
+mistletoe = "1.5.1"
+python-pptx = "1.0.2"
+xlrd = "2.0.2"
+openpyxl = "3.1.5"
 matplotlib = "^3.9.0"
 pip = "^25.0"
 pytest = "^8.1.1"
@@ -75,22 +78,4 @@ playwright = "^1.60.0"
 alibabacloud-green20220302 = "^3.3.0"
 alibabacloud-tea-openapi = "^0.4.4"
 llama-index-vector-stores-alibabacloud-opensearch = "^0.5.0"
-
-[tool.pytest.ini_options]
-testpaths = [
-  "tests",
-  "backend/single-agent/tests",
-]
-pythonpath = [
-  ".",
-  "backend",
-  "backend/single-agent",
-]
-norecursedirs = [
-  "crewAI",
-  "langgraph",
-]
-asyncio_mode = "auto"
-filterwarnings = [
-  "ignore::DeprecationWarning",
-]
+nls = {git = "https://github.com/aliyun/alibabacloud-nls-python-sdk.git", rev = "177972b1f02fcb1f2b229e77320a7286d21785f3"}

@@ -1,0 +1,227 @@
+{
+  "source_commit": "bd84ac17b1125814cae0f4e6dc8054bbc1d64693",
+  "working_tree_patch": "2026-09-14-pairag-attachments.patch",
+  "files": [
+    {
+      "source": "backend/db/models/file/file.py",
+      "target": "backend/attachments/models/file.py",
+      "source_sha256": "b04a5caf357c2db74afa939b9dba552c03c45e7aa324907a09a41cd2743bdd04",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "backend/db/models/file/chunk.py",
+      "target": "backend/attachments/models/chunk.py",
+      "source_sha256": "5dee5b171b1b7315692c287ee1a205ccb17542060d17948246c4cf4e28c24fc7",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "backend/db/models/file/upload_session.py",
+      "target": "backend/attachments/models/upload_session.py",
+      "source_sha256": "1c4361df38f201bf95d405d342a73fd44f341522976a74204944c483f6499cb4",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "backend/service/file/file_resource_service.py",
+      "target": "backend/attachments/service/file_resource_service.py",
+      "source_sha256": "1c0fb51bd025eb6a44a63e8178bf68269fc4129f4babce72c5940dc99ecba383",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "backend/service/file/upload_session_service.py",
+      "target": "backend/attachments/service/upload_session_service.py",
+      "source_sha256": "0ea1b147eab1a9bddcf05b1cd5e829e98db7c20fd471bb4fca8af9cd70cc2369",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "backend/service/file/content_extractor.py",
+      "target": "backend/attachments/service/content_extractor.py",
+      "source_sha256": "87629e1760e9f9b21bfc0a5580099411f09812bc03b689df60c5c8096b24427a",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "backend/service/file/mineru_extractor.py",
+      "target": "backend/attachments/service/mineru_extractor.py",
+      "source_sha256": "45aac24b0746ef32fafc3e1baf45980b1ecb555a46ff8239879479c4ab60edd1",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "backend/api/v1/files.py",
+      "target": "backend/attachments/api/files.py",
+      "source_sha256": "9473808483a7cd1c79c7f48c7503b559b1eb79c2fe3819b566bccee416e791f9",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "backend/api/v1/files_uploads.py",
+      "target": "backend/attachments/api/files_uploads.py",
+      "source_sha256": "ae96931a68d7aced0817e74d2f5eb89b42633789eee41562a30e9073302b59af",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "backend/api/v1/files_events.py",
+      "target": "backend/attachments/api/files_events.py",
+      "source_sha256": "1fa67fa8ed167826f38fcc0290c5ec8efe141a8aa3873b5ca893d1d1f65e0931",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "backend/api/v1/dto/file_dto.py",
+      "target": "backend/attachments/api/dto.py",
+      "source_sha256": "b5823ef6aed560095d09e15ecb2fa695deb2e02e41cf8ad9944b941547478330",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "backend/tools/utils/attachments.py",
+      "target": "backend/attachments/media_utils.py",
+      "source_sha256": "c05de14f54c07c017f037e67dafc4224da422a9122b8740696d0aec96412845a",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "backend/utils/attachment_processing.py",
+      "target": "backend/attachments/routing.py",
+      "source_sha256": "31a793894b97254eca79a4ce419c4058146fb0aabb2066481975b33ca687ee44",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "backend/utils/upload_file_utils.py",
+      "target": "backend/attachments/upload_utils.py",
+      "source_sha256": "10e5cd4b2af59bab6305dd730025b6b849d6456b03562ee43949d8d8f44cae8d",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/models/file_item.py",
+      "target": "backend/attachments/vendor/file/models/file_item.py",
+      "source_sha256": "6e49fc74b5e7db3df8d5282a52d534502305363d16e83dd83c40297f02599e50",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/utils/file_utils.py",
+      "target": "backend/attachments/vendor/file/utils/file_utils.py",
+      "source_sha256": "13bf83e58e4ed2b7225af588c559879403b0a23e23c20cb1e8895101e787b91a",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/store/bailian_file_store.py",
+      "target": "backend/attachments/vendor/file/store/bailian_file_store.py",
+      "source_sha256": "068f9805389ac705e9cdaad492e2260f4d489cea00c717efc64fac8287c02120",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/store/base.py",
+      "target": "backend/attachments/vendor/file/store/base.py",
+      "source_sha256": "10905fb3fc5882e73ff661872e40d163a0cb491bf865a96fc401666379425783",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/store/oss_store.py",
+      "target": "backend/attachments/vendor/file/store/oss_store.py",
+      "source_sha256": "b4b1a6029f33f7af456d18d851e7eccf08cd55206366dd207fa8b3ab8110d598",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/utils/oss_utils.py",
+      "target": "backend/attachments/vendor/file/utils/oss_utils.py",
+      "source_sha256": "517c28762e227f5e0c3f25ce64f10440679acc327b274959e0c51f036c9a5fcc",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/store/local_store.py",
+      "target": "backend/attachments/vendor/file/store/local_store.py",
+      "source_sha256": "e642d87045ef3880a9f9868ed40f2ff7a690158e75a23f71773919b1c0c51077",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/readers/simple_pdf_reader.py",
+      "target": "backend/attachments/vendor/file/readers/simple_pdf_reader.py",
+      "source_sha256": "328d5e3f1fda0cb3623f1375fdb55a9d55d2e54675d673b033bed86cf0836594",
+      "kind": "source-reviewed-removed-unused",
+      "removed_reason": "Not referenced by the migrated attachment runtime; source remains in the pinned PAI-RAG baseline."
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/utils/text_utils.py",
+      "target": "backend/attachments/vendor/file/utils/text_utils.py",
+      "source_sha256": "54ecb5860a0706186d336f0b720492c942a8b03587db634c6d53ffb92b405dd5",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/utils/image_utils.py",
+      "target": "backend/attachments/vendor/file/utils/image_utils.py",
+      "source_sha256": "91f95b8c0d4d09ea2297e1aa056d8f3739c569e137f5f7f1798dbcd9b048aad0",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/utils/image_caption_tool.py",
+      "target": "backend/attachments/vendor/file/utils/image_caption_tool.py",
+      "source_sha256": "a0fee8184ebaf57a9c66d8aaa410bf8a9c809821216c444b36b07ebd9b15d0ef",
+      "kind": "source-reviewed-removed-unused",
+      "removed_reason": "Not referenced by the migrated attachment runtime; source remains in the pinned PAI-RAG baseline."
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/utils/multimodal_llm.py",
+      "target": "backend/attachments/vendor/file/utils/multimodal_llm.py",
+      "source_sha256": "f6e5bdc5174ca754d3895be0832594bf9e2800daab9332e045c9534ecdffd557",
+      "kind": "source-reviewed-removed-unused",
+      "removed_reason": "Not referenced by the migrated attachment runtime; source remains in the pinned PAI-RAG baseline."
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/readers/base.py",
+      "target": "backend/attachments/vendor/file/readers/base.py",
+      "source_sha256": "cf3a31d12c345e0a877bdd30987edef90cb7c40947b713560c6cb30ebfe2c87a",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/readers/markdown_reader.py",
+      "target": "backend/attachments/vendor/file/readers/markdown_reader.py",
+      "source_sha256": "9078defa9a4fa9515cbd4520e8a33e25a4eeef75f6fdedca72d4f2757152e0eb",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/readers/pptx_reader.py",
+      "target": "backend/attachments/vendor/file/readers/pptx_reader.py",
+      "source_sha256": "be23bb4d50ec1b1afb680769c95ce56c0f68bc891f6485be44cf8ee9d762f8ce",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/utils/markdown_tree_utils.py",
+      "target": "backend/attachments/vendor/file/utils/markdown_tree_utils.py",
+      "source_sha256": "75a6571baa8779825f4c96d00fda2411e9028fd29c85ae7e3ccbb783473341db",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/utils/tokenization.py",
+      "target": "backend/attachments/vendor/file/utils/tokenization.py",
+      "source_sha256": "9a377bfb7017feb39a6d955828a45c5fad42542e23b7706677dbb136454f3305",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "integrations/pairag-file/pairag/file/readers/doc_reader.py",
+      "target": "backend/attachments/vendor/file/readers/doc_reader.py",
+      "source_sha256": "72424a15c59557f17f804e516a4218fb2e743125fc6d76604c543a28c163c923",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "LICENSE",
+      "target": "backend/attachments/PAI-RAG-LICENSE",
+      "source_sha256": "71b6fcb80877f634fb2666d27c9b310c15ef3bf4d30d8d9045fff531d8a0d480",
+      "kind": "source-adapted"
+    }
+  ],
+  "tool_sources": [
+    {
+      "source": "backend/tools/attachments/file_reader.py",
+      "target": "backend/attachments/tools/file_reader.py",
+      "source_sha256": "29610e6b95b2db2837678422511e814d6033547253924c3be0d6756b584709af",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "backend/tools/attachments/file_chunk_searcher.py",
+      "target": "backend/attachments/tools/file_chunk_searcher.py",
+      "source_sha256": "f69d53c4650f8d80c609a9e670c276923830fa319098bd7ec27289d0036b7eb6",
+      "kind": "source-adapted"
+    },
+    {
+      "source": "backend/tools/attachments/multimodal_parser.py",
+      "target": "backend/attachments/tools/multimodal_parser.py",
+      "source_sha256": "17090f9023cd0fa3a2c653a8837bc53662b6874751b4abfee5263b5110ab104f",
+      "kind": "source-adapted"
+    }
+  ]
+}

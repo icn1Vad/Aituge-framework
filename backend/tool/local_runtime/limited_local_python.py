@@ -42,6 +42,7 @@ class LimitedLocalPythonConfig:
     artifact_publisher: ArtifactPublisher | None = None
     max_artifact_files: int = 20
     env: dict[str, str] = field(default_factory=dict)
+    input_files: dict[str, Path] = field(default_factory=dict)
     keep_work_dir: bool = False
     cleanup_run_dir: bool = False
 
@@ -113,6 +114,8 @@ class LimitedLocalPythonTool:
         run_id = uuid.uuid4().hex
         run_dir = self.work_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
+        for name, source in self.config.input_files.items():
+            shutil.copyfile(source, run_dir / name)
         return run_id, run_dir
 
     async def _collect_artifacts(self, run_dir: Path) -> tuple[list[dict[str, str]], str | None]:
@@ -124,7 +127,7 @@ class LimitedLocalPythonTool:
         for path in sorted(run_dir.iterdir()):
             if len(artifacts) >= self.config.max_artifact_files:
                 break
-            if not path.is_file() or path.name == "main.py":
+            if not path.is_file() or path.name == "main.py" or path.name in self.config.input_files:
                 continue
             if path.suffix.lower() not in ARTIFACT_EXTENSIONS:
                 continue

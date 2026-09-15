@@ -31,11 +31,13 @@ class ToolManager:
         tenant_id: str = DEFAULT_TENANT_ID,
         model_pack_id: str = "",
         tool_list: ToolList | None = None,
+        input_files: dict[str, Path] | None = None,
     ) -> None:
         self.local_python_work_dir = local_python_work_dir
         self.artifact_publisher = artifact_publisher
         self.tenant_id = tenant_id
         self.model_pack_id = model_pack_id
+        self.input_files = input_files or {}
         self.tool_list = tool_list or get_default_tool_list()
 
     async def create_bundle(
@@ -121,6 +123,7 @@ class ToolManager:
                     "timeout_seconds": 20,
                     "max_output_chars": 50_000,
                     "work_dir": self.local_python_work_dir,
+                    "input_files": self.input_files,
                     "artifact_publisher": self.artifact_publisher,
                     "keep_work_dir": True,
                     "cleanup_run_dir": True,

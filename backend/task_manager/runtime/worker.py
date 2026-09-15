@@ -139,6 +139,7 @@ class TaskWorker:
         heartbeat_seconds: int = 30,
         poll_seconds: float = 1.0,
         tenant_concurrency: int = DEFAULT_TENANT_CONCURRENCY,
+        concurrency: int = 1,
     ) -> None:
         self.options = options
         self.worker_id = worker_id or f"framework-worker-{uuid.uuid4().hex}"
@@ -146,6 +147,7 @@ class TaskWorker:
         self.heartbeat_seconds = max(1, min(heartbeat_seconds, self.lease_seconds // 2))
         self.poll_seconds = max(0.05, poll_seconds)
         self.tenant_concurrency = max(1, tenant_concurrency)
+        self.concurrency = max(1, concurrency)
 
     async def claim_one(self) -> RunLease | None:
         async with create_db_session() as session:
@@ -306,6 +308,15 @@ class TaskWorker:
 
     async def run_forever(self, stop_event: asyncio.Event | None = None) -> None:
         stop_event = stop_event or asyncio.Event()
+        runners = [asyncio.create_task(self._run_loop(stop_event)) for _ in range(self.concurrency)]
+        try:
+            await asyncio.gather(*runners)
+        finally:
+            for runner in runners:
+                runner.cancel()
+            await asyncio.gather(*runners, return_exceptions=True)
+
+    async def _run_loop(self, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
             try:
                 claimed = await self.run_once()
@@ -376,6 +387,7 @@ async def main() -> None:
         heartbeat_seconds=int(os.environ.get("TASK_WORKER_HEARTBEAT_SECONDS", "30")),
         poll_seconds=float(os.environ.get("TASK_WORKER_POLL_SECONDS", "1")),
         tenant_concurrency=int(os.environ.get("TASK_TENANT_CONCURRENCY", "10")),
+        concurrency=int(os.environ.get("TASK_WORKER_CONCURRENCY", "1")),
     )
     await worker.run_forever()
 

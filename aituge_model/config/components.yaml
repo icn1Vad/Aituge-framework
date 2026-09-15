@@ -1,7 +1,37 @@
 version: 1
 default_pack_id: api-rerank
+default_speech_recognition_id: aliyun-nls-realtime
+
+speech_recognizers:
+  aliyun-nls-realtime:
+    mode: api
+    provider: aliyun_nls
+    model: realtime-speech-recognition
+    base_url: wss://nls-gateway.cn-shanghai.aliyuncs.com/ws/v1
+    app_key_ref: aliyun_nls_appkey
+    access_key_id_ref: aliyun_access_key_id
+    access_key_secret_ref: aliyun_access_key_secret
+    token_ref: aliyun_nls_token
+    region: cn-shanghai
+    meta_endpoint: nls-meta.cn-shanghai.aliyuncs.com
+    audio_format: pcm
+    sample_rate: 16000
+    channels: 1
+    recommended_chunk_ms: 20
 
 llms:
+  qwen3-vl-plus:
+    mode: api
+    provider: openai_compatible
+    model: qwen3-vl-plus
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    credential_ref: dashscope_api_key
+    context_window: 128000
+    max_tokens: 8000
+    temperature: 0.1
+    enable_thinking: false
+    vision_support: true
+
   deepseek-v4-flash:
     mode: api
     provider: deepseek

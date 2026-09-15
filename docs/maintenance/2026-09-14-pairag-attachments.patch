@@ -1,0 +1,302 @@
+diff --git a/backend/api/v1/files.py b/backend/api/v1/files.py
+index 48845700..bddca411 100644
+--- a/backend/api/v1/files.py
++++ b/backend/api/v1/files.py
+@@ -6,6 +6,7 @@ from typing import Optional
+ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+ from fastapi.responses import StreamingResponse
+ from loguru import logger
++from utils.attachment_processing import uses_mineru_for_attachment
+ 
+ from api.api_exception import ApiException
+ from api.v1.dto.file_dto import (
+@@ -281,4 +282,4 @@ _PROCESSABLE_EXTENSIONS = {
+ def _needs_background_processing(extension: Optional[str]) -> bool:
+     if not extension:
+         return False
+-    return extension.lower() in _PROCESSABLE_EXTENSIONS
++    return extension.lower() in _PROCESSABLE_EXTENSIONS or uses_mineru_for_attachment(extension)
+diff --git a/backend/common/llm/llm_model.py b/backend/common/llm/llm_model.py
+index d8e6b241..dd0fc13a 100644
+--- a/backend/common/llm/llm_model.py
++++ b/backend/common/llm/llm_model.py
+@@ -1,6 +1,7 @@
+ import traceback
+ from typing import List, Optional, cast
+ import uuid
++from urllib.parse import urlparse
+ from common.llm.models import DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_RETRIES, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, DEFAULT_TIMEOUT, THINK_END_TAG, THINK_START_TAG, ChatResponseGenerator, ErrorChunk, ReasoningChunk, TextChunk
+ from loguru import logger
+ from openai import AsyncOpenAI
+@@ -95,6 +96,16 @@ class PaiLlm():
+             max_retries=self.max_retries,
+         )
+ 
++    def _thinking_options(self) -> dict:
++        # DeepSeek uses a different switch from Qwen/OpenAI-compatible hosts.
++        # Without it, a model whose default is thinking ignores our disabled
++        # setting and rejects the next request after a tool call.
++        host = (urlparse(self.api_base).hostname or "").lower()
++        if host == "deepseek.com" or host.endswith(".deepseek.com"):
++            return {"thinking": {"type": "enabled" if self.enable_thinking else "disabled"}}
++        return {"chat_template_kwargs": {"enable_thinking": self.enable_thinking},
++                "enable_thinking": self.enable_thinking}
++
+     async def astream(
+         self,
+         messages: List[dict],
+@@ -123,7 +134,7 @@ class PaiLlm():
+                     max_tokens=self.max_tokens,
+                     tools=tools_to_use or None,
+                     stream_options={"include_usage": True},
+-                    extra_body={"chat_template_kwargs":{"enable_thinking": self.enable_thinking}, "enable_thinking": self.enable_thinking},
++                    extra_body=self._thinking_options(),
+                     **kwargs,
+                 )
+                 logger.info(f"Calling model {self.model}, enable_thinking: {self.enable_thinking}, temperature: {self.temperature}")
+diff --git a/backend/common/llm/utils.py b/backend/common/llm/utils.py
+index 6e117ff5..df902fbc 100644
+--- a/backend/common/llm/utils.py
++++ b/backend/common/llm/utils.py
+@@ -138,7 +138,7 @@ async def convert_gen_to_stream_chat_completions(
+                 total_usage.prompt_tokens += chunk.usage.prompt_tokens
+                 total_usage.completion_tokens += chunk.usage.completion_tokens
+                 total_usage.total_tokens += chunk.usage.total_tokens
+-                continue
++                # Buffered final chunks can carry both text and usage.
+ 
+             if isinstance(chunk, ToolResultChunk):
+                 citations, citation_details = extract_citations(chunk)
+diff --git a/backend/service/agent/agent_service.py b/backend/service/agent/agent_service.py
+index 627081db..bd99fa65 100644
+--- a/backend/service/agent/agent_service.py
++++ b/backend/service/agent/agent_service.py
+@@ -13,6 +13,7 @@ from tools.attachments.file_chunk_searcher import aget_file_chunk_searcher
+ from tools.attachments.file_reader import aget_file_reader
+ from tools.attachments.multimodal_parser import aget_multimodal_parser_tool
+ import os
++from utils.attachment_processing import uses_mineru_for_attachment
+ import traceback
+ from tools.code.code_sandbox_tool import DEFAULT_CODE_SANDBOX_DIR_PATH
+ from llama_index.core.tools.function_tool import FunctionTool
+@@ -280,7 +281,15 @@ class AgentService:
+         if user_message.get("role") != "user":
+             return [], None
+ 
+-        user_attachments = user_message.get("attachments", [])
++        # Keep files available on follow-up turns, including after reopening a
++        # persisted conversation. Only user messages supply attachment ids.
++        attachments_by_id = {}
++        for message in messages:
++            if message.get("role") == "user":
++                for attachment in message.get("attachments", []) or []:
++                    if attachment.get("id"):
++                        attachments_by_id[attachment["id"]] = attachment
++        user_attachments = list(attachments_by_id.values())
+         image_ids = []
+         file_ids_to_read = []
+         video_ids = []
+@@ -288,7 +297,11 @@ class AgentService:
+             attachment_file_id = attachment.get("id")
+             attachment_content_type = attachment.get("contentType")
+             if str(attachment_content_type).startswith("image/"):
+-                image_ids.append(attachment_file_id)
++                entity = await file_service.get_file(file_id=attachment_file_id, tenant_id=tenant_id)
++                if entity and uses_mineru_for_attachment(entity.file_extension):
++                    file_ids_to_read.append(attachment_file_id)
++                else:
++                    image_ids.append(attachment_file_id)
+             elif str(attachment_content_type).startswith("video/"):
+                 video_ids.append(attachment_file_id)
+             else:
+@@ -367,7 +380,9 @@ class AgentService:
+                 if _user_message_has_text(user_message):
+                     append_text(
+                         user_message,
+-                        f"\n\n 可以阅读的文件列表: \n\n {read_file_names}",
++                        f"\n\n[本会话已上传的可读取附件：{read_file_names}。"
++                        f"涉及附件内容的问题，请先使用 `read-file` 工具按准确文件名读取，"
++                        f"再根据实际内容回答。]",
+                     )
+                 else:
+                     # User sent files with no typed question — prompt the
+diff --git a/backend/service/file/content_extractor.py b/backend/service/file/content_extractor.py
+index 2016cee4..4939787c 100644
+--- a/backend/service/file/content_extractor.py
++++ b/backend/service/file/content_extractor.py
+@@ -14,9 +14,10 @@ from typing import BinaryIO, Optional, Tuple
+ 
+ import pandas as pd
+ from loguru import logger
++from utils.attachment_processing import uses_mineru_for_attachment
+ 
+ 
+-EXTRACTOR_VERSION = "v3"
++EXTRACTOR_VERSION = "v4-mineru-attachments"
+ 
+ # Per-extraction hard cap. MySQL TEXT caps around 64KB at utf8mb4, but most
+ # deployments use MEDIUMTEXT; 500KB is comfortable for SQLite and Postgres.
+@@ -113,6 +114,11 @@ def extract_text(
+     """
+     ext = (file_extension or "").lower()
+ 
++    if uses_mineru_for_attachment(ext):
++        from service.file.mineru_extractor import extract_with_mineru
++        file_data.seek(0)
++        return _cap(extract_with_mineru(file_data.read(), file_name or f"document{ext}"))
++
+     if ext in (".xlsx", ".xls"):
+         file_data.seek(0)
+         df = pd.read_excel(file_data)
+diff --git a/frontend/app/attachments/upload_attachment_adapter.ts b/frontend/app/attachments/upload_attachment_adapter.ts
+index b2add68b..a8c833db 100644
+--- a/frontend/app/attachments/upload_attachment_adapter.ts
++++ b/frontend/app/attachments/upload_attachment_adapter.ts
+@@ -100,6 +100,35 @@ export class UploadAttachmentAdapter implements AttachmentAdapter {
+           progress: 100,
+         },
+       } as PendingAttachment;
++
++      // A file id means upload completed; wait for extraction before allowing
++      // the user to send it. This also makes long-file search tools available
++      // on the very first chat turn.
++      const deadline = Date.now() + 10 * 60 * 1000;
++      let state = result.data;
++      while (state.status !== 'succeeded') {
++        if (state.status === 'failed' || state.status === 'cancelled') {
++          throw new Error(state.failed_reason || '附件解析失败');
++        }
++        if (!this.serverIdByClientId.has(clientId)) return;
++        if (Date.now() >= deadline) throw new Error('附件仍在解析，请稍后重试');
++        await new Promise(resolve => setTimeout(resolve, 1000));
++        const statusResponse = await this.tenantFetch(`/api/files/${serverId}`);
++        const statusResult = await statusResponse.json();
++        if (!statusResponse.ok || statusResult.code !== 200 || !statusResult.data) {
++          throw new Error(statusResult.message || '无法查询附件解析状态');
++        }
++        state = statusResult.data;
++      }
++      if (!this.serverIdByClientId.has(clientId)) return;
++      yield {
++        id: clientId,
++        type: uiType,
++        name: file.name,
++        contentType,
++        file,
++        status: { type: 'requires-action', reason: 'composer-send' },
++      } as PendingAttachment;
+       return;
+     } catch (error: unknown) {
+       const message = error instanceof Error ? error.message : 'Upload failed.';
+@@ -128,8 +157,11 @@ export class UploadAttachmentAdapter implements AttachmentAdapter {
+       throw new Error('Attachment upload failed');
+     }
+ 
++    const serverId = this.serverIdByClientId.get(attachment.id);
++    if (attachment.status.type !== 'requires-action' || !serverId) {
++      throw new Error('附件尚未完成上传或识别，请等待完成后再发送');
++    }
+     const contentType = attachment.contentType || 'application/octet-stream';
+-    const serverId = this.serverIdByClientId.get(attachment.id) ?? attachment.id;
+     return {
+       id: serverId,
+       type: typeFromMime(contentType),
+diff --git a/frontend/components/assistant-ui/my_attachment.tsx b/frontend/components/assistant-ui/my_attachment.tsx
+index c9d96cdc..4c79176f 100644
+--- a/frontend/components/assistant-ui/my_attachment.tsx
++++ b/frontend/components/assistant-ui/my_attachment.tsx
+@@ -509,6 +509,7 @@ const AttachmentUI: FC = () => {
+       ? (uploadStatus as { progress: number }).progress
+       : 0;
+   const isUploading = uploadStatus.type === 'running' && progress < 100;
++  const isProcessing = uploadStatus.type === 'running' && progress >= 100;
+   const isError = uploadStatus.type === 'incomplete';
+ 
+   // Palette adapts to context: inside the blue user bubble we use
+@@ -520,7 +521,7 @@ const AttachmentUI: FC = () => {
+   const metaClass = isFromMessage ? 'text-white/70' : 'text-muted-foreground';
+   const statusColor = isError
+     ? 'text-rose-300'
+-    : isUploading
++    : isUploading || isProcessing
+       ? 'text-amber-200'
+       : isFromMessage
+         ? 'text-emerald-200'
+@@ -547,10 +548,10 @@ const AttachmentUI: FC = () => {
+                       <XCircle className="h-2.5 w-2.5" />
+                       <span>{t('chat.attachment.uploadFailed')}</span>
+                     </>
+-                  ) : isUploading ? (
++                  ) : isUploading || isProcessing ? (
+                     <>
+                       <Spinner size="sm" />
+-                      <span>{t('chat.attachment.uploading')}</span>
++                      <span>{t(isProcessing ? 'chat.attachment.processing' : 'chat.attachment.uploading')}</span>
+                     </>
+                   ) : (
+                     <>
+diff --git a/frontend/components/assistant-ui/thread.tsx b/frontend/components/assistant-ui/thread.tsx
+index c7763cc9..ffbc01dc 100644
+--- a/frontend/components/assistant-ui/thread.tsx
++++ b/frontend/components/assistant-ui/thread.tsx
+@@ -5,6 +5,7 @@ import {
+   MessagePrimitive,
+   ThreadPrimitive,
+   useMessage,
++  useComposer,
+ } from '@assistant-ui/react';
+ import type { FC } from 'react';
+ import { useState, useEffect, useMemo } from 'react';
+@@ -364,8 +365,17 @@ const Composer: FC<ComposerProps> = ({
+   onOpenKbModal,
+ }) => {
+   const { t } = useI18n();
++  const attachmentsPending = useComposer((state) => state.attachments.some(
++    attachment => attachment.status.type !== 'requires-action' && attachment.status.type !== 'complete',
++  ));
+   return (
+     <ComposerPrimitive.Root
++      onSubmitCapture={(event) => {
++        if (attachmentsPending) {
++          event.preventDefault();
++          event.stopPropagation();
++        }
++      }}
+       className="composer-box flex w-full flex-col px-3"
+     >
+       <div className="flex items-center justify-between gap-2 px-2 pb-1">
+@@ -440,10 +450,13 @@ const Composer: FC<ComposerProps> = ({
+ 
+ const ComposerAction: FC = () => {
+   const { t } = useI18n();
++  const attachmentsPending = useComposer((state) => state.attachments.some(
++    attachment => attachment.status.type !== 'requires-action' && attachment.status.type !== 'complete',
++  ));
+   return (
+     <>
+       <ThreadPrimitive.If running={false}>
+-        <ComposerPrimitive.Send asChild>
++        <ComposerPrimitive.Send asChild disabled={attachmentsPending}>
+           <button
+             aria-label={t('chat.thread.send')}
+             title={t('chat.thread.send')}
+diff --git a/frontend/lib/translations.ts b/frontend/lib/translations.ts
+index 84d0b6c3..709d63a5 100644
+--- a/frontend/lib/translations.ts
++++ b/frontend/lib/translations.ts
+@@ -953,6 +953,7 @@ export const translations: I18nConfig = {
+         fileName: '文件名',
+         uploadAttachment: '上传附件',
+         uploading: '上传中',
++        processing: '识别中',
+         uploaded: '已上传',
+         uploadFailed: '上传失败',
+         image: '图片',
+@@ -2321,6 +2322,7 @@ export const translations: I18nConfig = {
+         fileName: 'File name',
+         uploadAttachment: 'Upload',
+         uploading: 'Uploading',
++        processing: 'Recognizing',
+         uploaded: 'Uploaded',
+         uploadFailed: 'Upload failed',
+         image: 'Image',

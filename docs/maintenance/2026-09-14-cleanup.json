@@ -1,0 +1,106 @@
+{
+  "date": "2026-09-14",
+  "baseline_origin_main": "879d6fefe23e20be4597e070590a20e6d71d9daa",
+  "original_worktree_head": "c01355cb58eba545111fa919d6a7c5fc050d9cb7",
+  "original_worktree_behind_main": 21,
+  "branch": "cleanup/main-20260914",
+  "removed_duplicate_resources": [
+    {
+      "removed": "backend/resources/tokenizer/Qwen3-32B-Tokenizer/vocab.json",
+      "retained": "backend/single-agent/resources/tokenizer/Qwen3-32B-Tokenizer/vocab.json",
+      "bytes": 3383407,
+      "sha256": "01154a4426e6077c8a3f04fca42edb5293bac73a7faed666901f25591ef89182"
+    },
+    {
+      "removed": "backend/resources/tokenizer/Qwen3-32B-Tokenizer/merges.txt",
+      "retained": "backend/single-agent/resources/tokenizer/Qwen3-32B-Tokenizer/merges.txt",
+      "bytes": 1671853,
+      "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"
+    },
+    {
+      "removed": "backend/resources/tokenizer/Qwen3-32B-Tokenizer/tokenizer_config.json",
+      "retained": "backend/single-agent/resources/tokenizer/Qwen3-32B-Tokenizer/tokenizer_config.json",
+      "bytes": 9732,
+      "sha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101"
+    },
+    {
+      "removed": "backend/single-agent/resources/i18n/en.json",
+      "retained": "backend/resources/i18n/en.json",
+      "bytes": 8842,
+      "sha256": "9d65e9138946e5ab8c7fab70df604fe67cfea585fe508beb88ec3b09d034be31"
+    },
+    {
+      "removed": "backend/single-agent/resources/i18n/zh.json",
+      "retained": "backend/resources/i18n/zh.json",
+      "bytes": 7789,
+      "sha256": "3eb9ccd6b97d2945f803673c6d7bc31afe2d221fd58f8ac35ec68a6755416b80"
+    },
+    {
+      "removed": "backend/single-agent/resources/prompts/prompts.yaml",
+      "retained": "backend/resources/prompts/prompts.yaml",
+      "bytes": 4333,
+      "sha256": "fc9b83e31be5ec31f7a70c81111cf335d19aa14c05e47b51be3c38f248fb728e"
+    }
+  ],
+  "archived_or_moved": {
+    "docs/contract_ir_window_stage_log.md": "docs/archive/contract/contract_ir_window_stage_log.md",
+    "docs/contract_risk_review_stage_log.md": "docs/archive/contract/contract_risk_review_stage_log.md",
+    "backend/single-agent/common/i18n_example.py": "examples/i18n.py",
+    "scripts/generate_stage5_pdf.py": "scripts/archive/generate_stage5_pdf.py"
+  },
+  "archival_bytes_unchanged": true,
+  "verification": {
+    "framework": {
+      "before": {
+        "passed": 740,
+        "skipped": 66,
+        "failed": 10
+      },
+      "after": {
+        "passed": 740,
+        "skipped": 66,
+        "failed": 10
+      },
+      "per_test_status_identical": true,
+      "failures": [
+        "tests.test_combined_framework_flow::test_combined_skill_artifact_search_and_rag_flow",
+        "tests.test_contract_risk_direct_review::test_cf005_requires_payment_quote_and_absence_of_safeguard",
+        "tests.test_contract_risk_direct_review::test_cf005_rejects_advance_payment_finding_without_absence_check",
+        "tests.test_finding_consolidation::test_classifies_all_candidates_in_one_non_thinking_call",
+        "tests.test_finding_consolidation::test_repairs_invalid_coverage_once_then_succeeds",
+        "tests.test_finding_consolidation::test_preserves_all_findings_when_model_output_stays_invalid",
+        "tests.test_task_manager_pipeline::test_direct_model_stage_uses_skill_and_llm_runtime_without_react",
+        "tests.test_task_manager_pipeline::test_pipeline_run_retry_replay_and_human_review",
+        "tests.test_task_memory::test_task_memory_versions_are_scoped_by_user_and_injected_as_prompt",
+        "tests.test_task_memory::test_task_type_refresh_is_explicit_and_conversation_aware"
+      ]
+    },
+    "proof": {
+      "before": {
+        "passed": 244,
+        "skipped": 8
+      },
+      "after": {
+        "passed": 244,
+        "skipped": 8
+      },
+      "per_test_status_identical": true,
+      "failures": []
+    },
+    "contract": {
+      "before": {
+        "passed": 242,
+        "skipped": 18
+      },
+      "after": {
+        "passed": 242,
+        "skipped": 18
+      },
+      "per_test_status_identical": true,
+      "failures": []
+    }
+  },
+  "live_default": "1 skipped; no service called",
+  "resource_probe": "prompt, i18n(en/zh), tokenizer encoding and app import passed",
+  "scope": "cleanup, conservative simplification, functionality inventory and architecture; security excluded"
+}

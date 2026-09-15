@@ -1,0 +1,76 @@
+{
+  "model": "OpenDataLab/MinerU2.5-Pro-2605-1.2B",
+  "revision": "7aa8e2991b947a7bd913ba2dcccc432696f3574c",
+  "files": [
+    {
+      "path": "models/MinerU2.5-Pro-2605-1.2B/.gitattributes",
+      "sha256": "5048ba1655963ff2336bc8882631492a5a25a195615746aa8bbdaaba665e0d7c",
+      "size": 2227
+    },
+    {
+      "path": "models/MinerU2.5-Pro-2605-1.2B/README.md",
+      "sha256": "18f0f3cce2cdd6271f19759db5aecf41cdf2990003380656bb95289393d0282d",
+      "size": 1449
+    },
+    {
+      "path": "models/MinerU2.5-Pro-2605-1.2B/added_tokens.json",
+      "sha256": "14155f41a9e51bee8ee7e5ff1b458418928d9ea86822ea5e98ae7bbdf1912ec8",
+      "size": 800
+    },
+    {
+      "path": "models/MinerU2.5-Pro-2605-1.2B/chat_template.jinja",
+      "sha256": "a0bc6f6fc7a29a80017a433e8f03a1cc1236e838a944a2d034295a60c4f2fddb",
+      "size": 1017
+    },
+    {
+      "path": "models/MinerU2.5-Pro-2605-1.2B/config.json",
+      "sha256": "22097df08750242647a513043636a8dff16820a09757e9271e220bdea378df28",
+      "size": 2840
+    },
+    {
+      "path": "models/MinerU2.5-Pro-2605-1.2B/configuration.json",
+      "sha256": "26726b583ef39126b03b84fffd5011c2544c50d236a16472f6575373b17f3986",
+      "size": 55
+    },
+    {
+      "path": "models/MinerU2.5-Pro-2605-1.2B/generation_config.json",
+      "sha256": "405a603af8aed51b82ef71a5e16e7c053d11576fdc2db3c168d32bac2fd75f0d",
+      "size": 215
+    },
+    {
+      "path": "models/MinerU2.5-Pro-2605-1.2B/merges.txt",
+      "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+      "size": 1671853
+    },
+    {
+      "path": "models/MinerU2.5-Pro-2605-1.2B/model.safetensors",
+      "sha256": "abf8681ca63b8dec7b67de257af47b821f179442f72998d0696ae2ed9232a5f0",
+      "size": 2312126640
+    },
+    {
+      "path": "models/MinerU2.5-Pro-2605-1.2B/preprocessor_config.json",
+      "sha256": "7070ae84a684ce2eb8d239c2cb38ff848085075784b213ea28a5ef5b3cdb445f",
+      "size": 316
+    },
+    {
+      "path": "models/MinerU2.5-Pro-2605-1.2B/special_tokens_map.json",
+      "sha256": "badbadb9452d98337219d280879a65eafe224d661a0216114c7cbd3e40ff4984",
+      "size": 919
+    },
+    {
+      "path": "models/MinerU2.5-Pro-2605-1.2B/tokenizer.json",
+      "sha256": "dceac5fc54a795ee7570d17902b47bd05412dc2afa62bdf325c3f97fcb5b87fe",
+      "size": 11423550
+    },
+    {
+      "path": "models/MinerU2.5-Pro-2605-1.2B/tokenizer_config.json",
+      "sha256": "d762430b9c668b5c3ad95e26626e3982d5b2a59c18ff214d621d1de4318ff376",
+      "size": 6596
+    },
+    {
+      "path": "models/MinerU2.5-Pro-2605-1.2B/vocab.json",
+      "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+      "size": 2776833
+    }
+  ]
+}

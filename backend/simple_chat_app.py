@@ -25,17 +25,30 @@ if str(SINGLE_AGENT_DIR) not in sys.path:
 
 from api.single_agent_api import ToolProvider, create_router  # noqa: E402
 from capability_registry import create_capability_router  # noqa: E402
+from backend.speech_recognition import (  # noqa: E402
+    ResolvedSpeechRecognitionModel,
+    SessionFactory,
+    create_speech_recognition_router,
+)
 
 
 def create_app(
     tool_provider: ToolProvider | None = None,
     lifespan: Any = None,
+    speech_recognition_model: ResolvedSpeechRecognitionModel | None = None,
+    speech_recognition_session_factory: SessionFactory | None = None,
 ) -> FastAPI:
     LOCAL_PYTHON_WORK_DIR.mkdir(parents=True, exist_ok=True)
     LOCAL_PYTHON_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     app = FastAPI(title="TUGE Simple Chat", lifespan=lifespan)
     app.include_router(create_router(tool_provider))
     app.include_router(create_capability_router())
+    app.include_router(
+        create_speech_recognition_router(
+            model=speech_recognition_model,
+            session_factory=speech_recognition_session_factory,
+        )
+    )
     app.mount("/ui", StaticFiles(directory=FRONTEND_DIR, html=True), name="ui")
     @app.get("/")
     async def index():

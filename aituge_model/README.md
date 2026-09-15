@@ -3,10 +3,10 @@
 This package is the single source of truth for model metadata and model-pack
 composition, and hosts the internal resilient model gateway.
 
-- `components.yaml` registers LLM, Embedding, and Reranker components.
+- `components.yaml` registers LLM, Embedding, Reranker, and streaming speech-recognition components.
 - `packs/*.yaml` composes those components into deployable model packs.
 - `ModelRuntimeProvider` is the shared runtime configuration interface used by
-  Framework Single Agent and Proof.
+  Framework Single Agent, Proof, and backend speech recognition.
 
 Business services pass only a registered `model_id` or use the active model
 pack. They do not define provider URLs, model dimensions, context windows, or
@@ -47,6 +47,19 @@ registration. This lets development tests prove package routing through the
 stored package ID, runtime provider, and `X-Model-Pack-ID` tool header without
 requiring a local inference server; the actual local Reranker connectivity is a
 deployment test.
+
+## Speech recognition
+
+`SPEECH_RECOGNITION_MODEL_ID` selects a registered ASR model; otherwise
+`default_speech_recognition_id` is used. Credentials use the same `SecretResolver`
+as LLM models. The Alibaba NLS registration expects `aliyun_nls_appkey`,
+`aliyun_access_key_id`, and `aliyun_access_key_secret`; a short-lived
+`aliyun_nls_token` may replace the access-key pair.
+
+Realtime browser audio remains a backend WebSocket service at `/ws/speech`. It
+does not pass through the OpenAI-compatible model gateway because that gateway
+serves request/response LLM, Embedding, and Reranker protocols rather than a
+bidirectional PCM stream.
 
 ## Internal gateway
 

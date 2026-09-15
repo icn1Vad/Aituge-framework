@@ -1049,6 +1049,9 @@ class TaskManagerService:
         return event
 
     def _get_handler(self, definition: TaskType):
+        if definition.handler == "attachment":
+            from backend.attachments.tasks import AttachmentTaskHandler
+            return AttachmentTaskHandler()
         if definition.handler == "scheduler":
             return SchedulerTaskHandler(self.options)
         if definition.handler == "batch_item_scheduler":

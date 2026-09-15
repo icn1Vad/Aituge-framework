@@ -153,6 +153,8 @@ def create_app() -> FastAPI:
     async def lifespan(_app):
         await init_db()
         await observability_runtime.start()
+        from backend.attachments.tasks import enabled, maintenance_loop
+        attachment_maintenance = asyncio.create_task(maintenance_loop()) if enabled() else None
         try:
             async with create_db_session() as session:
                 await remove_retired_framework_tool_configs(session)
@@ -171,6 +173,11 @@ def create_app() -> FastAPI:
             ):
                 yield
         finally:
+            if attachment_maintenance:
+                attachment_maintenance.cancel()
+                import contextlib
+                with contextlib.suppress(asyncio.CancelledError):
+                    await attachment_maintenance
             await observability_runtime.stop()
 
     app = create_simple_chat_app(tool_provider=tool_provider, lifespan=lifespan)
@@ -180,6 +187,11 @@ def create_app() -> FastAPI:
         local_python_work_dir=LOCAL_PYTHON_WORK_DIR,
         rag_store=RAG_STORE,
     )
+    from backend.attachments.tasks import configure, enabled
+    configure(scheduling_options)
+    if enabled():
+        from backend.attachments.api import create_router
+        app.include_router(create_router())
     app.include_router(create_scheduling_router(scheduling_options))
     app.include_router(create_task_manager_router(scheduling_options))
     app.include_router(create_revision_llm_router())

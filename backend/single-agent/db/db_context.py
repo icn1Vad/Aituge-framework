@@ -298,6 +298,9 @@ get_async_db_angine = get_async_db_engine
 
 
 async def init_db():
+    import backend.attachments.models  # additive attachment tables
+    from backend.attachments.tasks import register_tasks
+    register_tasks()
     import db.models.llm  # noqa: F401
     import db.models.message  # noqa: F401
     import db.models.thread  # noqa: F401

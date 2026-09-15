@@ -3,6 +3,8 @@ FROM ai-framework-core:base
 ENV PYTHONPATH=/app:/app/backend:/app/backend/single-agent:/app/services/contract/src
 
 WORKDIR /app
+RUN pip install --no-cache-dir mistletoe==1.5.1 python-pptx==1.0.2 xlrd==2.0.2 openpyxl==3.1.5 \
+    "https://github.com/aliyun/alibabacloud-nls-python-sdk/archive/177972b1f02fcb1f2b229e77320a7286d21785f3.tar.gz"
 
 COPY backend/ ./backend/
 COPY aituge_model/ ./aituge_model/
