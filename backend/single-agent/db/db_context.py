@@ -5,7 +5,7 @@ dotenv.load_dotenv()
 
 from loguru import logger
 from sqlmodel import SQLModel
-from sqlalchemy import event, text
+from sqlalchemy import event
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncEngine
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -278,25 +278,6 @@ def set_session_factory_for_test(factory) -> None:
     _session_factory = factory
 
 
-# ---------------------------------------------------------------------------
-# Backwards compatibility
-# ---------------------------------------------------------------------------
-# Historical callers and tests reference `async_engine` and `AsyncSessionLocal`
-# as module-level attributes. Expose them via PEP 562 `__getattr__` so the
-# import surface is unchanged while the actual construction stays lazy.
-def __getattr__(name):
-    if name == "async_engine":
-        return get_engine()
-    if name == "AsyncSessionLocal":
-        return get_session_factory()
-    raise AttributeError(f"module 'db.db_context' has no attribute {name!r}")
-
-
-# Backwards-compatible alias for the historical misspelling.
-# Deprecated: use get_async_db_engine() instead. Will be removed in a future release.
-get_async_db_angine = get_async_db_engine
-
-
 async def init_db():
     import backend.attachments.models  # additive attachment tables
     from backend.attachments.tasks import register_tasks
@@ -312,24 +293,20 @@ async def init_db():
 
     engine = get_engine()
 
-    async def initialize_schema() -> None:
+    if engine.url.get_backend_name() == "postgresql":
+        from db.schema_migrations import verify_runtime_schema
+        await verify_runtime_schema(engine)
+        return
+
+    # SQLite remains an explicit lightweight development/test backend. The
+    # deployable PostgreSQL runtime is initialized only by versioned migrations.
+    async def initialize_development_schema() -> None:
         async with engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.create_all)
         from task_manager.models import ensure_task_manager_schema
         await ensure_task_manager_schema(engine)
 
-    if engine.url.get_backend_name() != "postgresql":
-        await initialize_schema()
-        return
-
-    # API and Worker processes start together. Serialize their idempotent DDL so
-    # PostgreSQL does not deadlock on concurrent ALTER TABLE statements.
-    async with engine.connect() as lock_conn:
-        await lock_conn.execute(text("SELECT pg_advisory_lock(1827000)"))
-        try:
-            await initialize_schema()
-        finally:
-            await lock_conn.execute(text("SELECT pg_advisory_unlock(1827000)"))
+    await initialize_development_schema()
 
 
 @asynccontextmanager
