@@ -36,7 +36,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     VIRTUAL_ENV=/opt/venv \
     PATH=/opt/venv/bin:$PATH \
-    PYTHONPATH=/app:/app/backend:/app/backend/single-agent:/app/services/contract/src
+    PYTHONPATH=/app:/app/backend:/app/backend/single-agent:/app/services/contract/src:/app/services/business-workflow-kit
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git libgomp1 poppler-utils \

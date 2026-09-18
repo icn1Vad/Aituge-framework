@@ -180,6 +180,15 @@ class SchedulerTaskHandler:
             agent_id=profile.agent_id,
         )
 
+        if task.task_type == "workflow.assistant.chat":
+            from service.structured_form.scene_loader import build_scene_runtime_context
+            scene_context = build_scene_runtime_context(dict(task.input_payload_json or {}))
+            if scene_context:
+                runtime_context = runtime_context.extend(RuntimeContextBlock(
+                    kind="workflow_scene_context", content=scene_context,
+                    metadata={"task_id": task.id},
+                ))
+
         service = SchedulingService(
             self.options,
             tenant_id=task.tenant_id,
