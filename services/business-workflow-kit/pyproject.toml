@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aituge-business-workflow-kit"
+version = "1.1.0"
+description = "Versioned scene definitions and deterministic evidence-backed business audits"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["business_workflow_kit*"]
+
+[tool.setuptools.package-data]
+business_workflow_kit = ["scenes/*.json"]

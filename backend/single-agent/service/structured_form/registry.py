@@ -24,6 +24,11 @@ def get_workflow_definition(
     return _WORKFLOWS.get(normalized)
 
 
+def get_workflow_definitions(assistant_mode: str | None = None) -> tuple[FormWorkflowDefinition, ...]:
+    return tuple(item for item in _WORKFLOWS.values()
+                 if assistant_mode is None or item.assistant_mode == assistant_mode)
+
+
 def clear_workflow_definitions() -> None:
     """Test-only reset hook."""
 

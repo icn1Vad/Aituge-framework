@@ -1,6 +1,6 @@
 FROM ai-framework-core:base
 
-ENV PYTHONPATH=/app:/app/backend:/app/backend/single-agent:/app/services/contract/src
+ENV PYTHONPATH=/app:/app/backend:/app/backend/single-agent:/app/services/contract/src:/app/services/business-workflow-kit
 
 WORKDIR /app
 RUN pip install --no-cache-dir mistletoe==1.5.1 python-pptx==1.0.2 xlrd==2.0.2 openpyxl==3.1.5 \
@@ -15,6 +15,7 @@ COPY services/contract/capabilities/ ./services/contract/capabilities/
 COPY services/contract/scripts/ ./services/contract/scripts/
 COPY services/proof/capabilities/ ./services/proof/capabilities/
 COPY services/travel-assistant/ ./services/travel-assistant/
+COPY services/business-workflow-kit/ ./services/business-workflow-kit/
 
 RUN mkdir -p /app/localdata /app/runtime /app/backend/tool/local_runtime/artifacts
 

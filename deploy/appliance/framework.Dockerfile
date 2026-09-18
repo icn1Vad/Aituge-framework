@@ -4,7 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     POETRY_VIRTUALENVS_CREATE=false \
-    PYTHONPATH=/app:/app/backend:/app/backend/single-agent:/app/services/contract/src
+    PYTHONPATH=/app:/app/backend:/app/backend/single-agent:/app/services/contract/src:/app/services/business-workflow-kit
 
 WORKDIR /app
 
@@ -29,6 +29,7 @@ COPY services/contract/capabilities/ ./services/contract/capabilities/
 COPY services/proof/capabilities/ ./services/proof/capabilities/
 COPY services/contract/scripts/ ./services/contract/scripts/
 COPY services/travel-assistant/capabilities/ ./services/travel-assistant/capabilities/
+COPY services/business-workflow-kit/ ./services/business-workflow-kit/
 
 RUN mkdir -p /app/localdata /app/runtime /app/backend/tool/local_runtime/artifacts
 

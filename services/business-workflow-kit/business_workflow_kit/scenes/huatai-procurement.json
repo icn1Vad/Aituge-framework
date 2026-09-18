@@ -1,0 +1,212 @@
+{
+  "protocolVersion": 1,
+  "kitVersion": "1.1.0",
+  "sceneId": "huatai-procurement",
+  "title": "华泰采购办理",
+  "assistantMode": "HUATAI_ASSISTANT",
+  "readiness": "poc-integrated",
+  "notice": "本地 POC 流程：附件识别调用 DeepSeek 视觉 API；历史额度需按实际台账确认。完成本地办理不代表客户正式审批通过或已付款。",
+  "pendingAdapters": [
+    "customer-dictionaries",
+    "external-payment-history",
+    "external-approval"
+  ],
+  "workflows": [
+    {
+      "workflowType": "HUATAI_PURCHASE_APPLICATION",
+      "resourceType": "HUATAI_PURCHASE_APPLICATION",
+      "title": "采购申请单",
+      "validationMode": "schema",
+      "completionMode": "local-record",
+      "instructions": [
+        "这是采购申请，不是出差申请。优先确认固定资产、无形资产或维保费用，再选择演示费用细项。",
+        "仅使用列出的字段和选项。缺失信息应询问用户，不能编造预算余额、科目编码或审批结果。"
+      ],
+      "fields": [
+        {
+          "key": "title",
+          "label": "申请标题",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "company",
+          "label": "申请公司",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "department",
+          "label": "申请部门",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "applicant",
+          "label": "申请人",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "assetCategory",
+          "label": "资产或费用大类",
+          "type": "enum",
+          "required": true,
+          "options": [
+            "固定资产",
+            "无形资产",
+            "维保费用"
+          ]
+        },
+        {
+          "key": "expenseDetail",
+          "label": "费用细项（演示选项）",
+          "type": "enum",
+          "required": true,
+          "dependsOn": "assetCategory",
+          "options": [
+            "电脑设备",
+            "核心软件",
+            "软件维保"
+          ],
+          "optionsByParent": {
+            "固定资产": [
+              "电脑设备"
+            ],
+            "无形资产": [
+              "核心软件"
+            ],
+            "维保费用": [
+              "软件维保"
+            ]
+          }
+        },
+        {
+          "key": "applicationAmount",
+          "label": "申请金额（元）",
+          "type": "number",
+          "required": true,
+          "minimumExclusive": "0"
+        },
+        {
+          "key": "applicationDate",
+          "label": "申请日期",
+          "type": "date",
+          "required": true
+        },
+        {
+          "key": "notes",
+          "label": "申请说明",
+          "type": "text",
+          "required": true,
+          "multiline": true
+        }
+      ]
+    },
+    {
+      "workflowType": "HUATAI_PURCHASE_REIMBURSEMENT",
+      "resourceType": "HUATAI_PURCHASE_REIMBURSEMENT",
+      "title": "采购报销单",
+      "validationMode": "schema",
+      "completionMode": "audit-adapter",
+      "instructions": [
+        "当前报销单的 linkedApplicationId 已选定且 selected_references.linkedApplicationId.status 为 RESOLVED 时，直接使用该申请，不能因其他同名候选而追问。只有未关联、原关联不可用或明确更换关联时，才从 reference_candidates 选择或询问目标。",
+        "用户要求按关联采购申请回填对应信息时，来源为已选申请的 form：company 对应 reimbursementCompany，department、applicant、assetCategory、expenseDetail 对应同名字段。用户明确说金额与关联申请相同（包括“金额和我报销申请里的金额一样”）时，将来源 applicationAmount 写入当前报销单 taxInclusiveAmount，直接执行，不再追问编号或已给出的金额。优先用 value_from 引用来源字段。未要求金额相同时不默认把申请总额当本次报销额；不把申请日期当作发生日期，不因发生日期未填而阻止金额回填。",
+        "报销标题可能涉及多期付款；不得只凭标题或金额认定付款条件已满足。提醒用户上传合同、发票与履约材料，识别后逐条关联合同期次。",
+        "AI审校由用户点击独立按钮发起；本工具只填写表单，不能代替用户确认历史金额、人工复核或结束流程，不能声称客户正式审批或付款已执行。"
+      ],
+      "fields": [
+        {
+          "key": "linkedApplicationId",
+          "label": "关联采购申请",
+          "type": "text",
+          "required": true,
+          "referenceWorkflow": "HUATAI_PURCHASE_APPLICATION"
+        },
+        {
+          "key": "title",
+          "label": "报销标题",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "reimbursementCompany",
+          "label": "报销公司",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "department",
+          "label": "申请部门",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "applicant",
+          "label": "申请人",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "position",
+          "label": "岗位",
+          "type": "text"
+        },
+        {
+          "key": "assetCategory",
+          "label": "资产或费用大类",
+          "type": "enum",
+          "required": true,
+          "options": [
+            "固定资产",
+            "无形资产",
+            "维保费用"
+          ]
+        },
+        {
+          "key": "expenseDetail",
+          "label": "费用细项",
+          "type": "enum",
+          "required": true,
+          "dependsOn": "assetCategory",
+          "options": [
+            "电脑设备",
+            "核心软件",
+            "软件维保"
+          ],
+          "optionsByParent": {
+            "固定资产": [
+              "电脑设备"
+            ],
+            "无形资产": [
+              "核心软件"
+            ],
+            "维保费用": [
+              "软件维保"
+            ]
+          }
+        },
+        {
+          "key": "taxInclusiveAmount",
+          "label": "本次报销含税金额（元）",
+          "type": "number",
+          "required": true,
+          "minimumExclusive": "0"
+        },
+        {
+          "key": "occurrenceDate",
+          "label": "发生日期",
+          "type": "date",
+          "required": true
+        },
+        {
+          "key": "notes",
+          "label": "费用与付款期次说明",
+          "type": "text",
+          "required": true,
+          "multiline": true
+        }
+      ]
+    }
+  ]
+}

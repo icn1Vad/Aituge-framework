@@ -9,6 +9,7 @@ from llama_index.core.tools.function_tool import FunctionTool
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from tool import ToolBundle
+from .registry import get_workflow_definition
 
 
 class FormFieldChange(BaseModel):
@@ -36,8 +37,16 @@ class ApplyFormChangesInput(BaseModel):
 class StartWorkflowInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    workflow_type: Literal["TRAVEL_APPLICATION", "TRAVEL_REIMBURSEMENT"]
+    workflow_type: str = Field(min_length=1, max_length=64)
     changes: list[FormFieldChange] = Field(default_factory=list, max_length=100)
+
+    @field_validator("workflow_type")
+    @classmethod
+    def require_registered_workflow(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if get_workflow_definition(normalized) is None:
+            raise ValueError("Workflow is not registered")
+        return normalized
 
 
 def create_apply_form_changes_bundle(_config) -> ToolBundle:
@@ -105,8 +114,8 @@ def create_start_workflow_bundle(_config) -> ToolBundle:
         name="start_workflow",
         description=(
             "Start a supported business workflow when no form draft is currently bound. "
-            "TRAVEL_APPLICATION starts a travel request and TRAVEL_REIMBURSEMENT starts "
-            "reimbursement selection. Include any fields already stated by the user in changes. "
+            "Choose only a registered workflow listed in this scene's task context. "
+            "Include any fields already stated by the user in changes. "
             "The Java business boundary creates and persists the draft."
         ),
         fn_schema=StartWorkflowInput,

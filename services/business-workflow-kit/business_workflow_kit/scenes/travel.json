@@ -1,0 +1,22 @@
+{
+  "protocolVersion": 1,
+  "kitVersion": "1.0.0",
+  "sceneId": "travel",
+  "title": "差旅与报销",
+  "assistantMode": "TRAVEL_ASSISTANT",
+  "readiness": "existing-adapter",
+  "workflows": [
+    {
+      "workflowType": "TRAVEL_APPLICATION", "resourceType": "TRAVEL_APPLICATION", "title": "出差申请",
+      "validationMode": "legacy-adapter", "completionMode": "business-adapter",
+      "fields": [],
+      "adapter": "travel-assistant"
+    },
+    {
+      "workflowType": "TRAVEL_REIMBURSEMENT", "resourceType": "TRAVEL_REIMBURSEMENT", "title": "差旅报销",
+      "validationMode": "legacy-adapter", "completionMode": "business-adapter",
+      "fields": [],
+      "adapter": "travel-assistant"
+    }
+  ]
+}
