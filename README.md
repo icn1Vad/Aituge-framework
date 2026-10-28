@@ -1,5 +1,16 @@
 # Aituge Framework
 
+A Python framework for **agent execution, tool injection, local RAG, task scheduling, and discussion experiments**. It is part of the engineering context behind the ProofSpace product work.
+
+**Python 3.11 / 3.12 · FastAPI · SQLite · Redis**
+
+[Portfolio overview](docs/PortfolioOverview.md) · [ProofSpace case study](https://icn1vad.github.io/projects/proofspace/)
+
+The public repository exposes framework entry points and experiments. A complete business deployment requires separately configured services and model providers; this README does not claim production service guarantees.
+
+## Existing setup and operation guide
+
+
 Minimal TUGE framework for single-agent execution, tool injection, local RAG,
 agent scheduling, and multi-agent discussion tests.
 
